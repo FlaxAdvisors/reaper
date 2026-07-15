@@ -1,0 +1,69 @@
+---
+# Enable v2c read-only SNMP on Cumulus Linux 3.7.3. The vendor default
+# snmpd.conf is a symlink to snmpd.conf.cumulus and contains Cumulus-specific
+# pass_persist handlers (ifAlias, entity sensors, PoE, drop counters) that
+# snmp_exporter's cumulus_linux module walks via SNMP — we MUST NOT replace
+# the whole file. Instead, surgically add/update only the four lines we need:
+#   - agentaddress    listen on udp:161 (vendor default is loopback-only)
+#   - rocommunity     v2c read-only community string
+#   - sysLocation     site name
+#   - sysContact      ops mailbox
+#
+# Cumulus 3.7.3 ships python 3.4/3.5 — same constraint apply_config.yml hits
+# — so we shell out via raw rather than use ansible.builtin.lineinfile. The
+# script is idempotent: it emits CHANGED only when it actually edits the file,
+# and the registered changed_when keys off that.
+
+- name: Ensure SNMP v2c read-only access is configured (idempotent)
+  ansible.builtin.raw: |
+    set -e
+    f=/etc/snmp/snmpd.conf
+    changed=0
+    # 1. agentaddress — listen on UDP/161 on all IPv4 interfaces. Net-SNMP
+    #    needs an explicit host in the transport spec; udp:161 parses as
+    #    host=161 and the bind fails. The wildcard 0.0.0.0 already covers
+    #    127.0.0.1; listing both makes the second bind collide and snmpd
+    #    exits 1. Cumulus subagents talk to snmpd via AgentX over a Unix
+    #    socket (master agentx), so a loopback listener is unnecessary.
+    desired_aa='agentaddress udp:0.0.0.0:161'
+    if ! grep -qFx "$desired_aa" "$f"; then
+      sed -i '/^agentaddress[[:space:]]/d' "$f"
+      echo "$desired_aa" >> "$f"
+      changed=1
+    fi
+    # 2. rocommunity — add or replace existing line
+    desired_rc="rocommunity {{ apply_switch_snmp_community }} default"
+    if ! grep -qFx "$desired_rc" "$f"; then
+      sed -i '/^rocommunity[[:space:]]/d' "$f"
+      echo "$desired_rc" >> "$f"
+      changed=1
+    fi
+    # 3. sysLocation
+    desired_loc="sysLocation {{ apply_switch_snmp_location }}"
+    if ! grep -qFx "$desired_loc" "$f"; then
+      sed -i '/^sysLocation[[:space:]]/d' "$f"
+      echo "$desired_loc" >> "$f"
+      changed=1
+    fi
+    # 4. sysContact
+    desired_con="sysContact {{ apply_switch_snmp_contact }}"
+    if ! grep -qFx "$desired_con" "$f"; then
+      sed -i '/^sysContact[[:space:]]/d' "$f"
+      echo "$desired_con" >> "$f"
+      changed=1
+    fi
+    test "$changed" = 1 && echo CHANGED || echo UNCHANGED
+  become: true
+  register: apply_switch_snmp_edit
+  changed_when: '"CHANGED" in apply_switch_snmp_edit.stdout'
+  notify: Restart snmpd
+
+- name: Enable snmpd at boot
+  ansible.builtin.raw: systemctl enable snmpd
+  become: true
+  changed_when: false
+
+- name: Start snmpd if not running
+  ansible.builtin.raw: systemctl start snmpd
+  become: true
+  changed_when: false

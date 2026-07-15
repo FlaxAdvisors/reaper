@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% import "_components.html" as c %}
+{% block title %}flax-control — lanes{% endblock %}
+{% block content %}
+{{ c.page_header('Lanes', "Per-role lane status from core tables (registry · desired_reservations · materializer_plan · work_records · roaming). Role internals live in each role's own UI — cards link across.") }}
+<p class="page-sub"><a href="/bmc-fw-post">BMC firmware (post) →</a></p>
+
+{% if cards %}
+<div class="grid2">
+{% for card in cards %}
+  <div class="side-card">
+    <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+      <span class="chip {{ 'triage' if card.name == 'triage' else 'post' }}">{{ card.name }}</span>
+      <span class="tag">gen {{ card.generation }}</span>
+      {% if card.ui_link %}<a class="tag" href="{{ card.ui_link }}">role UI ↗</a>{% endif %}
+    </div>
+    {% set _universe %}{% for s in card.universe_summary %}<span class="tag">{{ s }}</span>{% else %}<span class="empty">none</span>{% endfor %}{% endset %}
+    {{ c.kv('universe', _universe) }}
+    {% set _desired %}{% for d in card.desired %}<span class="tag">{{ d.kind }}: {{ d.count }}</span>{% else %}<span class="empty">none</span>{% endfor %}{% endset %}
+    {{ c.kv('desired', _desired) }}
+    {% set _enf %}
+      {% if card.materializer_stale %}{{ c.badge('WRITE-FREEZE? no fresh materializer cycle', 'c') }}
+      {% elif card.planned_actions %}{{ c.badge(card.planned_actions ~ ' planned', 'w') }}
+      {% else %}{{ c.badge('converged', 'g') }}{% endif %}
+      <a href="/shadow">materializer →</a>
+    {% endset %}
+    {{ c.kv('enforcement', _enf) }}
+    {% set _records %}
+      {% for r in card.records %}<span class="tag">{{ r.kind }}: {{ r.n_24h }}/24h · {{ r.n_7d }}/7d</span>{% else %}<span class="empty">none yet</span>{% endfor %}
+      <a href="/records">browse →</a>
+    {% endset %}
+    {{ c.kv('records', _records) }}
+    {% set _roam %}in {{ card.roam_in }} · out {{ card.roam_out }} <a href="/ownership">ledger →</a>{% endset %}
+    {{ c.kv('roaming 24h', _roam) }}
+    {% set _keys %}{% for k in card.record_keys %}<code>{{ k }}</code> {% endfor %}{% endset %}
+    {{ c.kv('record keys', _keys) }}
+  </div>
+{% endfor %}
+</div>
+{% else %}
+<p class="empty">No roles published — the registry is empty (degraded start
+  or roles.d never loaded). See <a href="/roles">Registry</a>.</p>
+{% endif %}
+
+{% endblock %}

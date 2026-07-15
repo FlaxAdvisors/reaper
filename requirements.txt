@@ -1,0 +1,10 @@
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+jinja2==3.1.4
+psycopg[binary,pool]==3.2.3
+python-multipart==0.0.12
+# Bundled at runtime so the same image can run schema migrations.
+# SQLAlchemy comes in as alembic's transitive dep (no separate pin needed).
+alembic==1.13.3
+# flax_switch_sense's Arista eAPI driver — JSON-RPC over HTTPS.
+requests==2.32.3

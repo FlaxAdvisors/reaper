@@ -1,0 +1,141 @@
+---
+# Stand up bang services on both jumphosts.
+#
+# Single play with explicit import_role + a meta: flush_handlers between
+# the infra section (sysctls, time, VIPs, dnsmasq, nginx, PXE content)
+# and the daemon section (lease agent, switchport agent, triage stack).
+# The flush is required because apply_lease_agent's zypper task fetches
+# from http://bang/install/... — that path is what apply_bang_services
+# adds to the nginx vhost; without an explicit flush, the restart-nginx
+# handler doesn't fire until end-of-play, racing the zypper refresh on
+# a fresh box.
+#
+# Single-play (vs split into two plays) keeps every role's defaults in
+# scope for every later role — apply_triage_compose references
+# apply_keepalived_master_host which is declared in apply_keepalived's
+# defaults, so apply_keepalived must remain in the same play scope.
+#
+# All roles are idempotent and safe to re-run.
+
+- name: Apply bang services
+  hosts: jumphosts
+  gather_facts: true
+  serial: 1            # one bang at a time, so we can spot-check before continuing
+  tasks:
+    - name: Apply role apply_flax_facts
+      ansible.builtin.import_role:
+        name: apply_flax_facts
+      tags:
+        - flax_facts
+
+    - name: Apply role apply_bang_router
+      ansible.builtin.import_role:
+        name: apply_bang_router
+
+    - name: Apply role apply_bang_chrony
+      ansible.builtin.import_role:
+        name: apply_bang_chrony
+
+    - name: Apply role apply_keepalived
+      ansible.builtin.import_role:
+        name: apply_keepalived
+      tags: [keepalived]
+
+    - name: Apply role apply_bang_services
+      ansible.builtin.import_role:
+        name: apply_bang_services
+      tags: [bang_services]
+
+    - name: Apply role apply_pxe_payloads
+      ansible.builtin.import_role:
+        name: apply_pxe_payloads
+
+    # Force notify-handler flush before the daemons section. Required so
+    # apply_bang_services' restart-nginx handler fires before
+    # apply_lease_agent's zypper refresh hits http://bang/install/...
+    - name: Flush handlers before daemons start (nginx + dnsmasq must restart for /install/ to serve)
+      ansible.builtin.meta: flush_handlers
+
+    - name: Apply role apply_flax_tls      # fleet CA + per-host wildcard leaf
+      ansible.builtin.import_role:
+        name: apply_flax_tls
+      tags: [flax_tls]
+
+    - name: Apply role apply_flax_stack       # NEW — Postgres + flax-control + nginx
+      ansible.builtin.import_role:
+        name: apply_flax_stack
+      tags: [flax_stack]
+
+    - name: Apply role apply_flax_switch_sense
+      ansible.builtin.import_role:
+        name: apply_flax_switch_sense
+      tags: [flax_switch_sense]
+
+    - name: Apply role apply_flax_observe
+      ansible.builtin.import_role:
+        name: apply_flax_observe
+      tags: [flax_observe]
+
+    - name: Apply role apply_flax_post          # Eindhoven Post Servers viewer
+      ansible.builtin.import_role:
+        name: apply_flax_post
+      tags: [flax_post]
+
+    - name: Apply role apply_flax_classify
+      ansible.builtin.import_role:
+        name: apply_flax_classify
+      tags: [flax_classify]
+
+    - name: Apply role apply_flax_discover
+      ansible.builtin.import_role:
+        name: apply_flax_discover
+      tags: [flax_discover]
+
+    - name: Apply role apply_flax_reconcile
+      ansible.builtin.import_role:
+        name: apply_flax_reconcile
+      tags: [apply_flax_reconcile]
+
+    - name: Apply role apply_kea
+      ansible.builtin.import_role:
+        name: apply_kea
+      tags: [kea]
+
+    - name: Apply role apply_radvd
+      ansible.builtin.import_role:
+        name: apply_radvd
+      tags: [radvd]
+      when: (bang_dhcp_server | default('dnsmasq')) == 'kea'
+
+    - name: Apply role apply_lease_agent
+      ansible.builtin.import_role:
+        name: apply_lease_agent
+      tags: [lease_agent]
+
+    - name: Apply role apply_bmc_scripts
+      ansible.builtin.import_role:
+        name: apply_bmc_scripts
+
+    - name: Apply role apply_triage_firewall
+      ansible.builtin.import_role:
+        name: apply_triage_firewall
+
+    - name: Apply role apply_docker
+      ansible.builtin.import_role:
+        name: apply_docker
+
+    - name: Apply role apply_triage_compose
+      ansible.builtin.import_role:
+        name: apply_triage_compose
+
+    - name: Apply role apply_node_exporter
+      ansible.builtin.import_role:
+        name: apply_node_exporter
+
+    - name: Apply role apply_health_metrics_hooks
+      ansible.builtin.import_role:
+        name: apply_health_metrics_hooks
+
+    - name: Apply role apply_health_compose
+      ansible.builtin.import_role:
+        name: apply_health_compose

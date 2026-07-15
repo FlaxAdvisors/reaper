@@ -1,0 +1,30 @@
+---
+- name: Install radvd (host package; distro provides radvd.service)
+  become: true
+  ansible.builtin.package:
+    name: radvd
+    state: present
+
+- name: Deploy radvd.conf
+  become: true
+  ansible.builtin.template:
+    src: radvd.conf.j2
+    dest: /etc/radvd.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart radvd
+
+# VIP-exclusive: radvd runs ONLY on the keepalived master. notify_master
+# starts it on promotion; notify_backup stops it on demotion. enabled=false
+# so a cold-boot-into-BACKUP never autostarts it (failback-trap guard,
+# project_keepalived_failback_trap). state=stopped here because the package
+# install may auto-start it; the cutover / notify_master starts it explicitly
+# on the master.
+- name: Disable radvd autostart (keepalived master owns lifecycle)
+  become: true
+  ansible.builtin.systemd:
+    name: radvd.service
+    enabled: false
+    state: stopped
+    daemon_reload: true

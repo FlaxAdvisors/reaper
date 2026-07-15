@@ -1,0 +1,23 @@
+[Unit]
+Description=flax stack — postgres + flax-control + nginx
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+WorkingDirectory=/etc/flax/flax-stack
+EnvironmentFile=/etc/flax/flax-stack/flax-stack.env
+# Leading "-" makes a failed pull non-fatal: at cold boot the registry can be
+# unreachable before the uplink is fully up (network-online.target lies on
+# wicked), which previously failed the whole oneshot and left the stack down for
+# 6 days (braintree fiesta, 2026-06-04). The images are already present locally,
+# so `up -d` below still starts the stack from cache; the pull is only a
+# freshness optimisation, not a hard dependency.
+ExecStartPre=-/usr/bin/docker compose -f {{ apply_flax_stack_compose_path }} pull
+ExecStart=/usr/bin/docker compose -f {{ apply_flax_stack_compose_path }} up -d
+ExecStop=/usr/bin/docker compose -f {{ apply_flax_stack_compose_path }} down
+
+[Install]
+WantedBy=multi-user.target

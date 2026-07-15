@@ -1,0 +1,82 @@
+---
+# Roots that match apply_bang_services_{pxe,tftp}_root. Override per-site
+# only if the bang's filesystem layout deviates.
+apply_pxe_payloads_pxe_root: /srv/pxe
+apply_pxe_payloads_tftp_root: /srv/tftpboot
+
+# === post.tgz build (assembled at deploy from text source + /opt/flax/bin binaries) ===
+# The node payload tarball is BUILT here (was a committed binary blob); text source
+# lives in files/post/, secrets are vault-templated, binaries are pulled from the bang.
+# AMI flash tools (afulnx_64/SCELNX_64) are PLATFORM-SPECIFIC and are NOT bundled —
+# they are fetched per-platform from /export/share/SXC-Lab_OCP-Updates at runtime
+# (see docs/post-platform-firmware-tooling.md).
+post_build_dir: /srv/pxe/.post-build
+post_build_binaries:
+  - macinv
+  - dimmerr
+  - dimmsum
+  - lsnet
+  - alldisks
+  - bootorder
+
+# The single iperf3 serializer the qual agent's iperf stage dials (rendered into
+# post.tgz as flax-qual.env -> FLAX_IPERF_SERVER). Defaults to the eindhoven backup
+# bang; each site's group_vars/all/vars.yml overrides it with its OWN backup bang
+# (eindhoven=bang-edam, braintree=bang-siesta) so post nodes never cross sites.
+post_iperf_server: bang-edam
+
+# Per-vlan PXE trees to populate. The mgmt vlan (4) needs the same
+# boot.ipxe.cfg dispatch wiring even though it never carries DUTs, so
+# v4 lives outside the regular vlans list. Per-site overrides may swap
+# the mgmt vid (memory: braintree real=2 vs file=1 drift) but the
+# default matches the eindhoven shape.
+apply_pxe_payloads_extra_vids:
+  - 4
+
+# Vids to render. By default it's the inventory's vlans (vid 16-31 on
+# eindhoven and braintree both) plus apply_pxe_payloads_extra_vids.
+apply_pxe_payloads_vids: "{{ apply_pxe_payloads_extra_vids + (vlans | map(attribute='vid') | list) }}"
+
+# === per-VID boot.ipxe rendering ===
+# templates/v/boot.ipxe.j2 builds each /srv/pxe/v<vid>/boot.ipxe from
+# these maps + the inventory `vlans:` entry's family + phase. Operators
+# adjusting a single vlan should set `pxe: {menu, submenu, com,
+# com_setting, node}` on that vlans entry rather than editing the file
+# on the bang (apply_pxe_payloads stomps in-place edits).
+
+# Family → COM speed + node-setting hint.
+#   leopard pulls iLO-style serial at 115200n8 on ttyS1 ⇒ com2s/ttys1s.
+#   tiogapass speaks the 115200n8 ttyS0 console (matches vlans entry's
+#   console_zerofast) ⇒ com1f/ttys0f and node wiwynn-tp.
+#   Other Wiwynn-class boards (wedge, yv3, brycecanyon, grandcanyon,
+#   lightning) retain com2f/ttys1f pending per-family verification.
+apply_pxe_payloads_pxe_family_map:
+  leopard:     { com: com2s, com_setting: ttys1s, node: leopard }
+  tiogapass:   { com: com1f, com_setting: ttys0f, node: wiwynn-tp }
+  wedge100s:   { com: com2f, com_setting: ttys1f, node: wiwynn-tp }
+  wedge400:    { com: com2f, com_setting: ttys1f, node: wiwynn-tp }
+  yv3:         { com: com2f, com_setting: ttys1f, node: wiwynn-tp }
+  brycecanyon: { com: com2f, com_setting: ttys1f, node: wiwynn-tp }
+  grandcanyon: { com: com2f, com_setting: ttys1f, node: wiwynn-tp }
+  lightning:   { com: com2f, com_setting: ttys1f, node: wiwynn-tp }
+
+# Fallback for unrecognised families (and the extra_vids stubs that
+# carry no family at all).
+apply_pxe_payloads_pxe_family_default:
+  com: com2s
+  com_setting: ttys1s
+  node: leopard
+
+# Phase → submenu default.
+#   triage holds at the inventory tool so an operator can re-image / wipe.
+#   post stays in the live menu — DUTs land here for sustained use.
+apply_pxe_payloads_pxe_phase_map:
+  triage: inventoryoff
+  post:   staylive
+
+apply_pxe_payloads_pxe_phase_default: inventoryoff
+
+# Site-wide menu default. Overridable per-vlan via `pxe: { menu: ... }`
+# in the inventory entry (e.g. eindhoven vid 31 picks menu-ubuntu for
+# integration work).
+apply_pxe_payloads_pxe_menu_default: menu-live

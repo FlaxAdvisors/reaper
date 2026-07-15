@@ -1,0 +1,144 @@
+server {
+    listen {{ apply_flax_stack_https_port }} ssl;
+    listen [::]:{{ apply_flax_stack_https_port }} ssl;
+    server_name {{ inventory_hostname }} {{ apply_flax_stack_server_aliases | default('') }};
+
+    ssl_certificate     /etc/nginx/tls/server.crt;
+    ssl_certificate_key /etc/nginx/tls/server.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    # Trust the loopback for X-Forwarded-* (only the local nginx writes them)
+    set_real_ip_from 127.0.0.1;
+    real_ip_header X-Forwarded-For;
+
+    location / {
+        proxy_pass         http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 30s;
+    }
+}
+
+# --- :443 name-based vhosts (console / post / triage) ---
+# One-time CA import (flax-rootCA.crt) makes all three trusted. Upstreams are
+# the same loopback services fronted directly on 8000 / 8446+8448 / 5555+5559.
+
+# Unmatched name on :443 → explicit 404 (bare <host>:443 is not a vhost).
+server {
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    server_name _;
+    ssl_certificate     /etc/nginx/tls/server.crt;
+    ssl_certificate_key /etc/nginx/tls/server.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    return 404;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name console.{{ inventory_hostname }}.flaxadvisors.cloud;
+
+    ssl_certificate     /etc/nginx/tls/server.crt;
+    ssl_certificate_key /etc/nginx/tls/server.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    set_real_ip_from 127.0.0.1;
+    real_ip_header X-Forwarded-For;
+
+    location / {
+        proxy_pass         http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 30s;
+    }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name post.{{ inventory_hostname }}.flaxadvisors.cloud;
+
+    ssl_certificate     /etc/nginx/tls/server.crt;
+    ssl_certificate_key /etc/nginx/tls/server.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    set_real_ip_from 127.0.0.1;
+    real_ip_header X-Forwarded-For;
+
+    location / {
+        proxy_pass         http://127.0.0.1:8446;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 30s;
+    }
+
+    # flax-post-sol — Socket.IO SOL console relay (websocket upgrade).
+    location /socket.io/ {
+        proxy_pass         http://127.0.0.1:8448;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade $http_upgrade;
+        proxy_set_header   Connection "upgrade";
+        proxy_set_header   Host $host;
+        proxy_read_timeout 3600s;
+    }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name triage.{{ inventory_hostname }}.flaxadvisors.cloud;
+
+    ssl_certificate     /etc/nginx/tls/server.crt;
+    ssl_certificate_key /etc/nginx/tls/server.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    set_real_ip_from 127.0.0.1;
+    real_ip_header X-Forwarded-For;
+
+    location / {
+        proxy_pass         http://127.0.0.1:5555;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 30s;
+    }
+
+    # triage SOL — Socket.IO on the default /socket.io/ path, /sol/<ip>
+    # namespace, websocket upgrade. Backend on :5559.
+    location /socket.io/ {
+        proxy_pass         http://127.0.0.1:5559;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade $http_upgrade;
+        proxy_set_header   Connection "upgrade";
+        proxy_set_header   Host $host;
+        proxy_read_timeout 3600s;
+    }
+
+    # triage SOL power control (POST /power/<ip>) — same backend, plain HTTP.
+    location /power/ {
+        proxy_pass         http://127.0.0.1:5559;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 30s;
+    }
+}

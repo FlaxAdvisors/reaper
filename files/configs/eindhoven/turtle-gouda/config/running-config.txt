@@ -1,0 +1,482 @@
+Building configuration...
+
+Current configuration : 10996 bytes
+!
+! Last configuration change at 16:52:40 UTC Tue Jan 10 2006 by admin
+!
+version 15.2
+no service pad
+service timestamps debug datetime msec
+service timestamps log datetime msec
+no service password-encryption
+service unsupported-transceiver
+!
+hostname turtle-gouda
+!
+boot-start-marker
+boot-end-marker
+!
+enable secret 8 $8$Pc.OfB.SZ3JJFZ$Ob0vWHLEoEU/Gf5XPl65sKcGpzidXwznWw.KHy85cs6
+enable password LetM3!nNow
+!
+username admin privilege 15 secret 8 $8$qncskLw6dam38L$GKijTqkSRk7AUZdU9XNfN.2o9GRMwC89DFWD07.FNG6
+aaa new-model
+!
+!
+aaa authentication login default local
+aaa authorization exec default local 
+!
+!
+!
+!
+!
+!
+aaa session-id common
+switch 1 provision ws-c3750x-48p
+system mtu routing 1500
+!
+!
+!
+!
+!
+!
+ip domain-name ehv.lab
+ip name-server 192.168.88.10
+vtp mode transparent
+!
+!
+!
+!
+!
+authentication mac-move permit
+!
+crypto pki trustpoint TP-self-signed-256799104
+ enrollment selfsigned
+ subject-name cn=IOS-Self-Signed-Certificate-256799104
+ revocation-check none
+ rsakeypair TP-self-signed-256799104
+!
+!
+crypto pki certificate chain TP-self-signed-256799104
+ certificate self-signed 01
+  3082024A 308201B3 A0030201 02020101 300D0609 2A864886 F70D0101 04050030 
+  30312E30 2C060355 04031325 494F532D 53656C66 2D536967 6E65642D 43657274 
+  69666963 6174652D 32353637 39393130 34301E17 0D393330 33303130 30303234 
+  365A170D 32303031 30313030 30303030 5A303031 2E302C06 03550403 1325494F 
+  532D5365 6C662D53 69676E65 642D4365 72746966 69636174 652D3235 36373939 
+  31303430 819F300D 06092A86 4886F70D 01010105 0003818D 00308189 02818100 
+  B6C5DCEB A96DA161 3465E2B5 4E8CE2AE 0DAAD2FA 7BEE73B3 E54E952F 3ED28950 
+  8D149536 4096B6A2 532CC2D3 B376034F 637E3B82 E1408219 CB06E2FB 2CB495FF 
+  A588EAB5 2F643887 776E7DE3 86542F15 C3037FA3 630DAB94 FD6E1A41 F90B22CF 
+  1CA475B8 753DDDF4 B979A726 F9003F72 66C1BD78 638519B2 2C7BB1EC 63CC8B59 
+  02030100 01A37430 72300F06 03551D13 0101FF04 05300301 01FF301F 0603551D 
+  11041830 16821474 7572746C 652D676F 7564612E 6576682E 6C616230 1F060355 
+  1D230418 30168014 38483860 8B4F4586 66B3DABA 2AA481C2 4F4C4531 301D0603 
+  551D0E04 16041438 4838608B 4F458666 B3DABA2A A481C24F 4C453130 0D06092A 
+  864886F7 0D010104 05000381 810041CF 7387338C 283E3F82 BD76A0FB D958159E 
+  3C18602A 78B6DD89 B668F99B 59902CBE E017EBBA 9BE07BB3 FEB299F9 98FF17CC 
+  3BC064F8 0AD8891A E6A9F102 87DF3D61 F88D98C2 579185D4 6319C921 8ACC01A3 
+  95908E6E CE3D1ED3 D066408D BE6130D5 2C3E1029 1D5F6982 8E1712BA 1700E6C1 
+  C58D5485 39702E1A 35CCC7BF DEDD
+  	quit
+!
+!
+!
+!
+spanning-tree mode mst
+spanning-tree extend system-id
+spanning-tree pathcost method long
+!
+spanning-tree mst configuration
+ name lab-eindhoven
+ revision 1
+ instance 1 vlan 2, 4, 16-31
+!
+no errdisable detect cause gbic-invalid
+errdisable recovery cause gbic-invalid
+errdisable recovery interval 30
+!
+vlan internal allocation policy ascending
+!
+vlan 2
+ name corp
+!
+vlan 4
+ name mgmt
+!
+vlan 16
+ name triage-leopard
+!
+vlan 17
+ name triage-tiogapass
+!
+vlan 18
+ name triage-wedge100s
+!
+vlan 19
+ name triage-wedge400
+!
+vlan 20
+ name triage-yv3
+!
+vlan 21
+ name triage-brycecanyon
+!
+vlan 22
+ name triage-lightning
+!
+vlan 23
+ name triage-grandcanyon
+!
+vlan 24
+ name post-leopard
+!
+vlan 25
+ name post-tiogapass
+!
+vlan 26
+ name post-wedge100s
+!
+vlan 27
+ name post-wedge400
+!
+vlan 28
+ name post-yv3
+!
+vlan 29
+ name post-brycecanyon
+!
+vlan 30
+ name post-lightning
+!
+vlan 31
+ name post-grandcanyon
+!
+lldp run
+!
+!
+!
+!
+!
+interface FastEthernet0
+ no ip address
+!
+interface GigabitEthernet1/0/1
+ description Guest computer mgmt access (laptops, on-site tooling)
+ switchport access vlan 4
+ switchport mode access
+ spanning-tree portfast edge
+!
+interface GigabitEthernet1/0/2
+ description Guest computer mgmt access (laptops, on-site tooling)
+ switchport access vlan 4
+ switchport mode access
+ spanning-tree portfast edge
+!
+interface GigabitEthernet1/0/3
+ description Guest computer mgmt access (laptops, on-site tooling)
+ switchport access vlan 4
+ switchport mode access
+ spanning-tree portfast edge
+!
+interface GigabitEthernet1/0/4
+ description Rabbit-1 (Wedge100S R1) OOB mgmt
+ switchport access vlan 4
+ switchport mode access
+ spanning-tree portfast edge
+!
+interface GigabitEthernet1/0/5
+ description Guest computer mgmt access (laptops, on-site tooling)
+ switchport access vlan 4
+ switchport mode access
+ spanning-tree portfast edge
+!
+interface GigabitEthernet1/0/6
+ description rabbit-edam (Wedge100S R2) OOB mgmt - cabled here (was Gi1/0/5)
+ switchport access vlan 4
+ switchport mode access
+ spanning-tree portfast edge
+!
+interface GigabitEthernet1/0/7
+ description Guest computer mgmt access (laptops, on-site tooling)
+ switchport access vlan 4
+ switchport mode access
+ spanning-tree portfast edge
+!
+interface GigabitEthernet1/0/8
+ description Guest computer mgmt access (laptops, on-site tooling)
+ switchport access vlan 4
+ switchport mode access
+ spanning-tree portfast edge
+!
+interface GigabitEthernet1/0/9
+ description Guest computer mgmt access (laptops, on-site tooling)
+ switchport access vlan 4
+ switchport mode access
+ spanning-tree portfast edge
+!
+interface GigabitEthernet1/0/10
+ description Guest computer mgmt access (laptops, on-site tooling)
+ switchport access vlan 4
+ switchport mode access
+ spanning-tree portfast edge
+!
+interface GigabitEthernet1/0/11
+!
+interface GigabitEthernet1/0/12
+!
+interface GigabitEthernet1/0/13
+!
+interface GigabitEthernet1/0/14
+!
+interface GigabitEthernet1/0/15
+!
+interface GigabitEthernet1/0/16
+!
+interface GigabitEthernet1/0/17
+ description Zone E switch DUTs (W100S x4) - OOB mgmt
+ switchport access vlan 26
+ switchport mode access
+ spanning-tree portfast edge
+!
+interface GigabitEthernet1/0/18
+ description Zone E switch DUTs (W100S x4) - OOB mgmt
+ switchport access vlan 26
+ switchport mode access
+ spanning-tree portfast edge
+!
+interface GigabitEthernet1/0/19
+ description Zone E switch DUTs (W100S x4) - OOB mgmt
+ switchport access vlan 26
+ switchport mode access
+ spanning-tree portfast edge
+!
+interface GigabitEthernet1/0/20
+ description Zone E switch DUTs (W100S x4) - OOB mgmt
+ switchport access vlan 26
+ switchport mode access
+ spanning-tree portfast edge
+!
+interface GigabitEthernet1/0/21
+ description Zone E switch DUTs (W400 x4) - OOB mgmt
+ switchport access vlan 27
+ switchport mode access
+ spanning-tree portfast edge
+!
+interface GigabitEthernet1/0/22
+ description Zone E switch DUTs (W400 x4) - OOB mgmt
+ switchport access vlan 27
+ switchport mode access
+ spanning-tree portfast edge
+!
+interface GigabitEthernet1/0/23
+ description Zone E switch DUTs (W400 x4) - OOB mgmt
+ switchport access vlan 27
+ switchport mode access
+ spanning-tree portfast edge
+!
+interface GigabitEthernet1/0/24
+ description Zone E switch DUTs (W400 x4) - OOB mgmt
+ switchport access vlan 27
+ switchport mode access
+ spanning-tree portfast edge
+!
+interface GigabitEthernet1/0/25
+ description Zone A storage DUTs (per X/Y/Z config) - non-NC-SI BMC mgmt
+ switchport access vlan 4
+ switchport mode access
+ spanning-tree portfast edge
+!
+interface GigabitEthernet1/0/26
+ description Zone A storage DUTs (per X/Y/Z config) - non-NC-SI BMC mgmt
+ switchport access vlan 4
+ switchport mode access
+ spanning-tree portfast edge
+!
+interface GigabitEthernet1/0/27
+ description Zone A storage DUTs (per X/Y/Z config) - non-NC-SI BMC mgmt
+ switchport access vlan 4
+ switchport mode access
+ spanning-tree portfast edge
+!
+interface GigabitEthernet1/0/28
+ description Zone A storage DUTs (per X/Y/Z config) - non-NC-SI BMC mgmt
+ switchport access vlan 4
+ switchport mode access
+ spanning-tree portfast edge
+!
+interface GigabitEthernet1/0/29
+ description Zone A storage DUTs (per X/Y/Z config) - non-NC-SI BMC mgmt
+ switchport access vlan 4
+ switchport mode access
+ spanning-tree portfast edge
+!
+interface GigabitEthernet1/0/30
+ description Zone A storage DUTs (per X/Y/Z config) - non-NC-SI BMC mgmt
+ switchport access vlan 4
+ switchport mode access
+ spanning-tree portfast edge
+!
+interface GigabitEthernet1/0/31
+ description Zone A storage DUTs (per X/Y/Z config) - non-NC-SI BMC mgmt
+ switchport access vlan 4
+ switchport mode access
+ spanning-tree portfast edge
+!
+interface GigabitEthernet1/0/32
+ description Zone A storage DUTs (per X/Y/Z config) - non-NC-SI BMC mgmt
+ switchport access vlan 4
+ switchport mode access
+ spanning-tree portfast edge
+!
+interface GigabitEthernet1/0/33
+!
+interface GigabitEthernet1/0/34
+!
+interface GigabitEthernet1/0/35
+!
+interface GigabitEthernet1/0/36
+!
+interface GigabitEthernet1/0/37
+!
+interface GigabitEthernet1/0/38
+!
+interface GigabitEthernet1/0/39
+!
+interface GigabitEthernet1/0/40
+!
+interface GigabitEthernet1/0/41
+!
+interface GigabitEthernet1/0/42
+!
+interface GigabitEthernet1/0/43
+!
+interface GigabitEthernet1/0/44
+!
+interface GigabitEthernet1/0/45
+ description Corp firewall/router uplink
+ switchport access vlan 2
+ switchport mode access
+ spanning-tree portfast edge
+!
+interface GigabitEthernet1/0/46
+ description Corp firewall/router uplink
+ switchport access vlan 2
+ switchport mode access
+ spanning-tree portfast edge
+!
+interface GigabitEthernet1/0/47
+ description Corp firewall/router uplink
+ switchport access vlan 2
+ switchport mode access
+ spanning-tree portfast edge
+!
+interface GigabitEthernet1/0/48
+ description Corp firewall/router uplink
+ switchport access vlan 2
+ switchport mode access
+ spanning-tree portfast edge
+ spanning-tree bpdufilter enable
+!
+interface GigabitEthernet1/1/1
+!
+interface GigabitEthernet1/1/2
+!
+interface GigabitEthernet1/1/3
+!
+interface GigabitEthernet1/1/4
+!
+interface TenGigabitEthernet1/1/1
+ description bang-gouda mezz-p0 SFP+ DAC - corp + mgmt + wedge OOB
+ switchport trunk allowed vlan 2,4,26,27
+ switchport trunk encapsulation dot1q
+ switchport trunk native vlan 4
+ switchport mode trunk
+ spanning-tree portfast edge trunk
+!
+interface TenGigabitEthernet1/1/2
+ description bang-edam mezz-p0 SFP+ DAC - corp + mgmt + wedge OOB
+ switchport trunk allowed vlan 2,4,26,27
+ switchport trunk encapsulation dot1q
+ switchport trunk native vlan 4
+ switchport mode trunk
+ spanning-tree portfast edge trunk
+!
+interface Vlan1
+ no ip address
+ shutdown
+!
+interface Vlan4
+ description Lab mgmt SVI
+ ip address 192.168.88.33 255.255.255.0
+!
+interface Vlan16
+ ip address 172.16.0.5 255.255.0.0
+!
+interface Vlan17
+ ip address 172.17.0.5 255.255.0.0
+!
+interface Vlan18
+ ip address 172.18.0.5 255.255.0.0
+!
+interface Vlan19
+ ip address 172.19.0.5 255.255.0.0
+!
+interface Vlan20
+ ip address 172.20.0.5 255.255.0.0
+!
+interface Vlan21
+ ip address 172.21.0.5 255.255.0.0
+!
+interface Vlan22
+ ip address 172.22.0.5 255.255.0.0
+!
+interface Vlan23
+ ip address 172.23.0.5 255.255.0.0
+!
+interface Vlan24
+ ip address 172.24.0.5 255.255.0.0
+!
+interface Vlan25
+ ip address 172.25.0.5 255.255.0.0
+!
+interface Vlan26
+ ip address 172.26.0.5 255.255.0.0
+!
+interface Vlan27
+ ip address 172.27.0.5 255.255.0.0
+!
+interface Vlan28
+ ip address 172.28.0.5 255.255.0.0
+!
+interface Vlan29
+ ip address 172.29.0.5 255.255.0.0
+!
+interface Vlan30
+ ip address 172.30.0.5 255.255.0.0
+!
+interface Vlan31
+ ip address 172.31.0.5 255.255.0.0
+!
+ip default-gateway 192.168.88.10
+ip http server
+ip http secure-server
+ip ssh time-out 60
+ip ssh rsa keypair-name SSHv2
+ip ssh version 2
+!
+!
+!
+!
+line con 0
+line vty 0 4
+ exec-timeout 30 0
+ password <redacted-see-vault>
+ transport input ssh
+line vty 5 15
+ exec-timeout 30 0
+ password <redacted-see-vault>
+ transport input ssh
+!
+!
+end

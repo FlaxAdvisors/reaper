@@ -1,0 +1,42 @@
+---
+# Operator BMC recovery / configuration scripts.
+#
+# These are user-callable tools, not daemons:
+#   - bmc-reset-via-redfish: ForceRestart a stuck BMC (recovery for the
+#     AMI MegaRAC IPMI-session-exhaustion symptom; see TODO.md).
+#   - bmc-enable-inband-admin: grant admin priv on the in-band/KCS
+#     channel so host-side ipmitool works (Phosphor OpenBMC fleet).
+#
+# Both reach BMCs over the network (curl/ssh) and do not require root
+# on the bang itself — hence /opt/flax/bin (not /opt/flax/sbin).
+# the flax classifier will eventually invoke these on classification (per
+# TODO 779d39e); deploying them everywhere in the fleet now means that
+# integration is purely a pipeline-side change when it lands.
+
+- name: Ensure {{ apply_bmc_scripts_dest_dir }} exists
+  become: true
+  ansible.builtin.file:
+    path: "{{ apply_bmc_scripts_dest_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# The OpenBMC-fallback scripts embed the BMC root password; source it from the
+# vaulted credentials-bmc.json (root entry) and render it in rather than committing a
+# literal. bmc-reset-via-redfish.sh has no vars, so templating it is a plain copy.
+- name: Load the vaulted BMC root password (for the templated operator scripts)
+  ansible.builtin.set_fact:
+    bmc_root_password: "{{ (lookup('file', config_output_dir + '/' + site_name + '/services/credentials-bmc.json') | from_json | selectattr('bmcuser', 'equalto', 'root') | list | first).bmcpass }}"
+  no_log: true
+
+- name: Deploy BMC operator scripts (vault-templated)
+  become: true
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../scripts/{{ item.src }}"
+    dest: "{{ apply_bmc_scripts_dest_dir }}/{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ apply_bmc_scripts_files }}"
+  no_log: true

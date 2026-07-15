@@ -1,0 +1,13 @@
+---
+# Derived per-host vars for the health-dashboard role.
+#
+# bang_mgmt_ip — derived from bang_host_suffix + the .20-base convention
+#   (e.g. bang-fiesta suffix=1 → 192.168.88.21). The /24 network is
+#   bang_mgmt_cidr's network portion.
+#
+# bang_tailscale_ip — pulls from the per-host vault entry named
+#   bang_<short>_ts_ip (e.g. bang_fiesta_ts_ip). The mapping below
+#   resolves the underscore-form of the hostname at template time.
+
+bang_mgmt_ip: "192.168.88.{{ 20 + bang_host_suffix[inventory_hostname] }}"
+bang_tailscale_ip: "{{ lookup('vars', inventory_hostname.replace('-', '_') + '_ts_ip') }}"

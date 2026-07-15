@@ -1,0 +1,40 @@
+#!/bin/bash
+# Runs when keepalived enters FAULT (VRRP unable to assert). Treat the same
+# as transitioning out of MASTER: stop master-only compose stacks so they
+# don't run alongside whatever the surviving peer brings up.
+logger -t keepalived "FAULT on {{ inventory_hostname }} — VRRP state degraded"
+
+# Health-dashboard hook — record VRRP transition for textfile collector.
+/opt/flax/sbin/health_hooks/vrrp_state.sh FAULT || true
+
+# FAULT = demote: stop the VIP-exclusive systemd services so they don't run
+# alongside whatever the surviving peer brings up. Mirrors notify_backup —
+# without this, a FAULT leaves DHCP/observe/classify running on the degraded
+# bang and split-brains observe_state / kea.hosts with the new master.
+{% if (bang_dhcp_server | default('dnsmasq')) == 'kea' %}
+for u in kea-dhcp4 kea-dhcp6 radvd; do
+  systemctl stop "$u" 2>/dev/null || true
+done
+{% else %}
+systemctl stop dnsmasq 2>/dev/null || true
+{% endif %}
+for u in flax-switch-sense flax-observe flax-classify flax-discover flax-reconcile; do
+  systemctl stop "$u" 2>/dev/null || true
+done
+
+# Postgres demotion is log-only in v1 (mirrors notify_backup — FAULT does not
+# auto-demote the primary; failback is the operator runbook). Deployed by apply_flax_stack.
+if [ -x /opt/flax/sbin/notify_backup_postgres.sh ]; then
+  /opt/flax/sbin/notify_backup_postgres.sh || logger -t keepalived "notify_backup_postgres failed"
+fi
+
+{# keepalived.service has ProtectHome=yes (masks /home AND /root); docker
+   CLI tries to create ~/.docker/ on first invocation. Redirect to
+   /tmp/.docker which is writable inside the sandbox. Compose project
+   pinned to `prod` so the right project's containers are stopped on
+   FAULT (matches apply_triage_compose_project). #}
+export DOCKER_CONFIG=/tmp/.docker
+{% for stack in apply_keepalived_compose_stacks %}
+logger -t keepalived "Stopping compose stack: {{ stack }}"
+docker compose -p prod -f {{ stack }} stop 2>&1 | logger -t keepalived
+{% endfor %}

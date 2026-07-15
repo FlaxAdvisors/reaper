@@ -1,0 +1,8 @@
+---
+# bang-siesta is the Postgres streaming STANDBY (bang-fiesta is primary).
+# A standby is read-only: alembic must NOT run here (it would fail). The standby
+# receives schema changes via replication. apply_flax_stack/tasks/systemd.yml
+# gates the migration task on this flag. Runtime primary/standby role is owned by
+# the keepalived notify hooks (promote-on-MASTER), not by this deploy-time flag —
+# this only selects whether alembic runs.
+apply_flax_stack_is_primary: false

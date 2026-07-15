@@ -1,0 +1,11 @@
+---
+# Enable v2c read-only SNMP on Cisco IOS. Idempotent — ios_config diffs
+# against running.
+
+- name: Configure SNMP community + sysinfo on Cisco IOS
+  cisco.ios.ios_config:
+    lines:
+      - "snmp-server community {{ apply_switch_snmp_community }} RO"
+      - "snmp-server location {{ apply_switch_snmp_location }}"
+      - "snmp-server contact {{ apply_switch_snmp_contact }}"
+    save_when: modified

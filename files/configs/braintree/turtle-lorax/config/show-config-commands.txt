@@ -1,0 +1,94 @@
+net del all
+net add time zone Etc/UTC
+net add time ntp server 0.cumulusnetworks.pool.ntp.org iburst
+net add time ntp server 1.cumulusnetworks.pool.ntp.org iburst
+net add time ntp server 2.cumulusnetworks.pool.ntp.org iburst
+net add time ntp server 3.cumulusnetworks.pool.ntp.org iburst
+net add time ntp source eth0
+net add snmp-server listening-address localhost
+net add routing defaults datacenter
+net add routing service integrated-vtysh-config
+net add routing log syslog informational
+net add dns nameserver ipv4 192.168.88.10
+net add ptp global slave-only no
+net add ptp global priority1 255
+net add ptp global priority2 255
+net add ptp global domain-number 0
+net add ptp global logging-level 5
+net add ptp global path-trace-enabled no
+net add ptp global use-syslog yes
+net add ptp global verbose no
+net add ptp global summary-interval 0
+net add ptp global time-stamping
+net add bridge bridge ports swp1,swp2,swp3,swp4,swp5,swp6,swp7,swp8,swp9,swp10,swp11,swp12,swp13,swp14,swp15,swp16,swp17,swp18,swp19,swp20,swp21,swp22,swp23,swp24,swp25,swp26,swp27,swp28,swp29,swp30,swp31,swp32,swp33,swp34,swp35,swp36,swp37,swp38,swp39,swp40,swp41,swp42,swp43,swp44,swp45,swp46,swp47,swp48,swp49,swp50,swp51,swp52
+net add bridge bridge pvid 1
+net add bridge bridge vids 2,4,6,8,10,12,16-31
+net add bridge bridge vlan-aware
+net add interface eth0 ip address 192.168.88.33/24
+net add interface eth0 ip gateway 192.168.88.10
+net add interface swp1 bridge pvid 2
+net add interface swp1,52 bridge vids 2,4,6,8,10,12,16-31
+net add interface swp2-5,7-43,45-51 bridge access 2
+net add interface swp44 bridge access 25
+net add interface swp6 bridge access 4
+net add vlan 16 ip address 172.16.0.5/16
+net add vlan 16 vlan-id 16
+net add vlan 16 vlan-raw-device bridge
+net add vlan 17 ip address 172.17.0.5/16
+net add vlan 17 vlan-id 17
+net add vlan 17 vlan-raw-device bridge
+net add vlan 18 ip address 172.18.0.5/16
+net add vlan 18 vlan-id 18
+net add vlan 18 vlan-raw-device bridge
+net add vlan 19 ip address 172.19.0.5/16
+net add vlan 19 vlan-id 19
+net add vlan 19 vlan-raw-device bridge
+net add vlan 20 ip address 172.20.0.5/16
+net add vlan 20 vlan-id 20
+net add vlan 20 vlan-raw-device bridge
+net add vlan 21 ip address 172.21.0.5/16
+net add vlan 21 vlan-id 21
+net add vlan 21 vlan-raw-device bridge
+net add vlan 22 ip address 172.22.0.5/16
+net add vlan 22 vlan-id 22
+net add vlan 22 vlan-raw-device bridge
+net add vlan 23 ip address 172.23.0.5/16
+net add vlan 23 vlan-id 23
+net add vlan 23 vlan-raw-device bridge
+net add vlan 24 ip address 172.24.0.5/16
+net add vlan 24 vlan-id 24
+net add vlan 24 vlan-raw-device bridge
+net add vlan 25 ip address 172.25.0.5/16
+net add vlan 25 vlan-id 25
+net add vlan 25 vlan-raw-device bridge
+net add vlan 26 ip address 172.26.0.5/16
+net add vlan 26 vlan-id 26
+net add vlan 26 vlan-raw-device bridge
+net add vlan 27 ip address 172.27.0.5/16
+net add vlan 27 vlan-id 27
+net add vlan 27 vlan-raw-device bridge
+net add vlan 28 ip address 172.28.0.5/16
+net add vlan 28 vlan-id 28
+net add vlan 28 vlan-raw-device bridge
+net add vlan 29 ip address 172.29.0.5/16
+net add vlan 29 vlan-id 29
+net add vlan 29 vlan-raw-device bridge
+net add vlan 30 ip address 172.30.0.5/16
+net add vlan 30 vlan-id 30
+net add vlan 30 vlan-raw-device bridge
+net add vlan 31 ip address 172.31.0.5/16
+net add vlan 31 vlan-id 31
+net add vlan 31 vlan-raw-device bridge
+net add vlan 8 ip address 10.8.0.3/16
+net add vlan 8 vlan-id 8
+net add vlan 8 vlan-raw-device bridge
+net add dot1x radius accounting-port 1813
+net add dot1x radius authentication-port 1812
+net add dot1x mab-activation-delay 30
+net add dot1x eap-reauth-period 0
+net commit
+
+# There are some configuration commands that are not yet supported by nclu.
+# The following will append those commands to the appropriate files.
+# ========================================================================
+sudo sh -c "printf 'username cumulus nopassword\n' >> /etc/frr/frr.conf" 

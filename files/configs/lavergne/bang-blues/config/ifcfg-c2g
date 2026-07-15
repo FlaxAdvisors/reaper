@@ -1,0 +1,6 @@
+IPADDR='192.168.12.1/22'
+BOOTPROTO='static'
+STARTMODE='auto'
+ETHERDEVICE='mezz'
+VLAN_ID='12'
+ZONE=internal

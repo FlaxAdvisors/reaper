@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% import "_components.html" as c %}
+{% block title %}flax-control — switches{% endblock %}
+{% block content %}
+{{ c.page_header('Switches', 'Inventory of switch_facts polling targets.') }}
+{% if switches %}
+<div class="filter-bar">
+  <label>filter <input class="table-filter" data-table="switches-tbl" type="search" placeholder="switch, driver…"></label>
+  <span class="muted">{{ switches | length }} switch{{ '' if switches|length == 1 else 'es' }}</span>
+</div>
+<div class="table-scroll"><table class="data-table sortable" id="switches-tbl"><thead><tr>
+  <th>switch</th><th>driver</th><th>reachable</th><th>generation</th><th>ports</th><th>polled at</th>
+</tr></thead><tbody>
+    {% for s in switches %}
+    <tr>
+      <td><a href="/switches/{{ s.switch }}">{{ s.switch }}</a></td>
+      <td>{{ s.driver }}</td>
+      <td>{{ c.badge('up' if s.reachable else 'down', 'g' if s.reachable else 'c') }}</td>
+      <td>{{ s.generation }}</td>
+      <td>{{ s.port_count }}</td>
+      <td class="muted">{{ s.polled_at or "—" }}</td>
+    </tr>
+    {% endfor %}
+</tbody></table></div>
+{% else %}
+<p class="empty">No switches known yet — flax-switch-sense hasn't shipped to this site.</p>
+{% endif %}
+{% endblock %}

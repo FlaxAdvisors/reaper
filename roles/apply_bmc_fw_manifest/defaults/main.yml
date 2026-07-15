@@ -1,0 +1,16 @@
+---
+# Path the manifest is written to (read by the triage bmc_fw worker via /etc/flax mount).
+bmc_fw_manifest_path: /etc/flax/bmc-firmware-versions.json
+
+# Platforms; same shape as files/bmc-firmware-versions.sample.json. Override in inventory.
+bmc_fw_platforms:
+  tiogapass-openbmc:
+    match:
+      product_name: ["(?i)tioga", "(?i)tp[-_ ]?", "(?i)wiwynn.*tp", "(?i)quanta.*tioga"]
+      bmc_kind: openbmc
+    target_version: "flax-onetree-1.0.6-202606261452"
+    check: { method: redfish-firmware-inventory, id: bmc_active }
+    flash:
+      method: redfish-update-multipart
+      artifact: "SXC-Lab_OCP-Updates/OpenBMC/fx-tp-1.0.6-202606261452.mtd.tar"
+    auto: true

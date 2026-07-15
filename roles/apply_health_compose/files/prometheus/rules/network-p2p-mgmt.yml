@@ -1,0 +1,16 @@
+groups:
+  - name: network-p2p-mgmt
+    rules:
+      - alert: BangPeerUnreachable
+        expr: probe_success{probe_kind="peer_bang_mgmt"} == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "Bang peer {{ $labels.instance }} unreachable from {{ $labels.bang }}"
+
+      - alert: BangSwitchPathDegraded
+        expr: avg_over_time(probe_success{probe_kind="own_site_switch"}[2m]) < 0.8
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "Bang-to-own-switch ICMP degraded at {{ $labels.site }}"

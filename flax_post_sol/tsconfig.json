@@ -1,0 +1,22 @@
+// back/tsconfig.json
+{
+    "compilerOptions": {
+        "target": "ES2017",
+        "module": "NodeNext",
+        "moduleResolution": "nodenext",
+        "outDir": "./dist",
+        "rootDir": "./src",
+        "strict": true,
+        "esModuleInterop": true,
+        "skipLibCheck": true,
+        "forceConsistentCasingInFileNames": true,
+        "resolveJsonModule": true
+    },
+    "include": [
+        "src/**/*"
+    ], // Files to include in compilation
+    "exclude": [
+        "node_modules",
+        "src/**/*.test.ts"
+    ] // Folders/files to exclude
+}

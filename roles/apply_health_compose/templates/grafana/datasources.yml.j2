@@ -1,0 +1,20 @@
+apiVersion: 1
+# Hardcoded 3-site Prometheus datasource list. Each bang's Grafana sees
+# all 3 sites: own-site → localhost:9090 (network_mode: host so localhost
+# = local Prometheus); other-site → primary bang's FQDN over tailscale.
+# Hardcoding mirrors the fleet topology — per-site inventory iteration
+# would only ever produce the local site's datasource.
+datasources:
+{% set site_primary = {'braintree': 'bang-fiesta', 'eindhoven': 'bang-gouda', 'lavergne': 'bang-blues'} %}
+{% for s in ['braintree', 'eindhoven', 'lavergne'] %}
+  - name: {{ s }}
+    uid: {{ s }}
+    type: prometheus
+    access: proxy
+    url: {% if s == site_name %}http://localhost:9090{% else %}http://{{ site_primary[s] }}.flaxadvisors.cloud:9090{% endif %}
+
+    isDefault: {{ 'true' if s == site_name else 'false' }}
+    jsonData:
+      timeout: 5
+      httpMethod: GET
+{% endfor %}

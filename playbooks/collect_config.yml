@@ -1,0 +1,33 @@
+---
+# Collect running configuration and show-command output from all site devices.
+# Output is written to files/configs/<site>/<hostname>/ and should be committed
+# to git after running. git diff reveals any drift from the previously captured state.
+#
+# Run: ansible-playbook playbooks/collect_config.yml
+# Jump host failover: ansible-playbook playbooks/collect_config.yml -e lab_jump_host=100.93.229.59
+
+- name: Collect configuration from network switches
+  hosts: "arista:cumulus:cisco"
+  gather_facts: false
+  roles:
+    - collect_config
+
+- name: Collect configuration from jump hosts
+  hosts: jumphosts
+  gather_facts: false
+  roles:
+    - collect_config
+
+- name: Build topology from collected data
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Run build_topology.py for each site
+      ansible.builtin.command:
+        cmd: >
+          python3 {{ playbook_dir }}/../scripts/build_topology.py
+          {{ playbook_dir }}/../files/configs/{{ item }}
+        chdir: "{{ playbook_dir }}/.."
+      loop: "{{ groups['all'] | map('extract', hostvars, 'site_name') | unique | list }}"
+      delegate_to: localhost
+      changed_when: true

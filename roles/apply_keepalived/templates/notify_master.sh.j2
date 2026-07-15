@@ -1,0 +1,56 @@
+#!/bin/bash
+# Runs on the bang that just became MASTER. Long-lived fleet services
+# (nginx) stay running on both bangs active-active. dnsmasq is
+# VIP-exclusive (the backup's dhcp-hosts dir can be stale — the
+# reservation writer only runs on the master); we start it here on
+# transition and notify_backup.sh stops it on demotion.
+# Master-only docker compose stacks (e.g. the triage UI/API) are
+# started below; see apply_keepalived_compose_stacks.
+logger -t keepalived "Acquired MASTER on {{ inventory_hostname }}"
+
+# Health-dashboard hook — record VRRP transition for textfile collector.
+/opt/flax/sbin/health_hooks/vrrp_state.sh MASTER || true
+
+{% if (bang_dhcp_server | default('dnsmasq')) == 'kea' %}
+# Kea owns DHCP. dnsmasq is DNS+TFTP-only and runs active-active (enabled by
+# apply_bang_services), so we do NOT manage it here. Promote the VIP-exclusive
+# Kea trio instead.
+for u in kea-dhcp4 kea-dhcp6 radvd; do
+  systemctl reset-failed "$u" 2>/dev/null || true
+  systemctl restart "$u" || logger -t keepalived "$u restart failed (acceptable if not yet installed)"
+done
+{% else %}
+# Promote dnsmasq on this host (VIP-exclusive DHCP). A fresh restart picks up
+# the latest /etc/dnsmasq.dhcp-hosts/ written by the master-resident reservation writer.
+systemctl restart dnsmasq || logger -t keepalived "dnsmasq restart failed"
+{% endif %}
+
+# Promote the local Postgres standby -> primary BEFORE starting the flax
+# pipeline, so the single-writer services connect to a WRITABLE primary. The
+# hook blocks until promotion completes and no-ops if already primary (e.g. a
+# standalone/non-HA bang). Deployed by apply_flax_stack; guard for sites without it.
+if [ -x /opt/flax/sbin/notify_master_postgres.sh ]; then
+  /opt/flax/sbin/notify_master_postgres.sh || logger -t keepalived "notify_master_postgres failed"
+fi
+
+# Promote the flax-* pipeline (VIP-exclusive, single-writer: switch-sense
+# polls switches, observe probes BMCs + writes observe_state, classify writes
+# kea.hosts). Each unit's ExecStartPre VIP-gate passes now that this host
+# holds the VIP; reset-failed first clears any boot-time gate failure (the VIP
+# wasn't yet held when systemd autostarted them at cold boot).
+for u in flax-switch-sense flax-observe flax-classify flax-discover flax-reconcile flax-post flax-post-fwd flax-post-biosd flax-post-nicd flax-post-sol flax-post-nginx; do
+  systemctl reset-failed "$u" 2>/dev/null || true
+  systemctl restart "$u" || logger -t keepalived "$u restart failed (acceptable if not yet installed)"
+done
+
+{# keepalived.service has ProtectHome=yes (masks /home AND /root) plus
+   ProtectSystem=full (read-only /etc, /usr); docker CLI tries to create
+   ~/.docker/ on first invocation. Redirect to /tmp/.docker which is
+   writable inside the sandbox. Compose project pinned to `prod` so
+   container names are stable across master/backup transitions
+   (matches apply_triage_compose_project). #}
+export DOCKER_CONFIG=/tmp/.docker
+{% for stack in apply_keepalived_compose_stacks %}
+logger -t keepalived "Starting compose stack: {{ stack }}"
+docker compose -p prod -f {{ stack }} up -d 2>&1 | logger -t keepalived
+{% endfor %}

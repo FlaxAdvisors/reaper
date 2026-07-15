@@ -1,0 +1,131 @@
+---
+# Collects configuration and show-command output from Cumulus Linux 3.7.3 devices.
+# Uses ansible.builtin.ssh + ansible.builtin.raw (no Python required on target).
+# Cumulus 3.7.3 ships with Python 3.4/3.5; ansible-core 2.20 generates modules that
+# require Python 3.6+ (f-strings). raw executes directly over SSH — no module transfer.
+# community.network.cumulus cliconf is unsupported in ansible-core 2.20.x.
+# Output is written to files/configs/{{ site_name }}/{{ inventory_hostname }}/.
+
+# --- NCLU show commands ---
+
+- name: Collect net show configuration
+  when: not ansible_check_mode
+  ansible.builtin.raw: net show configuration  # noqa: no-changed-when
+  register: cumulus_linux_running_config
+  changed_when: false
+  check_mode: false
+
+- name: Write running-config.txt
+  delegate_to: localhost
+  when: not ansible_check_mode
+  ansible.builtin.copy:
+    content: "{{ cumulus_linux_running_config.stdout }}"
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/show/running-config.txt"
+    mode: "0644"
+
+- name: Collect net show interface all
+  when: not ansible_check_mode
+  ansible.builtin.raw: net show interface all  # noqa: no-changed-when
+  register: cumulus_linux_show_interfaces
+  changed_when: false
+  check_mode: false
+
+- name: Write show-interfaces.txt
+  delegate_to: localhost
+  when: not ansible_check_mode
+  ansible.builtin.copy:
+    content: "{{ cumulus_linux_show_interfaces.stdout }}"
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/show/show-interfaces.txt"
+    mode: "0644"
+
+- name: Collect net show lldp
+  when: not ansible_check_mode
+  ansible.builtin.raw: net show lldp  # noqa: no-changed-when
+  register: cumulus_linux_show_lldp
+  changed_when: false
+  check_mode: false
+
+- name: Write show-lldp.txt
+  delegate_to: localhost
+  when: not ansible_check_mode
+  ansible.builtin.copy:
+    content: "{{ cumulus_linux_show_lldp.stdout }}"
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/show/show-lldp.txt"
+    mode: "0644"
+
+- name: Collect net show route
+  when: not ansible_check_mode
+  ansible.builtin.raw: net show route  # noqa: no-changed-when
+  register: cumulus_linux_show_route
+  changed_when: false
+  check_mode: false
+
+- name: Write show-route.txt
+  delegate_to: localhost
+  when: not ansible_check_mode
+  ansible.builtin.copy:
+    content: "{{ cumulus_linux_show_route.stdout }}"
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/show/show-route.txt"
+    mode: "0644"
+
+- name: Collect net show bgp summary
+  when: not ansible_check_mode
+  ansible.builtin.raw: net show bgp summary  # noqa: no-changed-when
+  register: cumulus_linux_show_bgp
+  changed_when: false
+  check_mode: false
+  # FRR BGP may not be configured — ignore failure, write whatever we get
+  failed_when: false
+
+- name: Write show-bgp.txt
+  delegate_to: localhost
+  when: not ansible_check_mode
+  ansible.builtin.copy:
+    content: "{{ cumulus_linux_show_bgp.stdout | default('BGP not configured or command failed') }}"
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/show/show-bgp.txt"
+    mode: "0644"
+
+# --- Config file reads ---
+
+- name: Read /etc/network/interfaces
+  ansible.builtin.raw: cat /etc/network/interfaces  # noqa: no-changed-when
+  register: cumulus_linux_interfaces_file
+  changed_when: false
+  check_mode: false
+
+- name: Write interfaces.txt
+  delegate_to: localhost
+  ansible.builtin.copy:
+    content: "{{ cumulus_linux_interfaces_file.stdout | regex_replace('\\r', '') }}"
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/config/interfaces.txt"
+    mode: "0644"
+
+- name: Collect net show config commands
+  when: not ansible_check_mode
+  ansible.builtin.raw: net show config commands  # noqa: no-changed-when
+  register: cumulus_linux_show_config_commands
+  changed_when: false
+  check_mode: false
+
+- name: Write show-config-commands.txt
+  delegate_to: localhost
+  when: not ansible_check_mode
+  ansible.builtin.copy:
+    content: "{{ cumulus_linux_show_config_commands.stdout | regex_replace('\\r', '') }}"
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/config/show-config-commands.txt"
+    mode: "0644"
+
+- name: Read /etc/frr/frr.conf
+  ansible.builtin.raw: sudo cat /etc/frr/frr.conf  # noqa: no-changed-when
+  register: cumulus_linux_frr_conf
+  changed_when: false
+  check_mode: false
+  # FRR may not be installed or the file may not exist
+  failed_when: false
+
+- name: Write frr.conf
+  delegate_to: localhost
+  ansible.builtin.copy:
+    content: "{{ cumulus_linux_frr_conf.stdout | default('FRR not installed or frr.conf not found') | regex_replace('\\r', '') }}"
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/config/frr.conf"
+    mode: "0644"

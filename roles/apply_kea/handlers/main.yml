@@ -1,0 +1,27 @@
+---
+- name: Reload systemd
+  become: true
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Restart kea-dhcp4
+  become: true
+  ansible.builtin.systemd:
+    name: kea-dhcp4.service
+    state: restarted
+  # Only restart if it's currently active -- the role's initial deploy
+  # leaves it stopped per the comment above.
+  when: false   # Plan 5 deploy: cutover handles all start/restart explicitly
+
+- name: Reload firewalld
+  become: true
+  ansible.builtin.command:
+    cmd: firewall-cmd --reload
+  changed_when: true
+
+- name: Restart kea-dhcp6
+  become: true
+  ansible.builtin.systemd:
+    name: kea-dhcp6.service
+    state: restarted
+  when: false   # VIP-exclusive; cutover/keepalived handles start/restart

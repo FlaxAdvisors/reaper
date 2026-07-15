@@ -1,0 +1,16 @@
+---
+# Flax on-bang config redeploy. Sibling to apply_health.yml and
+# apply_pxe_payloads.yml — exists so a refresh of the /etc/flax config
+# + role registry doesn't drag the rest
+# of apply_bang_services.yml along with it. (The role is named
+# apply_lease_agent for historical reasons — it once also deployed the
+# now-decommissioned reaper-leased daemon; today it is config-only.)
+
+- name: Apply lease agent (flax /etc/flax config + role registry)
+  hosts: jumphosts
+  gather_facts: true
+  serial: 1
+  tasks:
+    - name: Apply role apply_lease_agent
+      ansible.builtin.import_role:
+        name: apply_lease_agent

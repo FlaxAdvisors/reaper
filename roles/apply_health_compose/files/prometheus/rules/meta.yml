@@ -1,0 +1,23 @@
+groups:
+  - name: meta
+    rules:
+      - alert: PrometheusTargetDown
+        expr: up == 0
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "Scrape target down: {{ $labels.job }} / {{ $labels.instance }}"
+
+      - alert: AlertmanagerClusterDegraded
+        expr: alertmanager_cluster_members < 6
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Alertmanager cluster has < 6 peers"
+
+      - alert: TextfileCollectorStale
+        expr: time() - node_textfile_mtime_seconds > 600
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "Textfile collector file stale on {{ $labels.bang }}: {{ $labels.file }}"

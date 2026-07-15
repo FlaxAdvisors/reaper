@@ -1,0 +1,38 @@
+{# Rendered by apply_keepalived. Single VRRP instance, all 17 VIPs. #}
+global_defs {
+  router_id {{ inventory_hostname }}
+  enable_script_security
+  script_user root
+}
+
+vrrp_script chk_services {
+  script "/usr/local/bin/check_lab_services.sh"
+  interval {{ apply_keepalived_chk_interval }}
+  weight -30
+  fall {{ apply_keepalived_chk_fall }}
+  rise {{ apply_keepalived_chk_rise }}
+}
+
+vrrp_instance LAB_VIP {
+  state {{ 'MASTER' if inventory_hostname == apply_keepalived_master_host else 'BACKUP' }}
+  interface {{ bang_mgmt_iface }}
+  virtual_router_id {{ apply_keepalived_vrid }}
+  priority {{ bang_vrrp_priority[inventory_hostname] }}
+  advert_int {{ apply_keepalived_advert_int }}
+  authentication {
+    auth_type PASS
+    auth_pass {{ bang_vrrp_auth_pass }}
+  }
+  track_script {
+    chk_services
+  }
+  virtual_ipaddress {
+    {{ bang_mgmt_cidr }} dev {{ bang_mgmt_iface }}
+{% for v in vlans %}
+    {{ v.gateway_vip }}/{{ v.cidr.split('/')[1] }} dev {{ v.parent }}.{{ v.vid }}
+{% endfor %}
+  }
+  notify_master "/usr/local/sbin/notify_master.sh"
+  notify_backup "/usr/local/sbin/notify_backup.sh"
+  notify_fault  "/usr/local/sbin/notify_fault.sh"
+}

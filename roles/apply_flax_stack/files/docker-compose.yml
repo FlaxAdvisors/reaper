@@ -1,0 +1,94 @@
+# flax-stack: Postgres + flax-control + nginx (TLS reverse proxy)
+# All services run network_mode: host so DHCP-adjacent services (Kea, dnsmasq)
+# can share the same model later, and firewalld zone allowlist is the boundary.
+
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:16
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: flax
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD}
+      # Postgres listens only on the bang's loopback by default;
+      # replication listener is added by postgresql.conf override.
+      POSTGRES_INITDB_ARGS: "--data-checksums --auth-local=trust --auth-host=scram-sha-256"
+    volumes:
+      - /opt/flax/var/postgres:/var/lib/postgresql/data
+      - /etc/flax/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - /etc/flax/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+    command:
+      - postgres
+      - -c
+      - config_file=/etc/postgresql/postgresql.conf
+      - -c
+      - hba_file=/etc/postgresql/pg_hba.conf
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d flax"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  flax-control:
+    image: flax-control:${FLAX_CONTROL_IMAGE_TAG:-latest}
+    # No registry to pull from — image is distributed via `docker load` on each bang
+    # (see Plan 1 Task 24). pull_policy: never lets `docker compose pull` skip this
+    # service cleanly instead of failing with 401 from Docker Hub.
+    pull_policy: never
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: 127.0.0.1
+      PGPORT: "5432"
+      PGUSER: flax_control
+      PGPASSWORD: ${FLAX_CONTROL_DB_PASSWORD}
+      PGDATABASE: flax
+    volumes:
+      # Plan 3.5: /api/v1/rackous needs geometry + the bang's hostname for
+      # Triage-UI-back-compat shape. Mount /etc/hostname over /etc/rackname
+      # to match the established /etc/rackname convention.
+      - /etc/flax/geometry.json:/etc/flax/geometry.json:ro
+      - /etc/hostname:/etc/rackname:ro
+      # Config page: non-secret tunables and topology files (read-only).
+      # credentials.json / credentials-bmc.json / credentials-host.json are
+      # intentionally NOT mounted here — flax-control must never see secrets.
+      - /etc/flax/reconcile.json:/etc/flax/reconcile.json:ro
+      - /etc/flax/vlans.json:/etc/flax/vlans.json:ro
+      - /etc/flax/switches.json:/etc/flax/switches.json:ro
+      - /etc/flax/no-steer-ports.json:/etc/flax/no-steer-ports.json:ro
+      - /etc/flax/site.env:/etc/flax/site.env:ro
+      # Additional non-secret topology the config page surfaces.
+      - /etc/flax/turtle-geometry.json:/etc/flax/turtle-geometry.json:ro
+      - /etc/flax/bmc-only-families.json:/etc/flax/bmc-only-families.json:ro
+      # Per-vid MAC classifiers + family map (directories of JSON).
+      - /etc/flax/macmath:/etc/flax/macmath:ro
+      - /etc/flax/family-map:/etc/flax/family-map:ro
+      # BMC FW page + Config: the target manifest (Config section + TP gate) and
+      # the bmc_fw worker's state store (live per-port flash state). Both read-only;
+      # a missing/unreadable store is tolerated (rows fall back to "not evaluated").
+      - /etc/flax/bmc-firmware-versions.json:/etc/flax/bmc-firmware-versions.json:ro
+      - /etc/flax/bmcfw.json:/etc/flax/bmcfw.json:ro
+      # Post firmware file stores (sole-written by flax_post/fwd) for /bmc-fw-post.
+      # Read-only; a missing file on a triage-only site tolerates as empty state.
+      - /etc/flax/post_fw.json:/etc/flax/post_fw.json:ro
+      - /etc/flax/post_nic_fw.json:/etc/flax/post_nic_fw.json:ro
+      - /etc/flax/post_bios_fw.json:/etc/flax/post_bios_fw.json:ro
+
+  nginx:
+    image: nginx:1.27-alpine
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      - flax-control
+    volumes:
+      # Mount OVER default.conf so the stock "listen 80" block is gone — the
+      # bang's host nginx already owns port 80 (PXE, lab-internal). Our nginx
+      # only needs 8443 for flax-control HTTPS termination.
+      - /etc/flax/nginx/flax-control.conf:/etc/nginx/conf.d/default.conf:ro
+      - /etc/flax/nginx/tls:/etc/nginx/tls:ro

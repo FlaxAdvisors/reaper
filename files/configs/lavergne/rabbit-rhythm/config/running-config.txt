@@ -1,0 +1,406 @@
+! Command: show running-config
+! device: rabbit-rhythm (WEDGE100S12V, EOS-4.27.0F)
+!
+! boot system flash:/EOS-4.27.0F.swi
+!
+no aaa root
+!
+username admin role network-admin secret sha512 $6$3nHPrw5vdN8ylrRi$7ziq9aX/T3P1ON0qZhvsoxmzHN3icxa9OH5gXyg0lBmQq7zHUl9YGGAgS3XJ4MI5NEpuH3qwDJvjqh.FMJzKM/
+!
+service routing protocols model ribd
+!
+hostname rabbit-rhythm
+ip name-server vrf default 192.168.88.1
+!
+spanning-tree mode mstp
+!
+service unsupported-transceiver sesame f71a13ed
+!
+vlan 2
+   name external
+!
+vlan 4
+   name rhythm
+!
+vlan 6
+   name mgmt
+!
+vlan 8
+   name blues
+!
+vlan 10
+   name howlin
+!
+vlan 12
+   name c2g
+!
+vlan 102
+   name harvester102
+!
+vlan 200
+   name vlan200
+!
+interface Ethernet1/1
+   speed forced 25gfull
+   switchport trunk native vlan 6
+   switchport trunk allowed vlan 4,6,8,10,12
+   switchport mode trunk
+!
+interface Ethernet1/2
+   speed forced 25gfull
+   switchport trunk native vlan 6
+   switchport trunk allowed vlan 4,6,8,10,12,102-200
+   switchport mode trunk
+!
+interface Ethernet1/3
+   speed forced 25gfull
+   switchport trunk native vlan 6
+   switchport trunk allowed vlan 4,6
+   switchport mode trunk
+!
+interface Ethernet1/4
+   speed forced 25gfull
+   switchport trunk native vlan 6
+   switchport trunk allowed vlan 4,6
+   switchport mode trunk
+!
+interface Ethernet2/1
+   switchport trunk allowed vlan 4,6,8,10,12
+   switchport mode trunk
+!
+interface Ethernet3/1
+   switchport trunk allowed vlan 2-20,102-200
+   switchport mode trunk
+!
+interface Ethernet4/1
+   switchport trunk allowed vlan 2-20,102-200
+   switchport mode trunk
+!
+interface Ethernet5/1
+!
+interface Ethernet6/1
+!
+interface Ethernet7/1
+!
+interface Ethernet8/1
+!
+interface Ethernet9/1
+!
+interface Ethernet10/1
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet10/2
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet10/3
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet10/4
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet11/1
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet11/2
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet11/3
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet11/4
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet12/1
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet12/2
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet12/3
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet12/4
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet13/1
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet13/2
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet13/3
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet13/4
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet14/1
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet14/2
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet14/3
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet14/4
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet15/1
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet15/2
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet15/3
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet15/4
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet16/1
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet16/2
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet16/3
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet16/4
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet17/1
+   speed forced 25gfull
+   switchport access vlan 4
+!
+interface Ethernet17/2
+   speed forced 25gfull
+   switchport access vlan 4
+!
+interface Ethernet17/3
+   speed forced 25gfull
+   switchport access vlan 4
+!
+interface Ethernet17/4
+   speed forced 25gfull
+   switchport access vlan 4
+!
+interface Ethernet18/1
+   speed forced 25gfull
+   switchport access vlan 4
+!
+interface Ethernet18/2
+   speed forced 25gfull
+   switchport access vlan 4
+!
+interface Ethernet18/3
+   speed forced 25gfull
+   switchport access vlan 4
+!
+interface Ethernet18/4
+   speed forced 25gfull
+   switchport access vlan 4
+!
+interface Ethernet19/1
+   speed forced 25gfull
+   switchport access vlan 4
+!
+interface Ethernet19/2
+   speed forced 25gfull
+   switchport access vlan 4
+!
+interface Ethernet19/3
+   speed forced 25gfull
+   switchport access vlan 4
+!
+interface Ethernet19/4
+   speed forced 25gfull
+   switchport access vlan 4
+!
+interface Ethernet20/1
+   speed forced 25gfull
+   switchport access vlan 4
+!
+interface Ethernet20/2
+   speed forced 25gfull
+   switchport access vlan 4
+!
+interface Ethernet20/3
+   speed forced 25gfull
+   switchport access vlan 4
+!
+interface Ethernet20/4
+   speed forced 25gfull
+   switchport access vlan 4
+!
+interface Ethernet21/1
+   speed forced 25gfull
+   switchport access vlan 10
+!
+interface Ethernet21/2
+   speed forced 25gfull
+   switchport access vlan 10
+!
+interface Ethernet21/3
+   speed forced 25gfull
+   switchport access vlan 10
+!
+interface Ethernet21/4
+   speed forced 25gfull
+   switchport access vlan 10
+!
+interface Ethernet22/1
+!
+interface Ethernet23/1
+   speed forced 25gfull
+   switchport access vlan 4
+!
+interface Ethernet23/2
+   speed forced 25gfull
+   switchport access vlan 4
+!
+interface Ethernet23/3
+   speed forced 25gfull
+   switchport access vlan 4
+!
+interface Ethernet23/4
+   speed forced 25gfull
+   switchport access vlan 4
+!
+interface Ethernet24/1
+!
+interface Ethernet25/1
+   speed forced 25gfull
+   switchport trunk native vlan 6
+   switchport trunk allowed vlan 4,6
+   switchport mode trunk
+!
+interface Ethernet25/2
+   speed forced 25gfull
+   switchport trunk native vlan 6
+   switchport trunk allowed vlan 4,6
+   switchport mode trunk
+!
+interface Ethernet25/3
+   speed forced 25gfull
+   switchport trunk native vlan 6
+   switchport trunk allowed vlan 4,6
+   switchport mode trunk
+!
+interface Ethernet25/4
+   speed forced 25gfull
+   switchport trunk native vlan 6
+   switchport trunk allowed vlan 4,6
+   switchport mode trunk
+!
+interface Ethernet26/1
+!
+interface Ethernet27/1
+   switchport trunk allowed vlan 4,6,8,10
+   switchport mode trunk
+!
+interface Ethernet28/1
+!
+interface Ethernet29/1
+   speed forced 25gfull
+   switchport access vlan 4
+!
+interface Ethernet29/2
+   speed forced 25gfull
+   switchport access vlan 4
+!
+interface Ethernet29/3
+   speed forced 25gfull
+   switchport access vlan 4
+!
+interface Ethernet29/4
+   speed forced 25gfull
+   switchport access vlan 4
+!
+interface Ethernet30/1
+   speed forced 25gfull
+   switchport access vlan 4
+!
+interface Ethernet30/2
+   speed forced 25gfull
+   switchport access vlan 4
+!
+interface Ethernet30/3
+   speed forced 25gfull
+   switchport access vlan 4
+!
+interface Ethernet30/4
+   speed forced 25gfull
+   switchport access vlan 4
+!
+interface Ethernet31/1
+   speed forced 25gfull
+   switchport access vlan 4
+!
+interface Ethernet31/2
+   speed forced 25gfull
+   switchport access vlan 4
+!
+interface Ethernet31/3
+   speed forced 25gfull
+   switchport access vlan 4
+!
+interface Ethernet31/4
+   speed forced 25gfull
+   switchport access vlan 4
+!
+interface Ethernet32/1
+   speed forced 10000full
+   switchport trunk allowed vlan 2-20
+   switchport mode trunk
+!
+interface Ethernet32/2
+   speed forced 10000full
+!
+interface Ethernet32/3
+   speed forced 10000full
+!
+interface Ethernet32/4
+   speed forced 10000full
+!
+interface Management1
+   ip address 192.168.88.4/24
+!
+no ip routing
+!
+ip route 0.0.0.0/0 192.168.88.1
+!
+ntp server 0.pool.ntp.org
+ntp server 1.pool.ntp.org
+ntp server 2.pool.ntp.org
+!
+end

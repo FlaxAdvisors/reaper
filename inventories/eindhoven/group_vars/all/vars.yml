@@ -1,0 +1,257 @@
+---
+site_name: eindhoven
+
+# Absolute path for collected config output. playbook_dir is the playbooks/ directory;
+# go one level up to land in the repo root's files/configs/ tree.
+config_output_dir: "{{ playbook_dir }}/../files/configs"
+
+# Inventory hostnames match ~/.ssh/config Host aliases (rabbit-lorax, turtle-lorax).
+# ProxyJump through bang-lorax is configured in ~/.ssh/config — no inline proxy needed.
+# StrictHostKeyChecking is disabled because lab devices don't have stable host keys.
+ansible_ssh_common_args: >-
+  -o StrictHostKeyChecking=no
+  -o UserKnownHostsFile=/dev/null
+
+site_jumphosts:
+  - { name: bang-edam, ts_ip: "{{ bang_edam_ts_ip }}" }
+  - { name: bang-gouda, ts_ip: "{{ bang_gouda_ts_ip }}" }
+
+bang_lab_domain: ehv.lab
+
+# Per-site core infra: primary turtle is the L2/L3 spine, primary
+# rabbit is the managed switch peering it. Eindhoven's bang-edam shares
+# this primary pair rather than running a dedicated rabbit-edam/turtle-edam
+# pair (operators wanting bang-edam-local mac data use macsum's `-r`
+# CLI override).
+primary_rabbit: rabbit-gouda
+primary_turtle: turtle-gouda
+turtle_type: cisco
+
+# Kernel console arg presets. Use these names in the vlans: array below
+# instead of typing `console=ttyS0,...` strings — fewer typos, easy bulk
+# edits, and a single place to fix if a baud convention changes.
+console_zeroslow: "console=ttyS0,57600n8"
+console_zerofast: "console=ttyS0,115200n8"
+console_oneslow:  "console=ttyS1,57600n8"
+console_onefast:  "console=ttyS1,115200n8"
+
+# Master VLAN list — single source of truth for keepalived, dnsmasq, nginx,
+# and per-VLAN /srv/pxe/v<vid>/boot.ipxe content. Adding a new device-type
+# VLAN is a one-entry append here; re-run apply_bang_services.yml.
+#
+# `console:` references one of the four presets above. For wedge VLANs the
+# value is currently unused (Arista EOS install via ONIE doesn't take a kernel
+# console arg from us) but is kept populated so the data shape stays uniform.
+vlans:
+  - { vid: 16, family: leopard,      phase: triage, parent: eth1, cidr: 172.16.0.0/16, gateway_vip: 172.16.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 17, family: tiogapass,    phase: triage, parent: eth1, cidr: 172.17.0.0/16, gateway_vip: 172.17.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 18, family: wedge100s,    phase: triage, parent: eth1, cidr: 172.18.0.0/16, gateway_vip: 172.18.0.10, console: "{{ console_zeroslow }}" }
+  - { vid: 19, family: wedge400,     phase: triage, parent: eth1, cidr: 172.19.0.0/16, gateway_vip: 172.19.0.10, console: "{{ console_zeroslow }}" }
+  - { vid: 20, family: yv3,          phase: triage, parent: eth1, cidr: 172.20.0.0/16, gateway_vip: 172.20.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 21, family: brycecanyon,  phase: triage, parent: eth1, cidr: 172.21.0.0/16, gateway_vip: 172.21.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 22, family: lightning,    phase: triage, parent: eth1, cidr: 172.22.0.0/16, gateway_vip: 172.22.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 23, family: grandcanyon,  phase: triage, parent: eth1, cidr: 172.23.0.0/16, gateway_vip: 172.23.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 24, family: leopard,      phase: post,   parent: eth1, cidr: 172.24.0.0/16, gateway_vip: 172.24.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 25, family: tiogapass,    phase: post,   parent: eth1, cidr: 172.25.0.0/16, gateway_vip: 172.25.0.10, console: "{{ console_zerofast }}" }
+  # vids 26/27 carry switch OOB-mgmt (turtle<->bang eth0 path). These are NOT
+  # monitored by the flax-* services, so reservation-only + authoritative-NAK
+  # just starves the OOB gear and any host booting on those ports. dhcp_mode:
+  # pool opts them back into an open pool (172.<vid>.0.50-.200), same override
+  # vid 31 uses. Reservations still win over the pool when one exists.
+  - { vid: 26, family: wedge100s,    phase: post,   parent: eth0, cidr: 172.26.0.0/16, gateway_vip: 172.26.0.10, console: "{{ console_zeroslow }}", dhcp_mode: pool }
+  - { vid: 27, family: wedge400,     phase: post,   parent: eth0, cidr: 172.27.0.0/16, gateway_vip: 172.27.0.10, console: "{{ console_zeroslow }}", dhcp_mode: pool }
+  - { vid: 28, family: yv3,          phase: post,   parent: eth1, cidr: 172.28.0.0/16, gateway_vip: 172.28.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 29, family: brycecanyon,  phase: post,   parent: eth1, cidr: 172.29.0.0/16, gateway_vip: 172.29.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 30, family: lightning,    phase: post,   parent: eth1, cidr: 172.30.0.0/16, gateway_vip: 172.30.0.10, console: "{{ console_zerofast }}" }
+  # vid 31: access vlan for the customer post switch uplink (reclassified
+  # from grandcanyon 2026-07-01; was "open DHCP pool for integration work"
+  # 2026-05-13). Open DHCP pool: bypasses the site-level reservation_only_dhcp
+  # and reaper-leased enrollment entirely; dnsmasq leases freely from the
+  # apply_bang_services_dhcp_pool range, third-party gear shows up in the
+  # dashboard's Leases tab via /api/leases, and reaper-leased's state.json
+  # stays untouched for this vlan.
+  #
+  # pxe.menu/submenu: gear boots a stock Ubuntu installer rather than the
+  # SUSE Leap live image; menu-ubuntu + submenu C_24.04 picks that path from
+  # the iPXE menu. family=tiogapass so com/com_setting/node derive com1f/
+  # ttys0f (wiwynn-tp) — the lindhof (Tioga Pass) nodes prepped here need the
+  # ttyS0 serial console, matching TP vids 17/25. (grandcanyon defaulted to
+  # ttys1f, which would have broken that console on deploy.)
+  - { vid: 31, family: tiogapass,    phase: post,   parent: eth1, cidr: 172.31.0.0/16, gateway_vip: 172.31.0.10, console: "{{ console_zerofast }}", dhcp_mode: pool, pxe: { menu: menu-ubuntu, submenu: "C_24.04" } }
+
+# Mgmt VIP (VLAN 4 native on eth0). Carried by the same vrrp_instance.
+bang_mgmt_vip: 192.168.88.10
+bang_mgmt_cidr: 192.168.88.10/24
+bang_mgmt_iface: eth0
+bang_wan_iface: eth0.2
+
+# Dynamic DHCP pool for laptops/on-site tooling on the mgmt VLAN.
+# Consumed by roles/apply_bang_services/templates/dnsmasq.conf.j2.
+# Omitting this var falls back to the legacy static-only range
+# (current behaviour at lavergne). Not a role default — deliberately
+# scoped to mgmt-VLAN, not per-DUT-VLAN ranges.
+mgmt_guest_pool:
+  start: 192.168.88.200
+  end:   192.168.88.249
+  lease: 8h
+
+# Enable RA-stateless on the mgmt VLAN. LL-only (no prefix), no v6 default
+# route. See docs/superpowers/specs/2026-05-11-mgmt-vlan-dhcpv6-ra-stateless-design.md
+mgmt_v6_ra_stateless: true
+
+# Same RA-stateless treatment on every lab-data VLAN in `vlans:` below.
+# Suppresses dnsmasq "no address range available for DHCPv6 request via
+# eth1.<vid>" log spam (OpenBMC BMCs SOLICIT v6 alongside their v4 DISCOVER
+# on link-up; without an RA there's nowhere for them to land). Stateful
+# DHCPv6 with a v6 leases table is still the long-term plan (see TODO.md)
+# — this is the noise-suppressing prerequisite, not a replacement.
+lab_data_v6_ra_stateless: true
+
+# Arista ZTP bootfile-name URL for switches tagged set:arista-ztp in
+# bmc-reservations.conf. Live config on bang-gouda uses the mgmt VIP
+# literal rather than the FQDN — captured here so a re-render doesn't
+# strip the hand-added line. Switch to bang.{{ bang_lab_domain }} once
+# we've confirmed EOS resolves the FQDN through dnsmasq during ZTP.
+arista_ztp_url: "http://192.168.88.10/arista-ztp.conf"
+
+# Reservation-only DHCP on lab-data VLANs (vid 16-31). Pool removed;
+# unknown MACs get denied and reaper-leased's denial watcher picks them
+# up from the dnsmasq journal (log-dhcp required) to trigger FDB+LL
+# discovery. See docs/superpowers/specs/2026-05-12-reservation-only-lab-data-design.md
+# Lavergne and braintree keep the pool form until their own cutover specs.
+reservation_only_dhcp: true
+
+# Per-vlan L3 SVI hostname → IP suffix map. Consumed by lab-hosts.j2 to
+# render switch SVI A records (172.<vid>.0.<suffix>) for every vlan in
+# vlans:. Switches don't have these SVIs configured yet — DNS records
+# resolve but ping fails until the eindhoven switch SVI follow-up lands.
+switch_host_suffix:
+  rabbit-gouda: 3
+  rabbit-edam: 4
+  turtle-gouda: 5
+
+# Per-host static IP suffix on every VLAN. bang-gouda = .1 (master, prio 110),
+# bang-edam = .2 (backup, prio 90). Used by keepalived role to compute priorities.
+bang_host_suffix:
+  bang-gouda: 1
+  bang-edam:  2
+
+bang_vrrp_priority:
+  bang-gouda: 110
+  bang-edam:  90
+
+# apply_keepalived defaults this to bang-gouda already (matches our
+# priority assignment above), but the var only resolves when the
+# apply_keepalived role is in the play. Pinned in group_vars so
+# thin single-role playbooks (apply_triage_compose.yml etc.) whose
+# tasks/handlers gate restart on master vs backup don't fail with
+# 'apply_keepalived_master_host is undefined'.
+apply_keepalived_master_host: bang-gouda
+
+# Triage UI/API stack runs only on the VIP master — the SOL websocket
+# listener requires single-instance per fleet. notify_master.sh and
+# notify_backup.sh (apply_keepalived) start/stop the stack on VIP
+# transitions; apply_triage_compose handles the initial up/down at
+# deploy time.
+apply_keepalived_compose_stacks:
+  - /etc/flax/triage/docker-compose-prod.yml
+
+# ── flax-stack / Kea / Postgres-HA wiring (2026-06-20 eindhoven migration) ──
+# Mirrors braintree. Secrets live in this site's encrypted vault.yml.
+# Kea DHCP cutover flipped 2026-06-21: dnsmasq drops to DNS+TFTP-only;
+# kea-dhcp4/6 + radvd own DHCP (VIP-exclusive via keepalived); flax-reconcile
+# becomes the sole switch writer (neuters legacy reaper-leased writes).
+bang_dhcp_server: kea
+bang_reconcile: flax
+apply_flax_stack_postgres_superuser_password: "{{ vault_flax_stack_postgres_superuser_password }}"
+apply_flax_stack_db_passwords: "{{ vault_flax_stack_db_passwords }}"
+
+# Postgres HA: bang-gouda primary, bang-edam streaming standby. Each bang allows
+# the OTHER as the replicator role over its mgmt IP. apply_flax_stack_is_primary
+# is per-host (host_vars/bang-edam.yml sets it false → standby gates OFF alembic).
+apply_flax_stack_peers:
+  - { name: bang-gouda, ip: 192.168.88.21 }
+  - { name: bang-edam,  ip: 192.168.88.22 }
+
+apply_flax_switch_sense_db_password: "{{ vault_flax_stack_db_passwords.flax_switch_sense }}"
+apply_flax_observe_db_password: "{{ vault_flax_stack_db_passwords.flax_observe }}"
+apply_flax_classify_db_password: "{{ vault_flax_stack_db_passwords.flax_classify }}"
+apply_flax_discover_db_password: "{{ vault_flax_stack_db_passwords.flax_discover }}"
+apply_flax_reconcile_db_password: "{{ vault_flax_stack_db_passwords.flax_reconcile }}"
+apply_flax_post_db_password: "{{ vault_flax_stack_db_passwords.flax_post }}"
+# Post-UI Wave 3 (PWR/IDNT/INV/POP action buttons). Pins eindhoven's post
+# image explicitly (was tracking the role default). 0.9.113 = main + the
+# post-UI-actions branch. Viewer unit gains creds-bmc/opt-flax-bin/export/
+# node_config mounts; image adds nmap/jq/curl for the ghost helpers.
+apply_flax_post_image_tag: "0.9.119"
+# SOL console (flax-post-sol Node relay + flax_post/web SOL modal), 2026-07-10.
+apply_flax_post_sol_image_tag: "0.9.117"
+
+# Role registry (spine migration phase 1) universe for the post role,
+# rendered into /etc/flax/roles.d/post.json by apply_lease_agent. Values
+# match the flax_role_post_* template defaults -- pinned explicitly here so
+# eindhoven's deploy is declarative; other sites fall back to the defaults.
+flax_role_post_switches: ["rabbit-edam"]
+flax_role_post_prefixes: ["turtle"]
+flax_role_post_catch_all: true
+
+# The qual agent's iperf3 serializer = this site's BACKUP bang (prio 90, .2).
+# Rendered into post.tgz's flax-qual.env as FLAX_IPERF_SERVER.
+post_iperf_server: bang-edam
+
+# Role registry (spine migration phase 6) universe for the integra role,
+# rendered into /etc/flax/roles.d/integra.json by apply_lease_agent. A pure
+# ports-claim role: one explicit (switch, port) claim on the customer post
+# switch uplink; values match the flax_role_integra_* template defaults --
+# pinned here so eindhoven's deploy is declarative.
+flax_role_integra_ports: { "rabbit-gouda": ["et32/1"] }
+flax_role_integra_vid: 31
+
+# Vid-by-family steering maps (spine migration Task 4), rendered into
+# roles.d/{triage,post}.json.j2's policy.vid.by_family and consumed by
+# flax_classify.vlan_policy.fp_to_vid_from_roles. This is the DEPLOYED gouda
+# /etc/flax/vlans.json map TRANSCRIBED VERBATIM (verified 2026-07-05) --
+# deliberately NOT derived from the `vlans:` array above. That array
+# currently carries a PENDING, NOT-YET-LIVE integra reclass (vid 31 flipped
+# to family: tiogapass, phase: post, for the customer post-switch uplink --
+# see the vid 31 entry's comment above) that must not leak into the role
+# registry until the reclass is actually rolled out; grandcanyon stays 31
+# here until then.
+flax_role_triage_vid_by_family:
+  leopard: 16
+  tiogapass: 17
+  wedge100s: 18
+  wedge400: 19
+  yv3: 20
+  brycecanyon: 21
+  lightning: 22
+  grandcanyon: 23
+flax_role_post_vid_by_family:
+  leopard: 24
+  tiogapass: 25
+  wedge100s: 26
+  wedge400: 27
+  yv3: 28
+  brycecanyon: 29
+  lightning: 30
+  grandcanyon: 31
+
+# Spine-migration phase-3a cutover (2026-07-04, operator green-lit remote flips;
+# physical node-move validation deferred -- no one on-site). Two-key arming:
+# mode=enforce AND the role named; the materializer is the sole kea writer for
+# enforced roles. Rollback = revert these two lines + re-apply --tags flax_classify.
+apply_flax_classify_materializer_mode: "enforce"
+apply_flax_classify_materializer_enforce_roles: "post,triage"
+
+# Kea Postgres backends: kea = libdhcp_pgsql hook (lease+hosts); flax_kea_hook =
+# the run_script discover-hook (INSERT-only into lease_events).
+apply_kea_db_password: "{{ vault_flax_stack_db_passwords.kea }}"
+apply_kea_hook_db_password: "{{ vault_flax_stack_db_passwords.flax_kea_hook }}"
+
+# radvd image tag (radvd is gated on bang_dhcp_server=kea — deploys at cutover).
+apply_radvd_image_tag: "latest"
+
+# Fleet TLS CA private key (PEM). Signs per-host wildcard leaves on the control
+# node only (apply_flax_tls, delegate_to localhost) -- never copied to a bang.
+# Same plaintext across all sites; encrypted separately per site vault.
+apply_flax_tls_ca_key: "{{ vault_flax_tls_ca_key }}"

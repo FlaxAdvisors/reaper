@@ -1,0 +1,32 @@
+[Unit]
+Description=flax-discover — device identity (family + vm_n) writer
+After=docker.service network-online.target flax-stack.service
+Wants=network-online.target
+Requires=docker.service flax-stack.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/flax/flax-discover/flax-discover.env
+# VIP-gate — bash one-liner (no container spin-up) so the gate adds <100ms.
+ExecStartPre=/bin/bash -c '. /etc/flax/site.env && ip -o -4 addr | grep -qE " $${MGMT_VIP}/"'
+
+ExecStart=/usr/bin/docker run --rm --name flax-discover \
+    --network host \
+    --env-file /etc/flax/flax-discover/flax-discover.env \
+    -v /etc/flax/family-map:/etc/flax/family-map:ro \
+    flax-control:${FLAX_DISCOVER_IMAGE_TAG} \
+    python -m flax_discover \
+        --cycle-secs {{ apply_flax_discover_cycle_secs }} \
+        --debounce-secs {{ apply_flax_discover_debounce_secs }} \
+        --healthz-port {{ apply_flax_discover_healthz_port }} \
+        --healthz-stale-secs {{ apply_flax_discover_healthz_stale_secs }} \
+        --match-retry-max-secs {{ apply_flax_discover_match_retry_max_secs }} \
+        --family-map-dir /etc/flax/family-map
+
+ExecStop=/usr/bin/docker stop flax-discover
+
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

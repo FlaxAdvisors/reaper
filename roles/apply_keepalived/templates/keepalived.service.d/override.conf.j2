@@ -1,0 +1,13 @@
+[Service]
+# keepalived treats a virtual_ipaddress interface that does not yet exist as a
+# fatal CONFIG error and exits (status 2/INVALIDARGUMENT). On wicked,
+# network-online.target fires before the eth0.<vlan> subinterfaces are created,
+# so a cold boot can start keepalived before eth0.16-eth0.31 exist. Without a
+# restart policy the unit then stays `failed` indefinitely (braintree fiesta sat
+# dead for 6 days, 2026-06-04 -> 2026-06-10, while siesta held the VIP).
+#
+# RestartSec=10s spaces retries far enough apart that the default StartLimitBurst
+# (5 starts / 10s) is never tripped, so systemd keeps retrying every 10s until
+# the VLAN subinterfaces exist and keepalived loads cleanly.
+Restart=on-failure
+RestartSec=10s

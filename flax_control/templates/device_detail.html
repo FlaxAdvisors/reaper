@@ -1,0 +1,339 @@
+{% extends "base.html" %}
+{% import "_components.html" as c %}
+{% block title %}flax-control — device {{ mac }}{% endblock %}
+
+{# ---- operator action state derived vars --------------------------------- #}
+{# op_request: latest reconcile_requests row for this mac (or None).
+   bmc_state: {bmcipmi, bmcping} flat values from observe.vars.
+   Action states — exactly one is true at a time:
+     _act_bmc_inflight  — bmc-reset pending|claimed
+     _act_bmc_awaiting  — bmc-reset done but bmcipmi still unknown
+     _act_bmc_failed    — bmc-reset stuck
+     _act_flap_inflight — flap/auto pending|claimed
+     _act_flap_failed   — flap/auto stuck
+   If none of the above: idle.
+   _action_in_progress — auto-refresh and button-disable guard.
+#}
+{% set _bmc_reset_reasons = ["operator bmc-reset"] %}
+{% set _flap_reasons = ["operator flap", "auto:mismatch", "lease!=reservation"] %}
+{% set _open_statuses = ["pending", "claimed"] %}
+
+{% set _op_reason = op_request.reason if op_request else "" %}
+{% set _op_status = op_request.status if op_request else "" %}
+
+{% set _act_bmc_inflight = (op_request and _op_reason in _bmc_reset_reasons and _op_status in _open_statuses) %}
+{% set _act_bmc_awaiting = (op_request and _op_reason in _bmc_reset_reasons and _op_status == "done"
+                             and bmc_state and bmc_state.bmcipmi == "unknown") %}
+{% set _act_bmc_failed   = (op_request and _op_reason in _bmc_reset_reasons and _op_status == "stuck") %}
+{% set _act_flap_inflight = (op_request and _op_reason not in _bmc_reset_reasons and _op_status in _open_statuses) %}
+{% set _act_flap_failed  = (op_request and _op_reason not in _bmc_reset_reasons and _op_status == "stuck") %}
+
+{% set _action_in_progress = _act_bmc_inflight or _act_bmc_awaiting or _act_flap_inflight %}
+
+{# idle bmc-stuck: only show session-exhausted banner when no in-flight reset #}
+{% set _bmc_stuck_idle = (not op_request or _op_status not in _open_statuses)
+    and bmc_state and bmc_state.bmcipmi == "unknown" and bmc_state.bmcping == "ok"
+    and not _act_bmc_awaiting %}
+
+{# disable both buttons when any action is in-progress or awaiting-recovery #}
+{% set _buttons_disabled = (not device) or _action_in_progress %}
+
+{% block head %}
+{% if _action_in_progress %}
+<meta http-equiv="refresh" content="8">
+{% endif %}
+{% endblock %}
+
+{% block content %}
+
+{# ---- identity header ----------------------------------------------------- #}
+{% set _obs_vars = (full.observe.vars if full and full.observe else {}) or {} %}
+{% set _resolved = (full.observe.resolved if full and full.observe else {}) or {} %}
+{% set _serial = (full.latched.serial if full and full.latched else None) or _resolved.get('chassis_sn') or _resolved.get('serial') %}
+{% set _linkstate = (_obs_vars.linkstate.value if _obs_vars.linkstate else None) %}
+{% set _bmcpower = (_obs_vars.bmcpower.value if _obs_vars.bmcpower else None) %}
+{% set _vid = (full.reservation.classify.get('vid') if full and full.reservation and full.reservation.classify else None) %}
+{% set _desired_vid = (full.desired.get('desired_vid') if full and full.desired else None) %}
+
+{{ c.breadcrumb([['Nodes', '/devices'], [mac, '']]) }}
+{{ c.page_header('DUT · ' + (_serial or mac)) }}
+
+<div class="dut-head">
+  {% if full %}
+  <div class="dut-id">
+    <span class="serial">{{ _serial or 'Unknown serial' }}</span>
+    <span class="mac mono">{{ full.mac }}</span>
+    {{ c.badge('kind: ' + (full.kind or '—'), 'n') }}
+    {% if _linkstate == 'link' %}{{ c.badge('present', 'g') }}
+    {% elif _linkstate == 'down' %}{{ c.badge('absent', 'c') }}
+    {% else %}{{ c.badge('presence unknown', 'n') }}{% endif %}
+    {% if _bmcpower == 'on' %}{{ c.badge('powered on', 'g') }}
+    {% elif _bmcpower == 'off' %}{{ c.badge('powered off', 'n') }}
+    {% else %}{{ c.badge('power unknown', 'n') }}{% endif %}
+    {% if full.latched and full.latched.family %}{{ c.badge(full.latched.family, 'n') }}{% endif %}
+  </div>
+  <div class="dut-meta">
+    <div class="cell"><div class="l">Switch / port</div><div class="v">
+      <a href="/switches/{{ full.switch }}">{{ full.switch }}</a> ·
+      <a href="/switches/{{ full.switch }}/{{ full.port }}"><code>{{ full.port }}</code></a>
+    </div></div>
+    <div class="cell"><div class="l">Access VID</div><div class="v">{{ _vid if _vid is not none else "—" }}</div></div>
+    <div class="cell"><div class="l">IPv4</div><div class="v">{{ (full.reservation.ipv4_address if full.reservation else None) or "—" }}</div></div>
+    <div class="cell"><div class="l">IPv6-LL</div><div class="v">{{ ipv6_ll or "—" }}</div></div>
+    <div class="cell"><div class="l">Hostname</div><div class="v">{{ (full.reservation.hostname if full.reservation else None) or "—" }}</div></div>
+    <div class="cell"><div class="l">dut_id</div><div class="v">—</div></div>
+  </div>
+  {% else %}
+  <div class="dut-id">
+    <span class="mac mono">{{ mac }}</span>
+    {{ c.badge('no device record', 'n') }}
+  </div>
+  <p class="empty">No device record found for <code>{{ mac }}</code>.</p>
+  {% endif %}
+</div>
+
+{# ---- operator-action status banners ------------------------------------ #}
+{# Tone: info -> notice.a (accent wash), failed -> notice.c (crit wash),
+   advisory/idle-stuck -> notice.w (warn wash). No inline hex — theme-aware
+   tokens only, so this reads correctly in both light and dark. #}
+{% if _act_bmc_inflight %}
+<div class="notice a">
+  <strong class="notice-title">BMC reset in progress</strong>
+  <p>Reset BMC via Redfish requested and in progress —
+    this page will update when the BMC is reachable.</p>
+</div>
+{% elif _act_bmc_awaiting %}
+<div class="notice a">
+  <strong class="notice-title">BMC reset sent — awaiting recovery</strong>
+  <p>BMC reset sent — waiting for the BMC to come back
+    (can take a few minutes)…</p>
+</div>
+{% elif _act_bmc_failed %}
+<div class="notice c">
+  <strong class="notice-title">BMC reset failed after {{ op_request.attempts }} attempts</strong>
+</div>
+{% elif _act_flap_inflight %}
+<div class="notice a">
+  <strong class="notice-title">Reconcile in progress</strong>
+  <p>Reconcile (re-DHCP) in progress…</p>
+</div>
+{% elif _act_flap_failed %}
+<div class="notice c">
+  <strong class="notice-title">Reconcile failed after {{ op_request.attempts }} attempts</strong>
+</div>
+{% elif _bmc_stuck_idle %}
+{# Session-exhausted banner: only shown when idle and no in-flight reset #}
+<div class="notice w">
+  <strong class="notice-title">BMC IPMI session-exhausted — reset recommended</strong>
+  <p>IPMI is unreachable
+    (<code>bmcipmi=unknown</code>) but the BMC still answers ping
+    (<code>bmcping=ok</code>) — the AMI MegaRAC session table is full. Use
+    <em>Reset BMC (Redfish)</em> below to force a Manager.Reset.</p>
+</div>
+{% endif %}
+
+{% if full %}
+{# ---- two-column DUT body: biography (own scroll panel) + right rail ---- #}
+<div class="dut-cols">
+  <div>
+    <section class="side-card">
+      <h3>Biography</h3>
+      <div class="scroll-panel">
+        <div class="tl">
+          {% for i in biography %}
+          <div class="item {{ i.source }}">
+            <div class="when mono">{{ i.when or '—' }}</div>
+            <div class="what">{{ i.what }}</div>
+            <div class="src mono">{{ i.source }}</div>
+          </div>
+          {% endfor %}
+          {% if not biography %}<p class="muted">No recorded history yet.</p>{% endif %}
+        </div>
+      </div>
+    </section>
+
+    <section class="side-card">
+      <h3>Ownership ledger</h3>
+      {% set _own_items = [] %}
+      {% for i in biography if i.source == 'ownership' %}{% if _own_items.append(i) %}{% endif %}{% endfor %}
+      {{ c.kv('Handoffs recorded', _own_items | length) }}
+      {% if _own_items %}
+      {{ c.kv('Latest handoff', _own_items[0].what) }}
+      {{ c.kv('When', _own_items[0].when or "—") }}
+      {% else %}
+      <p class="muted">No ownership handoffs recorded for this MAC.</p>
+      {% endif %}
+    </section>
+  </div>
+
+  <div>
+    <section class="side-card">
+      <h3>Current status</h3>
+      {{ c.kv('Presence', 'present' if _linkstate == 'link' else ('absent' if _linkstate == 'down' else '—')) }}
+      {{ c.kv('Power', _bmcpower or "—") }}
+      {{ c.kv('BMC IPMI', (bmc_state.bmcipmi if bmc_state else None) or "—") }}
+      {{ c.kv('BMC ping', (bmc_state.bmcping if bmc_state else None) or "—") }}
+      {{ c.kv('Last observe', (full.observe.last_polled if full.observe else None) or "—") }}
+    </section>
+
+    <section class="side-card">
+      <h3>Reservation</h3>
+      {% if full.reservation %}
+      {{ c.kv('Hostname', full.reservation.hostname or "—") }}
+      {{ c.kv('IP address', full.reservation.ipv4_address or "—") }}
+      {{ c.kv('Subnet', full.reservation.subnet_id or "—") }}
+      {{ c.kv('Operator note', full.reservation.operator_note or "—") }}
+      {% else %}
+      <p class="muted">No Kea reservation for this MAC.</p>
+      {% endif %}
+    </section>
+
+    <section class="side-card">
+      <h3>Config that shaped this</h3>
+      {{ c.kv('Family', (full.latched.family if full.latched else None) or "—") }}
+      {{ c.kv('Access VID (classify)', _vid if _vid is not none else "—") }}
+      {{ c.kv('Desired VID (desired_port)', _desired_vid if _desired_vid is not none else "—") }}
+      {{ c.kv('Classification source', (full.port_facts.classification_source if full.port_facts else None) or "—") }}
+      {% set _fw %}<a href="{{ fw_href }}">Firmware →</a>{% endset %}
+      {{ c.kv('Firmware', _fw) }}
+    </section>
+  </div>
+</div>
+{% endif %}
+
+{# ---- reconcile actions --------------------------------------------------- #}
+<div class="section">
+  <h3>Reconcile</h3>
+  <div class="side-card">
+    <form method="post" action="/reconcile/flap" style="margin-bottom:0.75rem;">
+      <input type="hidden" name="mac" value="{{ mac }}">
+      <input type="hidden" name="switch" value="{{ device.switch if device else '' }}">
+      <input type="hidden" name="port" value="{{ device.port if device else '' }}">
+      <input type="hidden" name="kind" value="{{ device.kind if device else '' }}">
+      <input type="hidden" name="return_to" value="/devices/{{ mac }}">
+      <button type="submit" class="ds-btn" {% if _buttons_disabled %}disabled{% endif %}>
+        Flap port (kick re-DHCP)
+      </button>
+    </form>
+    <form method="post" action="/reconcile/bmc-reset" style="margin-bottom:0.75rem;">
+      <input type="hidden" name="mac" value="{{ mac }}">
+      <input type="hidden" name="switch" value="{{ device.switch if device else '' }}">
+      <input type="hidden" name="port" value="{{ device.port if device else '' }}">
+      <input type="hidden" name="kind" value="{{ device.kind if device else '' }}">
+      <input type="hidden" name="return_to" value="/devices/{{ mac }}">
+      <button type="submit"
+              class="ds-btn {{ '' if _bmc_stuck_idle else 'ghost' }}"
+              {% if _buttons_disabled and not _act_bmc_failed %}disabled{% endif %}
+              {% if _bmc_stuck_idle %}style="font-weight:bold;"{% endif %}>
+        Reset BMC (Redfish){% if _bmc_stuck_idle %} — recommended{% endif %}
+      </button>
+    </form>
+    {% if full and full.last_reconcile_action %}
+    <p class="muted" style="font-size:0.82rem;">Last action: {{ full.last_reconcile_action.ts }} —
+      {{ full.last_reconcile_action.action }}
+      {{ c.outcome_badge(full.last_reconcile_action.outcome) }}</p>
+    {% endif %}
+    {% if actions %}
+    <div class="table-scroll" style="margin-top:0.5rem;">
+    <table class="data-table">
+      <thead><tr><th>when</th><th>action</th><th>outcome</th><th>reason</th></tr></thead>
+      <tbody>
+        {% for a in actions %}
+        <tr><td class="muted">{{ a.ts }}</td><td>{{ a.action }}</td>
+            <td>{{ c.outcome_badge(a.outcome) }}</td>
+            <td>{{ a.reason or "—" }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% else %}<p class="empty">No reconcile actions for this device.</p>{% endif %}
+  </div>
+</div>
+
+{% if full %}
+<section class="side-card">
+  <h3>desired_port</h3>
+  {% if full.desired %}
+  <table class="kv">
+    <tr><th>desired VLAN</th><td>{{ full.desired.desired_vid }}</td></tr>
+    <tr><th>occupants</th><td><code>{{ full.desired.occupants }}</code></td></tr>
+    <tr><th>generation</th><td>{{ full.desired.generation }}</td></tr>
+  </table>
+  {% else %}
+  <p class="empty">No desired_port entry for this port.</p>
+  {% endif %}
+</section>
+
+<section class="side-card">
+  <h3>observe_state (12-var)</h3>
+  {% if full.observe %}
+  <p class="muted" style="font-size:0.82rem;">generation {{ full.observe.generation }} · last_polled {{ full.observe.last_polled }}</p>
+  <div class="table-scroll">
+  <table class="data-table">
+    <thead><tr><th>variable</th><th>value</th><th>since</th></tr></thead>
+    <tbody>
+      {% for var, slot in full.observe.vars.items() %}
+      <tr><td>{{ var }}</td><td>{{ slot.value }}</td><td class="muted">{{ slot.since or "—" }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% if full.observe.resolved %}
+  <h4>resolved scalars</h4>
+  <table class="kv">
+    {% for k, v in full.observe.resolved.items() %}
+    <tr><th>{{ k }}</th><td>{{ v }}</td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+  {% else %}
+  <p class="empty">No observe_state row for this port.</p>
+  {% endif %}
+</section>
+
+<section class="side-card">
+  <h3>switch_facts port</h3>
+  {% if full.port_facts %}
+  <table class="kv">
+    <tr><th>link</th><td>{{ c.outcome_badge('link' if full.port_facts.link == 'link' else 'down') }}</td></tr>
+    <tr><th>mask</th><td>{{ full.port_facts.mask or "—" }}</td></tr>
+    <tr><th>MACs</th><td>{{ full.port_facts.macs | join(", ") if full.port_facts.macs else "—" }}</td></tr>
+    <tr><th>BMC MAC</th><td><code>{{ full.port_facts.bmc_mac or "—" }}</code></td></tr>
+    <tr><th>NIC MACs</th><td>{{ full.port_facts.nic_macs | join(", ") if full.port_facts.nic_macs else "—" }}</td></tr>
+    <tr><th>junk MACs</th><td>{{ full.port_facts.junk_macs | length if full.port_facts.junk_macs else 0 }}</td></tr>
+    <tr><th>classification</th><td>{{ full.port_facts.classification_source or "—" }}{% if full.port_facts.lldp_disagreement %} {{ c.badge('LLDP disagreement', 'w') }}{% endif %}</td></tr>
+    <tr><th>LLDP neighbors</th><td>
+      {% for n in full.port_facts.lldp_neighbors or [] %}
+        {{ n.sysname }} ({{ n.mac }}{% if n.port_description %} {{ n.port_description }}{% endif %})
+        {%- if not loop.last %}; {% endif %}
+      {% else %}—{% endfor %}
+    </td></tr>
+  </table>
+  {% else %}
+  <p class="empty">No switch_facts entry for this port.</p>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if full and full.recent_events %}
+<div class="section">
+  <h3>Recent audit events</h3>
+  <div class="table-scroll">
+  <table class="data-table sortable" id="dev-events-tbl">
+    <thead><tr><th>when</th><th>service</th><th>kind</th><th>switch</th><th>port</th></tr></thead>
+    <tbody>
+      {% for e in full.recent_events %}
+      <tr>
+        <td class="muted">{{ e.ts }}</td>
+        <td><span class="tag">{{ e.service }}</span></td>
+        <td>{{ c.badge(e.kind, 'n') }}</td>
+        <td>{{ e.switch or "—" }}</td>
+        <td>{% if e.switch and e.port %}<a href="/switches/{{ e.switch }}/{{ e.port }}"><code>{{ e.port }}</code></a>{% else %}{{ e.port or "—" }}{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

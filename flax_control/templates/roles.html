@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% import "_components.html" as c %}
+{% block title %}flax-control — roles{% endblock %}
+{% block content %}
+{{ c.page_header('Roles', "Read-only view of the published role registry (roles / role_universe tables) — the source of truth flax-classify's resolve_role() uses to decide (switch, port) → role. Editing happens via /etc/flax/roles.d/*.json on the site host, not here.") }}
+
+<div class="side-card" style="margin-bottom:1rem;">
+  <h3>Related</h3>
+  {% set _v1 %}<a href="/lanes">Post lanes →</a>{% endset %}
+  {{ c.kv('per-role lane rollup driven by this registry', _v1) }}
+  {% set _v2 %}<a href="/shadow">Materializer →</a>{% endset %}
+  {{ c.kv('convergence run against desired_reservations', _v2) }}
+  {% set _v3 %}<a href="/layers/policy">Policy layer →</a>{% endset %}
+  {{ c.kv('layer health this registry feeds', _v3) }}
+</div>
+
+<!-- ── 1. Registry ─────────────────────────────────────────────────────── -->
+<div class="section">
+  <h2>Registry</h2>
+  {% if registry.roles %}
+  <p class="muted" style="font-size:0.82rem;">
+    Catch-all role:
+    {% if registry.catch_all_role %}{{ c.badge(registry.catch_all_role, 'g') }}
+    {% else %}{{ c.badge('none configured', 'w') }}{% endif %}
+  </p>
+  <div class="table-scroll"><table class="data-table sortable" id="roles-tbl"><thead><tr>
+    <th>role</th><th>generation</th><th>loaded at</th>
+    <th>universe</th><th>capabilities</th><th>policy</th><th>record keys</th>
+  </tr></thead><tbody>
+    {% for r in registry.roles %}
+    <tr>
+      <td>
+        <code>{{ r.name }}</code>
+        {% if r.name == registry.catch_all_role %}{{ c.badge('catch-all', 'g') }}{% endif %}
+      </td>
+      <td>{{ r.generation }}</td>
+      <td class="muted">{{ r.loaded_at }}</td>
+      <td>
+        {% if r.universe_summary %}
+          {% for s in r.universe_summary %}<span class="tag">{{ s }}</span>{% endfor %}
+        {% else %}
+          <span class="empty">no explicit claims</span>
+        {% endif %}
+      </td>
+      <td><pre style="margin:0; font-size:0.78rem;">{{ r.capabilities | tojson(indent=2) }}</pre></td>
+      <td><pre style="margin:0; font-size:0.78rem;">{{ r.policy | tojson(indent=2) }}</pre></td>
+      <td>
+        {% for k in r.record_keys %}<span class="tag"><code>{{ k }}</code></span>{% endfor %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody></table></div>
+  {% else %}
+  <p class="empty">No roles published yet — the registry is empty
+    (flax-classify hasn't loaded/published <code>roles.d/</code> on this site).</p>
+  {% endif %}
+</div>
+
+<!-- ── 2. Coverage — live would-be-unassigned ports ────────────────────── -->
+<div class="section">
+  <h2>Coverage</h2>
+  <p class="muted" style="font-size:0.82rem;">
+    Known switch ports (<code>switch_facts</code>) matched by <strong>no explicit
+    claim</strong> — i.e. ports that would resolve only via the catch-all role.
+    An empty table here means every live port is explicitly claimed by a role.
+  </p>
+  {% if uncovered %}
+  <div class="filter-bar">
+    <label>filter <input class="table-filter" data-table="coverage-tbl" type="search" placeholder="switch, port…"></label>
+    <span class="muted">{{ uncovered | length }} port{{ '' if uncovered|length == 1 else 's' }}</span>
+  </div>
+  <div class="table-scroll"><table class="data-table sortable" id="coverage-tbl"><thead><tr><th>switch</th><th>port</th></tr></thead><tbody>
+    {% for switch, port in uncovered %}
+    <tr>
+      <td><a href="/switches/{{ switch }}">{{ switch }}</a></td>
+      <td>{{ port }}</td>
+    </tr>
+    {% endfor %}
+  </tbody></table></div>
+  {% else %}
+  <p class="empty">No uncovered ports — every known switch port is explicitly claimed.</p>
+  {% endif %}
+</div>
+
+{% endblock %}

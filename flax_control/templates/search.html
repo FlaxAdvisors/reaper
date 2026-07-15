@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% import "_components.html" as c %}
+{% block title %}search · flax console{% endblock %}
+{% block content %}
+{% if not found %}
+{% set _sub %}No node matches <b>{{ q }}</b>. Try a MAC, switch/port, serial, order, or hostname.{% endset %}
+{{ c.page_header('Search', _sub) }}
+{% else %}
+{% set _sub %}Multiple nodes match <b>{{ q }}</b>:{% endset %}
+{{ c.page_header('Search', _sub) }}
+<ul class="cand-list">
+  {% for cand in candidates %}
+    <li><a href="/devices/{{ cand.mac }}" class="mono">{{ cand.label }}</a></li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endblock %}

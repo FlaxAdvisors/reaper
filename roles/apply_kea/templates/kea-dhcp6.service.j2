@@ -1,0 +1,29 @@
+[Unit]
+Description=ISC Kea DHCPv6 (braintree stateful per-vlan)
+After=docker.service network-online.target flax-stack.service
+Wants=network-online.target
+Requires=docker.service flax-stack.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/flax/kea/kea.env
+
+ExecStartPre=/bin/bash -c 'umask 027 && envsubst < /etc/flax/kea/kea-dhcp6.conf.template > /etc/flax/kea/kea-dhcp6.conf && chown 100:101 /etc/flax/kea/kea-dhcp6.conf && chown 100:101 /var/run/kea'
+
+ExecStart=/usr/bin/docker run --rm --name kea-dhcp6 \
+    --network host \
+    --cap-add NET_ADMIN --cap-add NET_RAW --cap-add NET_BIND_SERVICE \
+    -v /etc/flax/kea/kea-dhcp6.conf:/etc/kea/kea-dhcp6.conf:ro \
+    -v /var/run/kea:/var/run/kea \
+    --env-file /etc/flax/kea/kea.env \
+    --entrypoint /usr/sbin/kea-dhcp6 \
+    docker.cloudsmith.io/isc/docker/kea-dhcp6:${KEA_IMAGE_TAG} \
+    -c /etc/kea/kea-dhcp6.conf
+
+ExecStop=/usr/bin/docker stop kea-dhcp6
+
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

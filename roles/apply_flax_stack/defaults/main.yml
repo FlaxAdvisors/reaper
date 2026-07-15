@@ -1,0 +1,29 @@
+---
+apply_flax_stack_https_port: 8443
+# Name-based :443 vhost front (console/post/triage). Opened in zone external
+# alongside 8443. Only meaningful where flax-stack nginx runs.
+apply_flax_stack_vhost_port: 443
+apply_flax_stack_postgres_port: 5432
+apply_flax_stack_compose_path: /etc/flax/flax-stack/docker-compose.yml
+apply_flax_stack_env_path: /etc/flax/flax-stack/flax-stack.env
+
+# Image now hosts flax_control (+ queries/triage_compat per Plan 3.5),
+# flax_switch_sense, and flax_observe.
+apply_flax_stack_flax_control_image_tag: "0.9.116"
+apply_flax_stack_postgres_image: "postgres:16"
+apply_flax_stack_nginx_image: "nginx:1.27-alpine"
+
+# Per-role passwords are pulled from the vault. Inventory wires
+# apply_flax_stack_db_passwords: {flax_control: "...", flax_discover: "...", ...}
+apply_flax_stack_db_passwords: {}
+apply_flax_stack_postgres_superuser_password: ""
+
+# Replication / HA.
+#   apply_flax_stack_is_primary  — per-host; the standby gates OFF alembic (read-only).
+#   apply_flax_stack_peers       — every bang in the HA set as {name, ip(mgmt)}.
+#     Drives the pg_hba replication lines (each bang allows the OTHERS) and widens
+#     listen_addresses. Empty = standalone (no HA) — the pre-existing behaviour.
+apply_flax_stack_is_primary: true
+apply_flax_stack_peers: []  # e.g. [{name: bang-fiesta, ip: 192.168.88.21}, {name: bang-siesta, ip: 192.168.88.22}]
+# firewalld zone the mgmt interface (peer replication source) lives in.
+apply_flax_stack_replication_zone: internal

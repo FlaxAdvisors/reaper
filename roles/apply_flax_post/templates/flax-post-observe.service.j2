@@ -1,0 +1,27 @@
+{# roles/apply_flax_post/templates/flax-post-observe.service.j2 #}
+[Unit]
+Description=flax-post-observe — IPMI producer for post nodes (serial/power/watts/SDR/SEL)
+After=docker.service network-online.target flax-stack.service
+Wants=network-online.target
+Requires=docker.service flax-stack.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/flax/flax-post/flax-post.env
+# VIP-gate — only the master bang runs the IPMI producer (sole writer of post_state/post_node).
+ExecStartPre=/bin/bash -c '. /etc/flax/site.env && ip -o -4 addr | grep -qE " $${MGMT_VIP}/"'
+ExecStart=/usr/bin/docker run --rm --init --name flax-post-observe \
+    --network host \
+    --env-file /etc/flax/flax-post/flax-post.env \
+    -v /etc/flax/site.env:/etc/flax/site.env:ro \
+    -v /etc/flax/credentials-bmc.json:/etc/flax/credentials-bmc.json:ro \
+    -v /etc/flax/credentials-redfish.json:/etc/flax/credentials-redfish.json:ro \
+    -v /etc/flax/post-geometry.json:/etc/flax/post-geometry.json:ro \
+    flax-control:${FLAX_POST_IMAGE_TAG} \
+    python -m flax_post.observe
+ExecStop=/usr/bin/docker stop flax-post-observe
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

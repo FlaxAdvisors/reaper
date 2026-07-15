@@ -1,0 +1,38 @@
+{
+  "MT_2450112034": {
+    "dir": "MCX4411A-ACQN",
+    "bin": "fw-ConnectX4Lx-rel-14_32_1010-MCX4411A-ACQ_Ax-UEFI-14.25.17-FlexBoot-3.6.502.bin",
+    "target_version": "14.32.1010",
+    "target_psid": "MT_2450112034"
+  },
+  "MT_2450111034": {
+    "dir": "MCX4411A-ACAN",
+    "bin": "fw-ConnectX4Lx-rel-14_32_1010-MCX4411A-ACA_Bx-UEFI-14.25.17-FlexBoot-3.6.502.bin",
+    "target_version": "14.32.1010",
+    "target_psid": "MT_2450111034"
+  },
+  "FB_2450111034": {
+    "dir": "MCX4411A-ACQN",
+    "bin": "fw-ConnectX4Lx-rel-14_32_1010-MCX4411A-ACQ_Ax-UEFI-14.25.17-FlexBoot-3.6.502.bin",
+    "target_version": "14.32.1010",
+    "target_psid": "MT_2450112034"
+  },
+  "FB_0000000005": {
+    "dir": "MCX4411A-ACQN",
+    "bin": "fw-ConnectX4Lx-rel-14_32_1010-MCX4411A-ACQ_Ax-UEFI-14.25.17-FlexBoot-3.6.502.bin",
+    "target_version": "14.32.1010",
+    "target_psid": "MT_2450112034"
+  },
+  "MT_2420110034": {
+    "dir": "MT_2420110034",
+    "bin": "fw-ConnectX4Lx-rel-14_32_1010-MCX4121A-ACA_Ax-UEFI-14.25.17-FlexBoot-3.6.502.bin",
+    "target_version": "14.32.1010",
+    "target_psid": "MT_2420110034"
+  },
+  "HP_2420110034": {
+    "dir": "MT_2420110034",
+    "bin": "fw-ConnectX4Lx-rel-14_32_1010-MCX4121A-ACA_Ax-UEFI-14.25.17-FlexBoot-3.6.502.bin",
+    "target_version": "14.32.1010",
+    "target_psid": "MT_2420110034"
+  }
+}

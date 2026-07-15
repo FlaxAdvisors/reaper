@@ -1,0 +1,64 @@
+---
+- name: Ensure golang-github-prometheus-node_exporter installed
+  become: true
+  community.general.zypper:
+    name: golang-github-prometheus-node_exporter
+    state: present
+
+- name: Ensure textfile collector dir exists
+  become: true
+  ansible.builtin.file:
+    path: "{{ apply_node_exporter_textfile_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure systemd drop-in dir exists
+  become: true
+  ansible.builtin.file:
+    path: /etc/systemd/system/prometheus-node_exporter.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy node_exporter unit override
+  become: true
+  ansible.builtin.template:
+    src: prometheus-node_exporter.service.d/override.conf.j2
+    dest: /etc/systemd/system/prometheus-node_exporter.service.d/override.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart node_exporter
+
+- name: Ensure node_exporter enabled + started
+  become: true
+  ansible.builtin.systemd:
+    name: prometheus-node_exporter
+    enabled: true
+    state: started
+    daemon_reload: true
+
+# === firewall ===
+# ansible.posix.firewalld would be cleaner but it imports python-firewall
+# which is only bundled with the openSUSE Leap python3.6 interpreter, while
+# the module's own code uses 3.7+ features (`from __future__ import
+# annotations`). Shell out to firewall-cmd to sidestep both problems.
+# See apply_lease_agent/tasks/main.yml for the same pattern.
+- name: Check if node_exporter port is already open in firewalld (permanent)
+  become: true
+  ansible.builtin.command:
+    cmd: "firewall-cmd --permanent --zone={{ apply_node_exporter_firewalld_zone }} --query-port={{ apply_node_exporter_port }}/tcp"
+  register: apply_node_exporter_port_query
+  changed_when: false
+  failed_when: false
+
+- name: Open node_exporter port in firewalld (permanent)
+  become: true
+  ansible.builtin.command:
+    cmd: "firewall-cmd --permanent --zone={{ apply_node_exporter_firewalld_zone }} --add-port={{ apply_node_exporter_port }}/tcp"
+  when: apply_node_exporter_port_query.rc != 0
+  changed_when: true  # gated by the query above; runs only when actually adding
+  notify: Reload firewalld

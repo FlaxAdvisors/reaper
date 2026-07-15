@@ -1,0 +1,77 @@
+{
+  "title": "HA Services Health",
+  "uid": "health-ha-services",
+  "tags": ["health", "ha"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 6,
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "bang",
+        "label": "bang",
+        "type": "query",
+        "datasource": {"type": "prometheus"},
+        "query": {"query": "label_values(unit_up, bang)", "refId": "bang"},
+        "refresh": 2,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "VIP holder per site",
+      "datasource": {"type": "prometheus"},
+      "gridPos": {"h": 6, "w": 24, "x": 0, "y": 0},
+      "targets": [
+        {"datasource": {"type": "prometheus"}, "expr": "vrrp_state * on (bang) group_left (site) (count by (bang, site) (up))", "refId": "A", "legendFormat": "{{site}} / {{bang}}"}
+      ]
+    },
+    {
+      "id": 100,
+      "type": "row",
+      "title": "$bang",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 6},
+      "collapsed": false,
+      "repeat": "bang",
+      "repeatDirection": "v",
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Effective VRRP priority",
+      "datasource": {"type": "prometheus"},
+      "gridPos": {"h": 6, "w": 8, "x": 0, "y": 7},
+      "targets": [
+        {"datasource": {"type": "prometheus"}, "expr": "effective_vrrp_priority{bang=~\"$bang\"}", "refId": "A", "legendFormat": "priority"}
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Coredumps last 24h",
+      "datasource": {"type": "prometheus"},
+      "gridPos": {"h": 6, "w": 8, "x": 8, "y": 7},
+      "targets": [
+        {"datasource": {"type": "prometheus"}, "expr": "sum by (exe) (increase(coredump_count{bang=~\"$bang\"}[24h]))", "refId": "A", "legendFormat": "{{exe}}"}
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Unit health",
+      "datasource": {"type": "prometheus"},
+      "gridPos": {"h": 6, "w": 8, "x": 16, "y": 7},
+      "targets": [
+        {"datasource": {"type": "prometheus"}, "expr": "unit_up{bang=~\"$bang\",name=~\"dnsmasq|nginx|keepalived\"}", "refId": "A", "legendFormat": "{{name}}"}
+      ]
+    }
+  ]
+}

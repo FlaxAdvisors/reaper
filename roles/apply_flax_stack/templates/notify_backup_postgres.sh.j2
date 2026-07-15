@@ -1,0 +1,8 @@
+#!/bin/bash
+# Called from keepalived's notify_backup.sh when this bang becomes BACKUP.
+# v1 scope: log only. Demoting a Postgres primary to standby requires pg_rewind
+# + restart, which is too disruptive to do unattended at VIP flap. Operator
+# will demote manually if a true failover happens; until then we just log.
+set -u
+
+logger -t notify_backup_postgres "node now BACKUP; primary remains as-is (manual demote required if flipping)"

@@ -1,0 +1,216 @@
+---
+- name: Ensure /etc/flax/flax-post exists
+  become: true
+  ansible.builtin.file:
+    path: /etc/flax/flax-post
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Ensure an empty post_fw.json exists for the read-only bind mount
+  become: true
+  ansible.builtin.copy:
+    content: "{}\n"
+    dest: /etc/flax/post_fw.json
+    force: false
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Ensure an empty post_bios_fw.json exists for the read-only bind mount
+  become: true
+  ansible.builtin.copy:
+    content: "{}\n"
+    dest: /etc/flax/post_bios_fw.json
+    force: false
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Deploy BIOS firmware version manifest
+  become: true
+  ansible.builtin.copy:
+    src: bios-firmware-versions.json
+    dest: /etc/flax/bios-firmware-versions.json
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Ensure an empty post_nic_fw.json exists for the read-only bind mount
+  become: true
+  ansible.builtin.copy:
+    content: "{}\n"
+    dest: /etc/flax/post_nic_fw.json
+    force: false
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Deploy nic-firmware-versions.json
+  become: true
+  ansible.builtin.copy:
+    src: nic-firmware-versions.json
+    dest: /etc/flax/nic-firmware-versions.json
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Deploy flax-post.env
+  become: true
+  ansible.builtin.template:
+    src: flax-post.env.j2
+    dest: /etc/flax/flax-post/flax-post.env
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  # The viewer, the observe producer AND the fwd/biosd drivers all read this
+  # env (shared image tag via EnvironmentFile), so an image-tag bump must
+  # restart all four to land the new image. (The fwd driver was revived in
+  # 0.9.59 for the firmware test page — it is no longer deliberately stopped.)
+  notify:
+    - Restart flax-post
+    - Restart flax-post-observe
+    - Restart flax-post-fwd
+    - Restart flax-post-biosd
+    - Restart flax-post-nicd
+    # NOT flax-post-sol: it has no EnvironmentFile and doesn't read flax-post.env.
+    # Restarting it on unrelated env changes would drop all live/retained SOL
+    # session buffers. Its own template task (below) notifies Restart flax-post-sol
+    # on a tag/template change, which is the only restart it needs.
+
+- name: Deploy flax-post.service unit
+  become: true
+  ansible.builtin.template:
+    src: flax-post.service.j2
+    dest: /etc/systemd/system/flax-post.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-post
+
+- name: Enable flax-post (start via VIP-gate handler / notify_master)
+  become: true
+  ansible.builtin.systemd:
+    name: flax-post.service
+    # VIP-exclusive (master-only): the firmware writer (Plan 2) must never run on
+    # two bangs. enabled:false + the VIP-gated Restart handler start it on master.
+    enabled: false
+    daemon_reload: true
+
+- name: Deploy flax-post-fwd.service unit
+  become: true
+  ansible.builtin.template:
+    src: flax-post-fwd.service.j2
+    dest: /etc/systemd/system/flax-post-fwd.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-post-fwd
+
+- name: Enable flax-post-fwd (start via VIP-gate handler / notify_master)
+  become: true
+  ansible.builtin.systemd:
+    name: flax-post-fwd.service
+    enabled: false
+    daemon_reload: true
+
+- name: Deploy flax-post-biosd.service unit
+  become: true
+  ansible.builtin.template:
+    src: flax-post-biosd.service.j2
+    dest: /etc/systemd/system/flax-post-biosd.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-post-biosd
+
+- name: Enable flax-post-biosd (start via VIP-gate handler / notify_master)
+  become: true
+  ansible.builtin.systemd:
+    name: flax-post-biosd.service
+    enabled: false
+    daemon_reload: true
+
+- name: Deploy flax-post-nicd.service unit
+  become: true
+  ansible.builtin.template:
+    src: flax-post-nicd.service.j2
+    dest: /etc/systemd/system/flax-post-nicd.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-post-nicd
+
+- name: Enable flax-post-nicd (start via VIP-gate handler / notify_master)
+  become: true
+  ansible.builtin.systemd:
+    name: flax-post-nicd.service
+    enabled: false
+    daemon_reload: true
+
+- name: Deploy flax-post-sol.service unit
+  become: true
+  ansible.builtin.template:
+    src: flax-post-sol.service.j2
+    dest: /etc/systemd/system/flax-post-sol.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-post-sol
+
+- name: Enable flax-post-sol (start via VIP-gate handler / notify_master)
+  become: true
+  ansible.builtin.systemd:
+    name: flax-post-sol.service
+    enabled: false
+    daemon_reload: true
+
+- name: Deploy flax-post-observe.service unit
+  become: true
+  ansible.builtin.template:
+    src: flax-post-observe.service.j2
+    dest: /etc/systemd/system/flax-post-observe.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-post-observe
+
+- name: Enable flax-post-observe (start via VIP-gate handler / notify_master)
+  become: true
+  ansible.builtin.systemd:
+    name: flax-post-observe.service
+    # VIP-exclusive (master-only): the IPMI producer is the sole writer of
+    # post_state/post_node; it must never run on two bangs simultaneously.
+    # enabled:false + the VIP-gated ExecStartPre guard start it on master.
+    enabled: false
+    daemon_reload: true
+
+- name: Deploy flax-post-nginx.conf (TLS vhost -> viewer)
+  become: true
+  ansible.builtin.template:
+    src: flax-post-nginx.conf.j2
+    dest: /etc/flax/nginx/flax-post-nginx.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-post-nginx
+
+- name: Deploy flax-post-nginx.service unit
+  become: true
+  ansible.builtin.template:
+    src: flax-post-nginx.service.j2
+    dest: /etc/systemd/system/flax-post-nginx.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-post-nginx
+
+- name: Enable flax-post-nginx (start via VIP-gate handler / notify_master)
+  become: true
+  ansible.builtin.systemd:
+    name: flax-post-nginx.service
+    # VIP-exclusive — tracks the viewer it fronts (master-only).
+    enabled: false
+    daemon_reload: true

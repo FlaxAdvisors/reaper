@@ -1,0 +1,6 @@
+IPADDR='192.168.40.1/24'
+BOOTPROTO='static'
+STARTMODE='auto'
+ETHERDEVICE='postprod'
+VLAN_ID='40'
+ZONE=internal

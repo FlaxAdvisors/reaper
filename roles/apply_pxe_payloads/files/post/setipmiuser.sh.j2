@@ -1,0 +1,243 @@
+#!/bin/bash -x
+
+ipmitool lan print 8 >/dev/null
+nolc8=$?
+
+function getuserid()
+{
+    echo "$(ipmitool user list 1 | grep "$1" | cut -d ' ' -f1)"
+}
+
+function setipmiuserpriv()
+{
+    adminid=$(getuserid admin)
+    if [ -z $adminid ]; then
+	adminid=0
+    fi
+    rootid=$(getuserid root)
+    if [ -z $rootid ]; then
+	# create rootid only if taking over fbuser
+	fbuserid=$(getuserid fbuser)
+	if [ ! -z $fbuserid ]; then
+	    rootid=$fbuserid
+	    ipmitool user set name $rootid root
+	    ipmitool user set password $rootid {{ post_ipmi_root_password }}
+	    ipmitool user priv $rootid 4 1
+	    ipmitool user enable $rootid
+
+	    ipmitool channel setaccess 1 $rootid link=on ipmi=on \
+		     callin=on privilege=4
+	    ipmitool channel getaccess 1 $rootid
+	    ipmitool sol payload enable 1 $rootid
+	    ipmitool sol payload status 1 $rootid
+
+	    if [ $nolc8 -eq 0 ]; then
+		# settings for lan channel eight too
+		ipmitool channel setaccess 8 $rootid link=on ipmi=on \
+			 callin=on privilege=4
+		ipmitool channel getaccess 8 $rootid
+		ipmitool sol payload enable 8 $rootid
+		ipmitool sol payload status 8 $rootid
+	    fi
+	else
+	    rootid=0
+	fi
+    fi
+
+    userid=$(getuserid {{ post_ipmi_admin_user }})
+    if [ -z $userid ]; then
+	can=2
+	while [ $can -lt 8 ]
+	do
+	    if [ $adminid -ne $can ] && [ $rootid -ne $can ]; then
+                userid=$can
+		break
+	    fi
+	    can=$((can+1))
+	done
+    fi
+    if [ -z $userid ]; then
+	# if all user ids 2-8 were somehow occupied we just bail
+	return
+    else
+	ipmitool user set name $userid {{ post_ipmi_admin_user }}
+    fi
+
+    ipmitool user set password $userid {{ post_ipmi_admin_password }}
+    ipmitool user priv $userid 4 1
+    ipmitool user enable $userid
+
+    ipmitool channel setaccess 1 $userid link=on ipmi=on \
+	     callin=on privilege=4
+    ipmitool channel getaccess 1 $userid
+    ipmitool sol payload enable 1 $userid
+    ipmitool sol payload status 1 $userid
+    if [ $nolc8 -eq 0 ]; then
+	# settings for lan channel eight too
+	ipmitool channel setaccess 8 $userid link=on ipmi=on \
+		 callin=on privilege=4
+	ipmitool channel getaccess 8 $userid
+	ipmitool sol payload enable 8 $userid
+	ipmitool sol payload status 8 $userid
+    fi
+}
+
+function setipmiipsrcdhcp()
+{
+    ipmitool lan set 1 access on
+    ipmitool lan set 1 vlan id off
+    ipmitool lan set 1 ipsrc dhcp
+    if [ $nolc8 -eq 0 ]; then
+	# settings for lan channel eight too
+	ipmitool lan set 8 access on
+	ipmitool lan set 8 vlan id off
+	ipmitool lan set 8 ipsrc dhcp
+    fi
+}
+
+function setipmiauthleveltype()
+{
+    ipmitool lan set 1 auth Callback NONE,MD2,MD5,PASSWORD,OEM 
+    ipmitool lan set 1 auth User     MD2,MD5,PASSWORD,OEM
+    ipmitool lan set 1 auth Operator MD2,MD5,PASSWORD,OEM
+    ipmitool lan set 1 auth Admin    MD2,MD5,PASSWORD,OEM
+    if [ $nolc8 -eq 0 ]; then
+	# settings for lan channel eight too
+        ipmitool lan set 8 auth Callback NONE,MD2,MD5,PASSWORD,OEM 
+        ipmitool lan set 8 auth User     MD2,MD5,PASSWORD,OEM
+        ipmitool lan set 8 auth Operator MD2,MD5,PASSWORD,OEM
+        ipmitool lan set 8 auth Admin    MD2,MD5,PASSWORD,OEM
+    fi
+}
+
+function setipmisnmpstring()
+{
+    ipmitool lan set 1 snmp AMI
+    if [ $nolc8 -eq 0 ]; then
+	# settings for lan channel eight too
+	ipmitool lan set 8 snmp AMI
+    fi
+}
+
+function setipmisolconfig()
+{
+    ipmitool sol set enabled true 1
+    ipmitool sol set privilege-level user 1
+    ipmitool sol set volatile-bit-rate 57.6 1
+    ipmitool sol set non-volatile-bit-rate 57.6 1
+    if [ $nolc8 -eq 0 ]; then
+	# settings for lan channel eight too
+	ipmitool sol set enabled true 8
+	ipmitool sol set privilege-level user 8
+	ipmitool sol set volatile-bit-rate 57.6 8
+	ipmitool sol set non-volatile-bit-rate 57.6 8
+    fi
+}
+
+setipmiuserpriv
+setipmiipsrcdhcp
+#setipmiauthleveltype
+setipmisnmpstring
+#setipmisolconfig
+
+ipmitool user list 1
+ipmitool channel info 1
+ipmitool lan print 1
+ipmitool sol info 1
+
+if [ $nolc8 -eq 0 ]; then
+    # settings for lan channel eight too
+    ipmitool channel info 8
+    ipmitool lan print 8
+    ipmitool sol info 8
+fi
+
+#### user list 1
+
+# localhost:/opt/sesame/sbin # ipmitool user list 1
+# ID  Name	     Callin  Link Auth	IPMI Msg   Channel Priv Limit
+# 1                    true    false      true       NO ACCESS
+# 2   USERID           true    false      true       ADMINISTRATOR
+# 3   root             true    true       true       ADMINISTRATOR
+# 4                    true    false      false      NO ACCESS
+# 5                    true    false      false      NO ACCESS
+# 6                    true    false      false      NO ACCESS
+# 7                    true    false      false      NO ACCESS
+# 8                    true    false      false      NO ACCESS
+# 9                    true    false      false      NO ACCESS
+# 10                   true    false      false      NO ACCESS
+
+
+#### channel info 1
+
+# localhost:/opt/sesame/sbin # ipmitool channel info 1
+# Channel 0x1 info:
+#   Channel Medium Type   : 802.3 LAN
+#   Channel Protocol Type : IPMB-1.0
+#   Session Support       : multi-session
+#   Active Session Count  : 1
+#   Protocol Vendor ID    : 7154
+#   Volatile(active) Settings
+#     Alerting            : enabled
+#     Per-message Auth    : enabled
+#     User Level Auth     : enabled
+#     Access Mode         : always available
+#   Non-Volatile Settings
+#     Alerting            : enabled
+#     Per-message Auth    : enabled
+#     User Level Auth     : enabled
+#     Access Mode         : always available
+
+
+#### lan print 1
+
+# Set in Progress         : Set Complete
+# Auth Type Support       : NONE MD2 MD5 PASSWORD OEM 
+# Auth Type Enable        : Callback : NONE MD2 MD5 PASSWORD OEM 
+#                         : User     : MD2 MD5 PASSWORD OEM 
+#                         : Operator : MD2 MD5 PASSWORD OEM 
+#                         : Admin    : MD2 MD5 PASSWORD OEM 
+#                         : OEM      : 
+# IP Address Source       : DHCP Address
+# IP Address              : 192.168.2.138
+# Subnet Mask             : 255.255.255.0
+# MAC Address             : 24:8a:07:88:3d:98
+# SNMP Community String   : Quanta
+# IP Header               : TTL=0x40 Flags=0x40 Precedence=0x00 TOS=0x10
+# BMC ARP Control         : ARP Responses Enabled, Gratuitous ARP Disabled
+# Gratituous ARP Intrvl   : 0.0 seconds
+# Default Gateway IP      : 192.168.2.1
+# Default Gateway MAC     : 00:00:00:00:00:00
+# Backup Gateway IP       : 0.0.0.0
+# Backup Gateway MAC      : 00:00:00:00:00:00
+# 802.1q VLAN ID          : Disabled
+# 802.1q VLAN Priority    : 0
+# RMCP+ Cipher Suites     : 0,1,2,3,6,7,8,11,12,15,16,17
+# Cipher Suite Priv Max   : XaaaXXaaaXXaaXX
+#                         :     X=Cipher Suite Unused
+#                         :     c=CALLBACK
+#                         :     u=USER
+#                         :     o=OPERATOR
+#                         :     a=ADMIN
+#                         :     O=OEM
+# Bad Password Threshold  : 0
+# Invalid password disable: no
+# Attempt Count Reset Int.: 0
+# User Lockout Interval   : 0
+
+
+#### sol info 1
+
+# Set in progress                 : set-complete
+# Enabled                         : true
+# Force Encryption                : false
+# Force Authentication            : false
+# Privilege Level                 : USER
+# Character Accumulate Level (ms) : 60
+# Character Send Threshold        : 96
+# Retry Count                     : 7
+# Retry Interval (ms)             : 500
+# Volatile Bit Rate (kbps)        : 57.6
+# Non-Volatile Bit Rate (kbps)    : 57.6
+# Payload Channel                 : 1 (0x01)
+# Payload Port                    : 623

@@ -1,0 +1,70 @@
+---
+# Applies jump host network config and authorized_keys.
+# Connects directly via Tailscale as flax user — no ProxyJump.
+
+- name: Assemble authorized_keys from files/ssh/flax/keys/*.pub
+  delegate_to: localhost
+  ansible.builtin.assemble:
+    src: "{{ playbook_dir }}/../files/ssh/flax/keys"
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/config/authorized_keys"
+    regexp: ".*\\.pub$"
+    mode: "0600"
+
+- name: Ensure authorized_keys ends with a newline
+  delegate_to: localhost
+  ansible.builtin.shell: >-
+    tail -c1 {{ dest }} | grep -qx '' || echo >> {{ dest }}
+  vars:
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/config/authorized_keys"
+  changed_when: false
+  check_mode: false
+
+- name: Find local ifcfg-* files to deploy (excluding -lo and *.bak)
+  delegate_to: localhost
+  ansible.builtin.find:
+    paths: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/config"
+    patterns: "ifcfg-*"
+    excludes:
+      - "ifcfg-lo"
+      - "*.bak"
+      - "*~"
+    file_type: file
+  register: apply_jumphost_local_ifcfg_files
+
+- name: Deploy ifcfg-* files
+  ansible.builtin.copy:
+    src: "{{ item.path }}"
+    dest: "/etc/sysconfig/network/{{ item.path | basename }}"
+    owner: root
+    group: root
+    mode: "0600"
+  become: true
+  loop: "{{ apply_jumphost_local_ifcfg_files.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  notify: reload network
+
+- name: Deploy /etc/sysconfig/network/config (NETCONFIG_*) when present
+  ansible.builtin.copy:
+    src: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/config/network-config"
+    dest: /etc/sysconfig/network/config
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  when: >
+    (config_output_dir + '/' + site_name + '/' + inventory_hostname + '/config/network-config')
+    is file
+  notify: reload netconfig
+
+- name: Deploy authorized_keys
+  ansible.builtin.copy:
+    src: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/config/authorized_keys"
+    dest: "~/.ssh/authorized_keys"
+    mode: "0600"
+  when: >
+    (config_output_dir + '/' + site_name + '/' + inventory_hostname + '/config/authorized_keys')
+    is file
+
+- name: Flush handlers
+  ansible.builtin.meta: flush_handlers

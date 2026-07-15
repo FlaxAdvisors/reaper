@@ -1,0 +1,35 @@
+---
+# Shared state directory for both wan-failover and wlan-watchdog state files.
+jumphost_wan_failover_state_dir: /var/lib/wan-failover
+
+# wan-failover: long-running watchdog that flips default-route metrics.
+# Set false on single-WAN-path sites that only want the wlan0 watchdog;
+# the firewalld asserts (both primary AND backup in 'external' zone) and
+# the wan-failover.service deploy are skipped when this is false.
+jumphost_wan_failover_wan_failover_enabled: true
+jumphost_wan_failover_primary_iface: eth0.2
+jumphost_wan_failover_backup_iface: wlan0
+jumphost_wan_failover_primary_metric_active: 100
+jumphost_wan_failover_primary_metric_demoted: 300
+jumphost_wan_failover_backup_metric: 200
+jumphost_wan_failover_probe_targets:
+  - 1.1.1.1
+  - 8.8.8.8
+jumphost_wan_failover_probe_interval_sec: 5
+jumphost_wan_failover_failover_threshold: 3
+jumphost_wan_failover_preempt_holddown_sec: 600
+jumphost_wan_failover_state_file: "{{ jumphost_wan_failover_state_dir }}/state"
+
+# wlan-watchdog: oneshot timer-driven probe + bounce
+jumphost_wan_failover_wlan_watchdog_enabled: true
+jumphost_wan_failover_wlan_watchdog_iface: wlan0
+jumphost_wan_failover_wlan_watchdog_interval_sec: 900
+jumphost_wan_failover_wlan_watchdog_failure_threshold: 2
+jumphost_wan_failover_wlan_watchdog_probe_targets:
+  - 1.1.1.1
+  - 8.8.8.8
+jumphost_wan_failover_wlan_watchdog_state_file: "{{ jumphost_wan_failover_state_dir }}/wlan-watchdog.state"
+
+# Path to site-agnostic role-input files (failover + watchdog scripts)
+# relocated out of roles/jumphost_wan_failover/files/ for operator visibility.
+jumphost_wan_failover_shared_inputs_dir: "{{ playbook_dir }}/../files/services/_common"

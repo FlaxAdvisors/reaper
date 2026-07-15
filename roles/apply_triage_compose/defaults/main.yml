@@ -1,0 +1,13 @@
+---
+# System-level path. Compose recipe is vendored into this role
+# (files/docker-compose-prod.yml) and rendered here at deploy time;
+# keepalived's notify scripts read from the same path. /etc/flax/ is
+# already used for site config (site.env, switches.json, etc.) and is
+# not blocked by ProtectHome=true on keepalived.service.
+apply_triage_compose_path: /etc/flax/triage
+apply_triage_compose_compose_file: docker-compose-prod.yml
+
+# Compose project name. Must match the -p flag in apply_keepalived's
+# notify_{master,backup,fault}.sh templates so master/backup transitions
+# act on the same project regardless of compose `name:` field.
+apply_triage_compose_project: prod

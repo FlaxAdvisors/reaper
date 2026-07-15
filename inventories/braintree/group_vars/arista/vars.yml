@@ -1,0 +1,17 @@
+---
+# Arista EOS 4.27.0F on WEDGE100S12V — network_cli (SSH) transport.
+# eAPI (httpapi) is not yet enabled on this device.
+# To switch: change ansible_connection to ansible.netcommon.httpapi
+# and ansible_network_os to arista.eos.eos — no role changes needed.
+ansible_connection: ansible.netcommon.network_cli
+ansible_network_os: arista.eos.eos
+ansible_network_cli_ssh_type: libssh
+ansible_user: "{{ vault_arista_user }}"
+ansible_password: "{{ vault_arista_password }}"
+ansible_become: true
+ansible_become_method: enable
+ansible_become_password: "{{ vault_arista_enable_password }}"
+ansible_command_timeout: 120
+
+# Which device-specific role collect_config delegates to
+device_role: arista_eos

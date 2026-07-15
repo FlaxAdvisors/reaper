@@ -1,0 +1,30 @@
+net del all
+net add interface swp1-2 bridge pvid 6
+net add interface swp1-2 bridge vids 2,6
+net add interface swp3-8,45,47 bridge access 6
+net add interface swp13-16 bridge access 10
+net add interface swp43-44,46,48 bridge access 2
+net add interface swp49-50 bridge vids 2,4,6,8,10,12
+net add loopback lo 
+net add interface eth0 ip address 192.168.88.3/24
+net add interface eth0 ip gateway 192.168.88.1
+net add bridge bridge ports swp1,swp2,swp3,swp4,swp5,swp6,swp7,swp8,swp13,swp14,swp15,swp16,swp43,swp44,swp45,swp46,swp47,swp48,swp49,swp50
+net add bridge bridge vids 1-2,4,6,8,10,12
+net add bridge bridge vlan-aware
+net add hostname turtle-rhythm
+net add routing log file /var/log/quagga/quagga.log
+net add routing log timestamp precision 6
+net add dot1x radius accounting-port 1813
+net add dot1x eap-reauth-period 0
+net add dot1x radius shared-secret 
+net add dot1x radius authentication-port 1812
+net add dot1x mab-activation-delay 30
+net add dot1x parking-vlan-id 
+net add time zone Etc/UTC
+net add time ntp server 0.cumulusnetworks.pool.ntp.org iburst
+net add time ntp server 1.cumulusnetworks.pool.ntp.org iburst
+net add time ntp server 2.cumulusnetworks.pool.ntp.org iburst
+net add time ntp server 3.cumulusnetworks.pool.ntp.org iburst
+net add time ntp source eth0
+net add dns nameserver ipv4 192.168.88.1
+net add dns nameserver ipv4 192.168.88.2

@@ -1,0 +1,16 @@
+# One-time setup: add to ~/.ssh/config: Include ~/reaper/ssh/lavergne
+
+Host turtle-rhythm
+  HostName 192.168.88.3
+  User cumulus
+  ProxyJump bang-rhythm
+
+Host rabbit-rhythm
+  HostName 192.168.88.4
+  User admin
+  ProxyJump bang-rhythm
+
+Host rabbit-blues
+  HostName 192.168.88.8
+  User admin
+  ProxyJump bang-rhythm

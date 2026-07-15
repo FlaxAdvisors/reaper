@@ -1,0 +1,19 @@
+---
+# Guarded, DESTRUCTIVE one-time bootstrap of a Postgres streaming standby.
+# Reseeds the target (default bang-siesta) from the primary via pg_basebackup,
+# WIPING its /opt/flax/var/postgres. Never part of a normal deploy.
+#
+#   ansible-playbook -i inventories/braintree/hosts.yml playbooks/pg_standby_bootstrap.yml
+#
+# Override the target / force a re-seed of a populated node:
+#   ... playbooks/pg_standby_bootstrap.yml -e target=bang-siesta -e pg_bootstrap_force=true
+#
+# See docs/runbooks/postgres-failback.md for restoring an old primary as a standby.
+- name: Bootstrap a Postgres streaming standby (GUARDED, DESTRUCTIVE)
+  hosts: "{{ target | default('bang-siesta') }}"
+  gather_facts: false
+  tasks:
+    - name: Run the guarded standby bootstrap
+      ansible.builtin.import_role:
+        name: apply_flax_stack
+        tasks_from: standby_bootstrap

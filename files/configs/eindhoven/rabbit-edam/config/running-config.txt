@@ -1,0 +1,473 @@
+! Command: show running-config
+! device: rabbit-edam (WEDGE100S12V, EOS-4.27.0F)
+!
+! boot system flash:/EOS-4.27.0F.swi
+!
+no aaa root
+!
+username admin role network-admin secret sha512 $6$3nHPrw5vdN8ylrRi$7ziq9aX/T3P1ON0qZhvsoxmzHN3icxa9OH5gXyg0lBmQq7zHUl9YGGAgS3XJ4MI5NEpuH3qwDJvjqh.FMJzKM/
+!
+service routing protocols model ribd
+!
+hostname rabbit-edam
+ip name-server vrf default 192.168.88.10
+!
+spanning-tree mode mstp
+spanning-tree mst 1 priority 8192
+!
+spanning-tree mst configuration
+   name lab-eindhoven
+   revision 1
+   instance 1 vlan  2,4,16-31
+!
+service unsupported-transceiver sesame f71a13ed
+!
+vlan 2
+   name corp
+!
+vlan 4
+   name mgmt
+!
+vlan 16
+   name triage-leopard
+!
+vlan 17
+   name triage-tiogapass
+!
+vlan 18
+   name triage-wedge100s
+!
+vlan 19
+   name triage-wedge400
+!
+vlan 20
+   name triage-yv3
+!
+vlan 21
+   name triage-brycecanyon
+!
+vlan 22
+   name triage-lightning
+!
+vlan 23
+   name triage-grandcanyon
+!
+vlan 24
+   name post-leopard
+!
+vlan 25
+   name post-tiogapass
+!
+vlan 26
+   name post-wedge100s
+!
+vlan 27
+   name post-wedge400
+!
+vlan 28
+   name post-yv3
+!
+vlan 29
+   name post-brycecanyon
+!
+vlan 30
+   name post-lightning
+!
+vlan 31
+   name post-grandcanyon
+!
+management api http-commands
+   no shutdown
+!
+interface Ethernet1/1
+   description Rabbit-gouda Ethernet1/1 - inter-Wedge non-wedge-post trunk
+   switchport trunk allowed vlan 16-31
+   switchport mode trunk
+!
+interface Ethernet2/1
+!
+interface Ethernet3/1
+!
+interface Ethernet4/1
+!
+interface Ethernet5/1
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet5/2
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet5/3
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet5/4
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet6/1
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet6/2
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet6/3
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet6/4
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet7/1
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet7/2
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet7/3
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet7/4
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet8/1
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet8/2
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet8/3
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet8/4
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet9/1
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet9/2
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet9/3
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet9/4
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet10/1
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet10/2
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet10/3
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet10/4
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet11/1
+!
+interface Ethernet12/1
+!
+interface Ethernet13/1
+!
+interface Ethernet14/1
+!
+interface Ethernet15/1
+!
+interface Ethernet16/1
+!
+interface Ethernet17/1
+!
+interface Ethernet18/1
+!
+interface Ethernet19/1
+!
+interface Ethernet20/1
+!
+interface Ethernet21/1
+!
+interface Ethernet22/1
+!
+interface Ethernet23/1
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet23/2
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet23/3
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet23/4
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet24/1
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet24/2
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet24/3
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet24/4
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet25/1
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet25/2
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet25/3
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet25/4
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet26/1
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet26/2
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet26/3
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet26/4
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet27/1
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet27/2
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet27/3
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet27/4
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet28/1
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet28/2
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet28/3
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet28/4
+   description Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+   speed forced 25gfull
+   switchport access vlan 25
+   spanning-tree portfast
+!
+interface Ethernet29/1
+!
+interface Ethernet30/1
+!
+interface Ethernet31/1
+!
+interface Ethernet32/1
+!
+interface Management1
+   description OOB to Turtle-1 GigabitEthernet1/0/5
+   ip address 192.168.88.32/24
+!
+interface Vlan16
+   ip address 172.16.0.4/16
+!
+interface Vlan17
+   ip address 172.17.0.4/16
+!
+interface Vlan18
+   ip address 172.18.0.4/16
+!
+interface Vlan19
+   ip address 172.19.0.4/16
+!
+interface Vlan20
+   ip address 172.20.0.4/16
+!
+interface Vlan21
+   ip address 172.21.0.4/16
+!
+interface Vlan22
+   ip address 172.22.0.4/16
+!
+interface Vlan23
+   ip address 172.23.0.4/16
+!
+interface Vlan24
+   ip address 172.24.0.4/16
+!
+interface Vlan25
+   ip address 172.25.0.4/16
+!
+interface Vlan26
+   ip address 172.26.0.4/16
+!
+interface Vlan27
+   ip address 172.27.0.4/16
+!
+interface Vlan28
+   ip address 172.28.0.4/16
+!
+interface Vlan29
+   ip address 172.29.0.4/16
+!
+interface Vlan30
+   ip address 172.30.0.4/16
+!
+interface Vlan31
+   ip address 172.31.0.4/16
+!
+no ip routing
+!
+ip route 0.0.0.0/0 192.168.88.10
+!
+ntp server 0.pool.ntp.org
+ntp server 1.pool.ntp.org
+ntp server 2.pool.ntp.org
+!
+end

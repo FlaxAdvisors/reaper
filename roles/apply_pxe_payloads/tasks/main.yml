@@ -1,0 +1,162 @@
+---
+# Pump the per-vlan PXE chain content + custom TFTP NBPs into /srv/pxe
+# and /srv/tftpboot. apply_bang_services creates the parent dirs and
+# wires nginx/dnsmasq to serve them; this role fills them with the
+# operator-built content captured from the source-of-truth bang.
+#
+# Source of truth lives in roles/apply_pxe_payloads/files/. To update,
+# scp the new content from a known-good bang (typically bang-fiesta
+# during dev cycles) into roles/apply_pxe_payloads/files/{v,tftpboot}
+# and commit. Earlier apply_bang_services commits 4558af1 + e56e19f
+# explicitly stopped clobbering operator-built NBPs from that role —
+# this role is the legitimate place for that content to flow.
+
+- name: Ensure /srv/pxe/v<vid> dirs exist with dnsmasq ownership
+  become: true
+  ansible.builtin.file:
+    path: "{{ apply_pxe_payloads_pxe_root }}/v{{ item }}"
+    state: directory
+    owner: dnsmasq
+    group: dnsmasq
+    mode: "0755"
+  loop: "{{ apply_pxe_payloads_vids }}"
+
+# grml's `ssh=<pw>` kernel arg sets the grml-live root password; source it from the
+# vaulted host creds' `sesame` entry (the managed debug/live cred) rather than a
+# hardcoded literal in the template.
+- name: Load the vaulted live-ISO/grml root password (for boot.ipxe's grml ssh= arg)
+  ansible.builtin.set_fact:
+    live_iso_root_password: "{{ (lookup('file', config_output_dir + '/' + site_name + '/services/credentials-host.json') | from_json | selectattr('user', 'equalto', 'sesame') | list | first).pass }}"
+  no_log: true
+
+- name: Render per-vlan boot.ipxe (templated; family + phase + per-vlan pxe override)
+  become: true
+  ansible.builtin.template:
+    src: v/boot.ipxe.j2
+    dest: "{{ apply_pxe_payloads_pxe_root }}/v{{ item }}/boot.ipxe"
+    owner: dnsmasq
+    group: dnsmasq
+    mode: "0644"
+  vars:
+    current_vid: "{{ item }}"
+  loop: "{{ apply_pxe_payloads_vids }}"
+
+# --- Build post.tgz from reaper TEXT source + /opt/flax/bin binaries (no committed blob) ---
+# The two IPMI cred pairs come from the already-vaulted credentials-bmc.json (root +
+# USERID entries); lookup('file') auto-decrypts the vault. setipmiuser.sh is rendered
+# from the vault-backed template into the build tree — never committed as plaintext.
+- name: Load BMC creds (vault-encrypted, auto-decrypted) for setipmiuser rendering
+  ansible.builtin.set_fact:
+    _post_bmc_creds: "{{ lookup('file', config_output_dir + '/' + site_name + '/services/credentials-bmc.json') | from_json }}"
+  no_log: true
+
+- name: Derive the two IPMI credential pairs (root + USERID) for setipmiuser
+  ansible.builtin.set_fact:
+    post_ipmi_root_password: "{{ (_post_bmc_creds | selectattr('bmcuser', 'equalto', 'root') | list | first).bmcpass }}"
+    post_ipmi_admin_user: "{{ (_post_bmc_creds | selectattr('bmcuser', 'equalto', 'USERID') | list | first).bmcuser }}"
+    post_ipmi_admin_password: "{{ (_post_bmc_creds | selectattr('bmcuser', 'equalto', 'USERID') | list | first).bmcpass }}"
+  no_log: true
+
+- name: Reset the post.tgz build dir (clean assemble each run)
+  become: true
+  ansible.builtin.file:
+    path: "{{ post_build_dir }}"
+    state: "{{ item }}"
+    mode: "0755"
+  loop:
+    - absent
+    - directory
+
+- name: Copy post text source into the build dir
+  become: true
+  ansible.builtin.copy:
+    src: post/
+    dest: "{{ post_build_dir }}/"
+    mode: preserve
+
+- name: Drop template + non-shipping files from the build dir
+  become: true
+  ansible.builtin.file:
+    path: "{{ post_build_dir }}/{{ item }}"
+    state: absent
+  loop:
+    - setipmiuser.sh.j2
+    - flax-qual.env.j2
+    - BINARIES.md
+    - test_nic_fw_lock.py
+    - test_qual_stages.py
+    - test_qual_battery.py
+    - test_qual_server.py
+    - test_qual_agent.py
+    - test_qual_contract.py
+    - __pycache__
+
+- name: Render setipmiuser.sh from the vault-backed template
+  become: true
+  ansible.builtin.template:
+    src: "{{ role_path }}/files/post/setipmiuser.sh.j2"   # .j2 lives with the rest of the post source in files/
+    dest: "{{ post_build_dir }}/setipmiuser.sh"
+    mode: "0755"
+  no_log: true
+
+- name: Render flax-qual.env (per-site qual-agent runtime config; FLAX_IPERF_SERVER)
+  become: true
+  ansible.builtin.template:
+    src: "{{ role_path }}/files/post/flax-qual.env.j2"
+    dest: "{{ post_build_dir }}/flax-qual.env"
+    mode: "0644"
+
+- name: Copy binaries from /opt/flax/bin into the build dir
+  become: true
+  ansible.builtin.copy:
+    src: "/opt/flax/bin/{{ item }}"
+    dest: "{{ post_build_dir }}/{{ item }}"
+    remote_src: true
+    mode: "0755"
+  loop: "{{ post_build_binaries }}"
+
+- name: Build {{ apply_pxe_payloads_pxe_root }}/post.tgz
+  become: true
+  ansible.builtin.command:
+    cmd: "tar -C {{ post_build_dir }} -czf {{ apply_pxe_payloads_pxe_root }}/post.tgz ."
+  changed_when: true
+
+- name: Stage shared per-vlan PXE payload files into /srv/pxe/v<vid>/ (boot.ipxe.cfg, menu.ipxe)
+  become: true
+  ansible.builtin.copy:
+    src: "v/{{ item.1 }}"
+    dest: "{{ apply_pxe_payloads_pxe_root }}/v{{ item.0 }}/{{ item.1 }}"
+    owner: dnsmasq
+    group: dnsmasq
+    mode: "0644"
+  loop: "{{ apply_pxe_payloads_vids | product(['boot.ipxe.cfg', 'menu.ipxe']) | list }}"
+
+- name: Symlink ipxe -> ../ipxe inside each /srv/pxe/v<vid>/ (relative; resolves to /srv/pxe/ipxe)
+  become: true
+  ansible.builtin.file:
+    src: ../ipxe
+    dest: "{{ apply_pxe_payloads_pxe_root }}/v{{ item }}/ipxe"
+    state: link
+    force: true
+  loop: "{{ apply_pxe_payloads_vids }}"
+
+- name: Symlink post.tgz -> ../post.tgz inside each /srv/pxe/v<vid>/ (single built tarball)
+  become: true
+  ansible.builtin.file:
+    src: ../post.tgz
+    dest: "{{ apply_pxe_payloads_pxe_root }}/v{{ item }}/post.tgz"
+    state: link
+    force: true
+  loop: "{{ apply_pxe_payloads_vids }}"
+
+- name: Stage operator-built TFTP NBPs (custom iPXE with embedded chain to http://bang/menu.ipxe)
+  become: true
+  ansible.builtin.copy:
+    src: "tftpboot/{{ item }}"
+    dest: "{{ apply_pxe_payloads_tftp_root }}/{{ item }}"
+    owner: dnsmasq
+    group: dnsmasq
+    mode: "0644"
+  loop:
+    - bios/undionly.kpxe
+    - efi64/ipxe.efi

@@ -1,0 +1,25 @@
+---
+apply_keepalived_vrid: 51
+apply_keepalived_advert_int: 1
+apply_keepalived_master_host: bang-gouda
+# auth_pass is templated from a vault var bang_vrrp_auth_pass (see group_vars/all/vault.yml).
+
+# Optional list of docker-compose files for stacks that should run only on
+# the VIP master. notify_master.sh runs `docker compose up -d` for each;
+# notify_backup.sh and notify_fault.sh run `docker compose stop`. Default
+# empty preserves the original active-active behavior (used by nginx,
+# which runs on both bangs and only sees traffic on the VIP holder).
+# Per-site override in group_vars/all/vars.yml, e.g.:
+#   apply_keepalived_compose_stacks:
+#     - /home/sesame/git/triage/docker-compose-prod.yml
+apply_keepalived_compose_stacks: []
+
+# chk_services timing. fall is raised from the historical 2 (interval*fall = ~4s)
+# to 5 (~10s) so a brief flax-control recreate / OOM restart / nginx reload / slow
+# healthz is absorbed without dropping MASTER priority. Only SERVICE-degradation
+# failover is affected; a hard master death still fails over via the VRRP
+# master-down timer (~3-4s = 3*advert_int + skew), which these do not touch.
+# Same values both sites.
+apply_keepalived_chk_interval: 2
+apply_keepalived_chk_fall: 5
+apply_keepalived_chk_rise: 2

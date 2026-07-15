@@ -1,0 +1,55 @@
+---
+- name: Restart flax-post
+  become: true
+  ansible.builtin.systemd:
+    name: flax-post.service
+    state: restarted
+    daemon_reload: true
+
+- name: Restart flax-post-fwd
+  become: true
+  ansible.builtin.systemd:
+    name: flax-post-fwd.service
+    state: restarted
+    daemon_reload: true
+
+- name: Restart flax-post-biosd
+  become: true
+  ansible.builtin.systemd:
+    name: flax-post-biosd.service
+    state: restarted
+    daemon_reload: true
+
+- name: Restart flax-post-nicd
+  become: true
+  ansible.builtin.systemd:
+    name: flax-post-nicd.service
+    state: restarted
+    daemon_reload: true
+
+- name: Restart flax-post-sol
+  become: true
+  ansible.builtin.systemd:
+    name: flax-post-sol.service
+    state: restarted
+    daemon_reload: true
+
+- name: Restart flax-post-observe
+  become: true
+  ansible.builtin.systemd:
+    name: flax-post-observe.service
+    state: restarted
+    daemon_reload: true
+
+- name: Restart flax-post-nginx
+  become: true
+  ansible.builtin.systemd:
+    name: flax-post-nginx.service
+    state: restarted
+    daemon_reload: true
+
+- name: Reload firewalld
+  become: true
+  ansible.builtin.command:
+    cmd: firewall-cmd --reload
+  changed_when: true

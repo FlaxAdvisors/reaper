@@ -1,0 +1,4 @@
+IPADDR='192.168.88.2/24'
+BOOTPROTO='static'
+STARTMODE='hotplug'
+ZONE='internal'

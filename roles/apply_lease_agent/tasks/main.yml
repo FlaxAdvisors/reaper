@@ -1,0 +1,236 @@
+---
+# Deploys the flax pipeline's on-bang config: the role registry
+# (/etc/flax/roles.d/*.json, consumed by flax-classify at startup), the vaulted
+# credentials, geometry/vlans/family-map/macmath, and the steering-guard files
+# that flax-classify / flax-reconcile bind-mount. (The reaper-leased daemon this
+# role once also deployed is DECOMMISSIONED — flax-reconcile is the sole switch
+# writer — so the daemon, its hook, service, dashboard and inbox are removed.)
+
+# === Required host packages (operator BMC scripts in /opt/flax/bin use these) ===
+- name: Ensure sshpass, ipmitool installed
+  become: true
+  community.general.zypper:
+    name:
+      - sshpass
+      - ipmitool
+    state: present
+
+# === Filesystem layout under /etc/flax ===
+- name: Ensure /etc/flax/family-map exists
+  become: true
+  ansible.builtin.file:
+    path: /etc/flax/family-map
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure /etc/flax/macmath exists
+  become: true
+  ansible.builtin.file:
+    path: /etc/flax/macmath
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure /etc/dnsmasq.dhcp-hosts exists
+  become: true
+  ansible.builtin.file:
+    path: /etc/dnsmasq.dhcp-hosts
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# === Config: credentials, geometry, family-map ===
+- name: Deploy credentials.json (vault-encrypted)
+  become: true
+  ansible.builtin.copy:
+    src: "{{ config_output_dir }}/{{ site_name }}/services/credentials.json"
+    dest: /etc/flax/credentials.json
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Deploy credentials-bmc.json (vault-encrypted)
+  become: true
+  ansible.builtin.copy:
+    src: "{{ config_output_dir }}/{{ site_name }}/services/credentials-bmc.json"
+    dest: /etc/flax/credentials-bmc.json
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Deploy credentials-host.json (vault-encrypted)
+  become: true
+  ansible.builtin.copy:
+    src: "{{ config_output_dir }}/{{ site_name }}/services/credentials-host.json"
+    dest: /etc/flax/credentials-host.json
+    owner: root
+    group: root
+    mode: "0644"
+
+# Redfish creds are deliberately separate from IPMI creds:
+# AMI MegaRAC BMCs use distinct user databases for IPMI/SSH vs Redfish
+# (e.g. USERID/<default> on IPMI but Administrator/superuser on Redfish).
+# OpenBMC reuses one cred everywhere, but that's the lucky case. The
+# `when: stat …` skip means sites that haven't set up a redfish cred
+# file yet (lavergne, eindhoven as of today) don't fail the role —
+# any consumer that needs Redfish reads the file lazily and falls back.
+- name: Stat credentials-redfish.json (per-site, may not exist yet)
+  delegate_to: localhost
+  ansible.builtin.stat:
+    path: "{{ config_output_dir }}/{{ site_name }}/services/credentials-redfish.json"
+  register: apply_lease_agent_redfish_stat
+  changed_when: false
+
+- name: Deploy credentials-redfish.json (vault-encrypted)
+  become: true
+  ansible.builtin.copy:
+    src: "{{ config_output_dir }}/{{ site_name }}/services/credentials-redfish.json"
+    dest: /etc/flax/credentials-redfish.json
+    owner: root
+    group: root
+    mode: "0644"
+  when: apply_lease_agent_redfish_stat.stat.exists
+
+- name: Deploy geometry.json
+  become: true
+  ansible.builtin.copy:
+    src: "{{ config_output_dir }}/{{ site_name }}/services/geometry.json"
+    dest: /etc/flax/geometry.json
+    owner: root
+    group: root
+    mode: "0644"
+
+# turtle-geometry.json is optional — only sites with a turtle switch have it.
+# Mirrors the credentials-redfish.json guard: stat on the controller, deploy
+# only when the source file exists. Sites without a turtle skip silently.
+- name: Stat turtle-geometry.json (per-site, may not exist)
+  delegate_to: localhost
+  ansible.builtin.stat:
+    path: "{{ config_output_dir }}/{{ site_name }}/services/turtle-geometry.json"
+  register: apply_lease_agent_turtle_geometry_stat
+  changed_when: false
+
+- name: Deploy turtle-geometry.json
+  become: true
+  ansible.builtin.copy:
+    src: "{{ config_output_dir }}/{{ site_name }}/services/turtle-geometry.json"
+    dest: /etc/flax/turtle-geometry.json
+    owner: root
+    group: root
+    mode: "0644"
+  when: apply_lease_agent_turtle_geometry_stat.stat.exists
+
+# Site no-steer port list (uplinks to downstream/peer switches + operator-
+# excluded ports). flax-classify skips these entirely; flax-reconcile refuses
+# to set_access_vlan on them. The file MUST exist before those containers
+# start -- a docker bind-mount of a missing path creates an empty directory,
+# which load_no_steer() opens and dies on. Empty list ([]) where no ports are
+# excluded (braintree).
+- name: Deploy no-steer-ports.json
+  become: true
+  ansible.builtin.copy:
+    src: "{{ config_output_dir }}/{{ site_name }}/services/no-steer-ports.json"
+    dest: /etc/flax/no-steer-ports.json
+    owner: root
+    group: root
+    mode: "0644"
+
+# Site list of RJ45-LOM "bmc-only" families (e.g. capri): one physical port =
+# ONE MAC for both BMC and host NIC. flax-classify uses this to suppress the
+# phantom host reservation flax-observe synthesizes for such single-MAC ports
+# (the phantom NIC never DHCPs -> permanent lease!=reservation flap). Deployed
+# unconditionally so the file exists before flax-classify starts -- a docker
+# bind-mount of a missing path creates an empty directory, which the loader
+# tolerates (soft-fails to empty) but we avoid relying on that. ["capri"]
+# fleet-wide; [] where no bmc-only families are present.
+- name: Deploy bmc-only-families.json
+  become: true
+  ansible.builtin.copy:
+    src: "{{ config_output_dir }}/{{ site_name }}/services/bmc-only-families.json"
+    dest: /etc/flax/bmc-only-families.json
+    owner: root
+    group: root
+    mode: "0644"
+
+# Render the inventory `vlans:` array straight to /etc/flax/vlans.json;
+# flax-classify / flax-reconcile resolve a vid to its trunk sub-interface from it.
+- name: Deploy vlans.json
+  become: true
+  ansible.builtin.copy:
+    content: "{{ vlans | to_nice_json }}\n"
+    dest: /etc/flax/vlans.json
+    owner: root
+    group: root
+    mode: "0644"
+
+# Role registry (spine migration phase 1, spec 2026-07-03-flax-spine-migration).
+# One JSON file per role under /etc/flax/roles.d/, loaded by flax-classify's
+# role_registry loader once at flax-classify startup (strict: malformed file
+# -> refuse publish, fall back to legacy phase_for). A roles.d change
+# requires a flax-classify restart to take effect.
+- name: Ensure /etc/flax/roles.d exists
+  become: true
+  ansible.builtin.file:
+    path: /etc/flax/roles.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy roles.d/triage.json
+  become: true
+  ansible.builtin.template:
+    src: roles.d/triage.json.j2
+    dest: /etc/flax/roles.d/triage.json
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Deploy roles.d/post.json
+  become: true
+  ansible.builtin.template:
+    src: roles.d/post.json.j2
+    dest: /etc/flax/roles.d/post.json
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Deploy roles.d/integra.json
+  become: true
+  ansible.builtin.template:
+    src: roles.d/integra.json.j2
+    dest: /etc/flax/roles.d/integra.json
+    owner: root
+    group: root
+    mode: "0644"
+  # Sites without a customer post-switch uplink set flax_role_integra_ports: {}
+  # to opt out of the integra role entirely (e.g. braintree). Eindhoven sets a
+  # non-empty map, so it still renders. A site that previously had integra and
+  # empties the map would need manual removal of the stale file (no site does).
+  when: (flax_role_integra_ports | default({})) | length > 0
+
+- name: Deploy family-map files
+  become: true
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/etc/flax/family-map/{{ item | basename }}"
+    owner: root
+    group: root
+    mode: "0644"
+  with_fileglob:
+    - "{{ config_output_dir }}/{{ site_name }}/services/family-map/*.txt"
+
+- name: Deploy macmath files
+  become: true
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/etc/flax/macmath/{{ item | basename }}"
+    owner: root
+    group: root
+    mode: "0644"
+  with_fileglob:
+    - "{{ config_output_dir }}/{{ site_name }}/services/macmath/*.json"

@@ -1,0 +1,31 @@
+# {{ ansible_managed }}
+[Unit]
+Description=WAN failover watchdog ({{ jumphost_wan_failover_primary_iface }} / {{ jumphost_wan_failover_backup_iface }})
+After=network-online.target wickedd.service
+Wants=network-online.target
+ConditionPathExists=/usr/local/sbin/wan-failover
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/wan-failover
+Restart=always
+RestartSec=5
+Environment=WAN_FAILOVER_PRIMARY_IFACE={{ jumphost_wan_failover_primary_iface }}
+Environment=WAN_FAILOVER_BACKUP_IFACE={{ jumphost_wan_failover_backup_iface }}
+Environment=WAN_FAILOVER_PRIMARY_METRIC_ACTIVE={{ jumphost_wan_failover_primary_metric_active }}
+Environment=WAN_FAILOVER_PRIMARY_METRIC_DEMOTED={{ jumphost_wan_failover_primary_metric_demoted }}
+Environment=WAN_FAILOVER_BACKUP_METRIC={{ jumphost_wan_failover_backup_metric }}
+Environment="WAN_FAILOVER_PROBE_TARGETS={{ jumphost_wan_failover_probe_targets | join(' ') }}"
+Environment=WAN_FAILOVER_PROBE_INTERVAL_SEC={{ jumphost_wan_failover_probe_interval_sec }}
+Environment=WAN_FAILOVER_FAILOVER_THRESHOLD={{ jumphost_wan_failover_failover_threshold }}
+Environment=WAN_FAILOVER_PREEMPT_HOLDDOWN_SEC={{ jumphost_wan_failover_preempt_holddown_sec }}
+Environment=WAN_FAILOVER_STATE_FILE={{ jumphost_wan_failover_state_file }}
+ProtectSystem=strict
+ReadWritePaths={{ jumphost_wan_failover_state_dir }} /run
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+User=root
+
+[Install]
+WantedBy=multi-user.target

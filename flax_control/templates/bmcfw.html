@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% import "_components.html" as c %}
+{% block title %}flax-control — BMC FW{% endblock %}
+{% block content %}
+{{ c.page_header('BMC FW', 'Read-only firmware state per Tioga Pass DUT port — joined from /etc/flax/bmc-firmware-versions.json, observe-state, and the bmc_fw worker store (/etc/flax/bmcfw.json). Flashing is performed by the worker (enforce mode); this page never writes.') }}
+<p class="page-sub mono">Store updated: {{ updated_str }} · Now: {{ now_str }}</p>
+
+{% set _kind = {'ok': 'g', 'warn': 'w', 'fail': 'c', 'inprogress': 'a', 'neutral': 'n'} %}
+<div class="section">
+  {% if targets %}
+  <p class="muted" style="font-size:0.82rem;">
+    Target{{ 's' if targets|length > 1 else '' }}:
+    {% for t in targets %}
+      {{ c.badge(t.target_version, 'g') }}
+      <span class="muted">({{ t.platform }}{{ ', auto' if t.auto else '' }})</span>
+    {% endfor %}
+  </p>
+  {% endif %}
+
+  {% if rows %}
+  <div class="filter-bar">
+    <label>filter <input class="table-filter" data-table="bmcfw-tbl" type="search" placeholder="port, bmc ip, version…"></label>
+    <span class="muted">{{ rows | length }} port{{ '' if rows|length == 1 else 's' }}</span>
+  </div>
+  <div class="table-scroll"><table class="data-table sortable" id="bmcfw-tbl"><thead><tr>
+    <th>port</th><th>bmc ip</th>
+    <th>current</th><th>target</th><th>state</th><th>%</th><th>updated</th>
+  </tr></thead><tbody>
+    {% for r in rows %}
+    <tr>
+      <td><code>{{ r.port }}</code></td>
+      <td class="muted">{{ r.bmc_ip }}</td>
+      <td><code>{{ r.current_version }}</code></td>
+      <td><code>{{ r.target_version }}</code></td>
+      <td>
+        {{ c.badge(r.state, _kind.get(r.state_pill, 'n')) }}
+        {% if r.fault_reason %}<span class="muted" title="{{ r.fault_reason }}">⚠</span>{% endif %}
+      </td>
+      <td class="muted">{% if r.evaluated and r.percent is not none %}{{ r.percent }}%{% endif %}</td>
+      <td class="muted">{{ r.updated }}</td>
+    </tr>
+    {% endfor %}
+  </tbody></table></div>
+  {% else %}
+  <p class="empty">No Tioga Pass ports known to observe-state on this host.</p>
+  {% endif %}
+</div>
+
+{% endblock %}

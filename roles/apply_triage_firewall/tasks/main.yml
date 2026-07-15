@@ -1,0 +1,28 @@
+---
+# Open triage's host-mode listener ports in firewalld. Both `external`
+# (WAN) and `internal` (mgmt VLAN where operator laptops live) need the
+# allowlist — see defaults/main.yml. Idempotent: query first per (port,
+# zone) pair, only --add-port when not present, notify reload only when
+# something actually changed.
+
+- name: Check if triage port is already open per firewalld zone (permanent)
+  become: true
+  ansible.builtin.command:
+    cmd: "firewall-cmd --permanent --zone={{ item.1 }} --query-port={{ item.0 }}/tcp"
+  register: apply_triage_firewall_port_query
+  changed_when: false
+  failed_when: false
+  loop: "{{ apply_triage_firewall_ports | product(apply_triage_firewall_zones) | list }}"
+  loop_control:
+    label: "{{ item.0 }}/{{ item.1 }}"
+
+- name: Open triage port in firewalld zones (permanent)
+  become: true
+  ansible.builtin.command:
+    cmd: "firewall-cmd --permanent --zone={{ item.item.1 }} --add-port={{ item.item.0 }}/tcp"
+  when: item.rc != 0
+  changed_when: true
+  notify: Reload firewalld
+  loop: "{{ apply_triage_firewall_port_query.results }}"
+  loop_control:
+    label: "{{ item.item.0 }}/{{ item.item.1 }}"

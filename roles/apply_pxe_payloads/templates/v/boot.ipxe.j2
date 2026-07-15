@@ -1,0 +1,766 @@
+{#- Resolve per-VID settings from the inventory `vlans:` array.
+    `current_vid` is passed in by the caller (apply_pxe_payloads task
+    loop). If the vid isn't in `vlans:` (e.g. the stub vids in
+    apply_pxe_payloads_extra_vids = [1, 2]), fall through to a
+    leopard-triage default so the rendered file is still a valid
+    boot.ipxe and the dispatcher chain works. -#}
+{%- set vlan_entry = (vlans | selectattr('vid', 'equalto', current_vid | int) | list | first) | default({}) -%}
+{%- set family = vlan_entry.family | default('leopard') -%}
+{%- set phase = vlan_entry.phase | default('triage') -%}
+{%- set pxe_override = vlan_entry.pxe | default({}) -%}
+{%- set fam = apply_pxe_payloads_pxe_family_map[family] | default(apply_pxe_payloads_pxe_family_default) -%}
+{%- set menu = pxe_override.menu | default(apply_pxe_payloads_pxe_menu_default) -%}
+{%- set submenu = pxe_override.submenu | default(apply_pxe_payloads_pxe_phase_map[phase] | default(apply_pxe_payloads_pxe_phase_default)) -%}
+{%- set com = pxe_override.com | default(fam.com) -%}
+{%- set com_setting = pxe_override.com_setting | default(fam.com_setting) -%}
+{%- set node = pxe_override.node | default(fam.node) -%}
+#!ipxe
+# Rendered from roles/apply_pxe_payloads/templates/v/boot.ipxe.j2 for
+# vid {{ current_vid }} ({{ family }}-{{ phase }}). Per-VID settings:
+# menu={{ menu }} submenu={{ submenu }} com={{ com }} com-setting={{ com_setting }} node={{ node }}.
+# Family + phase derive the defaults via apply_pxe_payloads_pxe_family_map
+# + apply_pxe_payloads_pxe_phase_map. Per-vlan overrides go in the site
+# inventory: vlans entry → pxe: {menu, submenu, com, com_setting, node}.
+# Edit-on-bang would be stomped by the next apply_pxe_payloads run —
+# adjust the inventory (or the role defaults) instead.
+
+# Some menu defaults
+isset ${menu-timeout} || set menu-timeout 10000
+isset ${submenu-timeout} || set submenu-timeout 5000
+
+# menu selection default
+isset ${menu-default} || set menu-default {{ menu }}
+
+# submenu selection default
+# only matters if menu-default is an OS install
+isset ${submenu-default} || set submenu-default {{ submenu }}
+
+# specification of COM
+isset ${com-default} || set com-default {{ com }}
+isset ${com-setting} || set com-setting {{ '${' ~ com_setting ~ '}' }}
+set console ${serial} console=${com-setting} earlyprintk=serial,${com-setting}
+
+# specification of node type
+isset ${node-setting} || set node-setting {{ node }}
+
+# Figure out if client is 64-bit capable
+cpuid --ext 29 && set arch x64 || set arch x86
+cpuid --ext 29 && set archl amd64 || set archl i386
+
+###################### MAIN MENU ####################################
+
+:start
+menu iPXE by ${next-server} for ${netX/ip} ${netX/mac} ${platform} ${buildarch}
+item --gap --             ${hostname} ${smbios/manufacturer:string} ${smbios/product:string} ${smbios/board-serial:string}
+item
+item --gap --             -- Tools --
+item --key l menu-live    L) Live SUSE Leap
+item --key g menu-grml    G) GRML live
+item --key o menu-tools   O) Other Tools
+item
+item --gap --             -- Install Menus --
+item --key s menu-suse    S) SUSE SLE/Leap
+item --key u menu-ubuntu  U) Canonical Ubuntu
+item --key r menu-redhat  R) RedHat RHEL/CentOS/Fedora
+item --key v menu-vmware  V) VMware VMvisor
+item --key h menu-harvest H) Harvester
+item --key e menu-edjx    E) EDJX mfsbsd iso
+item --key k menu-kinvolk K) Kinvolk Flatcar
+item --key w menu-onie    W) ONIE
+item --key m menu-memtest M) MemTest86
+item
+item --gap --             -- Set Target Particulars --
+item --key t menu-serial  T) Serial TTY [${com-default}: ${com-setting}]
+item --key n menu-node    N) Node Type  [${node-setting}]
+item
+item --key x exit         X) Exit iPXE and continue to next BIOS boot device
+choose --default ${menu-default} --timeout ${menu-timeout} selected || goto cancel
+set menu-timeout 0
+goto ${selected}
+
+:reboot
+reboot
+
+:exit
+exit 1
+
+:back
+set submenu-timeout 0
+clear submenu-default
+chain http://bang/menu.ipxe
+
+:reload
+chain --replace --autofree http://bang/menu.ipxe || goto failed
+goto start
+
+:config
+config || goto failed
+goto start
+
+:shell
+echo Starting iPXE shell... 
+echo Type 'exit' to get the back to the menu
+shell
+set menu-timeout 0
+set submenu-timeout 0
+goto start
+
+:cancel
+echo You cancelled the menu, dropping you to a shell
+goto shell
+
+:failed
+echo Some menu item failed, dropping to shell
+goto shell
+
+:pxelinux
+set 210:string tftp://${next-server}/
+chain ${210:string}pxelinux.0 || goto failed
+goto start
+
+
+###################### LIVE MENU #############################
+:menu-live
+menu Live Leap menu options
+item --key a amtinventory A) dmidecode, sel and power off
+item --key i inventoryoff I) Inventory, cfg IPMI, and power off
+item --key d ipmilive     D) Do IPMI settings and stay on
+item --key s staylive     S) Stay on after live boot
+item --key m memtest86    M) do the memtest thing
+item --key q postautomate Q) Post-qualify (Wave 4 agent)
+item
+item --key 0x08 back      Back to top menu...
+iseq ${menu-default} menu-live && isset ${submenu-default} && goto menu-live-timed ||
+choose selected && goto ${selected} || goto start
+:menu-live-timed
+choose --timeout ${submenu-timeout} --default ${submenu-default} selected && goto ${selected} || goto start
+
+:amtinventory
+set postaction amtinventory
+goto live
+
+:inventoryoff
+set postaction inventory
+goto live
+
+:ipmilive
+set postaction cfgipmi
+goto live
+
+:staylive
+set postaction liveboot
+goto live
+
+:memtest86
+set postaction memtest
+goto live
+
+:postautomate
+set postaction postautomate
+goto live
+
+:live
+set live rd.live.image rd.live.ram=1 rd.live.debug=1 rd.live.overlay.size=32768 rd.live.overlay.cowfs=ext4 extra iomem=relaxed BOOTIF=01-${mac:hexhyp} postaction=${postaction} pxeaddr=${dns} ksdevice=bootif text
+set loader ${install-url}/suse/live/test
+set livever 3.0.0
+set iso ${loader}/LiveLeap.x86_64-${livever}.iso
+echo Fetching initrd...
+initrd ${loader}/initrd-${livever}
+sleep 3
+echo Fetching kernel...
+kernel ${loader}/linux-${livever} initrd=initrd-${livever} root=live:${iso} ${live} ${console}
+sleep 3
+echo Booting...
+echo ${loader}/linux-${livever} initrd=initrd-${livever} root=live:${iso} ${live} ${console}
+sleep 3
+boot || goto failed
+
+###################### TOOLS MENU ##############################
+:menu-tools
+menu Other Tools and Options
+item --key a reload       A) Reload this iPXE menu
+item --key i shell        I) Drop to iPXE shell
+item --key c config       C) Configure iPXE settings
+item
+item --key p pxelinux     P) Load PXELinux menu (only non-EFI platforms)
+item
+item --key b reboot       B) Reboot computer
+item
+item --key 0x08 back      Back to top menu...
+iseq ${menu-default} menu-tools && isset ${submenu-default} && goto menu-tools-timed || 
+choose selected && goto ${selected} || goto start
+:menu-tools-timed
+choose --default ${submenu-default} --timeout ${submenu-timeout} selected && goto ${selected} || goto start
+
+###################### MemTest MENU #############################
+:menu-memtest
+menu Live MemTest86+
+item --gap --              -- MemTest Live  --
+item --key 1 C_6.10        1) memtest86+ 6.10 iso
+item --key m memtest-ipxe  M) Memtest86+ 6.10 efi
+item --key b memtest-bootx B) BootX64 6.10 efi
+item --key g memtest-grub  G) Memtest from GRUB ISO
+item
+item --key 0x08 back      Back to top menu...
+iseq ${menu-default} menu-memtest && isset ${submenu-default} && goto menu-memtest-timed ||
+choose selected && goto ${selected} || goto start
+menu-memtest-timed
+choose --timeout ${submenu-timeout} --default ${submenu-default} selected && goto ${selected} || goto start
+
+:C_6.10
+set install ${install-url}/memtest86/6.10
+goto common-memtest
+
+:common-memtest
+set loader ${install-url}/memtest86/memtest
+echo Fetching kernel...
+kernel ${loader}/ ${console}
+sleep 3
+echo Booting...
+sleep 3
+boot || goto failed
+
+:memtest-ipxe
+set memtestefi ${install-url}/memtest86/6.10/EFI/memtest64.efi
+goto memtest-common
+
+:memtest-bootx
+set memtestefi ${install-url}/memtest86/6.10/EFI/bootx64.efi
+goto memtest-common
+
+:memtest-grub
+set memtestefi ${install-url}/memtest86/6.10/EFI/memtest
+goto memtest-common
+
+:memtest-common
+set memconsole console=ttyS1,57600
+echo Fetching memtest payload
+kernel ${memtestefi} ${memconsole}
+#chain  ${memtestefi} ${memconsole}
+sleep 3
+echo Booting...
+echo kernel ${memtestefi} ${memconsole}
+sleep 3
+boot || goto failed
+
+
+
+###################### CANONICAL MENU #############################
+:menu-ubuntu
+menu Install Canonical Ubuntu
+item --gap --             -- Ubuntu Unattended Install --
+item --key 1 C_18.04      1) ubuntu 18.04
+item --key 2 C_20.04      2) ubuntu 20.04
+item --key 3 C_22.04      3) ubuntu 22.04
+item --key 4 C_24.04      4) ubuntu 24.04
+item
+item --key 0x08 back      Back to top menu...
+iseq ${menu-default} menu-ubuntu && isset ${submenu-default} && goto menu-ubuntu-timed ||
+choose selected && goto ${selected} || goto start
+:menu-ubuntu-timed
+choose --timeout ${submenu-timeout} --default ${submenu-default} selected && goto ${selected} || goto start
+
+:C_18.04
+set install ${install-url}/canonical/ubuntu/18.04/iso
+goto common-ubuntu
+
+:C_20.04
+set install ${install-url}/canonical/ubuntu/20.04/iso
+goto common-ubuntu
+
+:C_22.04
+set isodir isos/canonical/ubuntu/22.04
+set isoname ubuntu-22.04.5-live-server-amd64.iso
+set install ${install-url}/canonical/ubuntu/22.04/ga
+goto autocloud-ubuntu
+
+:C_24.04
+set isodir isos/canonical/ubuntu/24.04
+set isoname ubuntu-24.04.4-live-server-amd64.iso
+set install ${install-url}/canonical/ubuntu/24.04/ga
+goto autocloud-ubuntu
+
+:autocloud-ubuntu
+set ubuntu-args ip=dhcp autoinstall cloud-config-url=/dev/null url=http://bang/${isodir}/${isoname} ds=nocloud-net;s=${install}/../${node-setting}/
+set cmdline ${console}
+set loader ${install}/casper 
+echo Fetching initrd...
+initrd ${loader}/initrd
+sleep 3
+echo Fetching kernel...
+kernel ${loader}/vmlinuz initrd=initrd ${ubuntu-args} ${cmdline}
+sleep 3
+echo Booting...
+echo   ${loader}/vmlinuz initrd=initrd ${ubuntu-args} ${cmdline}
+sleep 3
+boot || goto start
+
+:common-ubuntu
+set cmdline preseed-${node-setting}.cfg --- ${console}
+set ubuntu-args auto=true priority=critical pkgsel/language-pack-patterns= pkgsel/install-language-support=false ksdevice=bootif interface=${mac} netcfg/dhcp_timeout=180 netconfig/link_wait_timeout=60
+set loader ${install}/install/netboot/ubuntu-installer/amd64
+echo Fetching initrd...
+initrd ${loader}/initrd.gz
+sleep 3
+echo Fetching kernel...
+kernel ${loader}/linux initrd=initrd.gz ${ubuntu-args} url=${install}/../${cmdline}
+sleep 3
+echo Booting...
+echo   ${loader}/linux initrd=initrd.gz ${ubuntu-args} url=${install}/../${cmdline}
+sleep 3
+boot || goto start
+
+###################### SUSE MENU #############################
+:menu-suse
+menu Install SUSE SLE or Leap
+item --gap --             ----- Open Source
+item --key l S_15.1       L) openSUSE Leap 15.1
+item --key e S_15.6       E) openSUSE Leap 15.6
+item --key m S_15.6_M     M) openSUSE Leap 15.6 manual
+item
+item --gap --             ----- Enterprise
+item --key s S_15SP1      S) SUSE Linux Enterprise Server 15 SP1
+item --key u S_15SP2      U) SUSE Linux Enterprise Server 15 SP2
+item
+item --key 0x08 back Back to top menu...
+iseq ${menu-default} menu-suse && isset ${submenu-default} && goto menu-suse-timed ||
+choose selected && goto ${selected} || goto start
+:menu-suse-timed
+choose --timeout ${submenu-timeout} --default ${submenu-default} selected && goto ${selected} || goto start
+
+:S_15.1
+set install ${install-url}/suse/leap/15.1/ga
+goto autoyast
+
+:S_15.6
+set install ${install-url}/suse/leap/15.6/ga
+goto autoyast
+#goto manual
+
+:S_15.6_M
+set install ${install-url}/suse/leap/15.6/ga
+goto manual
+
+:S_15SP1
+set install ${install-url}/suse/sles/15sp1/installer
+goto autoyast
+
+:S_15SP2
+set install ${install-url}/suse/sles/15sp2/ga
+goto autoyast
+
+:manual
+set cmdline ${console}
+goto common-suse
+
+:autoyast
+set cmdline autoyast2=${install}/../autoyast-${node-setting}.xml ${console}
+goto common-suse
+
+:common-suse
+set loader ${install}/boot/x86_64/loader 
+echo Fetching initrd...
+initrd ${loader}/initrd
+sleep 3
+echo Fetching kernel...
+kernel ${loader}/linux initrd=initrd install=${install} ${cmdline}
+sleep 3
+echo Booting...
+echo   ${loader}/linux initrd=initrd install=${install} ${cmdline}
+sleep 3
+boot || goto failed
+
+###################### HARVESTER MENU #############################
+:menu-harvest
+menu Install Harvester
+item --gap --             ----- Create
+item --key c H_C1.2.1       C) Harvester 1.2.1 Create mode
+item
+item --gap --             ----- Join
+item --key j H_J1.2.1       J) Harvester 1.2.1 Join mode
+item
+item --gap --             ----- Live
+item --key l H_L1.2.1       L) Harvester 1.2.1 Live boot
+item --key 0x08 back Back to top menu...
+iseq ${menu-default} menu-harvest && isset ${submenu-default} && goto menu-harvest-timed ||
+choose selected && goto ${selected} || goto start
+:menu-harvest-timed
+choose --timeout ${submenu-timeout} --default ${submenu-default} selected && goto ${selected} || goto start
+
+:H_C1.2.1
+set install ${install-url}suse/harvester/1.2.1
+set args harvester.install.automatic=true harvester.install.config_url=${install}/${hostname}-config-create.yml
+goto common-harvest
+
+:H_J1.2.1
+set install ${install-url}suse/harvester/1.2.1
+set args harvester.install.automatic=true harvester.install.config_url=${install}/${hostname}-config-join.yml
+goto common-harvest
+
+:H_L1.2.1
+set install ${install-url}suse/harvester/1.2.1
+set args
+goto common-harvest
+
+:common-harvest
+set console console=${com-setting} earlyprintk=serial,${com-setting}
+echo Fetching kernel...
+kernel ${install}/iso/boot/kernel initrd=initrd ip=dhcp net.ifnames=1 rd.cos.disable rd.noverifyssl ${console} root=live:${install}/iso/rootfs.squashfs ${args}
+sleep 3
+echo Fetching initrd...
+initrd ${install}/iso/boot/initrd
+sleep 3
+echo Booting with ${install}/iso/boot/kernel initrd=initrd ip=dhcp net.ifnames=1 rd.cos.disable rd.noverifyssl ${console} root=live:${install}/iso/rootfs.squashfs ${args}
+imgstat
+sleep 3
+boot || goto failed
+
+###################### REDHAT MENU #############################
+:menu-redhat
+menu Install RedHat RHEL/CentOS/Fedora
+item --gap --             ----- Install CentOS via Menu
+item --key 7 Centos7      7) CentOS 7.7.1908
+item --key 8 Centos8      8) CentOS 8.0.1905
+item
+item --key 0x08 back Back to top menu...
+iseq ${menu-default} menu-redhat && isset ${submenu-default} && goto menu-redhat-timed ||
+choose selected && goto ${selected} || goto start
+:menu-redhat-timed
+choose --timeout ${submenu-timeout} --default ${submenu-default} selected && goto ${selected} || goto start
+
+:Centos7
+set install ${install-url}/redhat/centos/7/ga
+goto common-centos
+
+:Centos8
+set install ${install-url}/redhat/centos/8/ga
+goto common-centos
+
+:common-centos
+set cmdline ks-${node-setting}.cfg ${console} inst.text ip=dhcp
+set loader ${install}/isolinux
+echo Fetching initrd...
+initrd ${loader}/initrd.img
+sleep 3
+echo Fetching kernel...
+kernel ${loader}/vmlinuz initrd=initrd.img  inst.repo=${install} inst.ks=${install}/../${cmdline}
+sleep 3
+echo Booting...
+echo   ${loader}/vmlinuz initrd=initrd.img  inst.repo=${install} inst.ks=${install}/../${cmdline}
+sleep 3
+boot || goto failed
+
+###################### GRML MENU #############################
+:menu-grml
+menu Liveboot GRML
+item --gap --             ----- Liveboot GRML Menu
+item --key 6 grml64       6) GRML 64
+item
+item --key 0x08 back Back to top menu...
+iseq ${menu-default} menu-grml && isset ${submenu-default} && goto menu-grml-timed ||
+choose selected && goto ${selected} || goto start
+:menu-grml-timed
+choose --timeout ${submenu-timeout} --default ${submenu-default} selected && goto ${selected} || goto start
+
+:grml64
+set live ${install-url}/debian/grml64/2021.07/full
+set kernelargs initrd=initrd.img boot=live apm=power-off vga=791 nomce fetch=${live}/live/grml64-full/grml64-full.squashfs nobeep noeject noprompt noblank keyboard=us xkeyboard=us serial utc tz=utc ip=dhcp ssh={{ live_iso_root_password }} log debug=1 ${console}
+goto common-grml
+
+:common-grml
+set cmdline ${console}
+set loader ${live}/boot/grml64full
+echo Fetching initrd...
+initrd ${loader}/initrd.img
+sleep 3
+echo Fetching kernel...
+kernel ${loader}/vmlinuz ${kernelargs} ${cmdline}
+sleep 3
+echo Booting...
+echo   ${loader}/vmlinuz ${kernelargs} ${cmdline}
+imgstat
+sleep 3
+boot || goto failed
+
+###################### VMWARE MENU #############################
+:menu-vmware
+menu VMware Installs
+item --gap --             ----- VMware ESXi iSCSI Kickstart
+item --key 6 esxi6.7.0u1  6) VMvisor 6.7.0u1
+item --key 3 esxi6.7.0u3  3) VMvisor 6.7.0u3
+item --key 7 esxi7.0b     7) VMvisor 7.0b  # qualified
+item --key l esxi7.0u1    L) VMvisor 7.0U1 # latest
+item --key m esxi7.0u1-tp M) VMvisor 7.0U1 TiogaPass # latest
+item --key 8 esxi8.0      8) VMvisor 8.0 57600  COM 2 (Leopard)
+
+###################### GRML MENU #############################
+:menu-grml
+menu Liveboot GRML
+item --gap --             ----- Liveboot GRML Menu
+item --key 6 grml64       6) GRML 64
+item
+item --key 0x08 back Back to top menu...
+iseq ${menu-default} menu-grml && isset ${submenu-default} && goto menu-grml-timed ||
+choose selected && goto ${selected} || goto start
+:menu-grml-timed
+choose --timeout ${submenu-timeout} --default ${submenu-default} selected && goto ${selected} || goto start
+
+:grml64
+set live ${install-url}/debian/grml64/2021.07/full
+set kernelargs initrd=initrd.img boot=live apm=power-off vga=791 nomce fetch=${live}/live/grml64-full/grml64-full.squashfs nobeep noeject noprompt noblank keyboard=us xkeyboard=us serial utc tz=utc ip=dhcp ssh={{ live_iso_root_password }} log debug=1 ${console}
+goto common-grml
+
+:common-grml
+set cmdline ${console}
+set loader ${live}/boot/grml64full
+echo Fetching initrd...
+initrd ${loader}/initrd.img
+sleep 3
+echo Fetching kernel...
+kernel ${loader}/vmlinuz ${kernelargs} ${cmdline}
+sleep 3
+echo Booting...
+echo   ${loader}/vmlinuz ${kernelargs} ${cmdline}
+imgstat
+sleep 3
+boot || goto failed
+
+###################### VMWARE MENU #############################
+:menu-vmware
+menu VMware Installs
+item --gap --             ----- VMware ESXi iSCSI Kickstart
+item --key 6 esxi6.7.0u1  6) VMvisor 6.7.0u1
+item --key 3 esxi6.7.0u3  3) VMvisor 6.7.0u3
+item --key 7 esxi7.0b     7) VMvisor 7.0b  # qualified
+item --key l esxi7.0u1    L) VMvisor 7.0U1 # latest
+item --key m esxi7.0u1-tp M) VMvisor 7.0U1 TiogaPass # latest
+item --key 8 esxi8.0      8) VMvisor 8.0 57600  COM 2 (Leopard)
+item --key 9 esxi8.0com1f 9) VMvisor 8.0 115200 COM 1 (Mitac)
+item --key 0 esxi8.0com2f 0) VMvisor 8.0 115200 COM 2 (Wiwynn)
+item
+item --key 0x08 back Back to top menu...
+iseq ${menu-default} menu-vmware && isset ${submenu-default} && goto menu-vmware-timed ||
+choose selected && goto ${selected} || goto back
+:menu-vmware-timed
+choose --timeout ${submenu-timeout} --default ${submenu-default} selected && goto ${selected} || goto back
+
+:esxi6.7.0u1
+echo Booting ESX6.7u1 ISO from iSCSI for ${initiator-iqn}
+set root-path ${base-iscsi}:esxi6.7.0u1com2
+goto common-vmware
+
+:esxi6.7.0u3
+echo Booting ESX6.7u3 ISO from iSCSI for ${initiator-iqn}
+set root-path ${base-iscsi}:esxi6.7.0u3com2
+goto common-vmware
+
+:esxi7.0b
+echo Booting ESX7.0b ISO from iSCSI for ${initiator-iqn}
+set root-path ${base-iscsi}:esxi7.0bcom2
+goto common-vmware
+
+:esxi7.0u1
+echo Booting ESX7.0U1 ISO from iSCSI for ${initiator-iqn}
+set root-path ${base-iscsi}:esxi7.0u1com2
+goto common-vmware
+
+:esxi7.0u1-tp
+echo Booting ESX7.0U1 ISO from iSCSI for ${initiator-iqn} and TiogaPass
+set root-path iscsi:${iscsi-server}::::iqn.2021-11.lab:esxi7.0u1com1
+goto common-vmware
+
+:esxi8.0
+echo Booting ESX8.0 ISO from iSCSI for ${initiator-iqn} and Leopard
+set root-path iscsi:${iscsi-server}::::iqn.2021-11.lab:esxi8.0com2
+goto common-vmware
+
+:esxi8.0com1f
+echo Booting ESX8.0 ISO COM1 Fast from iSCSI for ${initiator-iqn} and Leopard
+set root-path iscsi:${iscsi-server}::::iqn.2021-11.lab:esxi8.0com1
+goto common-vmware
+
+:esxi8.0com2f
+echo Booting ESX8.0 ISO COM2 Fast from iSCSI for ${initiator-iqn} and Leopard
+set root-path iscsi:${iscsi-server}::::iqn.2021-11.lab:esxi8.0com2f
+goto common-vmware
+
+:common-vmware
+echo Using ${root-path}
+sanboot ${root-path} || goto back
+
+###################### KINVOLK MENU #############################
+:menu-kinvolk
+menu Kinvolk Installs
+item --gap --             ----- Kinvolk Flatcar
+item --key s stable  s) stable
+item --key b beta  b) beta
+item --key a alpha     a) alpha
+item
+item --key 0x08 back Back to top menu...
+iseq ${menu-default} menu-kinvolk && isset ${submenu-default} && goto menu-kinvolk-timed ||
+choose selected && goto ${selected} || goto back
+:menu-kinvolk-timed
+choose --timeout ${submenu-timeout} --default ${submenu-default} selected && goto ${selected} || goto back
+
+:stable
+set base-url http://stable.release.flatcar-linux.net/amd64-usr/current
+kernel ${base-url}/flatcar_production_pxe.vmlinuz initrd=flatcar_production_pxe_image.cpio.gz ${console} flatcar.first_boot=1 flatcar.autologin
+initrd ${base-url}/flatcar_production_pxe_image.cpio.gz
+sleep 3
+boot
+
+###################### ONIE MENU #############################
+:menu-onie
+menu ONIE Installs
+item --gap --             ----- ONIE installer
+item --key o onie-100-embed  o) ONIE wedge 100 EMBED
+item --key s onie-100s-embed s) ONIE wedge 100S EMBED
+item
+item --key 0x08 back Back to top menu...
+iseq ${menu-default} menu-onie && isset ${submenu-default} && goto menu-onie-timed ||
+choose selected && goto ${selected} || goto back
+:menu-onie-timed
+choose --timeout ${submenu-timeout} --default ${submenu-default} selected && goto ${selected} || goto back
+
+:onie-100-embed
+set install ${install-url}/onie/wedge100/ga
+goto onie-common
+
+:onie-100s-embed
+set install ${install-url}/onie/wedge100s/ga
+goto onie-common
+
+:onie-common
+set console_cmdline_linux console=tty0 console=ttyS0,57600n8
+set onie_cmdline_linux quiet ${console_cmdline_linux}  boot_env=recovery
+set args ${onie_cmdline_linux} boot_reason=embed install_url=file:///lib/onie/onie-updater
+
+echo Fetching kernel...
+kernel ${install}/vmlinuz initrd=initrd.xz ${args}
+sleep 3
+echo Fetching initrd...
+initrd ${install}/initrd.xz
+sleep 3
+echo Booting with ${install}/vmlinuz initrd=initrd.xz ${args}
+imgstat
+sleep 3
+boot || goto failed
+
+###################### EDJX MENU #############################
+:menu-edjx
+menu Edjx Installs
+item --gap --             ----- Edjx mfsbsd installer
+item --key p common-edjx  p) EDJX
+item
+item --key 0x08 back Back to top menu...
+iseq ${menu-default} menu-edjx && isset ${submenu-default} && goto menu-edjx-timed ||
+choose selected && goto ${selected} || goto back
+:menu-edjx-timed
+choose --timeout ${submenu-timeout} --default ${submenu-default} selected && goto ${selected} || goto back
+
+:common-edjx
+echo Using http://bang/isos/edjx/efimfsbsd.iso
+sanboot --no-describe http://bang/isos/edjx/efimfsbsd.iso
+
+
+###################### SERIAL MENU #############################
+:menu-serial
+menu Select Target Serial Console COM and BAUD
+item --key 1 com1s        1) com1s: ${ttys0s}
+item --key 2 com2s        2) com2s: ${ttys1s}
+item --key 3 com1f        3) com1f: ${ttys0f}
+item --key 4 com2f        4) com2f: ${ttys1f}
+item
+item --key 9 comedit      9) Manual Edit: ${com-setting}
+item
+item --key 0x08 back      Back to top menu...
+choose --default ${com-default} --timeout 3000 target && goto ${target}
+
+:comedit
+echo com-setting ${com-setting}
+set com-setting ${}
+echo -n com settings: ${}
+read com-setting
+set com-default comedit
+set console ${serial} console=${com-setting} earlyprintk=serial,${com-setting}
+goto start
+
+:com1s
+set com-setting ${ttys0s}
+set com-default com1s
+set console ${serial} console=${com-setting} earlyprintk=serial,${com-setting}
+goto start
+
+:com2s
+set com-setting ${ttys1s}
+set com-default com2s
+set console ${serial} console=${com-setting} earlyprintk=serial,${com-setting}
+goto start
+
+:com1f
+set com-setting ${ttys0f}
+set com-default com1f
+set console ${serial} console=${com-setting} earlyprintk=serial,${com-setting}
+goto start
+
+:com2f
+set com-setting ${ttys1f}
+set com-default com2f
+set console ${serial} console=${com-setting} earlyprintk=serial,${com-setting}
+goto start
+
+###################### NODE MENU #############################
+:menu-node
+menu Select the Target Node Type
+item --key 1 leopard      1) leopard
+item --key 2 bigsur       2) bigsur
+item --key 3 tiogapass    3) tiogapass
+item --key 4 monolake     4) monolake
+item --key 5 mitac-tp     5) mitac-tp
+item --key 6 mitac-capri  6) mitac-capri
+item --key 7 wedge100s    7) wedge100s
+item --key 8 dellfx       8) dellfx
+item
+item --key 9 nodeedit     9) Manual Edit: ${node-setting}
+item
+item --key 0x08 back      Back to top menu...
+choose --default ${node-setting} --timeout 3000 target && goto ${target}
+
+:nodeedit
+echo node-setting ${node-setting}
+set node-setting ${}
+echo -n node type: ${}
+read node-setting
+goto start
+
+:leopard
+set node-setting leopard
+goto start
+
+:bigsur
+set node-setting bigsur
+goto start
+
+:tiogapass
+set node-setting tiogapass
+goto start
+
+:monolake
+set node-setting monolake
+goto start
+
+:mitac-tp
+set node-setting mitac-tp
+goto start
+
+:mitac-capri
+set node-setting mitac-capri
+goto start
+
+:wedge100s
+set node-setting wedge100s
+goto start
+
+:dellfx
+set node-setting dellfx
+goto start

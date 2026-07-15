@@ -1,0 +1,124 @@
+---
+# Collects configuration and show-command output from Arista EOS devices.
+# Uses arista.eos.eos_command (network_cli transport).
+# Each command is separate so a failure on one does not abort the others.
+# Output is written to files/configs/{{ site_name }}/{{ inventory_hostname }}/.
+
+- name: Collect show running-config
+  arista.eos.eos_command:
+    commands:
+      - show running-config
+  register: arista_eos_running_config
+  changed_when: false
+  check_mode: false
+
+- name: Write running-config.txt
+  delegate_to: localhost
+  ansible.builtin.copy:
+    content: "{{ arista_eos_running_config.stdout[0] }}"
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/config/running-config.txt"
+    mode: "0644"
+
+- name: Collect show interfaces status
+  when: not ansible_check_mode
+  arista.eos.eos_command:
+    commands:
+      - show interfaces status
+  register: arista_eos_show_interfaces
+  changed_when: false
+  check_mode: false
+
+- name: Write show-interfaces.txt
+  delegate_to: localhost
+  when: not ansible_check_mode
+  ansible.builtin.copy:
+    content: "{{ arista_eos_show_interfaces.stdout[0] }}"
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/show/show-interfaces.txt"
+    mode: "0644"
+
+- name: Collect show lldp neighbors
+  when: not ansible_check_mode
+  arista.eos.eos_command:
+    commands:
+      - show lldp neigh
+  register: arista_eos_show_lldp
+  changed_when: false
+  check_mode: false
+
+- name: Write show-lldp.txt
+  delegate_to: localhost
+  when: not ansible_check_mode
+  ansible.builtin.copy:
+    content: "{{ arista_eos_show_lldp.stdout[0] }}"
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/show/show-lldp.txt"
+    mode: "0644"
+
+- name: Collect show version
+  when: not ansible_check_mode
+  arista.eos.eos_command:
+    commands:
+      - show version
+  register: arista_eos_show_version
+  changed_when: false
+  check_mode: false
+
+- name: Write show-version.txt
+  delegate_to: localhost
+  when: not ansible_check_mode
+  ansible.builtin.copy:
+    content: "{{ arista_eos_show_version.stdout[0] }}"
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/show/show-version.txt"
+    mode: "0644"
+
+- name: Collect show ip route
+  when: not ansible_check_mode
+  arista.eos.eos_command:
+    commands:
+      - show ip route
+  register: arista_eos_show_route
+  changed_when: false
+  check_mode: false
+
+- name: Write show-route.txt
+  delegate_to: localhost
+  when: not ansible_check_mode
+  ansible.builtin.copy:
+    content: "{{ arista_eos_show_route.stdout[0] }}"
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/show/show-route.txt"
+    mode: "0644"
+
+- name: Collect show vlan
+  when: not ansible_check_mode
+  arista.eos.eos_command:
+    commands:
+      - show vlan
+  register: arista_eos_show_vlan
+  changed_when: false
+  check_mode: false
+
+- name: Write show-vlan.txt
+  delegate_to: localhost
+  when: not ansible_check_mode
+  ansible.builtin.copy:
+    content: "{{ arista_eos_show_vlan.stdout[0] }}"
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/show/show-vlan.txt"
+    mode: "0644"
+
+- name: Collect show ip bgp summary
+  when: not ansible_check_mode
+  arista.eos.eos_command:
+    commands:
+      - show ip bgp summary
+  register: arista_eos_show_bgp
+  changed_when: false
+  check_mode: false
+  # BGP may not be configured — ignore failure, write whatever we get
+  failed_when: false
+
+- name: Write show-bgp.txt
+  delegate_to: localhost
+  when: not ansible_check_mode
+  ansible.builtin.copy:
+    content: "{{ arista_eos_show_bgp.stdout | first | default('BGP not configured or command failed') }}"
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/show/show-bgp.txt"
+    mode: "0644"

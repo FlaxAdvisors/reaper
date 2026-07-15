@@ -1,0 +1,231 @@
+#!/bin/bash
+# WAN failover watchdog for openSUSE bang jumphosts.
+#
+# Probes the primary WAN interface every WAN_FAILOVER_PROBE_INTERVAL_SEC
+# seconds and manipulates the default-route metric on the primary
+# interface to fail over to backup or preempt back to primary, based on
+# consecutive probe failures and a hold-down timer.
+#
+# Tunables come from environment variables set by the systemd unit.
+# State persists in $WAN_FAILOVER_STATE_FILE as key=value lines.
+
+# `-u` catches typos in env var names; `pipefail` propagates errors through
+# pipes. We deliberately omit `-e`: a single failed command (transient
+# `ip route replace` race, ICMP rate-limit, etc.) must not crash the loop.
+set -uo pipefail
+
+# ---- env (required and defaulted) ----
+: "${WAN_FAILOVER_PRIMARY_IFACE:?required}"
+: "${WAN_FAILOVER_BACKUP_IFACE:?required}"
+: "${WAN_FAILOVER_PRIMARY_METRIC_ACTIVE:=100}"
+: "${WAN_FAILOVER_PRIMARY_METRIC_DEMOTED:=300}"
+: "${WAN_FAILOVER_BACKUP_METRIC:=200}"
+: "${WAN_FAILOVER_PROBE_TARGETS:=1.1.1.1 8.8.8.8}"
+: "${WAN_FAILOVER_PROBE_INTERVAL_SEC:=5}"
+: "${WAN_FAILOVER_FAILOVER_THRESHOLD:=3}"
+: "${WAN_FAILOVER_PREEMPT_HOLDDOWN_SEC:=600}"
+: "${WAN_FAILOVER_STATE_FILE:=/var/lib/wan-failover/state}"
+
+# Reject zero or negative probe interval up front: the holddown_cycles
+# arithmetic divides by it, and a zero would crash the daemon into a
+# tight systemd Restart=always loop with no useful diagnostic.
+if ! [[ "$WAN_FAILOVER_PROBE_INTERVAL_SEC" =~ ^[1-9][0-9]*$ ]]; then
+    logger -t wan-failover -- "WAN_FAILOVER_PROBE_INTERVAL_SEC must be a positive integer (got '${WAN_FAILOVER_PROBE_INTERVAL_SEC}')"
+    exit 2
+fi
+
+readonly TAG="wan-failover"
+
+log() { logger -t "$TAG" -- "$1"; }
+now_iso() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
+
+discover_gw() {
+    local iface="$1"
+    ip -4 route show default dev "$iface" 2>/dev/null \
+        | awk '/^default/ {for (i=1;i<=NF;i++) if ($i=="via") { print $(i+1); exit }}'
+}
+
+current_metric() {
+    local iface="$1"
+    ip -4 route show default dev "$iface" 2>/dev/null \
+        | awk '/metric/ {for (i=1;i<=NF;i++) if ($i=="metric") { print $(i+1); exit }}'
+}
+
+# `ip route replace` is intentional vs `add` or `del`+`add`: it is
+# idempotent under concurrent wicked DHCP renewals and never produces
+# duplicate or empty routing table entries.
+set_primary_metric() {
+    local gw="$1"
+    local metric="$2"
+    ip route replace default via "$gw" dev "$WAN_FAILOVER_PRIMARY_IFACE" metric "$metric"
+}
+
+write_state() {
+    # args: current_path fail_count success_count primary_gw backup_gw primary_metric \
+    #       last_flip_at last_flip_reason since
+    local current_path="$1" fail_count="$2" success_count="$3"
+    local primary_gw="$4" backup_gw="$5" primary_metric="$6"
+    local last_flip_at="$7" last_flip_reason="$8" since="$9"
+
+    local holddown_remaining=""
+    if [[ "$current_path" == "backup" ]]; then
+        local target=$((WAN_FAILOVER_PREEMPT_HOLDDOWN_SEC / WAN_FAILOVER_PROBE_INTERVAL_SEC))
+        holddown_remaining=$((target - success_count))
+        [[ $holddown_remaining -lt 0 ]] && holddown_remaining=0
+    fi
+
+    local both_down="false"
+    [[ -z "$primary_gw" && -z "$backup_gw" ]] && both_down="true"
+
+    local tmp="${WAN_FAILOVER_STATE_FILE}.tmp"
+    cat > "$tmp" <<EOF
+current_path=$current_path
+since=$since
+last_flip_reason=$last_flip_reason
+last_flip_at=$last_flip_at
+last_check_at=$(now_iso)
+primary_iface=$WAN_FAILOVER_PRIMARY_IFACE
+primary_gw=$primary_gw
+primary_route_metric=$primary_metric
+primary_consecutive_fails=$fail_count
+primary_consecutive_successes=$success_count
+backup_iface=$WAN_FAILOVER_BACKUP_IFACE
+backup_gw=$backup_gw
+backup_route_metric=$WAN_FAILOVER_BACKUP_METRIC
+holddown_cycles_remaining=$holddown_remaining
+both_down=$both_down
+EOF
+    mv -f "$tmp" "$WAN_FAILOVER_STATE_FILE"
+}
+
+read_state_path() {
+    [[ -r "$WAN_FAILOVER_STATE_FILE" ]] || { echo "primary"; return; }
+    local p
+    p="$(awk -F= '/^current_path=/ {print $2; exit}' "$WAN_FAILOVER_STATE_FILE")"
+    case "$p" in
+        primary|backup) echo "$p" ;;
+        *) echo "primary" ;;
+    esac
+}
+
+main() {
+    local current_path
+    current_path="$(read_state_path)"
+
+    local fail_count=0 success_count=0
+    local last_flip_at last_flip_reason since
+    last_flip_at="$(now_iso)"
+    last_flip_reason="startup"
+    since="$last_flip_at"
+
+    local last_state_write=0
+    local last_both_down_log=0
+
+    log "started in $current_path state"
+    write_state "$current_path" 0 0 "" "" "" "$last_flip_at" "$last_flip_reason" "$since"
+
+    local holddown_cycles=$((WAN_FAILOVER_PREEMPT_HOLDDOWN_SEC / WAN_FAILOVER_PROBE_INTERVAL_SEC))
+
+    while true; do
+        local primary_gw backup_gw
+        primary_gw="$(discover_gw "$WAN_FAILOVER_PRIMARY_IFACE")"
+        backup_gw="$(discover_gw "$WAN_FAILOVER_BACKUP_IFACE")"
+
+        # Reconcile primary route metric to current state (idempotent)
+        local current_pm=""
+        if [[ -n "$primary_gw" ]]; then
+            current_pm="$(current_metric "$WAN_FAILOVER_PRIMARY_IFACE")"
+            local desired_pm
+            if [[ "$current_path" == "primary" ]]; then
+                desired_pm="$WAN_FAILOVER_PRIMARY_METRIC_ACTIVE"
+            else
+                desired_pm="$WAN_FAILOVER_PRIMARY_METRIC_DEMOTED"
+            fi
+            if [[ "$current_pm" != "$desired_pm" ]]; then
+                if set_primary_metric "$primary_gw" "$desired_pm"; then
+                    log "reconciled primary route metric=$desired_pm"
+                    current_pm="$desired_pm"
+                fi
+            fi
+        fi
+
+        # Probe primary path. `ping -I <iface>` uses SO_BINDTODEVICE,
+        # forcing egress through the named interface even if it is not
+        # the kernel default. This lets us test the primary path while
+        # the default route is currently pointing at backup.
+        local probe_ok=0
+        if [[ -n "$primary_gw" ]]; then
+            local target
+            for target in $WAN_FAILOVER_PROBE_TARGETS; do
+                if ping -I "$WAN_FAILOVER_PRIMARY_IFACE" -c 1 -W 2 -q "$target" &>/dev/null; then
+                    probe_ok=1
+                    break
+                fi
+            done
+        fi
+
+        if [[ $probe_ok -eq 1 ]]; then
+            success_count=$((success_count + 1))
+            fail_count=0
+        else
+            fail_count=$((fail_count + 1))
+            success_count=0
+        fi
+
+        # Flip primary -> backup
+        if [[ "$current_path" == "primary" && $fail_count -ge $WAN_FAILOVER_FAILOVER_THRESHOLD ]]; then
+            current_path="backup"
+            if [[ -n "$primary_gw" ]]; then
+                if set_primary_metric "$primary_gw" "$WAN_FAILOVER_PRIMARY_METRIC_DEMOTED"; then
+                    current_pm="$WAN_FAILOVER_PRIMARY_METRIC_DEMOTED"
+                fi
+            fi
+            last_flip_at="$(now_iso)"
+            last_flip_reason="primary failed $fail_count consecutive probes"
+            since="$last_flip_at"
+            success_count=0
+            log "FLIP primary->backup ($last_flip_reason)"
+            write_state "$current_path" "$fail_count" 0 "$primary_gw" "$backup_gw" "$current_pm" "$last_flip_at" "$last_flip_reason" "$since"
+            last_state_write=$(date +%s)
+        fi
+
+        # Preempt backup -> primary
+        if [[ "$current_path" == "backup" && $success_count -ge $holddown_cycles ]]; then
+            current_path="primary"
+            if [[ -n "$primary_gw" ]]; then
+                if set_primary_metric "$primary_gw" "$WAN_FAILOVER_PRIMARY_METRIC_ACTIVE"; then
+                    current_pm="$WAN_FAILOVER_PRIMARY_METRIC_ACTIVE"
+                fi
+            fi
+            last_flip_at="$(now_iso)"
+            last_flip_reason="primary healthy for $WAN_FAILOVER_PREEMPT_HOLDDOWN_SEC sec"
+            since="$last_flip_at"
+            fail_count=0
+            log "PREEMPT backup->primary ($last_flip_reason)"
+            write_state "$current_path" 0 "$success_count" "$primary_gw" "$backup_gw" "$current_pm" "$last_flip_at" "$last_flip_reason" "$since"
+            last_state_write=$(date +%s)
+        fi
+
+        # Both-down warning, rate-limited to once per 60s
+        if [[ -z "$primary_gw" && -z "$backup_gw" ]]; then
+            local now
+            now=$(date +%s)
+            if [[ $((now - last_both_down_log)) -ge 60 ]]; then
+                log "BOTH WAN PATHS DOWN — no DHCP lease on either WAN interface"
+                last_both_down_log=$now
+            fi
+        fi
+
+        # Periodic state file refresh every 60s so timestamps don't go stale
+        local now_for_state
+        now_for_state=$(date +%s)
+        if [[ $((now_for_state - last_state_write)) -ge 60 ]]; then
+            write_state "$current_path" "$fail_count" "$success_count" "$primary_gw" "$backup_gw" "$current_pm" "$last_flip_at" "$last_flip_reason" "$since"
+            last_state_write=$now_for_state
+        fi
+
+        sleep "$WAN_FAILOVER_PROBE_INTERVAL_SEC"
+    done
+}
+
+main "$@"

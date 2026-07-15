@@ -1,0 +1,28 @@
+---
+- name: Ensure /etc/flax exists
+  become: true
+  ansible.builtin.file:
+    path: "{{ bmc_fw_manifest_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Render BMC firmware version manifest
+  become: true
+  ansible.builtin.template:
+    src: bmc-firmware-versions.json.j2
+    dest: "{{ bmc_fw_manifest_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Ensure an empty bmcfw.json state store exists for the read-only bind mount
+  become: true
+  ansible.builtin.copy:
+    content: "{}\n"
+    dest: /etc/flax/bmcfw.json
+    force: false
+    owner: root
+    group: root
+    mode: "0600"

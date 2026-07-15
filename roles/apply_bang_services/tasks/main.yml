@@ -1,0 +1,344 @@
+---
+# === dnsmasq (DHCP + DNS + TFTP) ===
+
+- name: Ensure dnsmasq + nginx + iPXE-bootloader packages installed
+  become: true
+  community.general.zypper:
+    name:
+      - dnsmasq
+      - nginx
+      - ipxe-bootimgs
+    state: present
+
+- name: Ensure TFTP root exists (owned by dnsmasq, the runtime user)
+  become: true
+  ansible.builtin.file:
+    path: "{{ apply_bang_services_tftp_root }}"
+    state: directory
+    owner: dnsmasq
+    group: dnsmasq
+    mode: "0755"
+
+- name: Recurse ownership of TFTP tree to dnsmasq (preserves per-file modes)
+  become: true
+  ansible.builtin.file:
+    path: "{{ apply_bang_services_tftp_root }}"
+    owner: dnsmasq
+    group: dnsmasq
+    recurse: true
+  # dnsmasq.conf has `tftp-secure`, which requires every served file to be
+  # OWNED by the dnsmasq runtime user (not just readable). The legacy
+  # `tftp:tftp` (and `root:root`) ownership predates dnsmasq taking over
+  # TFTP from xinetd/in.tftpd; under tftp-secure it produces "Permission
+  # denied" on every PXE fetch. Ownership recurses; modes are NOT touched
+  # so individual file permissions (e.g. the data files at 0644, dirs at
+  # 0755) stay correct.
+
+- name: Ensure arch-named TFTP subdirs exist
+  become: true
+  ansible.builtin.file:
+    path: "{{ apply_bang_services_tftp_root }}/{{ item }}"
+    state: directory
+    owner: dnsmasq
+    group: dnsmasq
+    mode: "0755"
+  loop:
+    - bios
+    - efi64
+
+# NOTE: TFTP NBPs (bios/undionly.kpxe, efi64/ipxe.efi) are OPERATOR-MANAGED.
+# Sites typically build a custom iPXE binary with an embedded `chain
+# http://bang/menu.ipxe` script so the boot chain runs menu.ipxe →
+# boot.ipxe.cfg (sets install-url and friends) → boot.ipxe.
+#
+# A previous version of this role staged the stock /usr/share/ipxe/{undionly.kpxe,
+# ipxe-x86_64.efi} files here on every apply, which silently overwrote the
+# operator's custom-built binaries — and a stock NBP boots via the dnsmasq
+# `dhcp-boot=tag:ipxe,http://bang/boot.ipxe` URL directly, bypassing the
+# menu.ipxe + boot.ipxe.cfg chain entirely. The result: install-url is
+# never set and downstream `${install-url}/...` fetches 404.
+#
+# Operators are responsible for staging their custom-built NBPs into:
+#     {{ apply_bang_services_tftp_root }}/bios/undionly.kpxe
+#     {{ apply_bang_services_tftp_root }}/efi64/ipxe.efi
+# (or whatever ROM-arch path your dnsmasq dhcp-boot config points to).
+
+- name: Deploy AppArmor local override permitting /etc/dnsmasq.hosts/
+  become: true
+  ansible.builtin.copy:
+    src: "{{ apply_bang_services_shared_inputs_dir }}/apparmor-dnsmasq-local"
+    dest: /etc/apparmor.d/local/usr.sbin.dnsmasq
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - reload apparmor dnsmasq profile
+    - restart dnsmasq
+
+- name: Ensure /etc/dnsmasq.hosts directory exists
+  become: true
+  ansible.builtin.file:
+    path: /etc/dnsmasq.hosts
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy mgmt hosts file (BMCs + switches)
+  become: true
+  ansible.builtin.copy:
+    src: "{{ config_output_dir }}/{{ site_name }}/services/mgmt-hosts"
+    dest: /etc/dnsmasq.hosts/mgmt
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart dnsmasq
+
+# lab-hosts is a hosts-format file (`<ip> <name>` lines), not a conf-file
+# format. It belongs under /etc/dnsmasq.hosts/ where dnsmasq's hostsdir=
+# loads it via inotify, not under /etc/dnsmasq.d/ which conventionally
+# holds conf-file= includes. The cleanup task below removes any prior
+# /etc/dnsmasq.d/lab-hosts left over from before the move.
+- name: Deploy lab-hosts file
+  become: true
+  ansible.builtin.template:
+    src: lab-hosts.j2
+    dest: /etc/dnsmasq.hosts/lab-hosts
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart dnsmasq
+
+- name: Remove old lab-hosts location (pre-relocation; idempotent)
+  become: true
+  ansible.builtin.file:
+    path: /etc/dnsmasq.d/lab-hosts
+    state: absent
+  notify: restart dnsmasq
+
+- name: Deploy BMC DHCP reservations (referenced via conf-file= in dnsmasq.conf)
+  become: true
+  ansible.builtin.copy:
+    src: "{{ config_output_dir }}/{{ site_name }}/services/bmc-reservations.conf"
+    dest: /etc/dnsmasq.d/bmc-reservations.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: (bang_dhcp_server | default('dnsmasq')) == 'dnsmasq'
+  notify: restart dnsmasq
+
+- name: Remove BMC reservations where Kea owns DHCP (served from kea.hosts)
+  become: true
+  ansible.builtin.file:
+    path: /etc/dnsmasq.d/bmc-reservations.conf
+    state: absent
+  when: (bang_dhcp_server | default('dnsmasq')) == 'kea'
+  notify: restart dnsmasq
+
+- name: Deploy lab-post-reservations.conf (legacy; only on sites still using static reservations)
+  become: true
+  ansible.builtin.copy:
+    src: "{{ config_output_dir }}/{{ site_name }}/services/lab-post-reservations.conf"
+    dest: /etc/dnsmasq.d/lab-post-reservations.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: legacy_lab_reservations | default(true)
+  notify: restart dnsmasq
+
+- name: Remove legacy lab-post-reservations.conf where the flax pipeline owns reservations
+  become: true
+  ansible.builtin.file:
+    path: /etc/dnsmasq.d/lab-post-reservations.conf
+    state: absent
+  when: not (legacy_lab_reservations | default(true))
+  notify: restart dnsmasq
+
+- name: Deploy lab-triage-reservations.conf (legacy; only on sites still using static reservations)
+  become: true
+  ansible.builtin.copy:
+    src: "{{ config_output_dir }}/{{ site_name }}/services/lab-triage-reservations.conf"
+    dest: /etc/dnsmasq.d/lab-triage-reservations.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: legacy_lab_reservations | default(true)
+  notify: restart dnsmasq
+
+- name: Remove legacy lab-triage-reservations.conf where the flax pipeline owns reservations
+  become: true
+  ansible.builtin.file:
+    path: /etc/dnsmasq.d/lab-triage-reservations.conf
+    state: absent
+  when: not (legacy_lab_reservations | default(true))
+  notify: restart dnsmasq
+
+- name: Deploy dnsmasq.conf
+  become: true
+  ansible.builtin.template:
+    src: dnsmasq.conf.j2
+    dest: /etc/dnsmasq.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart dnsmasq
+
+# Stock SUSE dnsmasq.service has no Restart= directive — first SIGABRT
+# leaves the unit in `failed` state until manual intervention. dnsmasq
+# 2.90 has a heap-corruption bug reachable via clear_dynamic_conf and
+# reread_dhcp (eindhoven 2026-05-17/18 outage), so unattended recovery
+# is load-bearing on this fleet.
+- name: Ensure dnsmasq.service.d drop-in directory exists
+  become: true
+  ansible.builtin.file:
+    path: /etc/systemd/system/dnsmasq.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy dnsmasq Restart=on-failure drop-in
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/dnsmasq.service.d/restart-on-failure.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Service]
+      Restart=on-failure
+      RestartSec=5s
+  notify: restart dnsmasq
+
+# dnsmasq lifecycle — two modes depending on bang_dhcp_server:
+#
+# DNSMASQ mode (default): dnsmasq is VIP-exclusive (DHCP+DNS+TFTP).
+#   Only the keepalived master serves DHCP/DNS for the lab. Under
+#   reservation-only DHCP (eindhoven and any future site that opts in via
+#   reservation_only_dhcp), the backup's dnsmasq would serve a STALE
+#   dhcp-hosts dir — the reservation writer only runs on the master, so only
+#   the master's reservation file is current. Even in pool mode, dual-active
+#   dnsmasq causes split-brain offers.
+#   Autostart is DISABLED. notify_backup.sh only fires on a MASTER->BACKUP
+#   transition, NOT a cold boot into BACKUP; with enabled=true a freshly
+#   booted backup came up with dnsmasq answering DHCPDISCOVERs from DUTs
+#   (eindhoven 2026-05-19 — bang-edam NAK'd requests bang-gouda should
+#   have served). notify_master.sh starts dnsmasq on VIP acquisition; the
+#   started/stopped tasks below own deploy-time state.
+#
+# KEA mode (bang_dhcp_server == 'kea'): dnsmasq is DNS+TFTP-only — safe
+#   (and desirable for DNS HA) to run active-active on both bangs. The
+#   three VIP-exclusive tasks below are SKIPPED; the Enable+start
+#   active-active task that follows governs dnsmasq instead.
+- name: Disable dnsmasq autostart (VIP role owns lifecycle, see comment above)
+  become: true
+  ansible.builtin.systemd:
+    name: dnsmasq
+    enabled: false
+    daemon_reload: true
+  when: (bang_dhcp_server | default('dnsmasq')) == 'dnsmasq'
+
+- name: Ensure dnsmasq is running on the VIP master
+  become: true
+  ansible.builtin.systemd:
+    name: dnsmasq
+    state: started
+  when:
+    - inventory_hostname == apply_keepalived_master_host
+    - (bang_dhcp_server | default('dnsmasq')) == 'dnsmasq'
+
+- name: Ensure dnsmasq is stopped on the VIP backup
+  become: true
+  ansible.builtin.systemd:
+    name: dnsmasq
+    state: stopped
+  when:
+    - inventory_hostname != apply_keepalived_master_host
+    - (bang_dhcp_server | default('dnsmasq')) == 'dnsmasq'
+
+- name: Enable + start dnsmasq active-active (kea DHCP mode only)
+  become: true
+  ansible.builtin.systemd:
+    name: dnsmasq.service
+    enabled: true
+    state: started
+  when: (bang_dhcp_server | default('dnsmasq')) == 'kea'
+
+# === nginx (HTTP for PXE chain + asset serving) ===
+
+# apache2 historically squatted on :80 with /etc/apache2/conf.d/*.conf
+# alias trees (/export, /install, /isos, /nodes, /share). Those are now
+# folded into the nginx vhost below — disable apache before nginx tries
+# to bind so :80 changes hands cleanly. Idempotent on hosts without
+# apache2 installed (e.g. eindhoven, where the swap already happened).
+- name: Check whether apache2 unit is installed
+  become: true
+  ansible.builtin.stat:
+    path: /usr/lib/systemd/system/apache2.service
+  register: apply_bang_services_apache2_unit
+
+- name: Stop and disable apache2 (frees :80 for nginx)
+  become: true
+  ansible.builtin.systemd:
+    name: apache2
+    state: stopped
+    enabled: false
+  when: apply_bang_services_apache2_unit.stat.exists
+
+- name: Ensure PXE root exists
+  become: true
+  ansible.builtin.file:
+    path: "{{ apply_bang_services_pxe_root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Disable default nginx vhost (openSUSE ships a stub)
+  become: true
+  ansible.builtin.file:
+    path: /etc/nginx/vhosts.d/default.conf
+    state: absent
+  notify: reload nginx
+
+- name: Deploy nginx PXE vhost
+  become: true
+  ansible.builtin.template:
+    src: nginx-pxe.conf.j2
+    dest: /etc/nginx/vhosts.d/pxe.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload nginx
+
+- name: Enable + start nginx
+  become: true
+  ansible.builtin.systemd:
+    name: nginx
+    enabled: true
+    state: started
+    daemon_reload: true
+
+# === Per-VLAN /srv/pxe/v<vid>/ content ===
+
+- name: Ensure each /srv/pxe/v<vid>/ directory exists
+  become: true
+  ansible.builtin.file:
+    path: "{{ apply_bang_services_pxe_root }}/v{{ item.vid }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ vlans }}"
+  loop_control:
+    label: "v{{ item.vid }} ({{ item.phase }}-{{ item.family }})"
+
+# Note: per-VLAN boot.ipxe files are OPERATOR-MANAGED, not role-rendered.
+# Operators stage them via:
+#     sudo cp /srv/pxe/boot.ipxe /srv/pxe/v<vid>/boot.ipxe
+# (or whatever curated chain script the site uses). The role used to push
+# a default stub here that printed "No installer staged for v<vid>. Rebooting
+# in 30s." which (a) clobbered the operator's curated script on every apply
+# and (b) wasn't a useful default in practice — every site needs to populate
+# real boot logic, and the stub gave the false impression that the chain
+# was wired when it wasn't.

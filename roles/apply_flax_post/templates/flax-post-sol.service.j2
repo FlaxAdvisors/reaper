@@ -1,0 +1,24 @@
+{# flax-post-sol — Serial-over-LAN console relay (persistent capture, powered-on blades) #}
+[Unit]
+Description=flax-post-sol — SOL console relay for the post rack
+After=docker.service network-online.target flax-post.service
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStartPre=/bin/bash -c '. /etc/flax/site.env && ip -o -4 addr | grep -qE " $${MGMT_VIP}/"'
+ExecStart=/usr/bin/docker run --rm --init --name flax-post-sol \
+    --network host \
+    -e PORT={{ apply_flax_post_sol_port }} \
+    -e POST_BLADES_URL=http://127.0.0.1:{{ apply_flax_post_web_port }}/api/v1/blades \
+    -e PATH=/opt/flax/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    -v /etc/flax/credentials-bmc.json:/etc/flax/credentials-bmc.json:ro \
+    -v /opt/flax/bin:/opt/flax/bin:ro \
+    flax-post-sol:{{ apply_flax_post_sol_image_tag }} \
+    node dist/index.js
+ExecStop=/usr/bin/docker stop flax-post-sol
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

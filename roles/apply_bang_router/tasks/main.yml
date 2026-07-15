@@ -1,0 +1,202 @@
+---
+# Bang router setup — sysctls + firewalld lab-data zone + lab-to-corp policy.
+# Idempotent. Replaces the legacy setup-bang-router.sh.
+
+- name: Deploy sysctl drop-in for IP forwarding + ARP discipline
+  become: true
+  ansible.builtin.template:
+    src: 99-bang-router.conf.j2
+    dest: /etc/sysctl.d/99-bang-router.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload sysctl
+
+- name: Remove legacy braintree-only forwarding drop-in (superseded by 99-bang-router.conf)
+  become: true
+  ansible.builtin.file:
+    path: /etc/sysctl.d/95-bang-mgmt-forward.conf
+    state: absent
+  notify: reload sysctl
+
+- name: Apply sysctl immediately so subsequent service starts see them
+  ansible.builtin.meta: flush_handlers
+
+- name: Permit VRRP (proto 112) on the internal zone — keepalived heartbeat
+  become: true
+  ansible.builtin.command:
+    argv:
+      - firewall-cmd
+      - --permanent
+      - --zone=internal
+      - --add-rich-rule=rule protocol value="vrrp" accept
+  register: r
+  changed_when: '"ALREADY_ENABLED" not in r.stderr|default("")'
+  failed_when: r.rc not in [0]
+  notify: reload firewalld
+
+# The BACKUP peer's /etc/resolv.conf points at the VIP, so when the
+# MASTER holds the VIP, the BACKUP queries DNS over the mgmt VLAN
+# (which lands in the `internal` zone on the MASTER). Without this,
+# UDP/53 is dropped at the firewall and the BACKUP can't resolve
+# anything dnsmasq is authoritative for (turtle-*, rabbit-*, etc.).
+# Symptom: ping turtle-lorax → "Name or service not known" on the
+# BACKUP bang, while ping by IP works. Surfaced post-fiesta reboot
+# 2026-05-27.
+- name: Permit DNS on the internal zone — peer-bang lookups via the VIP
+  become: true
+  ansible.builtin.command:
+    argv:
+      - firewall-cmd
+      - --permanent
+      - --zone=internal
+      - --add-service=dns
+  register: r
+  changed_when: '"ALREADY_ENABLED" not in r.stderr|default("")'
+  failed_when: r.rc not in [0]
+  notify: reload firewalld
+
+- name: Ensure firewalld lab-data zone exists (permanent)
+  become: true
+  ansible.builtin.command: >-
+    firewall-cmd --permanent --new-zone={{ apply_bang_router_lab_zone }}
+  register: r
+  changed_when: r.rc == 0
+  failed_when: r.rc not in [0, 26]   # 26 = NAME_CONFLICT (already exists)
+
+- name: Read lab-data zone target (permanent)
+  become: true
+  ansible.builtin.command: >-
+    firewall-cmd --permanent --zone={{ apply_bang_router_lab_zone }} --get-target
+  register: lab_zone_target
+  changed_when: false
+
+- name: Ensure lab-data zone target is ACCEPT
+  become: true
+  ansible.builtin.command: >-
+    firewall-cmd --permanent --zone={{ apply_bang_router_lab_zone }} --set-target=ACCEPT
+  when: lab_zone_target.stdout != "ACCEPT"
+  notify: reload firewalld
+
+# ifcfg ZONE= directives are SuSEfirewall2-era; firewalld has no wicked hook
+# to honour them, so VLAN interfaces are not bound to lab-data unless we do
+# it explicitly. Without this, lab→external FORWARD/MASQUERADE never engages
+# on a bang that's never been touched by hand (see siesta failover incident).
+- name: Read current firewalld zone of each lab VLAN interface (permanent)
+  become: true
+  ansible.builtin.command:
+    argv:
+      - firewall-cmd
+      - --permanent
+      - "--get-zone-of-interface={{ item.parent }}.{{ item.vid }}"
+  register: apply_bang_router_iface_zone
+  changed_when: false
+  failed_when: false   # "no zone" exits non-zero; handled below
+  loop: "{{ vlans | default([]) }}"
+  loop_control:
+    label: "{{ item.parent }}.{{ item.vid }}"
+
+- name: Bind lab VLAN interfaces to lab-data zone (permanent)
+  become: true
+  ansible.builtin.command:
+    argv:
+      - firewall-cmd
+      - --permanent
+      - "--zone={{ apply_bang_router_lab_zone }}"
+      - "--change-interface={{ item.item.parent }}.{{ item.item.vid }}"
+  when: (item.stdout | trim) != apply_bang_router_lab_zone
+  loop: "{{ apply_bang_router_iface_zone.results }}"
+  loop_control:
+    label: "{{ item.item.parent }}.{{ item.item.vid }}"
+  notify: reload firewalld
+
+- name: Ensure firewalld lab-to-corp policy exists (permanent)
+  become: true
+  ansible.builtin.command: >-
+    firewall-cmd --permanent --new-policy={{ apply_bang_router_lab_policy }}
+  register: r
+  changed_when: r.rc == 0
+  failed_when: r.rc not in [0, 26]
+
+- name: Ensure lab-to-corp policy ingress = lab-data
+  become: true
+  ansible.builtin.command: >-
+    firewall-cmd --permanent --policy={{ apply_bang_router_lab_policy }}
+    --add-ingress-zone={{ apply_bang_router_lab_zone }}
+  register: r
+  changed_when: '"ALREADY_ENABLED" not in r.stderr|default("")'
+  failed_when: r.rc not in [0]
+  notify: reload firewalld
+
+- name: Ensure lab-to-corp policy egress = external
+  become: true
+  ansible.builtin.command: >-
+    firewall-cmd --permanent --policy={{ apply_bang_router_lab_policy }}
+    --add-egress-zone=external
+  register: r
+  changed_when: '"ALREADY_ENABLED" not in r.stderr|default("")'
+  failed_when: r.rc not in [0]
+  notify: reload firewalld
+
+- name: Read lab-to-corp policy target (permanent)
+  become: true
+  ansible.builtin.command: >-
+    firewall-cmd --permanent --policy={{ apply_bang_router_lab_policy }} --get-target
+  register: lab_policy_target
+  changed_when: false
+
+- name: Ensure lab-to-corp policy target = ACCEPT
+  become: true
+  ansible.builtin.command: >-
+    firewall-cmd --permanent --policy={{ apply_bang_router_lab_policy }}
+    --set-target=ACCEPT
+  when: lab_policy_target.stdout != "ACCEPT"
+  notify: reload firewalld
+
+# internal->external masquerading policy. openSUSE shipped this as a
+# default before 15.6; on 15.6 we have to recreate it explicitly.
+- name: Ensure firewalld masq policy exists (permanent)
+  become: true
+  ansible.builtin.command: >-
+    firewall-cmd --permanent --new-policy={{ apply_bang_router_masq_policy }}
+  register: r
+  changed_when: r.rc == 0
+  failed_when: r.rc not in [0, 26]
+
+- name: Ensure masq policy ingress = internal
+  become: true
+  ansible.builtin.command: >-
+    firewall-cmd --permanent --policy={{ apply_bang_router_masq_policy }}
+    --add-ingress-zone=internal
+  register: r
+  changed_when: '"ALREADY_ENABLED" not in r.stderr|default("")'
+  failed_when: r.rc not in [0]
+  notify: reload firewalld
+
+- name: Ensure masq policy egress = external
+  become: true
+  ansible.builtin.command: >-
+    firewall-cmd --permanent --policy={{ apply_bang_router_masq_policy }}
+    --add-egress-zone=external
+  register: r
+  changed_when: '"ALREADY_ENABLED" not in r.stderr|default("")'
+  failed_when: r.rc not in [0]
+  notify: reload firewalld
+
+- name: Read masq policy target (permanent)
+  become: true
+  ansible.builtin.command: >-
+    firewall-cmd --permanent --policy={{ apply_bang_router_masq_policy }} --get-target
+  register: masq_policy_target
+  changed_when: false
+
+- name: Ensure masq policy target = ACCEPT
+  become: true
+  ansible.builtin.command: >-
+    firewall-cmd --permanent --policy={{ apply_bang_router_masq_policy }}
+    --set-target=ACCEPT
+  when: masq_policy_target.stdout != "ACCEPT"
+  notify: reload firewalld
+
+- name: Flush firewalld handlers before exit
+  ansible.builtin.meta: flush_handlers

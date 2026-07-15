@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% import "_components.html" as c %}
+{% block title %}flax-control — ownership{% endblock %}
+{% block content %}
+{{ c.page_header('Ownership', 'MAC roaming ledger (mac_ownership_events). Movement between roles is normal — rapid ping-pong is the symptom worth seeing (≥' ~ model.warn_threshold ~ ' handoffs/24h flags a mac below).') }}
+
+{% if model.rapid %}
+<div class="section">
+  <h2>Rapid roamers (24h)</h2>
+  <div class="grid3">
+  {% for r in model.rapid %}
+    <div class="side-card">
+      <h3><code>{{ r.mac }}</code></h3>
+      {% set _v %}{{ c.badge(r.count ~ ' handoffs', 'w') }}{% endset %}
+      {{ c.kv('last 24h', _v) }}
+      {% set _links %}<a href="/ownership?mac={{ r.mac }}">history</a> ·
+        <a href="/records?q={{ r.mac }}">records</a> ·
+        <a href="/devices/{{ r.mac }}">device</a>{% endset %}
+      {{ c.kv('links', _links) }}
+    </div>
+  {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<div class="section">
+  <h2>Handoffs</h2>
+  <form method="get" action="/ownership" class="filter-bar">
+    <input class="table-filter" type="search" name="mac"
+           value="{{ mac or '' }}" placeholder="filter by mac…">
+    <button type="submit" class="ds-btn">Filter</button>
+    {% if mac %}<a href="/ownership">clear</a>{% endif %}
+  </form>
+  {% if model.events %}
+  <div class="table-scroll"><table class="data-table sortable" id="ownership-tbl"><thead><tr>
+    <th>at</th><th>mac</th><th>from</th><th>to</th><th>sighted</th><th></th>
+  </tr></thead><tbody>
+    {% for e in model.events %}
+    <tr>
+      <td class="muted">{{ e.at }}</td>
+      <td><a href="/devices/{{ e.mac }}"><code>{{ e.mac }}</code></a></td>
+      <td>{{ e.from_role or '—' }}</td>
+      <td>{{ e.to_role }}</td>
+      <td>{{ e.switch }} {{ e.port }}</td>
+      <td><a href="/records?q={{ e.mac }}">records</a></td>
+    </tr>
+    {% endfor %}
+  </tbody></table></div>
+  {% else %}
+  <p class="empty">No roaming observed{% if mac %} for <code>{{ mac }}</code>{% endif %}.</p>
+  {% endif %}
+</div>
+
+{% endblock %}

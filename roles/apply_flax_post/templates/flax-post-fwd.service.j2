@@ -1,0 +1,27 @@
+{# roles/apply_flax_post/templates/flax-post-fwd.service.j2 #}
+[Unit]
+Description=flax-post-fwd — Redfish BMC firmware driver for post nodes (gate-only flash)
+After=docker.service network-online.target flax-stack.service
+Wants=network-online.target
+Requires=docker.service flax-stack.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/flax/flax-post/flax-post.env
+# VIP-gate — only the master bang runs the firmware writer (never two at once).
+ExecStartPre=/bin/bash -c '. /etc/flax/site.env && ip -o -4 addr | grep -qE " $${MGMT_VIP}/"'
+ExecStart=/usr/bin/docker run --rm --init --name flax-post-fwd \
+    --network host \
+    --env-file /etc/flax/flax-post/flax-post.env \
+    -v /etc/flax/site.env:/etc/flax/site.env:ro \
+    -v /etc/flax/bmc-firmware-versions.json:/etc/flax/bmc-firmware-versions.json:ro \
+    -v /etc/flax/credentials-bmc.json:/etc/flax/credentials-bmc.json:ro \
+    -v /etc/flax/post_fw.json:/etc/flax/post_fw.json:rw \
+    flax-control:${FLAX_POST_IMAGE_TAG} \
+    python -m flax_post.fwd
+ExecStop=/usr/bin/docker stop flax-post-fwd
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

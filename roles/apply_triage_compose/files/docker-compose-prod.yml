@@ -1,0 +1,28 @@
+services:
+
+  server:
+    image: prod-server:latest
+    command: npm run start
+    restart: always
+    network_mode: host
+    environment:
+      - PORT=5559
+    volumes:
+      - /etc/flax/:/etc/flax/
+
+  api:
+    image: prod-api:latest
+    command: gunicorn --bind 0.0.0.0:5555 -w 3 manage:app
+    restart: always
+    network_mode: host
+    env_file:
+      - ./.env_prod
+    volumes:
+      - /export/nodes:/export/nodes:ro
+      - /etc/flax/:/etc/flax/
+    environment:
+      - VERSION=${version}
+      # Plan 3.5: flax-control's /api/v1/{port,ports,rackous} replaces
+      # switchportrecond's on :10988. Same shape; both are network_mode:host so
+      # 127.0.0.1:8000 reaches the flax-control uvicorn directly (no TLS).
+      - SWITCHPORTRECON_URL=http://localhost:8000

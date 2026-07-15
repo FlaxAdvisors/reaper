@@ -1,0 +1,5 @@
+FLASK_APP=project/__init__.py
+FLASK_DEBUG=1
+APP_FOLDER=/home/app/api
+DB_FILE=/etc/flax/flash.json
+CACHE_URL=http://triage_at_cache_1:8002/api/v1/

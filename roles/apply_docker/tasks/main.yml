@@ -1,0 +1,49 @@
+---
+# Idempotent docker + docker-compose install, daemon up, group membership
+# for operator UX. Consumed by apply_bang_services.yml; runs before
+# apply_triage_compose so the daemon is ready when compose builds the
+# stack.
+
+- name: Ensure docker-compose package installed (pulls docker as a dependency)
+  become: true
+  community.general.zypper:
+    name: docker-compose
+    state: present
+
+- name: Ensure /etc/docker exists
+  become: true
+  ansible.builtin.file:
+    path: /etc/docker
+    state: directory
+    mode: "0755"
+
+- name: Deploy /etc/docker/daemon.json (bip + address-pools clear of lab VLANs)
+  become: true
+  ansible.builtin.template:
+    src: daemon.json.j2
+    dest: /etc/docker/daemon.json
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart docker
+
+- name: Ensure docker daemon enabled + started
+  become: true
+  ansible.builtin.systemd:
+    name: docker
+    enabled: true
+    state: started
+
+- name: Ensure docker group exists
+  become: true
+  ansible.builtin.group:
+    name: docker
+    state: present
+
+- name: Add operator users to docker group (append; preserves primary group)
+  become: true
+  ansible.builtin.user:
+    name: "{{ item }}"
+    groups: docker
+    append: true
+  loop: "{{ apply_docker_users }}"

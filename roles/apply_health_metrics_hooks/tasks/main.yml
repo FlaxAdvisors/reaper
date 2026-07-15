@@ -1,0 +1,101 @@
+---
+- name: Ensure /opt/flax/sbin/health_hooks exists
+  become: true
+  ansible.builtin.file:
+    path: "{{ apply_health_metrics_hooks_install_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy hook scripts
+  become: true
+  ansible.builtin.copy:
+    src: "health_hooks/{{ item }}.sh"
+    dest: "{{ apply_health_metrics_hooks_install_dir }}/{{ item }}.sh"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - vrrp_state
+    - chk_services_metric
+    - dnsmasq_leases
+    - coredump_count
+    - firewalld_zones
+
+- name: Ensure /etc/systemd/coredump.conf.d exists
+  become: true
+  ansible.builtin.file:
+    path: /etc/systemd/coredump.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy coredump sane-limits drop-in
+  become: true
+  ansible.builtin.copy:
+    src: coredump.conf.d/99-sane-limits.conf
+    dest: /etc/systemd/coredump.conf.d/99-sane-limits.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Deploy health-hook templated service unit
+  become: true
+  ansible.builtin.copy:
+    src: systemd/health-hook@.service
+    dest: /etc/systemd/system/health-hook@.service
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Deploy health-hook templated timer unit
+  become: true
+  ansible.builtin.copy:
+    src: systemd/health-hook@.timer
+    dest: /etc/systemd/system/health-hook@.timer
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Ensure per-timer drop-in dirs exist
+  become: true
+  ansible.builtin.file:
+    path: "/etc/systemd/system/health-hook@{{ item.name }}.timer.d"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ apply_health_metrics_hooks_timers }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Drop in per-instance timer interval
+  become: true
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/health-hook@{{ item.name }}.timer.d/interval.conf"
+    content: |
+      [Timer]
+      OnUnitActiveSec={{ item.interval }}
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ apply_health_metrics_hooks_timers }}"
+  loop_control:
+    label: "{{ item.name }} -> {{ item.interval }}"
+
+- name: Reload systemd
+  become: true
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Enable + start each hook timer
+  become: true
+  ansible.builtin.systemd:
+    name: "health-hook@{{ item.name }}.timer"
+    enabled: true
+    state: started
+  loop: "{{ apply_health_metrics_hooks_timers }}"
+  loop_control:
+    label: "{{ item.name }}"

@@ -1,0 +1,4 @@
+[
+  {"name": "rabbit-lorax", "driver": "eos", "host": "rabbit-lorax", "credentials_key": "eos"},
+  {"name": "turtle-lorax", "driver": "cumulus", "host": "turtle-lorax", "credentials_key": "cumulus"}
+]

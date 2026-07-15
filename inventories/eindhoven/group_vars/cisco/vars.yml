@@ -1,0 +1,16 @@
+---
+# Cisco IOS 15.x on WS-C3750X-48P (turtle-gouda) — network_cli (SSH) transport.
+# Admin user has privilege 15 so login lands directly in privileged exec;
+# `become_method: enable` is harmless and keeps the role symmetric with arista_eos.
+ansible_connection: ansible.netcommon.network_cli
+ansible_network_os: cisco.ios.ios
+ansible_network_cli_ssh_type: libssh
+ansible_user: "{{ vault_cisco_user }}"
+ansible_password: "{{ vault_cisco_password }}"
+ansible_become: true
+ansible_become_method: enable
+ansible_become_password: "{{ vault_cisco_enable_password }}"
+ansible_command_timeout: 120
+
+# Which device-specific role collect_config delegates to
+device_role: cisco_ios

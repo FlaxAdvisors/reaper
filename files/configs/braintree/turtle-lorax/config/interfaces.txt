@@ -1,0 +1,348 @@
+###############################################################################
+#                                                                             #
+#  WARNING : Generated file - Do no edit manually                             #
+#                                                                             #
+###############################################################################
+
+### The loopback interface ####################################################
+
+auto lo
+iface lo inet loopback
+
+### Management port ###########################################################
+
+auto eth0
+iface eth0 inet static
+    address 192.168.88.33/24
+    gateway 192.168.88.10
+
+## Standard ports ############################################################
+
+auto swp1
+iface swp1
+    bridge-pvid 2
+    bridge-vids 2 4 6 8 10 12 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31
+
+auto swp2
+iface swp2
+    bridge-access 2
+
+auto swp3
+iface swp3
+    bridge-access 2
+
+auto swp4
+iface swp4
+    alias "Guest computer mgmt access (laptops, on-site tooling)"
+    bridge-access 2
+
+auto swp5
+iface swp5
+    bridge-access 2
+
+auto swp6
+iface swp6
+    bridge-access 4
+
+auto swp7
+iface swp7
+    alias "Guest computer mgmt access (laptops, on-site tooling)"
+    bridge-access 2
+
+auto swp8
+iface swp8
+    alias "Guest computer mgmt access (laptops, on-site tooling)"
+    bridge-access 2
+
+auto swp9
+iface swp9
+    alias "Guest computer mgmt access (laptops, on-site tooling)"
+    bridge-access 2
+
+auto swp10
+iface swp10
+    alias "Guest computer mgmt access (laptops, on-site tooling)"
+    bridge-access 2
+
+auto swp11
+iface swp11
+    bridge-access 2
+
+auto swp12
+iface swp12
+    bridge-access 2
+
+auto swp13
+iface swp13
+    bridge-access 2
+
+auto swp14
+iface swp14
+    bridge-access 2
+
+auto swp15
+iface swp15
+    bridge-access 2
+
+auto swp16
+iface swp16
+    bridge-access 2
+
+auto swp17
+iface swp17
+    bridge-access 2
+
+auto swp18
+iface swp18
+    bridge-access 2
+
+auto swp19
+iface swp19
+    bridge-access 2
+
+auto swp20
+iface swp20
+    bridge-access 2
+
+auto swp21
+iface swp21
+    bridge-access 2
+
+auto swp22
+iface swp22
+    bridge-access 2
+    
+auto swp23
+iface swp23
+    bridge-access 2
+
+auto swp24
+iface swp24
+    bridge-access 2
+    
+auto swp25
+iface swp25
+    bridge-access 2
+    
+auto swp26
+iface swp26
+    bridge-access 2
+
+auto swp27
+iface swp27
+    bridge-access 2
+
+auto swp28
+iface swp28
+    bridge-access 2
+
+auto swp29
+iface swp29
+    bridge-access 2
+
+auto swp30
+iface swp30
+    bridge-access 2
+
+auto swp31
+iface swp31
+    bridge-access 2
+    
+auto swp32
+iface swp32
+    bridge-access 2
+
+auto swp33
+iface swp33
+    bridge-access 2
+
+auto swp34
+iface swp34
+    bridge-access 2
+    
+auto swp35
+iface swp35
+    bridge-access 2
+    
+auto swp36
+iface swp36
+    bridge-access 2
+    
+auto swp37
+iface swp37
+    bridge-access 2
+    
+auto swp38
+iface swp38
+    bridge-access 2
+
+auto swp39
+iface swp39
+    bridge-access 2
+
+auto swp40
+iface swp40
+    bridge-access 2
+
+auto swp41
+iface swp41
+    bridge-access 2
+
+auto swp42
+iface swp42
+    bridge-access 2
+    
+auto swp43
+iface swp43
+    bridge-access 2
+    
+auto swp44
+iface swp44
+    bridge-access 25
+
+auto swp45
+iface swp45
+    bridge-access 2
+    
+auto swp46
+iface swp46
+    bridge-access 2
+    
+auto swp47
+iface swp47
+    bridge-access 2
+
+auto swp48
+iface swp48
+    bridge-access 2
+
+### Uplink ports ##############################################################
+
+auto swp49
+iface swp49
+    bridge-access 2
+
+auto swp50
+iface swp50
+    bridge-access 2
+
+auto swp51
+iface swp51
+    bridge-access 2
+
+auto swp52
+iface swp52
+    bridge-vids 2 4 6 8 10 12 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31
+
+### VLAN interfaces ###########################################################
+
+auto vlan8
+iface vlan8 inet static
+    address 10.8.0.3/16
+    vlan-id 8
+    vlan-raw-device bridge
+
+auto vlan16
+iface vlan16 inet static
+    address 172.16.0.5/16
+    vlan-id 16
+    vlan-raw-device bridge
+
+auto vlan17
+iface vlan17 inet static
+    address 172.17.0.5/16
+    vlan-id 17
+    vlan-raw-device bridge
+
+auto vlan18
+iface vlan18 inet static
+    address 172.18.0.5/16
+    vlan-id 18
+    vlan-raw-device bridge
+
+auto vlan19
+iface vlan19 inet static
+    address 172.19.0.5/16
+    vlan-id 19
+    vlan-raw-device bridge
+
+auto vlan20
+iface vlan20 inet static
+    address 172.20.0.5/16
+    vlan-id 20
+    vlan-raw-device bridge
+
+auto vlan21
+iface vlan21 inet static
+    address 172.21.0.5/16
+    vlan-id 21
+    vlan-raw-device bridge
+
+auto vlan22
+iface vlan22 inet static
+    address 172.22.0.5/16
+    vlan-id 22
+    vlan-raw-device bridge
+
+auto vlan23
+iface vlan23 inet static
+    address 172.23.0.5/16
+    vlan-id 23
+    vlan-raw-device bridge
+
+auto vlan24
+iface vlan24 inet static
+    address 172.24.0.5/16
+    vlan-id 24
+    vlan-raw-device bridge
+
+auto vlan25
+iface vlan25 inet static
+    address 172.25.0.5/16
+    vlan-id 25
+    vlan-raw-device bridge
+
+auto vlan26
+iface vlan26 inet static
+    address 172.26.0.5/16
+    vlan-id 26
+    vlan-raw-device bridge
+
+auto vlan27
+iface vlan27 inet static
+    address 172.27.0.5/16
+    vlan-id 27
+    vlan-raw-device bridge
+
+auto vlan28
+iface vlan28 inet static
+    address 172.28.0.5/16
+    vlan-id 28
+    vlan-raw-device bridge
+
+auto vlan29
+iface vlan29 inet static
+    address 172.29.0.5/16
+    vlan-id 29
+    vlan-raw-device bridge
+
+auto vlan30
+iface vlan30 inet static
+    address 172.30.0.5/16
+    vlan-id 30
+    vlan-raw-device bridge
+
+auto vlan31
+iface vlan31 inet static
+    address 172.31.0.5/16
+    vlan-id 31
+    vlan-raw-device bridge
+
+### Bridge ####################################################################
+
+auto bridge
+iface bridge
+    bridge-ports swp1 swp2 swp3 swp4 swp5 swp6 swp7 swp8 swp9 swp10 swp11 swp12 swp13 swp14 swp15 swp16 swp17 swp18 swp19 swp20 swp21 swp22 swp23 swp24 swp25 swp26 swp27 swp28 swp29 swp30 swp31 swp32 swp33 swp34 swp35 swp36 swp37 swp38 swp39 swp40 swp41 swp42 swp43 swp44 swp45 swp46 swp47 swp48 swp49 swp50 swp51 swp52
+    bridge-pvid 1
+    bridge-vids 2 4 6 8 10 12 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31
+    bridge-vlan-aware yes

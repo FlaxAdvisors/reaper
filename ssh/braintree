@@ -1,0 +1,11 @@
+# One-time setup: add to ~/.ssh/config: Include ~/reaper/ssh/braintree
+
+Host turtle-lorax
+  HostName 192.168.88.33
+  User cumulus
+  ProxyJump bang-fiesta
+
+Host rabbit-lorax
+  HostName 192.168.88.31
+  User admin
+  ProxyJump bang-fiesta

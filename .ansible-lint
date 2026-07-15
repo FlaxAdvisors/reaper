@@ -1,0 +1,7 @@
+---
+profile: production
+
+exclude_paths:
+  - files/configs/   # collected device output, not Ansible code
+
+warn_list: []        # treat all warnings as errors

@@ -1,0 +1,30 @@
+---
+# Connectivity probe — verifies jump host → switch path after switch VLAN change.
+# Must be called with:
+#   -e probe_jump_host=<ts_ip_of_stage1_jumphost>
+#   -e probe_target=<switch_inventory_hostname>
+#   --limit <probe_target>
+#
+# Uses a short SSH timeout. Fails (non-zero exit) if the switch is unreachable.
+
+- name: Probe switch connectivity via stage1 jump host
+  hosts: "{{ probe_target | default('localhost') }}"
+  gather_facts: false
+  vars:
+    ansible_ssh_common_args: >-
+      -o StrictHostKeyChecking=no
+      -o UserKnownHostsFile=/dev/null
+      -o ConnectTimeout=10
+      -o ProxyCommand="ssh -W %h:%p -o StrictHostKeyChecking=no
+        -o UserKnownHostsFile=/dev/null {{ probe_jump_host }}"
+  tasks:
+    - name: Verify SSH connectivity
+      ansible.builtin.raw: "echo ok"
+      register: probe_result
+      changed_when: false
+
+    - name: Assert probe succeeded
+      ansible.builtin.assert:
+        that: "'ok' in probe_result.stdout"
+        fail_msg: "Connectivity probe failed — switch unreachable via {{ probe_jump_host }}"
+        success_msg: "Connectivity verified: {{ probe_jump_host }} → {{ inventory_hostname }} OK"

@@ -1,0 +1,38 @@
+---
+# Enable v2c read-only SNMP on every switch in the site so the bang-side
+# snmp_exporter (driven by apply_health_compose/files/snmp/snmp.yml — auth:
+# public_v2) can walk ifTable + entity sensors.
+#
+# Phase 1 community-only. Move to v3 with USM creds when snmp.yml grows
+# per-target `auths:` blocks.
+#
+# Vault entries required (define in inventories/<site>/group_vars/all/vault.yml):
+#   vault_snmp_community: "<ro community string>"
+#   vault_snmp_contact:   "ops@example.com"
+#
+# Run: ansible-playbook -i inventories/<site> playbooks/apply_switch_snmp.yml
+# Check-mode dry run: append --check --diff
+
+- name: Apply SNMP config to Arista EOS
+  hosts: arista
+  gather_facts: false
+  tasks:
+    - ansible.builtin.import_role:
+        name: apply_switch_snmp
+        tasks_from: arista
+
+- name: Apply SNMP config to Cisco IOS
+  hosts: cisco
+  gather_facts: false
+  tasks:
+    - ansible.builtin.import_role:
+        name: apply_switch_snmp
+        tasks_from: cisco
+
+- name: Apply SNMP config to Cumulus Linux
+  hosts: cumulus
+  gather_facts: false
+  tasks:
+    - ansible.builtin.import_role:
+        name: apply_switch_snmp
+        tasks_from: cumulus

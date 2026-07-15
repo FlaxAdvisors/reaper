@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}status · flax console{% endblock %}
+{% block content %}
+<h1 class="page">System status</h1>
+<p class="page-sub">The pipeline axis and the role lanes riding on it — live.</p>
+
+<div class="hero">
+  <div class="hero-head">
+    <span class="statelamp {{ pipeline.overall }}"><span class="big"></span>
+      <b>{{ pipeline.overall|capitalize }}</b></span>
+    <span class="badge n">{{ healthy_count }}/{{ expected_count }} acking</span>
+  </div>
+  <div hx-get="/partials/pipeline" hx-trigger="every 10s" hx-swap="innerHTML">
+    {% include "partials/pipeline.html" %}
+  </div>
+</div>
+
+<div class="axis-label"><b>Layers</b><span class="rule"></span></div>
+<div class="grid3">
+  <a class="lcard" href="/layers/sensing"><div class="q">Are my eyes open?</div>
+    <h3>Sensing</h3>
+    <div class="lrow"><span class="k">Switches reachable</span><span class="v">{{ reachable_count }}/{{ switch_count }}</span></div>
+    <div class="lrow"><span class="k">Ports observed</span><span class="v">{{ observe_port_count }}</span></div>
+    <div class="lrow"><span class="k">Unreserved leases</span>
+      {% if unreserved_leases %}<span class="badge w">{{ unreserved_leases }}</span>{% else %}<span class="badge g">0</span>{% endif %}</div>
+  </a>
+  <a class="lcard" href="/layers/policy"><div class="q">Deciding from fresh facts?</div>
+    <h3>Policy</h3>
+    <div class="lrow"><span class="k">Classify</span><span class="v">{{ classify_state }}</span></div>
+  </a>
+  <a class="lcard" href="/layers/actuation"><div class="q">Hands moving, as instructed?</div>
+    <h3>Actuation</h3>
+    <div class="lrow"><span class="k">Reconcile</span><span class="v">{{ reconcile_state }}</span></div>
+  </a>
+</div>
+
+<div class="axis-label"><b>Roles</b><span class="rule"></span></div>
+<div class="grid2">
+  {% for lane in role_lanes %}
+  <a class="lane" href="/lanes"><span class="chip">{{ lane.role }}</span>
+    <span class="stat"><span class="v">{{ lane.dut_count }}</span><span class="l">duts</span></span></a>
+  {% endfor %}
+</div>
+
+<section class="block"><h2>Recent events</h2>
+  <div hx-get="/partials/events" hx-trigger="every 10s" hx-swap="innerHTML">
+    {% include "partials/events.html" %}
+  </div>
+</section>
+{% endblock %}

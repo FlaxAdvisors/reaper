@@ -1,0 +1,195 @@
+---
+# Tasks added incrementally — see plan tasks 2 through 10.
+
+# Cleanup of the old per-iface forwarding=0 drop-in. The mechanism was
+# wrong: the kernel checks <iface>.forwarding for *every* forwarded
+# packet, including masq's de-NAT reply on the WAN side, so setting
+# the WAN interfaces to forwarding=0 silently broke NAT (see commit
+# 6660414 for the bang-fiesta fix that exposed this). Corp-WAN-loop
+# prevention belongs in a firewalld FORWARD rule, tracked separately.
+- name: Remove obsolete /etc/sysctl.d/92-wan-no-forward.conf and editor backup
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/sysctl.d/92-wan-no-forward.conf
+    - /etc/sysctl.d/92-wan-no-forward.conf~
+  notify: reload sysctl
+
+- name: Reload sysctl after drop-in removal
+  ansible.builtin.meta: flush_handlers
+
+- name: Deploy tmpfiles.d entry for jumphost_wan_failover_state_dir
+  become: true
+  ansible.builtin.template:
+    src: wan-failover-tmpfiles.conf.j2
+    dest: /etc/tmpfiles.d/wan-failover.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: apply tmpfiles wan-failover
+
+- name: Apply tmpfiles immediately so state dir exists before service start
+  ansible.builtin.meta: flush_handlers
+
+# Dual-WAN failover (eth0.2 ⇄ wlan0 route-metric swap) is gated by
+# jumphost_wan_failover_wan_failover_enabled. Single-WAN-path sites
+# (braintree, eindhoven) set that false and get only the wlan0 watchdog
+# below. The firewalld asserts here are wan-failover prerequisites
+# (require both primary AND backup in 'external'), not watchdog ones.
+- name: Wan-failover daemon — firewalld preconditions + unit deploy
+  when: jumphost_wan_failover_wan_failover_enabled
+  block:
+    - name: Assert firewalld is active
+      become: true
+      ansible.builtin.command: firewall-cmd --state
+      register: jumphost_wan_failover_firewalld_state
+      changed_when: false
+      failed_when: jumphost_wan_failover_firewalld_state.rc != 0
+
+    - name: Get firewalld interface->zone bindings
+      become: true
+      ansible.builtin.command: firewall-cmd --get-active-zones
+      register: jumphost_wan_failover_firewalld_active_zones
+      changed_when: false
+      check_mode: false
+
+    - name: Assert primary WAN interface is in firewalld 'external' zone
+      ansible.builtin.assert:
+        that:
+          - "'external' in jumphost_wan_failover_firewalld_active_zones.stdout"
+          - "jumphost_wan_failover_primary_iface in jumphost_wan_failover_firewalld_active_zones.stdout"
+        fail_msg: >-
+          firewalld 'external' zone must include {{ jumphost_wan_failover_primary_iface }}.
+          Current zones:
+          {{ jumphost_wan_failover_firewalld_active_zones.stdout }}
+
+    - name: Assert backup WAN interface is in firewalld 'external' zone
+      ansible.builtin.assert:
+        that:
+          - "jumphost_wan_failover_backup_iface in jumphost_wan_failover_firewalld_active_zones.stdout"
+        fail_msg: >-
+          firewalld 'external' zone must include {{ jumphost_wan_failover_backup_iface }}.
+          Current zones:
+          {{ jumphost_wan_failover_firewalld_active_zones.stdout }}
+
+    - name: Assert masquerade is enabled on the 'external' zone
+      become: true
+      ansible.builtin.command: firewall-cmd --zone=external --query-masquerade
+      register: jumphost_wan_failover_firewalld_masq
+      changed_when: false
+      failed_when: jumphost_wan_failover_firewalld_masq.stdout != "yes"
+
+    # Note: we deliberately do NOT assert that intra-zone forward is disabled
+    # on the external zone. firewalld 1.0 (2021) flipped that default to
+    # enabled, so modern openSUSE ships with --query-forward returning "yes".
+    #
+    # The earlier per-iface forwarding=0 mechanism for corp-loop prevention
+    # was removed (it broke masq's de-NAT reply leg — see commit 6660414).
+    # A replacement that does not break NAT — e.g. a firewalld FORWARD rule
+    # blocking eth0.2↔wlan0 specifically while leaving internal↔external
+    # open — is tracked as separate work.
+
+    - name: Deploy wan-failover script to /usr/local/sbin
+      become: true
+      ansible.builtin.copy:
+        src: "{{ jumphost_wan_failover_shared_inputs_dir }}/wan-failover"
+        dest: /usr/local/sbin/wan-failover
+        owner: root
+        group: root
+        mode: "0755"
+      notify: restart wan-failover
+
+    - name: Deploy wan-failover.service unit
+      become: true
+      ansible.builtin.template:
+        src: wan-failover.service.j2
+        dest: /etc/systemd/system/wan-failover.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify: restart wan-failover
+
+    - name: Enable and start wan-failover.service
+      become: true
+      ansible.builtin.systemd:
+        name: wan-failover.service
+        enabled: true
+        state: started
+        daemon_reload: true
+
+# Teardown when dual-WAN failover is NOT wanted at this site. The enabled
+# block above only SKIPS on false — it does not tear down an already-running
+# unit, so a host that was deployed while the flag was true keeps the daemon
+# running after the flag is flipped false (deployed-state drift; this is
+# exactly what happened on eindhoven gouda/edam, 2026-06-22). This branch
+# self-heals that by stop+disable + removing the unit/script, the symmetric
+# inverse of the deploy block. NOTE: a runtime-added demoted default route
+# (metric = *_demoted) is NOT cleaned here — the daemon simply stops re-adding
+# it and it clears on the next reboot / DHCP renewal; clean it by hand if
+# stale (ip route del default ... dev <primary> metric <demoted>).
+- name: Wan-failover daemon — teardown when disabled
+  when: not jumphost_wan_failover_wan_failover_enabled
+  block:
+    - name: Check whether wan-failover.service unit exists
+      become: true
+      ansible.builtin.stat:
+        path: /etc/systemd/system/wan-failover.service
+      register: jumphost_wan_failover_unit_stat
+
+    - name: Stop and disable wan-failover.service
+      become: true
+      ansible.builtin.systemd:
+        name: wan-failover.service
+        state: stopped
+        enabled: false
+      when: jumphost_wan_failover_unit_stat.stat.exists
+
+    - name: Remove wan-failover.service unit and script
+      become: true
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/wan-failover.service
+        - /usr/local/sbin/wan-failover
+      notify: reload systemd after wan-failover teardown
+
+- name: Deploy wlan-watchdog script to /usr/local/sbin
+  become: true
+  ansible.builtin.copy:
+    src: "{{ jumphost_wan_failover_shared_inputs_dir }}/wlan-watchdog"
+    dest: /usr/local/sbin/wlan-watchdog
+    owner: root
+    group: root
+    mode: "0755"
+  notify: restart wlan-watchdog timer
+
+- name: Deploy wlan-watchdog.service unit
+  become: true
+  ansible.builtin.template:
+    src: wlan-watchdog.service.j2
+    dest: /etc/systemd/system/wlan-watchdog.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart wlan-watchdog timer
+
+- name: Deploy wlan-watchdog.timer unit
+  become: true
+  ansible.builtin.template:
+    src: wlan-watchdog.timer.j2
+    dest: /etc/systemd/system/wlan-watchdog.timer
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart wlan-watchdog timer
+
+- name: Enable and start wlan-watchdog.timer
+  become: true
+  ansible.builtin.systemd:
+    name: wlan-watchdog.timer
+    enabled: "{{ jumphost_wan_failover_wlan_watchdog_enabled }}"
+    state: "{{ 'started' if jumphost_wan_failover_wlan_watchdog_enabled else 'stopped' }}"
+    daemon_reload: true

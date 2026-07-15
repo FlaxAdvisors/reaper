@@ -1,0 +1,14 @@
+---
+# Destination for operator-callable BMC tools. /opt/flax/bin is the
+# right home — these scripts reach BMCs via Redfish (curl) or SSH;
+# they do not need local root on the bang to run, so they live
+# alongside macsum/finddhcpack/soltriage rather than the daemon
+# binaries in /opt/flax/sbin.
+apply_bmc_scripts_dest_dir: /opt/flax/bin
+
+# Source-to-destination map. Keep the rename here so the role itself
+# stays trivially loop-driven and adding a new script is one line.
+apply_bmc_scripts_files:
+  - { src: bmc-reset-via-redfish.sh,      dest: bmc-reset-via-redfish }
+  - { src: bmc-enable-inband-admin.sh.j2, dest: bmc-enable-inband-admin }
+  - { src: fru_audit_post_vlan.sh.j2,     dest: fru_audit_post_vlan }

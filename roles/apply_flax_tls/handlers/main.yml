@@ -1,0 +1,19 @@
+---
+# Reload whichever nginx containers are present so they pick up the new leaf.
+# Both are failed_when:false — on a first-ever deploy neither container exists
+# yet (flax-stack/flax-post start fresh with the cert already in place).
+- name: Reload flax-stack nginx (tls)
+  become: true
+  ansible.builtin.command:
+    cmd: docker compose -f /etc/flax/flax-stack/docker-compose.yml exec -T nginx nginx -s reload
+  register: apply_flax_tls_reload_stack
+  changed_when: apply_flax_tls_reload_stack.rc == 0
+  failed_when: false
+
+- name: Reload flax-post nginx (tls)
+  become: true
+  ansible.builtin.command:
+    cmd: docker exec flax-post-nginx nginx -s reload
+  register: apply_flax_tls_reload_post
+  changed_when: apply_flax_tls_reload_post.rc == 0
+  failed_when: false

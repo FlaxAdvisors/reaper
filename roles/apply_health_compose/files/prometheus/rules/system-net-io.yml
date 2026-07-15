@@ -1,0 +1,15 @@
+groups:
+  - name: system-net-io
+    rules:
+      - alert: InterfaceErrorsRising
+        expr: rate(node_network_receive_errs_total[5m]) > 1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Interface {{ $labels.device }} errors rising on {{ $labels.bang }}"
+
+      - alert: InterfaceFlapping
+        expr: changes(node_network_up[10m]) > 5
+        labels: { severity: warning }
+        annotations:
+          summary: "Interface {{ $labels.device }} flapping on {{ $labels.bang }}"

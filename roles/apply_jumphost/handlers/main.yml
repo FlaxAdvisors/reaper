@@ -1,0 +1,13 @@
+---
+- name: Reload network
+  become: true
+  ansible.builtin.systemd:
+    name: network
+    state: restarted
+  listen: reload network
+
+- name: Reload netconfig
+  become: true
+  ansible.builtin.command: netconfig update -f
+  changed_when: true
+  listen: reload netconfig

@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% import "_components.html" as c %}
+{% block title %}flax-control — leases{% endblock %}
+{% block content %}
+{{ c.page_header('Leases', 'Live DHCP state vs desired') }}
+<p class="muted">Active Kea leases (<code>kea.lease4</code> / <code>kea.lease6</code>, state=0).</p>
+
+<p class="page-sub">
+  {{ model.total }} active leases ·
+  {% if model.unreserved_count %}
+    {{ c.badge(model.unreserved_count ~ ' unreserved', 'w') }}
+  {% else %}{{ c.badge('all reserved', 'g') }}{% endif %}
+</p>
+
+{% if subnet_summary %}
+<div class="filter-bar">
+  <span class="muted">by subnet:</span>
+  {% for sid, n in subnet_summary %}
+    <span class="tag">subnet {{ sid if sid is not none else '—' }}: {{ n }}</span>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if leases %}
+<div class="filter-bar">
+  <label>filter <input class="table-filter" data-table="leases-tbl" type="search" placeholder="ip, mac…"></label>
+  <span class="muted">{{ leases | length }} active lease{{ '' if leases|length == 1 else 's' }}</span>
+</div>
+<div class="table-scroll"><table class="data-table sortable" id="leases-tbl">
+  <thead><tr>
+    <th>IP</th><th>MAC</th><th>subnet</th><th>reservation</th><th>expires</th><th>state</th>
+  </tr></thead>
+  <tbody>
+  {% for l in leases %}
+    <tr class="{{ 'lease-unreserved' if not l.matched else '' }}">
+      <td><code>{{ l.ip }}</code></td>
+      <td>
+        {% if l.mac and not l.mac.startswith('duid:') %}
+        <a href="/devices/{{ l.mac }}"><code>{{ l.mac }}</code></a>
+        {% else %}
+        <code class="muted" title="v6 lease keyed by DUID (no hardware address)">{{ l.mac or '—' }}</code>
+        {% endif %}
+      </td>
+      <td>{{ l.subnet_id if l.subnet_id is not none else '—' }}</td>
+      <td>{% if l.matched %}{{ c.badge('reserved', 'g') }}
+          {% else %}{{ c.badge('unreserved · dhcp_release?', 'w') }}{% endif %}</td>
+      <td class="muted">{{ l.expires or '—' }}</td>
+      <td>{{ c.outcome_badge('active' if l.state == 0 else l.state) }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="empty">No active leases — Kea hasn't handed out any addresses, or this
+site isn't on the Postgres lease backend yet.</p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,45 @@
+[Unit]
+Description=flax-classify — pure formula classify_proposals writer
+After=docker.service network-online.target flax-stack.service
+Wants=network-online.target
+Requires=docker.service flax-stack.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/flax/flax-classify/flax-classify.env
+# VIP-gate — bash one-liner (no container spin-up) so the gate adds <100ms.
+# Per spec section "HA topology": classify is MASTER-only for writes in v1
+# (BACKUP renders DNS files only, but Plan 4 has no DNS writes so it's
+# strictly MASTER-only).
+ExecStartPre=/bin/bash -c '. /etc/flax/site.env && ip -o -4 addr | grep -qE " $${MGMT_VIP}/"'
+
+ExecStart=/usr/bin/docker run --rm --name flax-classify \
+    --network host \
+    --env-file /etc/flax/flax-classify/flax-classify.env \
+    -v /etc/flax/vlans.json:/etc/flax/vlans.json:ro \
+    -v /etc/flax/geometry.json:/etc/flax/geometry.json:ro \
+    -v /etc/flax/post-geometry.json:/etc/flax/post-geometry.json:ro \
+    -v /etc/flax/no-steer-ports.json:/etc/flax/no-steer-ports.json:ro \
+    -v /etc/flax/bmc-only-families.json:/etc/flax/bmc-only-families.json:ro \
+    -v /etc/flax/roles.d:/etc/flax/roles.d:ro \
+    -v /etc/dnsmasq.hosts:/etc/dnsmasq.hosts \
+    flax-control:${FLAX_CLASSIFY_IMAGE_TAG} \
+    python -m flax_classify \
+        --cycle-secs {{ apply_flax_classify_cycle_secs }} \
+        --debounce-secs {{ apply_flax_classify_debounce_secs }} \
+        --healthz-port {{ apply_flax_classify_healthz_port }} \
+        --healthz-stale-secs {{ apply_flax_classify_healthz_stale_secs }} \
+        --vlans /etc/flax/vlans.json \
+        --geometry /etc/flax/geometry.json \
+        --post-geometry /etc/flax/post-geometry.json \
+        --no-steer /etc/flax/no-steer-ports.json \
+        --bmc-only /etc/flax/bmc-only-families.json \
+        --roles-dir /etc/flax/roles.d
+
+ExecStop=/usr/bin/docker stop flax-classify
+
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,22 @@
+# Managed by apply_radvd. Do not edit.
+# RA for stateful DHCPv6: M=1 (use DHCPv6 for addresses), O=1, no SLAAC,
+# RouterLifetime 0 (bang is never a v6 default gateway -- mirrors dnsmasq
+# ra-param=<iface>,0,0).
+{% macro stanza(iface, prefix) %}
+interface {{ iface }} {
+    AdvSendAdvert on;
+    AdvManagedFlag on;
+    AdvOtherConfigFlag on;
+    AdvDefaultLifetime 0;
+    prefix {{ prefix }}::/64 {
+        AdvOnLink on;
+        AdvAutonomous off;
+    };
+};
+{% endmacro %}
+{% if apply_radvd_v6_lab_vlans %}
+{% for v in vlans %}
+{{ stanza(v.parent ~ '.' ~ v.vid, 'fd00:' ~ v.vid) }}
+{% endfor %}
+{% endif %}
+{{ stanza(bang_mgmt_iface, apply_radvd_mgmt_v6_prefix) }}

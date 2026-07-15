@@ -1,0 +1,13 @@
+---
+apply_bang_services_pxe_root: /srv/pxe
+apply_bang_services_tftp_root: /srv/tftpboot
+apply_bang_services_dhcp_pool_start: 50
+apply_bang_services_dhcp_pool_end: 200
+apply_bang_services_dhcp_lease: 12h
+apply_bang_services_upstream_dns:
+  - 8.8.8.8
+  - 8.8.4.4
+
+# Path to site-agnostic role-input files (apparmor override) relocated
+# out of roles/apply_bang_services/files/ for operator visibility.
+apply_bang_services_shared_inputs_dir: "{{ playbook_dir }}/../files/services/_common"

@@ -1,0 +1,87 @@
+[
+  {
+    "switch": "rabbit-lorax",
+    "port": "Ethernet20/1",
+    "reason": "vlan 888 (peer-SONiC / bang / non-post access) \u2014 exclude from observation"
+  },
+  {
+    "switch": "rabbit-lorax",
+    "port": "Ethernet21/1",
+    "reason": "vlan 888 (peer-SONiC / bang / non-post access) \u2014 exclude from observation"
+  },
+  {
+    "switch": "rabbit-lorax",
+    "port": "Ethernet22/1",
+    "reason": "vlan 888 (peer-SONiC / bang / non-post access) \u2014 exclude from observation"
+  },
+  {
+    "switch": "rabbit-lorax",
+    "port": "Ethernet26/1",
+    "reason": "vlan 888 (peer-SONiC / bang / non-post access) \u2014 exclude from observation"
+  },
+  {
+    "switch": "rabbit-lorax",
+    "port": "Ethernet27/1",
+    "reason": "vlan 888 (peer-SONiC / bang / non-post access) \u2014 exclude from observation"
+  },
+  {
+    "switch": "rabbit-lorax",
+    "port": "Ethernet1/1",
+    "reason": "vlan 2 mgmt access \u2014 exclude from observation"
+  },
+  {
+    "switch": "rabbit-lorax",
+    "port": "Ethernet1/2",
+    "reason": "vlan 2 mgmt access \u2014 exclude from observation"
+  },
+  {
+    "switch": "rabbit-lorax",
+    "port": "Ethernet1/3",
+    "reason": "vlan 2 mgmt access \u2014 exclude from observation"
+  },
+  {
+    "switch": "rabbit-lorax",
+    "port": "Ethernet1/4",
+    "reason": "vlan 2 mgmt access \u2014 exclude from observation"
+  },
+  {
+    "switch": "rabbit-lorax",
+    "port": "Ethernet2/1",
+    "reason": "vlan 2 mgmt access \u2014 exclude from observation"
+  },
+  {
+    "switch": "rabbit-lorax",
+    "port": "Ethernet2/2",
+    "reason": "vlan 2 mgmt access \u2014 exclude from observation"
+  },
+  {
+    "switch": "rabbit-lorax",
+    "port": "Ethernet2/3",
+    "reason": "vlan 2 mgmt access \u2014 exclude from observation"
+  },
+  {
+    "switch": "rabbit-lorax",
+    "port": "Ethernet2/4",
+    "reason": "vlan 2 mgmt access \u2014 exclude from observation"
+  },
+  {
+    "switch": "rabbit-lorax",
+    "port": "Ethernet3/1",
+    "reason": "vlan 2 mgmt access \u2014 exclude from observation"
+  },
+  {
+    "switch": "rabbit-lorax",
+    "port": "Ethernet4/1",
+    "reason": "vlan 2 mgmt access \u2014 exclude from observation"
+  },
+  {
+    "switch": "rabbit-lorax",
+    "port": "Ethernet32/3",
+    "reason": "vlan 2 mgmt access \u2014 exclude from observation"
+  },
+  {
+    "switch": "rabbit-lorax",
+    "port": "Ethernet32/4",
+    "reason": "vlan 2 mgmt access \u2014 exclude from observation"
+  }
+]

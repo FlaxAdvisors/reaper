@@ -1,0 +1,23 @@
+groups:
+  - name: network-uplink
+    rules:
+      - alert: InternetUplinkDown
+        expr: |
+          (count by (site) (probe_success{probe_kind="internet_uplink"} == 0))
+          >= (0.5 * count by (site) (probe_success{probe_kind="internet_uplink"}))
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "Internet uplink down at {{ $labels.site }}"
+          description: "More than 50% of WAN ICMP probes failing for 2m."
+
+      - alert: InternetUplinkUnstable
+        expr: |
+          sum by (site) (
+            sum_over_time((1 - probe_success{probe_kind="internet_uplink"})[1h:])
+          ) >= 60
+        for: 0m
+        labels: { severity: warning }
+        annotations:
+          summary: "Internet uplink unstable at {{ $labels.site }}"
+          description: ">=60 failed ICMP probes in last hour (~4% loss) across 1.1.1.1/8.8.8.8/9.9.9.9 from both bangs at {{ $labels.site }}."

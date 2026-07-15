@@ -1,0 +1,10 @@
+---
+# Apply the WAN path failover services (wan-failover, wlan-watchdog) and
+# the supporting sysctl drop-in to all jumphosts. Standalone playbook so
+# iteration on this role does not re-run apply_jumphost.
+
+- name: Apply WAN failover services
+  hosts: jumphosts
+  gather_facts: false
+  roles:
+    - jumphost_wan_failover

@@ -1,0 +1,7 @@
+{% for jh in site_jumphosts %}
+Host {{ jh.name }}
+  HostName {{ jh.ts_ip }}
+  User flax
+  IdentityFile ~/.ssh/id_ed25519
+
+{% endfor %}

@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% import "_components.html" as c %}
+{% block title %}flax-control — devices{% endblock %}
+{% block content %}
+{{ c.page_header('Nodes', 'Every MAC flax-observe has seen, cross-linked to its switch/port.') }}
+{% if devices %}
+<div class="filter-bar">
+  <label>filter <input class="table-filter" data-table="devices-tbl" type="search" placeholder="mac, switch, family…"></label>
+  <span class="muted">{{ devices | length }} device{{ '' if devices|length == 1 else 's' }}</span>
+</div>
+<div class="table-scroll"><table class="data-table sortable" id="devices-tbl"><thead><tr>
+  <th>mac</th><th>switch</th><th>port</th><th>kind</th><th>family</th><th>last seen</th>
+</tr></thead><tbody>
+    {% for d in devices %}
+    <tr>
+      <td><a href="/devices/{{ d.mac }}"><code>{{ d.mac }}</code></a></td>
+      <td><a href="/switches/{{ d.switch }}">{{ d.switch }}</a></td>
+      <td><a href="/switches/{{ d.switch }}/{{ d.port }}"><code>{{ d.port }}</code></a></td>
+      <td>{{ c.badge(d.kind, 'n') }}</td>
+      <td>{% if d.family %}<span class="tag">{{ d.family }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+      <td class="muted">{{ d.last_seen or '—' }}</td>
+    </tr>
+    {% endfor %}
+</tbody></table></div>
+{% else %}
+<p class="empty">No devices enrolled yet — flax-discover hasn't shipped to this site.</p>
+{% endif %}
+{% endblock %}

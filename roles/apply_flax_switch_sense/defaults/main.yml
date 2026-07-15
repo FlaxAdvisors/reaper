@@ -1,0 +1,14 @@
+---
+apply_flax_switch_sense_image_tag: "0.9.41"
+apply_flax_switch_sense_healthz_port: 10989
+apply_flax_switch_sense_cycle_secs: 10
+apply_flax_switch_sense_healthz_stale_secs: 30
+
+# Password supplied by inventory from vault. defaults blank — assertion in
+# main.yml fails loud if it's missing at deploy time.
+apply_flax_switch_sense_db_password: ""
+
+# Path the systemd unit will run docker with — switches.json + credentials.json
+# already shipped by apply_lease_agent + apply_flax_stack-adjacent infra.
+apply_flax_switch_sense_switches_path: /etc/flax/switches.json
+apply_flax_switch_sense_credentials_path: /etc/flax/credentials.json

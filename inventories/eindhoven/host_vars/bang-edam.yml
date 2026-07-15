@@ -1,0 +1,7 @@
+---
+# bang-edam is the Postgres streaming STANDBY (bang-gouda is primary). A standby
+# is read-only: alembic must NOT run here (it would fail). apply_flax_stack gates
+# the migration + role-provisioning on this flag. Runtime primary/standby role is
+# owned by the keepalived notify hooks (promote-on-MASTER), not this deploy-time
+# flag — this only selects whether alembic runs. Mirrors braintree's bang-siesta.
+apply_flax_stack_is_primary: false

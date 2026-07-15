@@ -1,0 +1,126 @@
+---
+# Collects configuration and show-command output from Cisco IOS devices.
+# Uses cisco.ios.ios_command (network_cli transport).
+# Each command is separate so a failure on one does not abort the others.
+# Output is written to files/configs/{{ site_name }}/{{ inventory_hostname }}/.
+
+- name: Collect show running-config
+  cisco.ios.ios_command:
+    commands:
+      - show running-config
+  register: cisco_ios_running_config
+  changed_when: false
+  check_mode: false
+
+- name: Write running-config.txt
+  delegate_to: localhost
+  ansible.builtin.copy:
+    content: "{{ cisco_ios_running_config.stdout[0] }}"
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/config/running-config.txt"
+    mode: "0644"
+
+- name: Collect show interfaces status
+  when: not ansible_check_mode
+  cisco.ios.ios_command:
+    commands:
+      - show interfaces status
+  register: cisco_ios_show_interfaces
+  changed_when: false
+  check_mode: false
+
+- name: Write show-interfaces.txt
+  delegate_to: localhost
+  when: not ansible_check_mode
+  ansible.builtin.copy:
+    content: "{{ cisco_ios_show_interfaces.stdout[0] }}"
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/show/show-interfaces.txt"
+    mode: "0644"
+
+- name: Collect show lldp neighbors
+  when: not ansible_check_mode
+  cisco.ios.ios_command:
+    commands:
+      - show lldp neighbors
+  register: cisco_ios_show_lldp
+  changed_when: false
+  check_mode: false
+
+- name: Write show-lldp.txt
+  delegate_to: localhost
+  when: not ansible_check_mode
+  ansible.builtin.copy:
+    content: "{{ cisco_ios_show_lldp.stdout[0] }}"
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/show/show-lldp.txt"
+    mode: "0644"
+
+- name: Collect show version
+  when: not ansible_check_mode
+  cisco.ios.ios_command:
+    commands:
+      - show version
+  register: cisco_ios_show_version
+  changed_when: false
+  check_mode: false
+
+- name: Write show-version.txt
+  delegate_to: localhost
+  when: not ansible_check_mode
+  ansible.builtin.copy:
+    content: "{{ cisco_ios_show_version.stdout[0] }}"
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/show/show-version.txt"
+    mode: "0644"
+
+- name: Collect show ip route
+  when: not ansible_check_mode
+  cisco.ios.ios_command:
+    commands:
+      - show ip route
+  register: cisco_ios_show_route
+  changed_when: false
+  check_mode: false
+  # L2-only switches reject `show ip route` outright (no `ip routing`).
+  failed_when: false
+
+- name: Write show-route.txt
+  delegate_to: localhost
+  when: not ansible_check_mode
+  ansible.builtin.copy:
+    content: "{{ cisco_ios_show_route.stdout | first | default('IP routing not enabled or command failed') }}"
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/show/show-route.txt"
+    mode: "0644"
+
+- name: Collect show vlan brief
+  when: not ansible_check_mode
+  cisco.ios.ios_command:
+    commands:
+      - show vlan brief
+  register: cisco_ios_show_vlan
+  changed_when: false
+  check_mode: false
+
+- name: Write show-vlan.txt
+  delegate_to: localhost
+  when: not ansible_check_mode
+  ansible.builtin.copy:
+    content: "{{ cisco_ios_show_vlan.stdout[0] }}"
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/show/show-vlan.txt"
+    mode: "0644"
+
+- name: Collect show spanning-tree mst
+  when: not ansible_check_mode
+  cisco.ios.ios_command:
+    commands:
+      - show spanning-tree mst
+  register: cisco_ios_show_mst
+  changed_when: false
+  check_mode: false
+  # MSTP may not be configured on every IOS device — capture whatever we get.
+  failed_when: false
+
+- name: Write show-mst.txt
+  delegate_to: localhost
+  when: not ansible_check_mode
+  ansible.builtin.copy:
+    content: "{{ cisco_ios_show_mst.stdout | first | default('MSTP not configured or command failed') }}"
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/show/show-mst.txt"
+    mode: "0644"

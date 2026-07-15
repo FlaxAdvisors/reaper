@@ -1,0 +1,287 @@
+---
+site_name: braintree
+
+# Reaper-leased now manages all dhcp-host reservations dynamically via
+# /etc/dnsmasq.dhcp-hosts/. The legacy /etc/dnsmasq.d/lab-{post,triage}-
+# reservations.conf files cause MAC-IP conflicts with the dynamic dir
+# (the static entries silently shadow reaper-leased's upgrades), so they
+# are removed at braintree.
+legacy_lab_reservations: false
+
+# Absolute path for collected config output. playbook_dir is the playbooks/ directory;
+# go one level up to land in the repo root's files/configs/ tree.
+config_output_dir: "{{ playbook_dir }}/../files/configs"
+
+# Inventory hostnames match ~/.ssh/config Host aliases (rabbit-lorax, turtle-lorax).
+# ProxyJump through bang-lorax is configured in ~/.ssh/config — no inline proxy needed.
+# StrictHostKeyChecking is disabled because lab devices don't have stable host keys.
+ansible_ssh_common_args: >-
+  -o StrictHostKeyChecking=no
+  -o UserKnownHostsFile=/dev/null
+
+site_jumphosts:
+  # bang-lorax DECOM 2026-05-04 — chassis faulted; replaced by bang-fiesta + bang-siesta pair.
+  # - { name: bang-lorax,  ts_ip: "{{ bang_lorax_ts_ip }}" }
+  - { name: bang-fiesta, ts_ip: "{{ bang_fiesta_ts_ip }}" }
+  - { name: bang-siesta, ts_ip: "{{ bang_siesta_ts_ip }}" }
+
+# --- Phase 2 step 2: keepalived VIP + apply_bang_router prereq ---
+# Mirrors eindhoven's group_vars shape so the same roles work here.
+
+bang_lab_domain: brt.lab
+
+# Per-site core infra: primary turtle is the L2/L3 spine, primary
+# rabbit is the managed switch peering it. Consumed by the new
+# apply_flax_facts role (writes them as PRIMARY_TURTLE / PRIMARY_RABBIT
+# into /etc/flax/site.env for /opt/flax/bin/ utilities like macsum).
+primary_rabbit: rabbit-lorax
+primary_turtle: turtle-lorax
+turtle_type: cumulus
+
+bang_mgmt_vip: 192.168.88.10
+bang_mgmt_cidr: 192.168.88.10/24
+bang_mgmt_iface: mgmt
+bang_wan_iface: public
+
+# Dynamic DHCP pool for laptops/on-site tooling on the mgmt VLAN.
+# Consumed by roles/apply_bang_services/templates/dnsmasq.conf.j2.
+# Omitting this var falls back to the legacy static-only range
+# (current behaviour at lavergne). Not a role default — deliberately
+# scoped to mgmt-VLAN, not per-DUT-VLAN ranges.
+mgmt_guest_pool:
+  start: 192.168.88.200
+  end:   192.168.88.249
+  lease: 8h
+
+# Enable RA-stateless on the mgmt VLAN. LL-only (no prefix), no v6 default
+# route. See docs/superpowers/specs/2026-05-11-mgmt-vlan-dhcpv6-ra-stateless-design.md
+mgmt_v6_ra_stateless: true
+
+# Per-vlan L3 SVI hostname → IP suffix map. Consumed by lab-hosts.j2 to
+# render switch SVI A records (172.<vid>.0.<suffix>) for every vlan in
+# vlans:. .4 reserved for future rabbit_secondary at braintree.
+switch_host_suffix:
+  rabbit-lorax: 3
+  turtle-lorax: 5
+
+bang_host_suffix:
+  bang-fiesta: 1
+  bang-siesta: 2
+
+bang_vrrp_priority:
+  bang-fiesta: 110
+  bang-siesta: 90
+
+# Per-family/phase data vlans on eth0 (temp parent until eth1 cabled).
+# Mirrors eindhoven's vid/family/phase mapping; differs only in parent.
+vlans:
+  - { vid: 16, family: leopard,      phase: triage, parent: eth0, cidr: 172.16.0.0/16, gateway_vip: 172.16.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 17, family: tiogapass,    phase: triage, parent: eth0, cidr: 172.17.0.0/16, gateway_vip: 172.17.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 18, family: wedge100s,    phase: triage, parent: eth0, cidr: 172.18.0.0/16, gateway_vip: 172.18.0.10, console: "{{ console_zeroslow }}" }
+  - { vid: 19, family: wedge400,     phase: triage, parent: eth0, cidr: 172.19.0.0/16, gateway_vip: 172.19.0.10, console: "{{ console_zeroslow }}" }
+  - { vid: 20, family: yv3,          phase: triage, parent: eth0, cidr: 172.20.0.0/16, gateway_vip: 172.20.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 21, family: brycecanyon,  phase: triage, parent: eth0, cidr: 172.21.0.0/16, gateway_vip: 172.21.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 22, family: lightning,    phase: triage, parent: eth0, cidr: 172.22.0.0/16, gateway_vip: 172.22.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 23, family: grandcanyon,  phase: triage, parent: eth0, cidr: 172.23.0.0/16, gateway_vip: 172.23.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 24, family: leopard,      phase: post,   parent: eth0, cidr: 172.24.0.0/16, gateway_vip: 172.24.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 25, family: tiogapass,    phase: post,   parent: eth0, cidr: 172.25.0.0/16, gateway_vip: 172.25.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 26, family: wedge100s,    phase: post,   parent: eth0, cidr: 172.26.0.0/16, gateway_vip: 172.26.0.10, console: "{{ console_zeroslow }}" }
+  - { vid: 27, family: wedge400,     phase: post,   parent: eth0, cidr: 172.27.0.0/16, gateway_vip: 172.27.0.10, console: "{{ console_zeroslow }}" }
+  - { vid: 28, family: yv3,          phase: post,   parent: eth0, cidr: 172.28.0.0/16, gateway_vip: 172.28.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 29, family: brycecanyon,  phase: post,   parent: eth0, cidr: 172.29.0.0/16, gateway_vip: 172.29.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 30, family: lightning,    phase: post,   parent: eth0, cidr: 172.30.0.0/16, gateway_vip: 172.30.0.10, console: "{{ console_zerofast }}" }
+  # vid 31: access vlan for the customer post switch uplink (reclassified
+  # from grandcanyon 2026-07-01, mirroring eindhoven). family=tiogapass so
+  # com/com_setting/node derive com1f/ttys0f (wiwynn-tp) — TP nodes prepped
+  # here need the ttyS0 serial console, matching TP vids 17/25. (grandcanyon
+  # defaulted to ttys1f.) NOTE: unlike eindhoven, no dhcp_mode:pool /
+  # menu-ubuntu wiring yet — add those if/when this vlan actually fronts a
+  # DHCP+PXE customer uplink here.
+  - { vid: 31, family: tiogapass,    phase: post,   parent: eth0, cidr: 172.31.0.0/16, gateway_vip: 172.31.0.10, console: "{{ console_zerofast }}" }
+
+# Console arg presets — carry-over from eindhoven shape. Referenced
+# only inside vlan entries (currently none), so unused today; defined
+# here so the data shape is consistent when vlans land.
+console_zeroslow: "console=ttyS0,57600n8"
+console_zerofast: "console=ttyS0,115200n8"
+console_oneslow:  "console=ttyS1,57600n8"
+console_onefast:  "console=ttyS1,115200n8"
+
+# Override the role default (bang-gouda) for braintree.
+apply_keepalived_master_host: bang-fiesta
+
+# Triage UI/API stack runs only on the VIP master — the SOL websocket
+# listener requires single-instance per fleet. notify_master.sh and
+# notify_backup.sh (apply_keepalived) start/stop the stack on VIP
+# transitions; apply_triage_compose handles the initial up/down at
+# deploy time. Inert until the apply_keepalived role runs on the
+# braintree bangs and re-renders the notify scripts with this list.
+apply_keepalived_compose_stacks:
+  - /etc/flax/triage/docker-compose-prod.yml
+
+# apply_flax_stack — Postgres + flax-control + nginx (Plan 1 — BMC redesign).
+# Wire the role's expected variable names to the vault entries; the encrypted
+# vault file holds the actual secret values.
+apply_flax_stack_postgres_superuser_password: "{{ vault_flax_stack_postgres_superuser_password }}"
+apply_flax_stack_db_passwords: "{{ vault_flax_stack_db_passwords }}"
+
+# Postgres HA (2026-06-19): bang-fiesta primary, bang-siesta streaming standby.
+# Each bang allows the OTHERS as the replicator role over their mgmt IP (drives
+# pg_hba + listen widening). apply_flax_stack_is_primary is per-host
+# (host_vars/bang-siesta.yml sets it false so the standby gates OFF alembic).
+apply_flax_stack_peers:
+  - { name: bang-fiesta, ip: 192.168.88.21 }
+  - { name: bang-siesta, ip: 192.168.88.22 }
+
+# Plan 2: wire flax-switch-sense DB password (already in vault from Plan 1).
+apply_flax_switch_sense_db_password: "{{ vault_flax_stack_db_passwords.flax_switch_sense }}"
+
+# Plan 3: wire flax-observe DB password (already in vault from Plan 1).
+apply_flax_observe_db_password: "{{ vault_flax_stack_db_passwords.flax_observe }}"
+
+# Plan 4: wire flax-classify DB password (operator must ensure
+# vault_flax_stack_db_passwords.flax_classify is set in the encrypted vault;
+# apply_flax_classify's "Assert flax-classify password is wired" task will
+# fail loudly at deploy time if the vault key is missing).
+apply_flax_classify_db_password: "{{ vault_flax_stack_db_passwords.flax_classify }}"
+
+# flax-discover DB password (already in vault from Plan 1; the
+# apply_flax_discover "Assert flax-discover password is wired" task fails loudly
+# at deploy time if the vault key is missing).
+apply_flax_discover_db_password: "{{ vault_flax_stack_db_passwords.flax_discover }}"
+
+# flax-reconcile DB password (must be present in vault_flax_stack_db_passwords;
+# apply_flax_reconcile will fail at deploy time if the vault key is missing).
+apply_flax_reconcile_db_password: "{{ vault_flax_stack_db_passwords.flax_reconcile }}"
+
+# flax-post DB password (already in vault from Plan 1; the apply_flax_post
+# assert fails at deploy time if the vault key is missing).
+apply_flax_post_db_password: "{{ vault_flax_stack_db_passwords.flax_post }}"
+
+# Post firmware agents observe-only on braintree first boot (BMC + BIOS already
+# default to detect; NIC role default is enforce, so pin it to detect here).
+# Arm enforce deliberately once braintree post hardware is proven.
+apply_flax_post_nic_fw_mode: "detect"
+
+# Plan 5 -- Kea cutover. Two passwords: kea is for Kea's libdhcp_pgsql
+# hook (lease + hosts backend); flax_kea_hook is for the run_script
+# discover-hook (INSERT-only into lease_events).
+apply_kea_db_password: "{{ vault_flax_stack_db_passwords.kea }}"
+apply_kea_hook_db_password: "{{ vault_flax_stack_db_passwords.flax_kea_hook }}"
+
+# Plan 5.6 -- Kea all-vlans DHCP cutover. dnsmasq drops to DNS+TFTP;
+# kea-dhcp4/dhcp6 + radvd own DHCP (VIP-exclusive via keepalived).
+bang_dhcp_server: kea
+# flax-reconcile cutover: neuter reaper-leased's switch writes (set_access_vlan
+# /kick/flap) so flax-reconcile is the sole switch writer. Read via os.environ
+# from /etc/flax/site.env (the flax containers' EnvironmentFile).
+bang_reconcile: flax
+# Comprehensive per-vlan stateful DHCPv6 (adopt eindhoven's scheme).
+lab_data_v6_ra_stateless: true
+# Pin the radvd container image tag for reproducible RA behaviour
+# (replace 'latest' with a digest once chosen during deploy).
+apply_radvd_image_tag: "latest"
+
+# ---- Role registry (spine migration) — braintree topology ----
+# Braintree runs triage AND post on the SINGLE switch rabbit-lorax (eindhoven
+# splits them across rabbit-gouda / rabbit-edam). The runtime resolver precedence
+# is port > switch > prefix > catch_all, so triage's 12 geometry ports
+# (et6b1-4, et7b1-4, et8b1-4 — from /etc/flax/geometry.json via triage.json's
+# ports_from) win at PORT precedence; post switch-claims the remainder of
+# rabbit-lorax plus the turtle prefix (turtle-lorax). No catch_all — every
+# braintree port resolves via the explicit switch/prefix claims, so a global
+# fallback is unnecessary and undesirable on a shared switch.
+flax_role_post_switches: ["rabbit-lorax"]
+flax_role_post_prefixes: ["turtle"]
+flax_role_post_catch_all: false
+# The qual agent's iperf3 serializer = this site's BACKUP bang (prio 90, .2) =
+# bang-siesta (NOT bang-edam, which is eindhoven's). Rendered into post.tgz's
+# flax-qual.env as FLAX_IPERF_SERVER.
+post_iperf_server: bang-siesta
+# No customer post-switch uplink at braintree → integra.json is not rendered
+# (apply_lease_agent guards the integra deploy on this map being non-empty).
+flax_role_integra_ports: {}
+
+# Vid-by-family steering maps, rendered into roles.d/{triage,post}.json's
+# policy.vid.by_family and consumed by flax_classify.vlan_policy. TRANSCRIBED
+# VERBATIM from braintree's live /etc/flax/vlans.json (verified 2026-07-08 —
+# identical to eindhoven's scheme). vid 31 stays grandcanyon here until the
+# tiogapass reclass is actually rolled out (mirrors eindhoven's discipline of
+# not leaking a pending reclass into the role registry).
+flax_role_triage_vid_by_family:
+  leopard: 16
+  tiogapass: 17
+  wedge100s: 18
+  wedge400: 19
+  yv3: 20
+  brycecanyon: 21
+  lightning: 22
+  grandcanyon: 23
+flax_role_post_vid_by_family:
+  leopard: 24
+  tiogapass: 25
+  wedge100s: 26
+  wedge400: 27
+  yv3: 28
+  brycecanyon: 29
+  lightning: 30
+  grandcanyon: 31
+
+# ---- flax image tags — braintree pinned uniformly to latest ----
+# Shared role defaults lag per-service (eindhoven runs a mix). Braintree is a
+# fresh spine cutover, so pin ALL flax services to one image for a coherent
+# deploy. Bump this block (and re-load the image, Task 4) to roll braintree
+# forward in future.
+apply_flax_stack_flax_control_image_tag: "0.9.120"
+apply_flax_switch_sense_image_tag: "0.9.120"
+apply_flax_observe_image_tag: "0.9.110"
+apply_flax_discover_image_tag: "0.9.103"
+apply_flax_classify_image_tag: "0.9.105"
+apply_flax_reconcile_image_tag: "0.9.103"
+# Post UI Wave 3 (PWR/IDNT/INV/POP buttons) + SOL console, caught up to main 2026-07-10.
+apply_flax_post_image_tag: "0.9.119"
+apply_flax_post_sol_image_tag: "0.9.117"
+
+# BMC firmware manifest — braintree Tioga Pass OpenBMC target, transcribed from
+# eindhoven's live 1.0.9 manifest (matches the staged artifact). Rendered to
+# /etc/flax/bmc-firmware-versions.json by apply_bmc_fw_manifest.
+bmc_fw_platforms:
+  tiogapass-openbmc:
+    match:
+      product_name: ["(?i)tioga", "(?i)tp[-_ ]?", "(?i)wiwynn.*tp", "(?i)quanta.*tioga"]
+      bmc_kind: openbmc
+    target_version: "flax-onetree-1.0.9-202607032146"
+    check: { method: redfish-firmware-inventory, id: bmc_active }
+    flash:
+      method: redfish-update-multipart
+      artifact: "SXC-Lab_OCP-Updates/OpenBMC/flax-onetree-1.0.9-202607032146.tar"
+    auto: true
+  # OEM AMI MegaRAC Tioga Pass boards (Redfish-first: SSH closed / AMI, not the
+  # flax-onetree OpenBMC). No higher OEM BMC FW exists and they aren't onetree-
+  # flashable via this pipeline, so bmc-fw reports them TERMINAL 'oem' (never
+  # flashes/faults) -- keyed off the low OEM Redfish version. `updatable:false`
+  # is the worker's report-only flag. Matches the AMI product_name observe
+  # synthesizes ('AMI Redfish Server' on the v1.5.0 build, 'Ami Redfish' on
+  # v1.17.0) OR the exact 'Wiwynn' manufacturer string (blank Systems.Model);
+  # the worker additionally gates OEM handling on bmc_kind=redfish so an
+  # openbmc/onetree board can never be mislabelled. No flash/target/check keys:
+  # the OEM branch skips the flash state machine entirely.
+  tiogapass-ami-oem:
+    match:
+      product_name: ["(?i)ami\\s*redfish", "(?i)^wiwynn$"]
+      bmc_kind: redfish
+    updatable: false
+    auto: false
+
+# Spine materializer cutover — enforce (parity with eindhoven). The materializer
+# becomes the sole kea writer for the post + triage roles: it applies the desired
+# reservations classify computes, so post_state populates (post UI) and BMC/DUT
+# reservations exist (triage BMC-FW). Two-key arming: mode=enforce AND roles named.
+# Rollback: revert these two lines + re-apply --tags flax_classify.
+apply_flax_classify_materializer_mode: "enforce"
+apply_flax_classify_materializer_enforce_roles: "post,triage"
+
+# Fleet TLS CA private key (PEM). Signs per-host wildcard leaves on the control
+# node only (apply_flax_tls, delegate_to localhost) -- never copied to a bang.
+# Same plaintext across all sites; encrypted separately per site vault.
+apply_flax_tls_ca_key: "{{ vault_flax_tls_ca_key }}"

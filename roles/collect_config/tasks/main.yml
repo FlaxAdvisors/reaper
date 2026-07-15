@@ -1,0 +1,23 @@
+---
+# Device-agnostic config collection scaffolding.
+# Creates the local output directories and then delegates to the
+# device-specific role identified by the `device_role` variable,
+# which is set per group in group_vars/{arista,cumulus}/vars.yml.
+
+- name: Ensure local config output directory exists for {{ inventory_hostname }}
+  delegate_to: localhost
+  ansible.builtin.file:
+    path: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/config"
+    state: directory
+    mode: "0755"
+
+- name: Ensure local show output directory exists for {{ inventory_hostname }}
+  delegate_to: localhost
+  ansible.builtin.file:
+    path: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/show"
+    state: directory
+    mode: "0755"
+
+- name: Collect device config and show output ({{ device_role }})
+  ansible.builtin.include_role:
+    name: "{{ device_role }}"

@@ -1,0 +1,5 @@
+---
+ansible_connection: ansible.builtin.ssh
+ansible_user: "{{ vault_cumulus_user }}"
+ansible_password: "{{ vault_cumulus_password }}"
+device_role: cumulus_linux

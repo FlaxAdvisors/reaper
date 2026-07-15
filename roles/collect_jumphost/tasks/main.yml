@@ -1,0 +1,99 @@
+---
+# Collects configuration and state from jump host servers (openSUSE Linux).
+# Connects directly via Tailscale as flax user — no ProxyJump.
+# lldpctl -f keyvalue gives machine-parseable LLDP output.
+# ifcfg-lo, *.bak, and *~ are excluded — lo is not relevant; the others are stale backups.
+
+- name: Collect lldpctl keyvalue output
+  ansible.builtin.command: /usr/sbin/lldpctl -f keyvalue
+  register: collect_jumphost_lldpctl
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  become: true
+  when: not ansible_check_mode
+
+- name: Write lldpctl.txt
+  delegate_to: localhost
+  when: not ansible_check_mode
+  ansible.builtin.copy:
+    content: "{{ collect_jumphost_lldpctl.stdout | default('') }}"
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/show/lldpctl.txt"
+    mode: "0644"
+
+- name: Collect ip addr show
+  ansible.builtin.command: ip addr show
+  register: collect_jumphost_ip_addr
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: Write ip-addr.txt
+  delegate_to: localhost
+  when: not ansible_check_mode
+  ansible.builtin.copy:
+    content: "{{ collect_jumphost_ip_addr.stdout }}"
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/show/ip-addr.txt"
+    mode: "0644"
+
+- name: Collect ip route show
+  ansible.builtin.command: ip route show
+  register: collect_jumphost_ip_route
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: Write ip-route.txt
+  delegate_to: localhost
+  when: not ansible_check_mode
+  ansible.builtin.copy:
+    content: "{{ collect_jumphost_ip_route.stdout }}"
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/show/ip-route.txt"
+    mode: "0644"
+
+- name: Collect authorized_keys (live state)
+  ansible.builtin.command: cat ~/.ssh/authorized_keys
+  register: collect_jumphost_authorized_keys
+  changed_when: false
+  check_mode: false
+  failed_when: false
+
+- name: Write authorized_keys snapshot
+  delegate_to: localhost
+  ansible.builtin.copy:
+    content: "{{ collect_jumphost_authorized_keys.stdout | default('') | trim }}\n"
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/config/authorized_keys"
+    mode: "0600"
+
+- name: Find ifcfg-* files (excluding -lo and *.bak)
+  ansible.builtin.find:
+    paths: /etc/sysconfig/network
+    patterns: "ifcfg-*"
+    excludes:
+      - "ifcfg-lo"
+      - "*.bak"
+      - "*~"
+    file_type: file
+  become: true
+  check_mode: false
+  register: collect_jumphost_ifcfg_files
+
+- name: Collect each ifcfg file
+  ansible.builtin.command: "cat {{ item.path }}"
+  register: collect_jumphost_ifcfg_contents
+  loop: "{{ collect_jumphost_ifcfg_files.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  changed_when: false
+  check_mode: false
+  become: true
+
+- name: Write each ifcfg file locally
+  delegate_to: localhost
+  ansible.builtin.copy:
+    content: "{{ item.stdout | trim }}\n"
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/config/{{ item.item.path | basename }}"
+    mode: "0644"
+  loop: "{{ collect_jumphost_ifcfg_contents.results }}"
+  loop_control:
+    label: "{{ item.item.path | basename }}"

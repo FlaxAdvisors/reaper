@@ -1,0 +1,27 @@
+# Managed by apply_bang_services. Do not edit.
+# Loaded by dnsmasq via hostsdir=/etc/dnsmasq.hosts (see dnsmasq.conf).
+# DNS resolution for VLAN-4 mgmt addresses: bang BMCs and lab switches.
+# expand-hosts in dnsmasq.conf appends the configured domain automatically.
+192.168.88.11 bang-gouda-bmc
+192.168.88.12 bang-edam-bmc
+192.168.88.13 rabbit-gouda-bmc
+192.168.88.14 rabbit-edam-bmc
+192.168.88.31 rabbit-gouda
+192.168.88.32 rabbit-edam
+192.168.88.33 turtle-gouda
+
+# Wedge BMC IPv4 addresses are pinned by dhcp-host reservations in
+# /etc/dnsmasq.d/bmc-reservations.conf — OpenBMC's overlay FS doesn't
+# preserve IP config across reboots, so static-DHCP is the persistence path.
+#
+# IPv6 link-local fallback — useful if DHCP fails or before the BMC has
+# completed its first DHCPDISCOVER (e.g. on initial cabling):
+#   ssh -6 root@<addr>%eth0   (password: BMC vendor default — see credentials-bmc.json, then sol.sh)
+# Not parsed by dnsmasq (the %scope-id form isn't valid in hosts files);
+# kept here as the canonical operator reference. Rediscover with:
+#   ip -6 neigh show dev eth0  |  grep <oui>
+#
+# rabbit-gouda-bmc  fe80::ba6a:97ff:feb3:845c%eth0   (Edge-Core OUI b8:6a:97)
+# rabbit-edam-bmc   fe80::1eea:bff:fee6:19eb%eth0    (Edge-Core OUI 1c:ea:0b — cabled
+#                                                     to turtle Gi1/0/6, not Gi1/0/5
+#                                                     as originally documented)
