@@ -183,7 +183,7 @@ apply_flax_post_db_password: "{{ vault_flax_stack_db_passwords.flax_post }}"
 # image explicitly (was tracking the role default). 0.9.113 = main + the
 # post-UI-actions branch. Viewer unit gains creds-bmc/opt-flax-bin/export/
 # node_config mounts; image adds nmap/jq/curl for the ghost helpers.
-apply_flax_post_image_tag: "0.9.119"
+apply_flax_post_image_tag: "0.9.120"  # 0.9.120 = post-qualify-done engine (migration 032 post_artifact, observe/host_qual, qualclient)
 # SOL console (flax-post-sol Node relay + flax_post/web SOL modal), 2026-07-10.
 apply_flax_post_sol_image_tag: "0.9.117"
 
