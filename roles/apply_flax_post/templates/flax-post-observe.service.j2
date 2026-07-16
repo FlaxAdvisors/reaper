@@ -16,6 +16,7 @@ ExecStart=/usr/bin/docker run --rm --init --name flax-post-observe \
     -v /etc/flax/site.env:/etc/flax/site.env:ro \
     -v /etc/flax/credentials-bmc.json:/etc/flax/credentials-bmc.json:ro \
     -v /etc/flax/credentials-redfish.json:/etc/flax/credentials-redfish.json:ro \
+    -v /etc/flax/credentials-host.json:/etc/flax/credentials-host.json:ro \
     -v /etc/flax/post-geometry.json:/etc/flax/post-geometry.json:ro \
     flax-control:${FLAX_POST_IMAGE_TAG} \
     python -m flax_post.observe
