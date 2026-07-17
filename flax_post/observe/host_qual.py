@@ -10,6 +10,8 @@ Sole writer of post_state.vars.qual/pop/done + post_artifact. Never raises out o
 run_once: a dead or misbehaving agent for one blade must not kill the loop.
 """
 import logging
+import os
+import time
 
 from .. import actions
 from .. import population
@@ -17,6 +19,15 @@ from .. import state as _state
 from ..qualclient import QualClient, QualUnreachable
 
 log = logging.getLogger("flax-post.host_qual")
+
+# Debounce the qualify-agent launch. A node that finished Firmware sits at
+# phase=='Qualify'; host_qual SSH-launches the on-node agent, but that launch
+# (post.sh postautomate -> `systemctl stop` + `systemd-run`) is NOT idempotent:
+# firing it every poll while the agent is still coming up stomps the starting
+# agent, so it never persists. It also must not race Firmware's own resets/
+# reboots. So launch at most once per cooldown per node and let it settle;
+# a failed launch (host mid-reboot) simply retries after the cooldown.
+LAUNCH_COOLDOWN_S = int(os.environ.get("FLAX_POST_QUAL_LAUNCH_COOLDOWN", "120"))
 
 QUAL_MAP = {"pass": "done", "running": "cur", "pending": "pending",
             "fail": "fault", "skip": "done"}
@@ -115,10 +126,11 @@ def run_done(target, verdict, *, identify=actions.run_identify, power=actions.ru
 
 
 def poll_target(target, *, make_client=_default_make_client, store=_state,
-                launch_agent=None) -> dict:
+                launch_agent=None, now=time.time) -> dict:
     """Poll one blade; write vars.qual; capture terminal-stage artifacts once. When the
     agent is unreachable but Firmware is done (phase == 'Qualify'), launch_agent (if
-    given) SSH-starts the agent so the next pass can poll it."""
+    given) SSH-starts the agent so the next pass can poll it -- debounced to at most
+    once per LAUNCH_COOLDOWN_S so per-poll relaunches don't stomp a starting agent."""
     client = make_client(target["host_ip"])
     try:
         health = client.health()
@@ -128,14 +140,23 @@ def poll_target(target, *, make_client=_default_make_client, store=_state,
         live = store.read_state().get(target["port"], {}) if hasattr(store, "read_state") else {}
         if (live.get("done") or {}).get("verdict") == "pass":
             return live.get("qual") or {}
-        # Firmware complete, agent not up yet -> trigger the postautomate launch (once;
-        # the launch script no-ops if it's already active). Never let a launch failure
-        # kill the poll.
+        # Firmware complete, agent not up yet -> trigger the postautomate launch,
+        # debounced: skip if we launched within LAUNCH_COOLDOWN_S (the launch is not
+        # idempotent and stomps a still-starting agent; Firmware resets must settle).
+        # Record the attempt time BEFORE launching so a failed launch (host mid-reboot)
+        # still backs off a full cooldown. Never let a launch failure kill the poll.
         if launch_agent is not None and target.get("phase") == "Qualify":
-            try:
-                launch_agent(target)
-            except Exception:
-                log.exception("agent launch trigger failed for %s", target.get("port"))
+            last = (live.get("launch_at") or 0) if isinstance(live, dict) else 0
+            t = now()
+            if t - last >= LAUNCH_COOLDOWN_S:
+                store.set_state(target["port"], launch_at=t)
+                try:
+                    launch_agent(target)
+                except Exception:
+                    log.exception("agent launch trigger failed for %s", target.get("port"))
+            else:
+                log.debug("qual launch debounced for %s (%.0fs into %ss cooldown)",
+                          target.get("port"), t - last, LAUNCH_COOLDOWN_S)
         qual = {"agent": {"reachable": False},
                 "steps": {k: {"status": v} for k, v in boot_steps(False).items()}}
         store.set_state(target["port"], qual=qual)
