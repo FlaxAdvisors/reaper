@@ -13,12 +13,14 @@ ExecStartPre=/bin/bash -c '. /etc/flax/site.env && ip -o -4 addr | grep -qE " $$
 ExecStart=/usr/bin/docker run --rm --init --name flax-post-observe \
     --network host \
     --env-file /etc/flax/flax-post/flax-post.env \
+    -e PATH=/opt/flax/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     -v /etc/flax/site.env:/etc/flax/site.env:ro \
     -v /etc/flax/credentials-bmc.json:/etc/flax/credentials-bmc.json:ro \
     -v /etc/flax/credentials-redfish.json:/etc/flax/credentials-redfish.json:ro \
     -v /etc/flax/credentials-host.json:/etc/flax/credentials-host.json:ro \
     -v /etc/flax/post-geometry.json:/etc/flax/post-geometry.json:ro \
     -v /opt/flax/node_config:/opt/flax/node_config:ro \
+    -v /opt/flax/bin:/opt/flax/bin:ro \
     flax-control:${FLAX_POST_IMAGE_TAG} \
     python -m flax_post.observe
 ExecStop=/usr/bin/docker stop flax-post-observe
