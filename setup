@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# setup — bootstrap a new operator's environment for reaper.
+# Idempotent: safe to re-run after pulling updates or adding a new site.
+set -euo pipefail
+
+REAPER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+info()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
+ok()    { printf '\033[1;32m  ok\033[0m %s\n' "$*"; }
+added() { printf '\033[1;33m  +\033[0m %s\n' "$*"; }
+
+# ---------------------------------------------------------------------------
+# 1. Python / Ansible
+# ---------------------------------------------------------------------------
+if [ -n "$(command -v ansible)" ]; then
+    ok "ansible is already installed: $(ansible --version | head -n1)"
+else
+    info "Installing Python dependencies (user scope)"
+    pip3 install --user ansible --quiet
+fi
+
+info "Installing pinned Ansible collections"
+ansible-galaxy collection install -r "$REAPER_DIR/requirements.yml" --timeout 60
+
+# ---------------------------------------------------------------------------
+# 2. SSH config
+# ---------------------------------------------------------------------------
+
+SSH_CONFIG=~/.ssh/config
+if ! [ -f "$SSH_CONFIG" ]; then
+    touch "$SSH_CONFIG"
+    chmod 600 "$SSH_CONFIG"    
+fi
+
+# Helper: append a line to ~/.ssh/config if not already present.
+ensure_ssh_include() {
+    local line="$1"
+    if ! grep -qxF "$line" "$SSH_CONFIG"; then
+        printf '\n%s\n' "$line" >> "$SSH_CONFIG"
+        added "$line  →  $SSH_CONFIG"
+    else
+        ok "already in $SSH_CONFIG: $line"
+    fi
+}
+
+ensure_ssh_include "Include ~/.ssh/config.d/reaper-jumphosts"
+
+# Per-site SSH device includes (files/ssh/<site> as a regular file).
+for inv_dir in "$REAPER_DIR/inventories"/*/; do
+    site=$(basename "$inv_dir")
+    ssh_file="$REAPER_DIR/files/ssh/$site"
+    if [[ -f "$ssh_file" ]]; then
+        ensure_ssh_include "Include $ssh_file"
+    fi
+done
+
+# ---------------------------------------------------------------------------
+# 3. Generate jump host SSH config from vault
+# ---------------------------------------------------------------------------
+info "Running 'reaper setup' to populate ~/.ssh/config.d/reaper-jumphosts"
+"$REAPER_DIR/reaper" setup
+
+info "Generating ~/jumphosts.txt from jump host SSH config"
+grep '^Host ' ~/.ssh/config.d/reaper-jumphosts | cut -d' ' -f2 > ~/jumphosts.txt
+ok "wrote ~/jumphosts.txt ($(wc -l < ~/jumphosts.txt | tr -d ' ') entries)"
+
+# ---------------------------------------------------------------------------
+# 4. Shell environment (~/.bashrc)
+# ---------------------------------------------------------------------------
+BASHRC=~/.bashrc
+[ -f "$BASHRC" ] || touch "$BASHRC"
+
+# Helper: append a line to ~/.bashrc if not already present.
+ensure_bashrc_line() {
+    local line="$1"
+    local label="${2:-$line}"
+    if ! grep -qxF "$line" "$BASHRC"; then
+        printf '\n%s\n' "$line" >> "$BASHRC"
+        added "$label  →  $BASHRC"
+    else
+        ok "already in $BASHRC: $label"
+    fi
+}
+
+info "Configuring ~/.bashrc"
+ensure_bashrc_line ". $REAPER_DIR/scripts/reaper-completion.bash" \
+    "source reaper-completion.bash"
+ensure_bashrc_line "export WCOLL=~/jumphosts.txt" \
+    "export WCOLL"
+ensure_bashrc_line "export PDSH_RCMD_TYPE=ssh" \
+    "export PDSH_RCMD_TYPE"
+
+# ---------------------------------------------------------------------------
+printf '\n\033[1;32mSetup complete.\033[0m\n'
+printf 'Run \033[1msource ~/.bashrc\033[0m or open a new shell to pick up tab completion and pdsh env vars.\n'
+printf '\nNote: vault password files (~/.vault_pass_<site>) are not created by this script.\n'
+printf 'Obtain them from a project admin before running reaper commands.\n'

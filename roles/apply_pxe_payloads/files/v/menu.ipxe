@@ -1,0 +1,44 @@
+#!ipxe
+
+# This is the file referenced the payload embedded 
+# in the efi.ipxe file served by TFTP. Loading this
+# ipxe script it then chains the config file for
+# variables common to all other ipxe files. Those
+# other files will be attempted, one after the other
+# using the chain <x> || ... syntax, and if all fail
+# this script will fall through to the last dynamic
+# menu configured to timeout on a pre-set default.
+
+# Global variables used by all other iPXE scripts
+chain --autofree boot.ipxe.cfg ||
+
+# Boot <menu-url>/<menu-dir>/hostname-<hostname>.ipxe
+# if hostname DHCP variable is set and script is present
+isset ${hostname} && chain --replace --autofree ${menu-dir}hostname-${hostname}.ipxe ||
+
+# Boot <menu-url>/<menu-dir>/uuid-<UUID>.ipxe
+# if SMBIOS UUID variable is set and script is present
+# isset ${uuid} && chain --replace --autofree ${menu-dir}uuid-${uuid}.ipxe ||
+
+# Boot <menu-url>/<menu-dir>/mac-010203040506.ipxe if script is present
+chain --replace --autofree ${menu-dir}mac-${mac:hexraw}.ipxe ||
+
+# Boot <menu-url>/<menu-dir>/pci-8086100e.ipxe if one type of
+# PCI Intel adapter is present and script is present
+# chain --replace --autofree ${menu-dir}pci-${pci/${busloc}.0.2}${pci/${busloc}.2.2}.ipxe ||
+
+# Boot <menu-url>/<menu-dir>/chip-82541pi.ipxe if one type of
+# PCI Intel adapter is present and script is present
+# ConnectX-4Lx
+# chain --replace --autofree ${menu-dir}chip-${chip}.ipxe ||
+
+# Boot <menu-url>/<menu-dir>/product-[see examples below].ipxe
+# # Leopard ORv2-DDR4              ## Quanta (all??)
+# # Leopard-Orv2                   ## Wiwynn (all??)
+# # SV7220G3                       ## Tioga Pass
+# # Mono Lake-M.2 SATA 20F20BU01I0 ## Monolake
+# # BIGSUR                         ## Bigsur
+chain --replace --autofree ${menu-dir}product-${smbios/product:string}.ipxe ||
+
+# Boot <menu-url>/boot.ipxe script if all other options have been exhausted
+chain --replace --autofree ${boot-url} ||

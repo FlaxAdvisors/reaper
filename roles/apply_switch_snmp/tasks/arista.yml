@@ -1,0 +1,12 @@
+---
+# Enable v2c read-only SNMP on Arista EOS so snmp_exporter (auth: public_v2)
+# can walk ifTable + entity sensors. Idempotent — eos_config diffs against
+# running.
+
+- name: Configure SNMP community + sysinfo on Arista EOS
+  arista.eos.eos_config:
+    lines:
+      - "snmp-server community {{ apply_switch_snmp_community }} ro"
+      - "snmp-server location {{ apply_switch_snmp_location }}"
+      - "snmp-server contact {{ apply_switch_snmp_contact }}"
+    save_when: modified

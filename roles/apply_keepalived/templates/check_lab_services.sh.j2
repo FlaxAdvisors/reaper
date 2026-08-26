@@ -1,0 +1,21 @@
+#!/bin/bash
+# Health check used by keepalived's chk_services. Exits 0 if healthy, non-zero
+# triggers priority decrement -30. Conservative — only fails on hard outages.
+#
+# The VIP-exclusive flax-* units are intentionally NOT checked here. Their
+# --check-vip-holder ExecStartPre exits 1 on the backup, so at boot the unit
+# lands in `failed` state. Checking is-failed used to trap the recovering bang
+# in BACKUP forever (braintree 2026-05-15 incident). Real outages on MASTER are
+# caught by the health-dashboard's UnitDown alert. notify_master.sh's
+# reset-failed + start handles failover.
+#
+# flax-stack: a single oneshot systemd unit wraps a docker compose. We check
+# is-active on the unit AND that flax-control's API answers /api/v1/healthz
+# (which pings Postgres). Either failure means the stack is degraded enough to
+# move the VIP.
+set -u
+systemctl is-active --quiet dnsmasq || exit 1
+systemctl is-active --quiet nginx   || exit 1
+systemctl is-active --quiet flax-stack.service || exit 1
+curl -fsS -m 2 http://127.0.0.1:8000/api/v1/healthz >/dev/null || exit 1
+exit 0

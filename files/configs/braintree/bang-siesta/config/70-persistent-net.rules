@@ -1,0 +1,13 @@
+# MAC-pinned + physical-only. SUBSYSTEMS=="pci" excludes vlan subifs
+# (they share the parent MAC and would otherwise collide on the name). 2026-07-28.
+# Replaces the old PCI-slot-pinned rules that broke when the ConnectX-4 NICs
+# re-enumerated the bus (mgmt Realtek moved 04:00.0 -> 03:00.0), leaving siesta
+# with no `mgmt` interface -> no 192.168.88.22 -> dead pg replication -> WAL fill.
+# Mellanox ConnectX-4 -> lab data (rabbit-lorax trunk)
+SUBSYSTEM=="net", ACTION=="add", SUBSYSTEMS=="pci", ATTR{address}=="0c:42:a1:19:ac:c2", KERNEL=="eth*", NAME="eth0"
+SUBSYSTEM=="net", ACTION=="add", SUBSYSTEMS=="pci", ATTR{address}=="0c:42:a1:19:ac:c3", KERNEL=="eth*", NAME="eth1"
+# Realtek RTL8111 -> mgmt / public (turtle-lorax)
+SUBSYSTEM=="net", ACTION=="add", SUBSYSTEMS=="pci", ATTR{address}=="00:13:3b:5a:c6:08", KERNEL=="eth*", NAME="mgmt"
+SUBSYSTEM=="net", ACTION=="add", SUBSYSTEMS=="pci", ATTR{address}=="00:13:3b:5a:c6:09", KERNEL=="eth*", NAME="public"
+# Wi-Fi (USB)
+SUBSYSTEM=="net", ACTION=="add", ATTR{address}=="00:0c:e7:01:4a:56", KERNEL=="wlan*", NAME="wlan0"

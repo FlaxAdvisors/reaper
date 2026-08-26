@@ -1,0 +1,13 @@
+[Service]
+ExecStart=
+ExecStart=/usr/bin/node_exporter \
+  --collector.systemd \
+  --collector.systemd.unit-include=^(dnsmasq|nginx|keepalived|chronyd|docker|firewalld|prometheus-node_exporter|sshd|tailscaled|health-hook@.*)\.(service|timer)$ \
+  --collector.processes \
+  --collector.textfile.directory={{ apply_node_exporter_textfile_dir }} \
+  --web.listen-address=:{{ apply_node_exporter_port }}
+# unit-include uses systemd's ListUnitsByPatterns, which force-loads matching unit
+# files even when they're disabled and never-started. Required for backup-bang
+# coverage of VIP-exclusive units (dnsmasq and the kea trio) that stay disabled
+# until the backup gets promoted. Default --collector.systemd uses
+# ListUnits which returns only currently-loaded units, hiding disabled ones.

@@ -1,0 +1,53 @@
+[Unit]
+Description=flax-reconcile — sole switch writer (DUT-kick + intentional-flap)
+After=docker.service network-online.target flax-stack.service
+Wants=network-online.target
+Requires=docker.service flax-stack.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/flax/flax-reconcile/flax-reconcile.env
+# VIP-gate — bash one-liner (no container spin-up) so the gate adds <100ms.
+ExecStartPre=/bin/bash -c '. /etc/flax/site.env && ip -o -4 addr | grep -qE " $${MGMT_VIP}/"'
+
+# --init: tini as PID 1 reaps orphaned ssh children. The IOS writer still uses
+# ssh ControlMaster, so without this its backgrounded masters leak as zombies
+# under the python PID 1 (see feedback_ios_ssh_controlmaster_session_is_a_trap).
+ExecStart=/usr/bin/docker run --rm --init --name flax-reconcile \
+    --network host \
+    --env-file /etc/flax/flax-reconcile/flax-reconcile.env \
+    -v /etc/flax/reconcile.json:/etc/flax/reconcile.json:ro \
+    -v /etc/flax/switches.json:/etc/flax/switches.json:ro \
+    -v /etc/flax/credentials.json:/etc/flax/credentials.json:ro \
+    -v /etc/flax/credentials-host.json:/etc/flax/credentials-host.json:ro \
+    -v /etc/flax/credentials-redfish.json:/etc/flax/credentials-redfish.json:ro \
+    -v /etc/flax/no-steer-ports.json:/etc/flax/no-steer-ports.json:ro \
+    -v /etc/flax/vlans.json:/etc/flax/vlans.json:ro \
+    -v /run/flax:/run/flax \
+    flax-control:${FLAX_RECONCILE_IMAGE_TAG} \
+    python -m flax_reconcile \
+        --config /etc/flax/reconcile.json \
+        --switches /etc/flax/switches.json \
+        --credentials /etc/flax/credentials.json \
+        --credentials-host /etc/flax/credentials-host.json \
+        --credentials-redfish /etc/flax/credentials-redfish.json \
+        --no-steer /etc/flax/no-steer-ports.json \
+        --vlans /etc/flax/vlans.json \
+        --healthz-port {{ apply_flax_reconcile_healthz_port }} \
+        --healthz-stale-secs {{ apply_flax_reconcile_healthz_stale_secs }}
+
+# -t 30: give PID 1 (python -m flax_reconcile) time to run its SIGTERM handler,
+# which completes any in-flight flap's no-shutdown (each set_admin_up is an
+# eAPI/ssh round-trip ~a few seconds; several pending markers are possible after
+# a flap storm) before docker escalates to SIGKILL. Must exceed
+# flap_hold_seconds (2) + the no-shutdown round-trips; 30s is comfortable.
+ExecStop=/usr/bin/docker stop -t 30 flax-reconcile
+# Systemd's own ceiling on the whole ExecStop; keep it above docker's -t 30 so
+# systemd doesn't SIGKILL the container before docker's graceful stop finishes.
+TimeoutStopSec=45
+
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,7 @@
+---
+- name: Restart radvd
+  become: true
+  ansible.builtin.systemd:
+    name: radvd.service
+    state: restarted
+  when: false   # VIP-exclusive; keepalived owns start/restart on transition

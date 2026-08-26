@@ -1,0 +1,128 @@
+---
+# Read-only Postgres-HA drift detector. Confirms the site's streaming standby is
+# actually streaming from the primary. Side-effect-free (SELECTs + one stat).
+#
+#   report (default, always exits 0):
+#     ansible-playbook -i inventories/<site>/hosts.yml \
+#       --vault-password-file ~/.vault_pass_<site> playbooks/pg_ha_check.yml
+#   assert (non-zero on drift; used by deploy_flax_ha.yml):
+#     ... playbooks/pg_ha_check.yml -e ha_check_mode=assert
+#
+# Role is decided by pg_is_in_recovery() (evidence, not config): a DETACHED
+# standby reports 'f' and is therefore checked as a primary — its empty
+# pg_stat_replication then fails the assert, which is exactly the drift signal.
+#
+# apply_flax_stack_compose_path is a role default (roles/apply_flax_stack/defaults/
+# main.yml), not a site group_var/host_var — this playbook doesn't import that role,
+# so it would be undefined here. ha_compose_path resolves it once (with the same
+# literal the role default carries) and every docker-compose task uses that.
+- name: Postgres-HA drift check (read-only)
+  hosts: jumphosts
+  gather_facts: false
+  vars:
+    ha_check_mode: report   # report | assert
+    ha_compose_path: "{{ apply_flax_stack_compose_path | default('/etc/flax/flax-stack/docker-compose.yml') }}"
+  tasks:
+    - name: End play on standalone (non-HA) sites
+      ansible.builtin.meta: end_play
+      when: (apply_flax_stack_peers | default([]) | length) < 2
+
+    - name: Probe local recovery state
+      become: true
+      ansible.builtin.command: >
+        docker compose -f {{ ha_compose_path }} exec -T postgres
+        psql -U postgres -d flax -tAc "SELECT pg_is_in_recovery()"
+      register: ha_recovery
+      changed_when: false
+      check_mode: false   # read-only — must run even under --check (else drift false-positive)
+
+    - name: Probe local alembic head
+      become: true
+      ansible.builtin.command: >
+        docker compose -f {{ ha_compose_path }} exec -T postgres
+        psql -U postgres -d flax -tAc "SELECT version_num FROM alembic_version"
+      register: ha_alembic
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Record role fact
+      ansible.builtin.set_fact:
+        ha_in_recovery: "{{ (ha_recovery.stdout | trim) == 't' }}"
+        ha_alembic_head: "{{ ha_alembic.stdout | default('') | trim }}"
+
+    - name: (primary) Probe pg_stat_replication
+      become: true
+      ansible.builtin.command: >
+        docker compose -f {{ ha_compose_path }} exec -T postgres
+        psql -U postgres -d flax -tAc
+        "SELECT string_agg(client_addr::text || '=' || state, ',') FROM pg_stat_replication"
+      register: ha_statrep
+      changed_when: false
+      check_mode: false
+      when: not ha_in_recovery
+
+    - name: (standby) Probe WAL receiver status
+      become: true
+      ansible.builtin.command: >
+        docker compose -f {{ ha_compose_path }} exec -T postgres
+        psql -U postgres -d flax -tAc "SELECT status FROM pg_stat_wal_receiver"
+      register: ha_walrcv
+      changed_when: false
+      check_mode: false
+      when: ha_in_recovery
+
+    - name: (standby) Stat standby.signal
+      become: true
+      ansible.builtin.stat:
+        path: /opt/flax/var/postgres/standby.signal
+      register: ha_signal
+      check_mode: false
+      when: ha_in_recovery
+
+    - name: Report — primary view
+      ansible.builtin.debug:
+        msg: >-
+          PRIMARY {{ inventory_hostname }} alembic={{ ha_alembic_head }}
+          replication='{{ ha_statrep.stdout | default('') | trim }}'
+      when: not ha_in_recovery
+
+    - name: Report — standby view
+      ansible.builtin.debug:
+        msg: >-
+          STANDBY {{ inventory_hostname }} alembic={{ ha_alembic_head }}
+          wal_receiver='{{ ha_walrcv.stdout | default('') | trim }}'
+          standby.signal={{ ha_signal.stat.exists | default(false) }}
+      when: ha_in_recovery
+
+    - name: Assert — primary has a streaming standby
+      ansible.builtin.assert:
+        that:
+          - "'streaming' in (ha_statrep.stdout | default(''))"
+        fail_msg: >-
+          DRIFT: {{ inventory_hostname }} (primary) has NO streaming standby in
+          pg_stat_replication ('{{ ha_statrep.stdout | default('') | trim }}').
+          Re-seed the standby: ansible-playbook -i inventories/<site>/hosts.yml
+          --vault-password-file ~/.vault_pass_<site> playbooks/pg_standby_bootstrap.yml
+          -e target=<standby-host> -e pg_bootstrap_force=true
+        success_msg: "{{ inventory_hostname }} (primary): standby streaming — OK"
+      when:
+        - not ha_in_recovery
+        - ha_check_mode == 'assert'
+
+    - name: Assert — standby is streaming from the primary
+      ansible.builtin.assert:
+        that:
+          - (ha_walrcv.stdout | default('') | trim) == 'streaming'
+          - ha_signal.stat.exists | default(false)
+        fail_msg: >-
+          DRIFT: {{ inventory_hostname }} (standby) is NOT streaming
+          (wal_receiver='{{ ha_walrcv.stdout | default('') | trim }}',
+          standby.signal={{ ha_signal.stat.exists | default(false) }}).
+          Re-seed: ansible-playbook -i inventories/<site>/hosts.yml
+          --vault-password-file ~/.vault_pass_<site> playbooks/pg_standby_bootstrap.yml
+          -e target={{ inventory_hostname }} -e pg_bootstrap_force=true
+        success_msg: "{{ inventory_hostname }} (standby): streaming — OK"
+      when:
+        - ha_in_recovery
+        - ha_check_mode == 'assert'

@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% import "_components.html" as c %}
+{% block title %}flax-control — reservations{% endblock %}
+{% block content %}
+{{ c.page_header('Reservations', 'Kea reservations — desired state') }}
+<p class="muted">
+  flax-classify writes here (kea.hosts, surfaced via the <code>reservations</code> view).
+  Operator notes are editable inline.
+</p>
+{% if rows %}
+<div class="filter-bar">
+  <label>filter <input class="table-filter" data-table="res-tbl" type="search" placeholder="ip, mac, hostname…"></label>
+  <span class="muted">{{ rows | length }} reservation{{ '' if rows|length == 1 else 's' }}</span>
+</div>
+<div class="table-scroll"><table class="data-table sortable" id="res-tbl">
+  <thead>
+    <tr>
+      <th>IP</th><th>IPv6</th><th>MAC</th><th>Hostname</th>
+      <th>Switch</th><th>Port</th><th>Kind</th><th>VID</th>
+      <th data-nosort>Updated</th>
+      <th data-nosort>Note</th>
+      <th data-nosort>DNS aliases</th>
+      <th data-nosort>Delete</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for r in rows %}
+    <tr>
+      <td><code>{{ r.ipv4_address }}</code></td>
+      <td><code>{{ r.ipv6_address or '—' }}</code></td>
+      <td><a href="/devices/{{ r.mac }}"><code>{{ r.mac }}</code></a></td>
+      <td>{{ r.hostname }}</td>
+      <td><a href="/switches/{{ r.switch }}">{{ r.switch }}</a></td>
+      <td><a href="/switches/{{ r.switch }}/{{ r.port }}"><code>{{ r.port }}</code></a></td>
+      <td>{{ r.kind }}</td>
+      <td>{{ r.vid }}</td>
+      <td class="muted">{{ r.updated_at }}</td>
+      <td>
+        <form method="post" action="/reservations/{{ r.mac_hex or (r.mac | replace(':','')) }}/operator_note"
+              style="display:inline-flex; gap:4px; align-items:center;">
+          <input type="text" name="note" value="{{ r.operator_note or '' }}" style="width: 180px" />
+          <button type="submit" class="ds-btn ghost">Save</button>
+        </form>
+      </td>
+      <td>
+        <form method="post" action="/reservations/{{ r.mac_hex or (r.mac | replace(':','')) }}/aliases"
+              style="display:inline-flex; gap:4px; align-items:center;">
+          <input type="text" name="aliases" value="{{ r.aliases or '' }}"
+                 placeholder="alias1 alias2 alias3" style="width: 180px" />
+          <button type="submit" class="ds-btn ghost">Save</button>
+        </form>
+      </td>
+      <td>
+        <form method="post" action="/reservations/{{ r.mac_hex or (r.mac | replace(':','')) }}/delete"
+              onsubmit="return confirm('Delete the reservation for {{ r.hostname or r.mac }}?\n\nOnly cleans up devices that are gone — if the device is still live, flax-classify will re-create it next cycle.');">
+          <button type="submit" class="ds-btn ghost" title="Hard-delete this reservation">Delete</button>
+        </form>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="empty">No proposals yet. flax-classify writes on every observe_state
+or switch_facts change.</p>
+{% endif %}
+{% endblock %}

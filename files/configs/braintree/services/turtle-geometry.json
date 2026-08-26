@@ -1,0 +1,187 @@
+[
+  {
+    "switch": "turtle-lorax",
+    "port": "swp12",
+    "ou": "T12"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp13",
+    "ou": "T13"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp14",
+    "ou": "T14"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp15",
+    "ou": "T15"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp16",
+    "ou": "T16"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp17",
+    "ou": "T17"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp18",
+    "ou": "T18"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp19",
+    "ou": "T19"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp20",
+    "ou": "T20"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp21",
+    "ou": "T21"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp22",
+    "ou": "T22"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp23",
+    "ou": "T23"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp24",
+    "ou": "T24"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp25",
+    "ou": "T25"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp26",
+    "ou": "T26"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp27",
+    "ou": "T27"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp28",
+    "ou": "T28"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp29",
+    "ou": "T29"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp30",
+    "ou": "T30"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp31",
+    "ou": "T31"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp32",
+    "ou": "T32"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp33",
+    "ou": "T33"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp34",
+    "ou": "T34"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp35",
+    "ou": "T35"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp36",
+    "ou": "T36"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp37",
+    "ou": "T37"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp38",
+    "ou": "T38"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp39",
+    "ou": "T39"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp40",
+    "ou": "T40"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp41",
+    "ou": "T41"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp42",
+    "ou": "T42"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp43",
+    "ou": "T43"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp44",
+    "ou": "T44"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp45",
+    "ou": "T45"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp46",
+    "ou": "T46"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp47",
+    "ou": "T47"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp48",
+    "ou": "T48"
+  }
+]

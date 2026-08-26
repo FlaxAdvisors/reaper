@@ -1,0 +1,87 @@
+# Health-dashboard stack — active-active on every bang. NOT VIP-exclusive.
+# Mirrors triage's docker-compose-prod.yml shape; all services use
+# network_mode: host so they bind directly to the bang's tailscale interface.
+#
+# Rendered per-bang via ansible.builtin.template — inventory_hostname,
+# bang_tailscale_ip, and the alertmanager cluster-peer list are
+# substituted at deploy time.
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    restart: always
+    network_mode: host
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=90d"
+      - "--storage.tsdb.retention.size=40GB"
+      - "--web.enable-lifecycle"
+      - "--web.listen-address=0.0.0.0:9090"
+      - "--web.external-url=http://{{ inventory_hostname }}.flaxadvisors.cloud:9090"
+    volumes:
+      - /etc/flax/health/prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    restart: always
+    network_mode: host
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+      - "--cluster.listen-address=0.0.0.0:9094"
+      - "--cluster.peer={{ (groups['jumphosts'] | difference([inventory_hostname])) | map('extract', hostvars, 'bang_tailscale_ip') | map('regex_replace', '$', ':9094') | join(',') }}"
+      - "--web.listen-address=0.0.0.0:9093"
+      - "--web.external-url=http://{{ inventory_hostname }}.flaxadvisors.cloud:9093"
+    volumes:
+      - /etc/flax/health/alertmanager:/etc/alertmanager:ro
+      - alertmanager-data:/alertmanager
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    restart: always
+    network_mode: host
+    environment:
+      - GF_SERVER_HTTP_PORT=3000
+      - GF_SERVER_ROOT_URL=http://{{ inventory_hostname }}.flaxadvisors.cloud:3000/
+      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+    volumes:
+      - /etc/flax/health/grafana/provisioning:/etc/grafana/provisioning:ro
+      - /etc/flax/health/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+
+  blackbox:
+    image: prom/blackbox-exporter:v0.25.0
+    restart: always
+    network_mode: host
+    cap_add:
+      - NET_RAW    # ICMP probes require raw sockets
+    command:
+      - "--config.file=/etc/blackbox/blackbox.yml"
+      - "--web.listen-address=0.0.0.0:9115"
+    volumes:
+      - /etc/flax/health/blackbox:/etc/blackbox:ro
+
+  snmp_exporter:
+    image: prom/snmp-exporter:v0.26.0
+    restart: always
+    network_mode: host
+    command:
+      - "--config.file=/etc/snmp_exporter/snmp.yml"
+      - "--web.listen-address=0.0.0.0:9116"
+    volumes:
+      - /etc/flax/health/snmp:/etc/snmp_exporter:ro
+
+  smartctl_exporter:
+    image: quay.io/prometheuscommunity/smartctl-exporter:v0.13.0
+    restart: always
+    network_mode: host
+    privileged: true   # required to read SMART attributes
+    command:
+      - "--web.listen-address=:9633"
+
+volumes:
+  prometheus-data:
+  alertmanager-data:
+  grafana-data:

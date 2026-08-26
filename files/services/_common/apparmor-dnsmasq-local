@@ -1,0 +1,16 @@
+# Managed by apply_bang_services. Do not edit.
+# Local additions to /etc/apparmor.d/usr.sbin.dnsmasq.
+
+# hostsdir=/etc/dnsmasq.hosts/ — without this, dnsmasq fails inotify_init
+# on the directory with EACCES.
+/etc/dnsmasq.hosts/ r,
+/etc/dnsmasq.hosts/** r,
+
+# dhcp-hostsdir=/etc/dnsmasq.dhcp-hosts/ — static reservation files, loaded
+# by dnsmasq via inotify.
+/etc/dnsmasq.dhcp-hosts/ r,
+/etc/dnsmasq.dhcp-hosts/** r,
+
+# (The dhcp-script exec rules for the decommissioned reaper-leased hook —
+# shell-fork + /opt/flax/var/reaper-leased spool — were removed with the
+# dhcp-script line itself: dnsmasq no longer forks a shell.)

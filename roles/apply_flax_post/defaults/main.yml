@@ -1,0 +1,28 @@
+---
+apply_flax_post_image_tag: "0.9.106"
+apply_flax_post_web_port: 8446
+apply_flax_post_https_port: 8444
+apply_flax_post_nginx_image: "nginx:1.27-alpine"
+apply_flax_post_db_password: ""
+apply_flax_post_fwd_port: 8447
+apply_flax_post_fwd_probe_s: 60
+apply_flax_post_sol_image_tag: "0.9.113"
+apply_flax_post_sol_port: 8448
+apply_flax_post_fwd_workers: 48   # probe pass fan-out (parallel Redfish sessions); 1 = sequential
+apply_flax_post_share_base: "http://bang/export/share"
+apply_flax_post_fw_mode: "detect"
+apply_flax_post_fw_enable_ports: ""
+apply_flax_post_fw_max_parallel: 24
+apply_flax_post_bios_fw_mode: "detect"
+apply_flax_post_bios_fw_enable_ports: ""
+apply_flax_post_bios_fw_max_parallel: 24
+apply_flax_post_bios_fw_probe_s: 120
+apply_flax_post_nic_fw_mode: "enforce"
+apply_flax_post_nic_fw_enable_ports: ""
+apply_flax_post_nic_fw_max_parallel: 24
+apply_flax_post_nic_fw_probe_s: 120
+apply_flax_post_nic_reset_timeout: 120
+apply_flax_post_nic_bmc_reset_timeout: 300
+apply_flax_post_nic_flash_timeout: 900
+apply_flax_post_nic_fw_force_bmc_reset: "false"
+apply_flax_post_state_gc_grace_secs: 300

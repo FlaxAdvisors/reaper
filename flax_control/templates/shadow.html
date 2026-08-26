@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% import "_components.html" as c %}
+{% block title %}flax-control — shadow{% endblock %}
+{% block content %}
+{{ c.page_header('Shadow', "Read-only view of the phase-2 shadow materializer (materializer_plan / mac_ownership_events / desired_reservations) — the diff engine that plans, but never applies, changes to kea.hosts. SHADOW ONLY: nothing on this page or behind it writes a Kea reservation.") }}
+
+<div class="side-card" style="margin-bottom:1rem;">
+  <h3>Related</h3>
+  {% set _v1 %}<a href="/roles">Registry →</a>{% endset %}
+  {{ c.kv('role definitions this materializer diffs against', _v1) }}
+  {% set _v2 %}<a href="/lanes">Post lanes →</a>{% endset %}
+  {{ c.kv('per-role convergence rollup', _v2) }}
+  {% set _v3 %}<a href="/ownership">Ownership ledger →</a>{% endset %}
+  {{ c.kv('mac roaming / handoff events recorded here', _v3) }}
+</div>
+
+<!-- ── 1. Convergence banner ────────────────────────────────────────────── -->
+<div class="section">
+  <h2>Convergence</h2>
+  {% if not shadow.ran %}
+  <p>{{ c.badge('never ran', 'n') }}
+    the shadow materializer has not recorded a run yet.</p>
+  {% elif shadow.converged and shadow.skip_total %}
+  <p>{{ c.badge('converged', 'w') }}
+    latest recorded run planned 0 actions, but skipped {{ shadow.skip_total }} mac{{ '' if shadow.skip_total == 1 else 's' }} from planning (see skip counters below).</p>
+  {% elif shadow.converged %}
+  <p>{{ c.badge('converged', 'g') }}
+    latest recorded run planned 0 actions.</p>
+  {% else %}
+  <p>{{ c.badge('not converged', 'w') }}
+    run {{ shadow.latest_run }} planned {{ shadow.planned_count }} action{{ '' if shadow.planned_count == 1 else 's' }}.</p>
+  {% endif %}
+  <p class="muted" style="font-size:0.82rem;">
+    Latest plan ts: {{ shadow.latest_plan_ts if shadow.latest_plan_ts else "n/a" }}.
+    Every materializer run writes one summary marker row even when it plans
+    nothing, so an empty <code>materializer_plan</code> table simply means the
+    materializer has never run.
+  </p>
+  {% if shadow.skip_total %}
+  <div class="table-scroll"><table class="data-table sortable" id="shadow-skip-tbl"><thead><tr><th>skip reason</th><th>macs</th></tr></thead><tbody>
+    {% for reason, n in shadow.skipped.items() %}
+    <tr><td><code>{{ reason }}</code></td><td>{{ n }}</td></tr>
+    {% endfor %}
+  </tbody></table></div>
+  {% endif %}
+  {% if shadow.by_owner_action %}
+  <div class="table-scroll"><table class="data-table sortable" id="shadow-summary-tbl"><thead><tr><th>owner role</th><th>action</th><th>count</th></tr></thead><tbody>
+    {% for row in shadow.by_owner_action %}
+    <tr>
+      <td><code>{{ row.owner_role }}</code></td>
+      <td>{{ row.action }}</td>
+      <td>{{ row.count }}</td>
+    </tr>
+    {% endfor %}
+  </tbody></table></div>
+  {% endif %}
+</div>
+
+<!-- ── 2. Plan history ─────────────────────────────────────────────────── -->
+<div class="section">
+  <h2>Plan history</h2>
+  <p class="muted" style="font-size:0.82rem;">Most recent 500 rows across all
+    runs (newest first) — not just the latest run above.</p>
+  {% if shadow.plan_rows %}
+  <div class="filter-bar">
+    <label>filter <input class="table-filter" data-table="plan-tbl" type="search" placeholder="mac, owner, action…"></label>
+    <span class="muted">{{ shadow.plan_rows | length }} row{{ '' if shadow.plan_rows|length == 1 else 's' }}</span>
+  </div>
+  <div class="table-scroll"><table class="data-table sortable" id="plan-tbl"><thead><tr>
+    <th>ts</th><th>owner role</th><th>action</th><th>mac</th><th>detail</th>
+  </tr></thead><tbody>
+    {% for r in shadow.plan_rows %}
+    <tr>
+      <td class="muted">{{ r.ts }}</td>
+      <td><code>{{ r.owner_role }}</code></td>
+      <td>{{ r.action }}</td>
+      <td><code>{{ r.mac }}</code></td>
+      <td><pre style="margin:0; font-size:0.78rem;">{{ r.detail | tojson }}</pre></td>
+    </tr>
+    {% endfor %}
+  </tbody></table></div>
+  {% else %}
+  <p class="empty">No plan rows recorded — the shadow materializer hasn't
+    run yet.</p>
+  {% endif %}
+</div>
+
+<!-- ── 3. MAC ownership events ─────────────────────────────────────────── -->
+<div class="section">
+  <h2>MAC ownership events</h2>
+  <p class="muted" style="font-size:0.82rem;">Most recent 200 ownership
+    handoffs recorded by the desired-reservations writer (newest first).</p>
+  {% if shadow.events %}
+  <div class="table-scroll"><table class="data-table sortable" id="events-tbl"><thead><tr>
+    <th>at</th><th>mac</th><th>from role</th><th>to role</th><th>switch</th><th>port</th>
+  </tr></thead><tbody>
+    {% for e in shadow.events %}
+    <tr>
+      <td class="muted">{{ e.at }}</td>
+      <td><code>{{ e.mac }}</code></td>
+      <td>{{ e.from_role if e.from_role else "—" }}</td>
+      <td><code>{{ e.to_role }}</code></td>
+      <td>{{ e.switch if e.switch else "—" }}</td>
+      <td>{{ e.port if e.port else "—" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody></table></div>
+  {% else %}
+  <p class="empty">No ownership events recorded yet.</p>
+  {% endif %}
+</div>
+
+<!-- ── 4. Desired reservations summary ─────────────────────────────────── -->
+<div class="section">
+  <h2>Desired reservations</h2>
+  <p class="muted" style="font-size:0.82rem;">One row per owner role publishing
+    into <code>desired_reservations</code> — the target state the shadow
+    materializer diffs against.</p>
+  {% if shadow.desired_summary %}
+  <div class="table-scroll"><table class="data-table sortable" id="desired-tbl"><thead><tr><th>owner role</th><th>count</th><th>most recently updated</th></tr></thead><tbody>
+    {% for d in shadow.desired_summary %}
+    <tr>
+      <td><code>{{ d.owner_role }}</code></td>
+      <td>{{ d.count }}</td>
+      <td class="muted">{{ d.max_updated_at }}</td>
+    </tr>
+    {% endfor %}
+  </tbody></table></div>
+  {% else %}
+  <p class="empty">No desired reservations published yet.</p>
+  {% endif %}
+</div>
+
+{% endblock %}

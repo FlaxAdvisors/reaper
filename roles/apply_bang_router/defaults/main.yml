@@ -1,0 +1,7 @@
+---
+# Names of firewalld zones / policies; rarely overridden.
+apply_bang_router_lab_zone: lab-data
+apply_bang_router_lab_policy: lab-to-corp
+# masq: internal->external forwarding policy. openSUSE shipped this
+# behaviour by default before 15.6; we recreate it explicitly here.
+apply_bang_router_masq_policy: masq

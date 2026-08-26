@@ -1,0 +1,26 @@
+---
+apply_health_compose_path: /etc/flax/health
+apply_health_compose_compose_file: docker-compose-prod.yml
+apply_health_compose_project: prod-health
+
+# Image versions — pin specific tags so reruns don't surprise-upgrade.
+apply_health_compose_image_prometheus: prom/prometheus:v2.55.1
+apply_health_compose_image_alertmanager: prom/alertmanager:v0.27.0
+apply_health_compose_image_grafana: grafana/grafana:11.3.0
+apply_health_compose_image_blackbox: prom/blackbox-exporter:v0.25.0
+apply_health_compose_image_snmp: prom/snmp-exporter:v0.26.0
+apply_health_compose_image_smartctl: quay.io/prometheuscommunity/smartctl-exporter:v0.13.0
+
+apply_health_compose_retention_time: 90d
+apply_health_compose_retention_size: 40GB
+
+# Firewalld ports to open (all on tailscale-bound interface only).
+apply_health_compose_firewalld_zone: external
+apply_health_compose_ports:
+  - 9090   # prometheus
+  - 9093   # alertmanager UI/API
+  - 9094   # alertmanager gossip
+  - 9115   # blackbox_exporter
+  - 9116   # snmp_exporter
+  - 9633   # smartctl_exporter
+  - 3000   # grafana

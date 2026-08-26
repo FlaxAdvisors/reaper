@@ -1,0 +1,46 @@
+# Phase-1 minimal SNMP config. Older snmp_exporter (≤ 0.22) schema with
+# top-level lookups+overrides was rejected by v0.26.0 — auth/module config
+# was split in an incompatible way. For Phase 1 we ship walks only; richer
+# per-vendor relabeling lands in Phase 2 via the snmp_exporter `generator`.
+auths:
+  public_v2:
+    community: public
+    security_level: noAuthNoPriv
+    version: 2
+
+modules:
+  arista_eos:
+    walk:
+      - 1.3.6.1.2.1.2.2.1.2      # ifDescr
+      - 1.3.6.1.2.1.2.2.1.7      # ifAdminStatus
+      - 1.3.6.1.2.1.2.2.1.8      # ifOperStatus
+      - 1.3.6.1.2.1.31.1.1.1.6   # ifHCInOctets
+      - 1.3.6.1.2.1.31.1.1.1.10  # ifHCOutOctets
+      - 1.3.6.1.2.1.2.2.1.14     # ifInErrors
+      - 1.3.6.1.2.1.2.2.1.20     # ifOutErrors
+      - 1.3.6.1.2.1.2.2.1.13     # ifInDiscards
+      - 1.3.6.1.2.1.2.2.1.19     # ifOutDiscards
+      - 1.3.6.1.2.1.47.1.1.1.1.7 # entPhysicalName
+      - 1.3.6.1.2.1.99.1.1.1.5   # entPhySensorValue (fan/PSU/temp)
+      - 1.3.6.1.2.1.99.1.1.1.7   # entPhySensorOperStatus
+
+  cumulus_linux:
+    walk:
+      - 1.3.6.1.2.1.2.2.1.2
+      - 1.3.6.1.2.1.2.2.1.7
+      - 1.3.6.1.2.1.2.2.1.8
+      - 1.3.6.1.2.1.31.1.1.1.6
+      - 1.3.6.1.2.1.31.1.1.1.10
+      - 1.3.6.1.2.1.2.2.1.14
+      - 1.3.6.1.2.1.2.2.1.20
+
+  cisco_ios:
+    walk:
+      - 1.3.6.1.2.1.2.2.1.2
+      - 1.3.6.1.2.1.2.2.1.7
+      - 1.3.6.1.2.1.2.2.1.8
+      - 1.3.6.1.2.1.31.1.1.1.6
+      - 1.3.6.1.2.1.31.1.1.1.10
+      - 1.3.6.1.2.1.2.2.1.14
+      - 1.3.6.1.2.1.2.2.1.20
+      - 1.3.6.1.4.1.9.9.13.1.4.1  # Cisco fan/PSU sensors

@@ -1,0 +1,24 @@
+groups:
+  - name: network-switches
+    rules:
+      - alert: SwitchUnreachable
+        expr: probe_success{probe_kind="own_site_switch"} == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "Switch {{ $labels.instance }} unreachable"
+          description: "ICMP from bangs at {{ $labels.site }} has been failing for 1m."
+
+      - alert: SwitchPortErrorsRising
+        expr: rate(ifInErrors[5m]) > 1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Switch port errors rising on {{ $labels.switch }} {{ $labels.ifName }}"
+
+      - alert: SwitchPortDiscardsRising
+        expr: rate(ifInDiscards[5m]) > 1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Switch port discards rising on {{ $labels.switch }} {{ $labels.ifName }}"

@@ -1,0 +1,10 @@
+{
+  "role": "triage",
+  "universe": {
+    "ports_from": "/etc/flax/geometry.json"
+  },
+  "capabilities": {"reconcile_switch": true, "dhcp_reservations": true, "firmware": true},
+  "policy": {"vid": {"default": 16,
+                      "by_family": {{ flax_role_triage_vid_by_family | default({}) | to_json }}}},
+  "record_keys": ["mac", "serial"]
+}

@@ -1,0 +1,180 @@
+---
+# Stages /etc/flax/health/ with all configs, then brings the stack up.
+# Mirrors apply_triage_compose's shape, but always-up (no MASTER/BACKUP).
+
+- name: Ensure health compose dir hierarchy exists
+  become: true
+  ansible.builtin.file:
+    path: "{{ apply_health_compose_path }}/{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - ""
+    - prometheus
+    - prometheus/rules
+    - alertmanager
+    - blackbox
+    - snmp
+    - grafana
+    - grafana/provisioning
+    - grafana/provisioning/datasources
+    - grafana/provisioning/dashboards
+    - grafana/dashboards
+
+- name: Stage docker-compose file (renders cluster_peers + per-bang external URLs)
+  become: true
+  ansible.builtin.template:
+    src: docker-compose-prod.yml.j2
+    dest: "{{ apply_health_compose_path }}/{{ apply_health_compose_compose_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Stage prometheus.yml
+  become: true
+  ansible.builtin.template:
+    src: prometheus/prometheus.yml.j2
+    dest: "{{ apply_health_compose_path }}/prometheus/prometheus.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload prometheus
+
+- name: Stage recording rules
+  become: true
+  ansible.builtin.copy:
+    src: prometheus/recording-rules.yml
+    dest: "{{ apply_health_compose_path }}/prometheus/recording-rules.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload prometheus
+
+- name: Stage blackbox.yml
+  become: true
+  ansible.builtin.copy:
+    src: blackbox/blackbox.yml
+    dest: "{{ apply_health_compose_path }}/blackbox/blackbox.yml"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Stage snmp.yml
+  become: true
+  ansible.builtin.copy:
+    src: snmp/snmp.yml
+    dest: "{{ apply_health_compose_path }}/snmp/snmp.yml"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Stage alertmanager.yml
+  become: true
+  ansible.builtin.template:
+    src: alertmanager/alertmanager.yml.j2
+    dest: "{{ apply_health_compose_path }}/alertmanager/alertmanager.yml"
+    owner: root
+    group: "65534"   # nogroup — alertmanager container runs as uid/gid 65534
+    mode: "0640"
+  notify: Reload alertmanager
+
+- name: Stage alert rule files
+  become: true
+  ansible.builtin.copy:
+    src: "prometheus/rules/{{ item }}"
+    dest: "{{ apply_health_compose_path }}/prometheus/rules/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - network-uplink.yml
+    - network-switches.yml
+    - network-p2p-mgmt.yml
+    - system-disk.yml
+    - system-net-io.yml
+    - ha-services.yml
+    - meta.yml
+  notify: Reload prometheus
+
+- name: Stage grafana datasource provisioning
+  become: true
+  ansible.builtin.template:
+    src: grafana/datasources.yml.j2
+    dest: "{{ apply_health_compose_path }}/grafana/provisioning/datasources/datasources.yml"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Stage grafana dashboard provider config
+  become: true
+  ansible.builtin.copy:
+    src: grafana/provisioning/dashboards/dashboards.yml
+    dest: "{{ apply_health_compose_path }}/grafana/provisioning/dashboards/dashboards.yml"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Stage grafana dashboard JSON files
+  become: true
+  ansible.builtin.copy:
+    src: "grafana/dashboards/{{ item }}"
+    dest: "{{ apply_health_compose_path }}/grafana/dashboards/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - site-overview.json
+    - network.json
+    - system.json
+    - ha-services.json
+
+# === firewall ===
+# ansible.posix.firewalld would be cleaner but it imports python-firewall
+# which is only bundled with the openSUSE Leap python3.6 interpreter, while
+# the module's own code uses 3.7+ features (`from __future__ import
+# annotations`). Shell out to firewall-cmd to sidestep both problems.
+# See apply_node_exporter/tasks/main.yml for the same pattern.
+- name: Query whether health-stack TCP ports are open in firewalld
+  become: true
+  ansible.builtin.command:
+    cmd: "firewall-cmd --permanent --zone={{ apply_health_compose_firewalld_zone }} --query-port={{ item }}/tcp"
+  register: apply_health_compose_port_query
+  loop: "{{ apply_health_compose_ports }}"
+  changed_when: false
+  failed_when: false
+
+- name: Open health-stack TCP ports in firewalld (permanent)
+  become: true
+  ansible.builtin.command:
+    cmd: "firewall-cmd --permanent --zone={{ apply_health_compose_firewalld_zone }} --add-port={{ item.item }}/tcp"
+  loop: "{{ apply_health_compose_port_query.results }}"
+  when: item.rc != 0
+  changed_when: true  # gated by the query above; runs only when actually adding
+  notify: Reload firewalld
+  loop_control:
+    label: "{{ item.item }}/tcp"
+
+- name: Query whether alertmanager UDP gossip port is open in firewalld
+  become: true
+  ansible.builtin.command:
+    cmd: "firewall-cmd --permanent --zone={{ apply_health_compose_firewalld_zone }} --query-port=9094/udp"
+  register: apply_health_compose_udp_query
+  changed_when: false
+  failed_when: false
+
+- name: Open alertmanager UDP gossip port in firewalld (permanent)
+  become: true
+  ansible.builtin.command:
+    cmd: "firewall-cmd --permanent --zone={{ apply_health_compose_firewalld_zone }} --add-port=9094/udp"
+  when: apply_health_compose_udp_query.rc != 0
+  changed_when: true  # gated by the query above; runs only when actually adding
+  notify: Reload firewalld
+
+- name: Bring health stack up
+  become: true
+  ansible.builtin.command:
+    cmd: "docker compose -p {{ apply_health_compose_project }} -f {{ apply_health_compose_compose_file }} up -d"
+    chdir: "{{ apply_health_compose_path }}"
+  changed_when: true

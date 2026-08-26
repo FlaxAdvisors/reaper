@@ -1,0 +1,92 @@
+{#
+  flax console — design-system component macros.
+
+  Thin Jinja macros that emit the classes styled by static/style.css (the
+  "design system" section, ported from docs/superpowers/refs/flax-console-mockup.html).
+  Import in a template with:  {% import "_components.html" as c %}
+  Every macro here maps 1:1 onto a CSS component so page migration is just
+  "call the macro". Keep them thin — markup only, no logic beyond optional args.
+#}
+
+{#- page title + optional sub-line (h1.page / .page-sub) -#}
+{% macro page_header(title, sub=None) -%}
+<h1 class="page">{{ title }}</h1>
+{%- if sub %}
+<p class="page-sub">{{ sub }}</p>
+{%- endif %}
+{%- endmacro %}
+
+{#- status badge. kind ∈ g(ood) w(arn) c(rit) a(ccent) n(eutral) -#}
+{% macro badge(text, kind='n') -%}
+<span class="badge {{ kind }}">{{ text }}</span>
+{%- endmacro %}
+
+{#-
+  Outcome/state badge: maps a reconcile-outcome or link-state string onto a
+  badge kind and renders it (text is preserved verbatim; only the color
+  mapping is derived). Case-insensitive on the mapping lookup only.
+    g (good)    -> applied, active, link, up, ok, converged, success
+    n (neutral) -> noop, neutral, info (also the fallback for anything
+                   unrecognized, e.g. raw lease-state codes)
+    w (warn)    -> deferred, skipped, warn, down
+    c (crit)    -> failed, error, crit, failure
+-#}
+{% macro outcome_badge(value) -%}
+{%- set v = (value | string | lower) if value is not none else '' -%}
+{%- if v in ('applied', 'active', 'link', 'up', 'ok', 'converged', 'success') -%}
+{{ badge(value, 'g') }}
+{%- elif v in ('noop', 'neutral', 'info') -%}
+{{ badge(value, 'n') }}
+{%- elif v in ('deferred', 'skipped', 'warn', 'down') -%}
+{{ badge(value, 'w') }}
+{%- elif v in ('failed', 'error', 'crit', 'failure') -%}
+{{ badge(value, 'c') }}
+{%- else -%}
+{{ badge(value, 'n') }}
+{%- endif -%}
+{%- endmacro %}
+
+{#-
+  Breadcrumb trail (.crumbs). crumbs = list of [label, href]; the last item
+  renders as the current page (plain text, no link); earlier items with a
+  truthy href render as <a>, separated by a "/" .sep span.
+-#}
+{% macro breadcrumb(crumbs) -%}
+<nav class="crumbs" aria-label="Breadcrumb">
+  {%- for label, href in crumbs -%}
+    {%- if not loop.last and href %}<a href="{{ href }}">{{ label }}</a><span class="sep">/</span>
+    {%- else %}<span class="cur">{{ label }}</span>{% endif -%}
+  {%- endfor -%}
+</nav>
+{%- endmacro %}
+
+{#- key / value row for side-cards (.kv) -#}
+{% macro kv(k, v) -%}
+<div class="kv"><span class="k">{{ k }}</span><span class="v">{{ v }}</span></div>
+{%- endmacro %}
+
+{#- KPI / stat tile (.kpi). note renders as a muted sub-line -#}
+{% macro stat_tile(label, value, note=None) -%}
+<div class="kpi">
+  <div class="lab">{{ label }}</div>
+  <div class="val">{{ value }}</div>
+  {%- if note %}
+  <div class="note">{{ note }}</div>
+  {%- endif %}
+</div>
+{%- endmacro %}
+
+{#-
+  Data table. Open emits an overflow-x container + <table class="data-table">
+  + a <thead> built from `headers`; caller emits <tr>…</tr> body rows, then
+  data_table_close(). Split (not a {% call %}) so callers can stream rows.
+-#}
+{% macro data_table_open(headers) -%}
+<div class="table-scroll"><table class="data-table"><thead><tr>
+{%- for h in headers %}<th>{{ h }}</th>{% endfor -%}
+</tr></thead><tbody>
+{%- endmacro %}
+
+{% macro data_table_close() -%}
+</tbody></table></div>
+{%- endmacro %}

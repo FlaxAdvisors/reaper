@@ -1,0 +1,7 @@
+BOOTPROTO='dhcp'
+STARTMODE='auto'
+ZONE='external'
+BONDING_MASTER='yes'
+BONDING_SLAVE0='public'
+BONDING_SLAVE1='wlan0'
+BONDING_MODULE_OPTS='mode=active-backup miimon=100 primary=public'

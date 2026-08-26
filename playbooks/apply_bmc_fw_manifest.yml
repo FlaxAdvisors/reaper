@@ -1,0 +1,12 @@
+---
+# Render the BMC firmware target manifest (+ empty bmcfw.json state stub) onto the
+# bangs. Operator-run out of band from the main service deploy; scope with --limit.
+# bmc_fw_platforms comes from site group_vars.
+- name: Apply BMC firmware manifest
+  hosts: jumphosts
+  gather_facts: false
+  tasks:
+    - name: Apply role apply_bmc_fw_manifest
+      ansible.builtin.import_role:
+        name: apply_bmc_fw_manifest
+      tags: [bmc_fw_manifest]

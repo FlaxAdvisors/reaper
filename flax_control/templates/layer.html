@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% import "_components.html" as c %}
+{% block title %}flax-control — {{ title | lower }}{% endblock %}
+{% block content %}
+{{ c.page_header(title, question) }}
+
+{% set panels = model.panels %}
+{% set _kind = {'ok': 'g', 'warn': 'w', 'err': 'c'} %}
+{% set _sev = 'crit' if panels | selectattr('badge', 'equalto', 'err') | list
+              else ('warn' if panels | selectattr('badge', 'equalto', 'warn') | list else '') %}
+
+<div class="side-card" style="margin-bottom:1rem;">
+  <h3>Related</h3>
+  {% if title == 'Policy' %}
+  {% set _v1 %}<a href="/roles">Registry →</a>{% endset %}
+  {{ c.kv('role definitions this layer decides from', _v1) }}
+  {% set _v2 %}<a href="/lanes">Lanes →</a>{% endset %}
+  {{ c.kv('per-role rollup driven by the registry', _v2) }}
+  {% elif title == 'Actuation' %}
+  {% set _v3 %}<a href="/shadow">Materializer →</a>{% endset %}
+  {{ c.kv('convergence run this layer is measuring', _v3) }}
+  {% set _v4 %}<a href="/ownership">Ownership ledger →</a>{% endset %}
+  {{ c.kv('mac roaming / handoff events the materializer records', _v4) }}
+  {% endif %}
+  {% set _vsvc %}<a href="/services">Services →</a>{% endset %}
+  {{ c.kv('per-consumer ack + health roster for the pipeline', _vsvc) }}
+</div>
+
+<section class="block"><h2>Pipeline services & state</h2>
+<div class="lcard {{ _sev }}">
+  <div class="rows">
+  {% for p in panels %}
+    <div class="lrow">
+      <span class="k">{% if p.href %}<a href="{{ p.href }}">{{ p.label }}</a>{% else %}{{ p.label }}{% endif %}</span>
+      <span class="v">{% if p.badge %}{{ c.badge(p.value, _kind.get(p.badge, 'n')) }}{% else %}{{ p.value }}{% endif %}</span>
+    </div>
+    {% if p.hint %}
+    <div class="lrow"><span class="k"></span><span class="v muted" style="font-size:11px; font-weight:400;">{{ p.hint }}</span></div>
+    {% endif %}
+  {% endfor %}
+  </div>
+</div>
+</section>
+
+<!-- ── Config that drives this layer ───────────────────────────────────── -->
+<section class="block"><h2>Config that drives this layer</h2>
+<table class="cfg-table">
+  <thead><tr><th>File</th><th>What it decides</th><th>Read by</th><th>Status</th></tr></thead>
+  <tbody>
+  {% for f in model.config %}
+    <tr>
+      <td class="file mono">{{ f.name }}</td>
+      <td>{{ f.decides }}</td>
+      <td class="mono">{{ f.readers | join(', ') or '—' }}</td>
+      <td>
+        {% if f.live_state == 'live' %}{{ c.badge('live', 'g') }}
+        {% elif f.live_state == 'drift' %}{{ c.badge('changed · unpicked', 'w') }}
+        {% else %}{{ c.badge('absent', 'n') }}{% endif %}
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="4" class="muted">no config files scoped to this layer</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</section>
+
+<!-- ── Recent anomalies ─────────────────────────────────────────────────── -->
+<section class="block"><h2>Recent anomalies</h2>
+<div class="table-scroll"><table class="data-table" id="layer-anomalies-tbl">
+  <thead><tr><th>when</th><th>source</th><th>what</th></tr></thead>
+  <tbody>
+  {% for a in model.anomalies %}
+    <tr>
+      <td class="muted mono">{{ a.when }}</td>
+      <td><span class="tag">{{ a.source }}</span></td>
+      <td>{{ a.what }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="3" class="muted">none — clean</td></tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+</section>
+
+<!-- ── Recent events (scoped to this layer's services) ─────────────────── -->
+<section class="block"><h2>Recent events</h2>
+<div class="feed" id="layer-eventfeed">
+  {% for e in model.events %}
+  <div class="ev">
+    <span class="t mono">{{ e.ts }}</span>
+    <span class="svc mono">{{ e.service }}</span>
+    <span class="msg">{{ e.kind }} {% if e.mac %}<a class="tgt mono" href="/devices/{{ e.mac }}">{{ e.mac }}</a>{% elif e.switch %}<a class="tgt mono" href="/switches/{{ e.switch }}">{{ e.switch }}</a>{% endif %}</span>
+  </div>
+  {% else %}
+  <div class="ev muted">no recent events for this layer's services</div>
+  {% endfor %}
+</div>
+</section>
+{% endblock %}

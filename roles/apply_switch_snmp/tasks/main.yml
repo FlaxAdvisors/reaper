@@ -1,0 +1,10 @@
+---
+# Vendor dispatch — apply_switch_snmp.yml runs one play per group and sets
+# this var via tasks_from. main.yml exists so plain `roles: [apply_switch_snmp]`
+# (without tasks_from) fails loud rather than silent-noop.
+
+- name: apply_switch_snmp requires tasks_from to select a vendor
+  ansible.builtin.fail:
+    msg: >-
+      Use this role with tasks_from=arista|cisco|cumulus,
+      driven from playbooks/apply_switch_snmp.yml.

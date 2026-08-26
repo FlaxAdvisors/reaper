@@ -1,0 +1,28 @@
+---
+- name: Restart flax-stack
+  become: true
+  ansible.builtin.systemd:
+    name: flax-stack.service
+    state: restarted
+    daemon_reload: true
+
+- name: Restart nginx in flax-stack
+  become: true
+  # The nginx site config is a single-FILE bind mount. Ansible's template
+  # write is atomic (temp file + rename), which swaps the host inode; a running
+  # container stays pinned to the ORIGINAL inode, so `nginx -s reload` re-reads
+  # the STALE mounted file and never sees the new config (e.g. a new listen
+  # port). A container restart re-resolves the bind mount to the current inode.
+  # (The tls/ DIRECTORY mount is exempt — cert swaps are picked up by a reload,
+  # which is why apply_flax_tls uses a reload handler for the leaf.)
+  ansible.builtin.command: >
+    docker compose -f {{ apply_flax_stack_compose_path }} restart nginx
+  register: flax_nginx_restart
+  changed_when: flax_nginx_restart.rc == 0
+  failed_when: false
+
+- name: Reload firewalld
+  become: true
+  ansible.builtin.command:
+    cmd: firewall-cmd --reload
+  changed_when: true

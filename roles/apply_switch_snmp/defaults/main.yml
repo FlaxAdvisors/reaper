@@ -1,0 +1,12 @@
+---
+# Push v2c SNMP read-only access to the switches so the bang-side
+# snmp_exporter (see apply_health_compose/files/snmp/snmp.yml — auth: public_v2)
+# can scrape ifTable / sensors. Phase 1 community-string only; v3 lands when
+# snmp.yml's `auths:` block grows per-target USM creds.
+#
+# Override `apply_switch_snmp_community` in vault — leaving "public" here so
+# this role works on bench gear, but production should NOT ship "public".
+
+apply_switch_snmp_community: "{{ vault_snmp_community | default('public') }}"
+apply_switch_snmp_location: "{{ site_name }}"
+apply_switch_snmp_contact: "{{ vault_snmp_contact | default('ops@example.com') }}"

@@ -1,0 +1,20 @@
+---
+# Ports the triage docker stack listens on under network_mode: host on
+# bang-fiesta (and any future bang at a triage-running site). Two TCP
+# ports today:
+#   5555 — gunicorn API (triage UI HTTP)
+#   5559 — node + socket.io server (SOL websocket, /sol/<ip> namespace)
+# Triage's docker-compose-prod.yml runs both with network_mode: host —
+# so unlike bridge+port-mapping where Docker DNAT silently bypasses
+# firewalld, host-mode listeners hit the INPUT chain and the external
+# zone allowlist is load-bearing.
+apply_triage_firewall_ports:
+  - 5555
+  - 5559
+
+# Firewalld zones to allowlist the triage ports in. See
+# apply_lease_agent_firewall_zones for the rationale (host-mode listener
+# hits INPUT per ingress interface; mgmt-VLAN laptops live in `internal`).
+apply_triage_firewall_zones:
+  - external
+  - internal

@@ -1,0 +1,157 @@
+---
+# Apply switch config (Arista + Cumulus). Used for push and plan (check mode).
+# In check mode, writes per-device .check_result.json for critical_ports analysis.
+# Final play runs critical_ports module on localhost and writes .critical_changes.json.
+
+# ── Arista ────────────────────────────────────────────────────────────────────
+
+- name: Apply Arista config
+  hosts: arista
+  gather_facts: false
+  tasks:
+    - name: Apply running-config
+      arista.eos.eos_config:
+        src: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/config/running-config.txt"
+        replace: line
+        save_when: modified
+      register: arista_apply_result
+
+    - name: Write check result for critical_ports analysis
+      delegate_to: localhost
+      check_mode: false   # always runs — this is analysis metadata, not a device change
+      ansible.builtin.copy:
+        content: >-
+          {{ {'device_type': 'arista', 'changed': arista_apply_result.changed,
+          'diff': arista_apply_result.diff.prepared | default('')} | to_nice_json }}
+        dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/.check_result.json"
+        mode: "0644"
+
+# ── Cisco IOS ─────────────────────────────────────────────────────────────────
+
+- name: Apply Cisco IOS config
+  hosts: cisco
+  gather_facts: false
+  tasks:
+    - name: Apply running-config
+      cisco.ios.ios_config:
+        src: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/config/running-config.txt"
+        replace: line
+        save_when: modified
+      register: cisco_apply_result
+
+    - name: Write check result for critical_ports analysis
+      delegate_to: localhost
+      check_mode: false   # always runs — this is analysis metadata, not a device change
+      ansible.builtin.copy:
+        # cisco.ios.ios_config does not populate diff.prepared the way Arista does.
+        # We capture the flat `updates` command list instead — that's enough to
+        # identify which interface stanzas were touched.
+        content: >-
+          {{ {'device_type': 'cisco', 'changed': cisco_apply_result.changed,
+          'commands': cisco_apply_result.updates | default([])} | to_nice_json }}
+        dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/.check_result.json"
+        mode: "0644"
+
+# ── Cumulus ───────────────────────────────────────────────────────────────────
+# Cumulus 3.7.3 ships Python 3.4/3.5; ansible-core 2.20 modules use f-strings
+# (Python 3.6+). Use raw for all remote writes — no module transfer.
+
+- name: Apply Cumulus config
+  hosts: cumulus
+  gather_facts: false
+  tasks:
+    - name: Fetch live /etc/network/interfaces
+      ansible.builtin.raw: cat /etc/network/interfaces
+      register: live_interfaces
+      changed_when: false
+      check_mode: false
+
+    - name: Read desired interfaces.txt
+      delegate_to: localhost
+      ansible.builtin.slurp:
+        src: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/config/interfaces.txt"
+      register: desired_interfaces
+      check_mode: false
+
+    - name: Decode interfaces.txt to temp file
+      # Decode without become so the complex printf|base64 command is sent
+      # raw over SSH — no sudo sh -c quoting to corrupt line endings.
+      ansible.builtin.raw: >-
+        printf '%s' '{{ desired_interfaces.content }}' | base64 -d > /tmp/.reaper_interfaces
+      when: not ansible_check_mode
+      changed_when: false
+
+    - name: Install interfaces.txt
+      # Simple mv runs under sudo with no quoting risk.
+      ansible.builtin.raw: mv /tmp/.reaper_interfaces /etc/network/interfaces
+      when: not ansible_check_mode
+      become: true
+      changed_when: >-
+        (live_interfaces.stdout | replace('\r', '') | trim) != (desired_interfaces.content | b64decode | trim)
+      register: install_interfaces
+
+    - name: Read desired frr.conf
+      delegate_to: localhost
+      ansible.builtin.slurp:
+        src: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/config/frr.conf"
+      register: desired_frr
+      check_mode: false
+      failed_when: false
+
+    - name: Decode frr.conf to temp file
+      ansible.builtin.raw: >-
+        printf '%s' '{{ desired_frr.content }}' | base64 -d > /tmp/.reaper_frr
+      when: >-
+        not ansible_check_mode
+        and desired_frr.content is defined
+        and 'FRR not installed' not in (desired_frr.content | b64decode)
+      failed_when: false
+      changed_when: false
+
+    - name: Install frr.conf
+      ansible.builtin.raw: mv /tmp/.reaper_frr /etc/frr/frr.conf
+      when: >-
+        not ansible_check_mode
+        and desired_frr.content is defined
+        and 'FRR not installed' not in (desired_frr.content | b64decode)
+      become: true
+      failed_when: false
+      changed_when: false
+
+    - name: Reload network interfaces
+      ansible.builtin.raw: ifreload -a
+      when: not ansible_check_mode and install_interfaces.changed
+      become: true
+      changed_when: false
+
+    - name: Write check result for critical_ports analysis
+      delegate_to: localhost
+      check_mode: false
+      ansible.builtin.copy:
+        content: >-
+          {{ {'device_type': 'cumulus',
+              'changed': (live_interfaces.stdout | replace('\r', '') | trim) != (desired_interfaces.content | b64decode | trim),
+              'live_content': live_interfaces.stdout | replace('\r', ''),
+              'desired_content': desired_interfaces.content | b64decode} | to_nice_json }}
+        dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/.check_result.json"
+        mode: "0644"
+
+# ── Critical change analysis (localhost) ──────────────────────────────────────
+
+- name: Analyse critical changes
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Run critical_ports module
+      critical_ports:
+        site_dir: "{{ config_output_dir }}/{{ site_name }}"
+        topology: "{{ config_output_dir }}/{{ site_name }}/topology.yml"
+      register: analysis
+      check_mode: false
+
+    - name: Write critical_changes.json for reaper
+      ansible.builtin.copy:
+        content: "{{ analysis.critical_changes | to_nice_json }}"
+        dest: "{{ config_output_dir }}/{{ site_name }}/.critical_changes.json"
+        mode: "0644"
+      check_mode: false

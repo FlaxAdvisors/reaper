@@ -1,0 +1,17 @@
+---
+- name: Assert flax-switch-sense DB password is wired
+  ansible.builtin.assert:
+    that:
+      - apply_flax_switch_sense_db_password | length > 0
+    fail_msg: |
+      apply_flax_switch_sense_db_password is empty. Wire it from the vault:
+        all/vars.yml: apply_flax_switch_sense_db_password:
+                        "{{ vault_flax_stack_db_passwords.flax_switch_sense }}"
+      (Plan 1 already stored the vault entry; Plan 2 just adds the wiring.)
+  no_log: true
+
+- name: Apply systemd unit + env
+  ansible.builtin.import_tasks: systemd.yml
+
+- name: Apply firewalld rule
+  ansible.builtin.import_tasks: firewall.yml

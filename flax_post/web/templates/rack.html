@@ -1,0 +1,316 @@
+<!-- flax_post/web/templates/rack.html -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ site }} Post Servers</title>
+  <link rel="icon" href="/web-static/flax-logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/web-static/rack.css">
+  <link rel="stylesheet" href="/web-static/vendor/xterm.css">
+  <script>window.BOOT = { site: {{ site|tojson }}, rackname: {{ rackname|tojson }},
+    phases: {{ phases|tojson }}, order_no: {{ (settings.order_no or '')|tojson }},
+    population: {{ (settings.population or '')|tojson }},
+    customer: {{ (settings.customer or '')|tojson }} };</script>
+  <script src="/web-static/vendor/xterm.js"></script>
+  <script src="/web-static/vendor/socket.io.min.js"></script>
+  <script src="/web-static/sol.js"></script>
+  <script src="/web-static/petite-vue.iife.js" defer></script>
+  <script type="module" src="/web-static/app.js" defer></script>
+</head>
+<body>
+{% raw %}
+<div id="app" v-scope="App()" @vue:mounted="mounted()">
+
+  <!-- ================= header ================= -->
+  <div class="top">
+    <img class="flogo" src="/web-static/flax-logo.svg" alt="flax" onerror="this.style.display='none'">
+    <div class="metrics">
+      <div class="metric discover" :class="{on:filter==='discover'}" @click="toggle('discover')"><b>{{counts.discover}}</b><span>discover</span></div>
+      <div class="metric firmware" :class="{on:filter==='firmware'}" @click="toggle('firmware')"><b>{{counts.firmware}}</b><span>firmware</span></div>
+      <div class="metric qualify" :class="{on:filter==='qualify'}" @click="toggle('qualify')"><b>{{counts.qualify}}</b><span>qualify</span></div>
+      <div class="metric done" :class="{on:filter==='done'}" @click="toggle('done')"><b>{{counts.done}}</b><span>done</span></div>
+      <div class="metric alert" :class="{on:filter==='alert'}" @click="toggle('alert')"><b>{{counts.alert}}</b><span>alerts</span></div>
+    </div>
+    <div class="search">
+      <input name="post-search" autocomplete="off" placeholder="search serial / MAC…" v-model="q">
+      <span class="hint" v-if="q">{{matchCount}} match{{matchCount===1?'':'es'}}</span>
+    </div>
+    <select class="rackpick" name="post-rack" v-if="rackList.length>1" v-model="activeSwitch">
+      <option value="">all racks</option>
+      <option v-for="r in rackList" :value="r.switch">{{r.label}}</option>
+    </select>
+    <div class="ctx">
+      <label>Order <input name="post-order" autocomplete="off" v-model="order_no" @change="saveOrder" placeholder="RRORD-003">
+        <span class="clr" title="clear" @click="clearOrder">✕</span></label>
+      <label>Population
+        <select name="post-population" v-model="population" @change="savePopulation">
+          <option value="">—</option>
+          <option v-for="p in profiles" :value="p">{{p}}</option>
+        </select></label>
+      <label>Customer
+        <input name="post-customer" autocomplete="off" v-model="customer" @change="saveCustomer"
+               placeholder="customer"></label>
+    </div>
+    <span class="title">{{site}} Post Servers</span>
+  </div>
+
+  <!-- ================= rack ================= -->
+  <div class="rack">
+    <div class="group" v-for="g in groups">
+      <div class="group-h">
+        <span class="g-range">{{g.range}}</span>
+        <span class="col-h" v-for="h in g.colHeads">{{h}}</span>
+      </div>
+      <div class="row" v-for="row in g.rows">
+        <span class="ou-label">{{row.ou}}</span>
+        <div class="tile" v-for="cell in row.cells" :class="wrapCls(cell)" :style="tileStyle(cell)" @click="open(cell)">
+          <div class="t-head">
+            <span class="t-port">{{cell.port}}</span>
+            <span class="watt" :class="wattCls(cell)" v-if="!cell.empty">{{tilePwr(cell)}}</span>
+            <span class="dot" :class="dotCls(cell)"></span>
+          </div>
+          <div v-if="!cell.empty">
+            <div class="t-row"><span class="k">MAC</span>
+              <span v-if="cell.bmc_mac" class="v">{{cell.bmc_mac}}</span>
+              <span v-else-if="cell.macs_seen && cell.macs_seen.length" class="v unreserved">{{cell.macs_seen.join(' ')}}</span>
+              <span v-else class="skel"></span></div>
+            <div class="t-row"><span class="k">SN</span>
+              <span v-if="cell.serial" class="v">{{cell.serial}}</span><span v-else class="skel" style="width:60%"></span></div>
+            <div class="bars">
+              <div class="bar"><span class="seg" v-for="c in phaseSegs(cell)" :class="c"></span></div>
+              <div class="bar steps"><span class="seg" v-for="c in stepSegs(cell)" :class="c"></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= detail drawer (docked, non-modal) ================= -->
+  <div class="drawer" v-if="sel">
+    <div class="d-head">
+      <span class="d-sn">{{sel.serial || '— no serial yet —'}}</span>
+      <span class="d-status" :style="statusStyle(sel)">{{statusText(sel)}}</span>
+      <span class="x" @click="sel=null">✕</span>
+    </div>
+    <div class="d-sub">OU {{sel.ou}} {{colName(sel)}} · {{sel.port}} · {{sel.switch}}</div>
+
+    <div class="actions">
+      <button :class="wattCls(sel)" @click="openModal('pwr')">PWR</button>
+      <button v-if="sel.bmc_ip" @click="openModal('sol')">SOL</button>
+      <button @click="openModal('inv')">INV</button>
+      <button :class="popBtnCls()" @click="openModal('pop')">POP</button>
+      <button @click="openModal('idnt')">IDNT</button>
+    </div>
+
+    <div class="section-l">addresses</div>
+    <div class="facets">
+      <span class="lbl">BMC</span><span class="mono">{{sel.bmc_mac||'⋯'}} · {{sel.bmc_ip||'⋯'}}</span>
+        <span :class="sel.bmc_leased?'ok':'no'">{{sel.bmc_leased?'✓ lease':'—'}}</span>
+      <span class="lbl">HOST</span><span class="mono">{{sel.host_mac||'⋯'}} · {{sel.host_ip||'⋯'}}</span>
+        <span :class="sel.host_leased?'ok':'no'">{{sel.host_leased?'✓ lease':'—'}}</span>
+    </div>
+
+    <div class="section-l">pipeline</div>
+    <div class="checklist">
+      <div class="phase" v-for="p in phases">
+        <div class="phase-h"><span class="dot" :class="phaseDot(sel,p)"></span>{{p}}
+          <span class="pct">{{phasePct(sel,p)}}</span></div>
+        <div class="steps">
+          <div class="step" v-for="st in stepEntries(sel,p)" :class="st.state" @click="openStep(p,st.name)">
+            <span class="si">{{stepIcon(st.state)}}</span>{{st.name}}</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-l">alerts</div>
+    <div class="alert-grid">
+      <div class="alert-box" :class="{bad:hasSel(sel)}" @click="openModal('sel')">
+        <div class="ab-h">SEL<span v-if="hasSel(sel)" class="ab-tag"> · !</span></div>
+        <div class="ab-b" :class="hasSel(sel)?'':'pending-note'">{{hasSel(sel)? sel.sel.length+' events — click to view' :'events (CATERR…) — capture pending'}}</div>
+      </div>
+      <div class="alert-box" :class="{bad:false}" @click="openModal('sdr')">
+        <div class="ab-h">SDR</div>
+        <div class="ab-b" :class="hasSdr(sel)?'':'pending-note'">{{hasSdr(sel)?'captured':'thresholds (lcr/ucr/lnc/unc/cri) — capture pending'}}</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= modal (modal?. — petite-vue evaluates these even as v-if tears down) ================= -->
+  <div class="m-scrim" v-if="modal" @click="closeModal()">
+    <div class="m-box" :class="{'m-sol':modal?.kind==='sol'}" @click.stop>
+      <div class="m-h"><span class="m-title">{{modalTitle()}}</span>
+        <select name="post-pop-profile" v-if="modal?.kind==='pop'" v-model="popProfile" @change="loadInv()">
+          <option value="">(order: {{population||'—'}})</option>
+          <option v-for="p in profiles" :value="p">{{p}}</option></select>
+        <span class="x" @click="closeModal()">✕</span></div>
+      <div class="m-b">
+        <div v-if="modal?.kind==='pwr'">
+          <p class="m-sub">draw <b>{{sel?.watts||'—'}}</b> · power is <b :class="wattCls(sel)">{{sel?.power_on||'unknown'}}</b></p>
+          <div class="radios">
+            <label :class="{on:pwrChoice==='on'}"><input type="radio" name="post-pwr" value="on" v-model="pwrChoice"> On</label>
+            <label :class="{on:pwrChoice==='off',disabled:flashActive(sel)}">
+              <input type="radio" name="post-pwr" value="off" v-model="pwrChoice" :disabled="flashActive(sel)"> Off</label>
+          </div>
+          <p class="pending-note" v-if="flashActive(sel)">firmware flash in progress — power-off blocked</p>
+          <button class="press" :disabled="!pwrChoice" @click="pwrConfirm=true">Activate</button>
+          <div class="confirm" v-if="pwrConfirm">Power <b>{{pwrChoice}}</b> {{sel?.serial||sel?.port}}?
+            <button class="yes" @click="doPower()">Yes</button><button class="no" @click="pwrConfirm=false">No</button></div>
+          <p class="action-msg" v-if="actionMsg">{{actionMsg}}</p>
+        </div>
+        <div v-else-if="modal?.kind==='idnt'">
+          <p class="m-sub">chassis-identify LED</p>
+          <div class="radios">
+            <label :class="{on:idntMode==='on'}"><input type="radio" name="post-idnt" value="on" v-model="idntMode"> On</label>
+            <label :class="{on:idntMode==='off'}"><input type="radio" name="post-idnt" value="off" v-model="idntMode"> Off</label>
+            <label :class="{on:idntMode==='force'}"><input type="radio" name="post-idnt" value="force" v-model="idntMode"> Force</label>
+          </div>
+          <button class="press" @click="doIdent()">Activate</button>
+          <p class="action-msg" v-if="actionMsg">{{actionMsg}}</p>
+        </div>
+        <div v-else-if="modal?.kind==='inv'">
+          <p class="pending-note" v-if="invLoading || !inv">loading…</p>
+          <p class="pending-note" v-else-if="!inv.present && inv.error">inventory fetch failed ({{inv.error}})</p>
+          <p class="pending-note" v-else-if="!inv.present">inventory not captured (no /export dump for this blade yet)</p>
+          <div v-else>
+            <div v-if="inv.sections.cpu && inv.sections.cpu.length">
+              <div class="section-l">CPU</div>
+              <table class="inv-tbl"><thead><tr><th>Model</th><th>Serial</th></tr></thead>
+                <tbody><tr v-for="c in inv.sections.cpu" :class="groupColor(inv.sections.cpu,'model',c.model)">
+                  <td>{{c.model}}</td><td class="mono">{{c.serial||'—'}}</td></tr></tbody></table>
+            </div>
+            <div v-if="inv.sections.memory && inv.sections.memory.length">
+              <div class="section-l">Memory</div>
+              <table class="inv-tbl"><thead><tr><th>Slot</th><th>Serial</th><th>Size</th><th>Part</th><th>Mfg</th><th>Speed</th></tr></thead>
+                <tbody><tr v-for="m in inv.sections.memory" :class="groupColor(inv.sections.memory,'part',m.part)">
+                  <td class="mono">{{m.slot}}</td><td class="mono">{{m.serial}}</td><td>{{m.size}}</td><td>{{m.part}}</td><td>{{m.mfg}}</td><td>{{m.speed}}</td></tr></tbody></table>
+            </div>
+            <div v-if="inv.sections.nic && inv.sections.nic.length">
+              <div class="section-l">NIC</div>
+              <table class="inv-tbl"><thead><tr><th>MAC</th><th>Model</th></tr></thead>
+                <tbody><tr v-for="n in inv.sections.nic" :class="groupColor(inv.sections.nic,'model',n.model)">
+                  <td class="mono">{{n.mac}}</td><td>{{n.model}}</td></tr></tbody></table>
+            </div>
+            <div v-if="inv.sections.storage && inv.sections.storage.length">
+              <div class="section-l">Storage</div>
+              <table class="inv-tbl"><thead><tr><th>Model</th><th>Serial</th><th>Size</th></tr></thead>
+                <tbody><tr v-for="s in inv.sections.storage" :class="groupColor(inv.sections.storage,'model',s.model)">
+                  <td>{{s.model}}</td><td class="mono">{{s.serial||'—'}}</td><td>{{s.size}}</td></tr></tbody></table>
+            </div>
+            <div v-if="inv.sections.bmc && (inv.sections.bmc.mac||inv.sections.bmc.version)">
+              <div class="section-l">BMC</div>
+              <div class="kv-grid">
+                <span class="lbl">MAC</span><span class="mono">{{inv.sections.bmc.mac||'—'}}</span>
+                <span class="lbl">Version</span><span class="mono">{{inv.sections.bmc.version||'—'}}</span>
+              </div>
+            </div>
+            <div v-if="inv.sections.bios && inv.sections.bios.version">
+              <div class="section-l">BIOS</div>
+              <div class="kv-grid"><span class="lbl">Version</span><span class="mono">{{inv.sections.bios.version}}</span></div>
+            </div>
+            <div v-if="inv.sections.fru && Object.keys(inv.sections.fru).length">
+              <div class="section-l">FRU</div>
+              <div class="kv-grid">
+                <span class="lbl">Mfg</span><span class="mono">{{inv.sections.fru.mfg||'—'}}</span>
+                <span class="lbl">Board</span><span class="mono">{{inv.sections.fru.board_product||'—'}}</span>
+                <span class="lbl">Serial</span><span class="mono">{{inv.sections.fru.product_serial||'—'}}</span>
+              </div>
+            </div>
+            <div v-if="inv.sections.lldp && inv.sections.lldp.length">
+              <div class="section-l">LLDP</div>
+              <table class="inv-tbl"><thead><tr><th>Iface</th><th>Neighbor</th><th>Port</th></tr></thead>
+                <tbody><tr v-for="l in inv.sections.lldp"><td class="mono">{{l.iface}}</td><td>{{l.neighbor}}</td><td>{{l.port||'—'}}</td></tr></tbody></table>
+            </div>
+            <div v-if="inv.sections.gpu && inv.sections.gpu.length">
+              <div class="section-l">GPU</div>
+              <table class="inv-tbl"><thead><tr><th>Model</th></tr></thead>
+                <tbody><tr v-for="g in inv.sections.gpu"><td>{{g.model}}</td></tr></tbody></table>
+            </div>
+            <div v-if="inv.sections.block_ctlr && inv.sections.block_ctlr.length">
+              <div class="section-l">Storage controllers</div>
+              <table class="inv-tbl"><thead><tr><th>Model</th></tr></thead>
+                <tbody><tr v-for="bc in inv.sections.block_ctlr"><td>{{bc.model}}</td></tr></tbody></table>
+            </div>
+            <p class="inv-dir">{{inv.dir}}</p>
+          </div>
+        </div>
+        <div v-else-if="modal?.kind==='pop'">
+          <p class="pending-note" v-if="invLoading || !inv">loading…</p>
+          <p class="pending-note" v-else-if="!inv.present && inv.error">inventory fetch failed ({{inv.error}})</p>
+          <p class="pending-note" v-else-if="!inv.present">inventory not captured (no /export dump for this blade yet)</p>
+          <div v-else>
+            <div v-if="inv.sections.cpu && inv.sections.cpu.length">
+              <div class="section-l">CPU ({{inv.sections.cpu.length}})</div>
+              <table class="inv-tbl"><thead><tr><th>Model</th><th>Serial</th></tr></thead>
+                <tbody><tr v-for="c in inv.sections.cpu" :class="groupColor(inv.sections.cpu,'model',c.model)">
+                  <td>{{c.model}}</td><td class="mono">{{c.serial||'—'}}</td></tr></tbody></table>
+            </div>
+            <div v-if="inv.sections.memory && inv.sections.memory.length">
+              <div class="section-l">Memory ({{inv.sections.memory.length}})</div>
+              <table class="inv-tbl"><thead><tr><th>Slot</th><th>Size</th><th>Part</th><th>Mfg</th></tr></thead>
+                <tbody><tr v-for="m in inv.sections.memory" :class="groupColor(inv.sections.memory,'part',m.part)">
+                  <td class="mono">{{m.slot}}</td><td>{{m.size}}</td><td>{{m.part}}</td><td>{{m.mfg}}</td></tr></tbody></table>
+            </div>
+            <div v-if="inv.sections.nic && inv.sections.nic.length">
+              <div class="section-l">NIC ({{inv.sections.nic.length}})</div>
+              <table class="inv-tbl"><thead><tr><th>MAC</th><th>Model</th></tr></thead>
+                <tbody><tr v-for="n in inv.sections.nic" :class="groupColor(inv.sections.nic,'model',n.model)">
+                  <td class="mono">{{n.mac}}</td><td>{{n.model}}</td></tr></tbody></table>
+            </div>
+            <div v-if="inv.sections.storage && inv.sections.storage.length">
+              <div class="section-l">Storage ({{inv.sections.storage.length}})</div>
+              <table class="inv-tbl"><thead><tr><th>Model</th><th>Size</th></tr></thead>
+                <tbody><tr v-for="s in inv.sections.storage" :class="groupColor(inv.sections.storage,'model',s.model)">
+                  <td>{{s.model}}</td><td>{{s.size}}</td></tr></tbody></table>
+            </div>
+            <div class="section-l">verdict</div>
+            <p class="pending-note" v-if="inv.pop.state==='grey'">no population profile in effect / profile not found</p>
+            <div v-else>
+              <span class="pop-badge" :class="inv.pop.state">{{inv.pop.state}}</span>
+              <div class="pop-row" v-for="r in inv.pop.results" :class="{bad:!r.ok}">
+                <span>{{r.rule}}</span><span>{{r.found}}</span><span>{{r.ok?'✓':'✗'}}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div v-else-if="modal?.kind==='sel'">
+          <p class="m-sub" :class="{bad:hasSel(sel)}">{{hasSel(sel)? sel.sel.length+' SEL events' : 'no events captured yet — capture pending (needs BMC creds)'}}</p>
+          <pre class="console" v-if="hasSel(sel)">{{selLines(sel)}}</pre>
+          <pre class="console" v-else>~ ipmitool sel elist
+  (post-SEL capture — CATERR / ECC / thermal events list here)</pre>
+        </div>
+        <div v-else-if="modal?.kind==='sdr'">
+          <p class="m-sub">{{hasSdr(sel)?'sensor readings captured':'thresholds — capture pending (needs BMC creds)'}}</p>
+          <pre class="console">~ ipmitool sdr
+  (post-SDR capture — CPU/HSC/PSU readings + lcr/ucr/lnc/unc/cri here)</pre>
+        </div>
+        <div v-else-if="modal?.kind==='step'">
+          <p class="m-sub">log · step <b>{{modal?.step}}</b></p>
+          <pre class="console" v-if="modal?.step==='switchportlink'">{{(sel?.macs_seen && sel.macs_seen.length) ? 'MACs seen on wire: '+sel.macs_seen.join(' ') : 'no MACs seen on wire'}}</pre>
+          <pre class="console" v-else-if="modal?.step==='bmc-checked'">{{sel?.fw?.bmc?.phase==='oem' ? ('OEM board · Redfish '+(sel.fw.bmc.current||'?')) : (sel?.fw?.bmc?.current ? ('current: '+sel.fw.bmc.current) : 'no BMC version read yet')}}</pre>
+          <pre class="console" v-else-if="modal?.step==='bmc-updated'">{{sel?.fw?.bmc?.phase==='oem' ? 'OEM board — firmware not flax-managed (no update)' : (sel?.fw?.bmc?.fault_reason ? ('target: '+(sel.fw.bmc.target||'?')+' — '+sel.fw.bmc.fault_reason) : (sel?.fw?.bmc?.target ? 'target: '+sel.fw.bmc.target : 'target unknown'))}}</pre>
+          <pre class="console" v-else-if="modal?.step==='bios-checked'">{{sel?.fw?.bios?.current ? ('current: '+sel.fw.bios.current) : 'no BIOS version read yet'}}</pre>
+          <pre class="console" v-else-if="modal?.step==='bios-updated'">{{sel?.fw?.bios?.fault_reason ? ('target: '+(sel.fw.bios.target||'?')+' — '+sel.fw.bios.fault_reason) : (sel?.fw?.bios?.target ? 'target: '+sel.fw.bios.target : 'target unknown')}}</pre>
+          <pre class="console" v-else-if="modal?.step==='mlx-checked'">{{ (sel?.fw?.nic?.devices && sel.fw.nic.devices.length) ? sel.fw.nic.devices.map(d => d.pci+' '+d.psid+': '+(d.current||'?')).join(' · ') : 'no Mellanox cards' }}</pre>
+          <pre class="console" v-else-if="modal?.step==='mlx-updated'">{{ (sel?.fw?.nic?.devices && sel.fw.nic.devices.length) ? sel.fw.nic.devices.map(d => d.pci+' → '+(d.target||'?')+' '+(d.target_psid||'')+' ['+d.phase+']').join(' · ') : 'no Mellanox cards' }}</pre>
+          <pre class="console" v-else>[step log not yet captured for {{modal?.step}}]</pre>
+        </div>
+        <div v-else-if="modal?.kind==='sol'" class="sol-wrap">
+          <div class="sol-controls">
+            <button class="sol-lock" :class="'lk-'+solLockState()" @click="solLock()">{{solLockLabel()}}</button>
+            <button class="sol-relaunch" @click="solRelaunch()">Relaunch</button>
+            <span class="sol-client">Client: {{solClientId || '—'}}</span>
+          </div>
+          <div ref="solTerm" class="sol-terminal"></div>
+          <div class="sol-log"><div v-for="m in solLog" class="sol-log-line">{{m}}</div></div>
+        </div>
+        <div v-else>
+          <p class="pending-note">{{modal?.kind?.toUpperCase()}} — wired in a later wave.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endraw %}
+</body>
+</html>

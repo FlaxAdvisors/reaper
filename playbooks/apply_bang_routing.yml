@@ -1,0 +1,17 @@
+---
+# Phase 2 step 2: stand up bang router + keepalived only (no services).
+# Sibling to apply_bang_services.yml, which also includes apply_bang_services
+# and is intentionally avoided here so braintree's snapshotted dnsmasq config
+# is not clobbered. To be removed (or merged into apply_bang_services.yml)
+# once phase 2 step 4 promotes the dnsmasq snapshot into role templates.
+#
+# Order: router (sysctls + zone) → keepalived (VIPs).
+# Both roles are idempotent and safe to re-run.
+
+- name: Apply bang router + keepalived (no services)
+  hosts: jumphosts
+  gather_facts: true
+  serial: 1
+  roles:
+    - apply_bang_router
+    - apply_keepalived

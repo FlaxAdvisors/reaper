@@ -1,0 +1,88 @@
+{
+  "Dhcp4": {
+    "interfaces-config": {
+      "interfaces": [
+{% for v in vlans %}
+        "{{ v.parent }}.{{ v.vid }}",
+{% endfor %}
+        "{{ bang_mgmt_iface }}"
+      ]
+    },
+    "lease-database": {
+      "type": "postgresql", "host": "${KEA_DB_HOST}", "name": "${KEA_DB_NAME}",
+      "user": "${KEA_DB_USER}", "password": "${KEA_DB_PASSWORD}",
+      "max-reconnect-tries": 5
+    },
+    "hosts-database": {
+      "type": "postgresql", "host": "${KEA_DB_HOST}", "name": "${KEA_DB_NAME}",
+      "user": "${KEA_DB_USER}", "password": "${KEA_DB_PASSWORD}"
+    },
+    "valid-lifetime": 4000, "renew-timer": 1000, "rebind-timer": 2000,
+    "expired-leases-processing": {
+      "reclaim-timer-wait-time": 10, "flush-reclaimed-timer-wait-time": 25,
+      "hold-reclaimed-time": 3600, "max-reclaim-leases": 100, "max-reclaim-time": 250
+    },
+    "client-classes": [
+      { "name": "iPXE",
+        "test": "substring(option[77].text,0,4) == 'iPXE' or option[175].exists" },
+      { "name": "BIOS",
+        "test": "not member('iPXE') and option[93].hex == 0x0000",
+        "boot-file-name": "bios/undionly.kpxe" },
+      { "name": "EFI64",
+        "test": "not member('iPXE') and (option[93].hex == 0x0007 or option[93].hex == 0x0009)",
+        "boot-file-name": "efi64/ipxe.efi" },
+      { "name": "ONIE",
+        "test": "option[60].text == 'OnieDhcpRequest'" }
+    ],
+    "subnet4": [
+{% for v in vlans %}
+{% set o = v.cidr.split('/')[0].split('.') %}
+{% set res_only = (reservation_only_dhcp | default(false)) and (v.dhcp_mode | default('reservation')) != 'pool' and v.phase in (apply_kea_reservation_only_phases | default(['post'])) %}
+      {
+        "id": {{ v.vid }},
+        "subnet": "{{ v.cidr }}",
+        "interface": "{{ v.parent }}.{{ v.vid }}",
+        "next-server": "{{ v.gateway_vip }}",
+{% if res_only %}
+        "pools": [],
+        "authoritative": true,
+{% else %}
+        "pools": [{ "pool": "{{ o[0] }}.{{ o[1] }}.0.{{ apply_kea_pool_start }} - {{ o[0] }}.{{ o[1] }}.0.{{ apply_kea_pool_end }}" }],
+{% endif %}
+        "option-data": [
+          {"name": "routers", "data": "{{ v.gateway_vip }}"},
+          {"name": "domain-name-servers", "data": "{{ v.gateway_vip }}"},
+          {"name": "domain-name", "data": "{{ apply_kea_lab_domain }}"}
+        ]
+      },
+{% endfor %}
+      {
+        "id": {{ apply_kea_mgmt_subnet_id }},
+        "subnet": "{{ apply_kea_mgmt_cidr }}",
+        "interface": "{{ bang_mgmt_iface }}",
+        "pools": [
+          { "pool": "{{ apply_kea_onie_pool_start }} - {{ apply_kea_onie_pool_end }}",
+            "client-class": "ONIE",
+            "option-data": [
+              {"name": "routers", "data": "{{ apply_kea_mgmt_vip }}"},
+              {"name": "domain-name-servers", "data": "{{ apply_kea_mgmt_vip }}"}
+            ] }
+{% if mgmt_guest_pool is defined %}
+          ,
+          { "pool": "{{ mgmt_guest_pool.start }} - {{ mgmt_guest_pool.end }}",
+            "option-data": [
+              {"name": "domain-name-servers", "data": "{{ apply_kea_mgmt_vip }}"},
+              {"name": "domain-name", "data": "{{ apply_kea_lab_domain }}"}
+            ] }
+{% endif %}
+        ],
+        "option-data": [
+          {"name": "domain-name-servers", "data": "{{ apply_kea_mgmt_vip }}"}
+        ]
+      }
+    ],
+    "loggers": [
+      { "name": "kea-dhcp4", "output_options": [{"output": "stdout"}], "severity": "INFO" }
+    ]
+  }
+}

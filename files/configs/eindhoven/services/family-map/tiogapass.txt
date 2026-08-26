@@ -1,0 +1,5 @@
+SV7220G3
+TiogaPass
+Tioga-Pass Channel
+Tioga Pass Single Side .*
+.* Tioga Pass Single Side

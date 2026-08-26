@@ -1,0 +1,62 @@
+---
+# Triage UI/API stack — VIP-exclusive. The SOL websocket listener
+# requires single-instance per fleet, so containers run only on the
+# bang holding the keepalived MASTER state. Compose file + env are
+# vendored into this role so keepalived's notify scripts can launch
+# from a system-level path (ProtectHome=true blocks /home/*). Image
+# lifecycle (prod-api:latest / prod-server:latest) is operator-managed
+# out of band — this role only stages and orchestrates lifecycle.
+# notify_master.sh / notify_backup.sh (managed by apply_keepalived)
+# handle subsequent VIP transitions.
+
+- name: Ensure triage compose dir exists
+  become: true
+  ansible.builtin.file:
+    path: "{{ apply_triage_compose_path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Stage triage docker-compose-prod.yml
+  become: true
+  ansible.builtin.copy:
+    src: docker-compose-prod.yml
+    dest: "{{ apply_triage_compose_path }}/{{ apply_triage_compose_compose_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Stage triage .env (compose reads it for ${version} interpolation)
+  become: true
+  ansible.builtin.copy:
+    src: env
+    dest: "{{ apply_triage_compose_path }}/.env"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Stage triage .env_prod (env_file referenced from docker-compose-prod.yml)
+  become: true
+  ansible.builtin.copy:
+    src: env_prod
+    dest: "{{ apply_triage_compose_path }}/.env_prod"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Bring triage stack up — master only (SOL listener requires VIP exclusivity)
+  become: true
+  ansible.builtin.command:
+    cmd: docker compose -p {{ apply_triage_compose_project }} -f {{ apply_triage_compose_compose_file }} up -d
+    chdir: "{{ apply_triage_compose_path }}"
+  when: inventory_hostname == apply_keepalived_master_host
+  changed_when: true
+
+- name: Ensure triage stack is down on backup (idempotent — VIP exclusivity)
+  become: true
+  ansible.builtin.command:
+    cmd: docker compose -p {{ apply_triage_compose_project }} -f {{ apply_triage_compose_compose_file }} down --remove-orphans
+    chdir: "{{ apply_triage_compose_path }}"
+  when: inventory_hostname != apply_keepalived_master_host
+  changed_when: true

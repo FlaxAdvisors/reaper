@@ -1,0 +1,26 @@
+---
+# Time sync on bang hosts. The chrony package ships pre-configured on
+# openSUSE (pool 2.opensuse.pool.ntp.org via /etc/chrony.d/pool.conf and
+# a `makestep` directive in /etc/chrony.conf), but chronyd.service is
+# disabled out of the box — so freshly-installed bangs drift freely
+# until something turns it on. This role just ensures the package is
+# present and the service is enabled+running; the shipped config is
+# left alone.
+#
+# Initial-step on a drifted host is automatic: chrony.conf's stock
+# `makestep 1.0 3` directive will jump the clock once measurements
+# converge, typically within ~30s of chronyd starting.
+
+- name: Ensure chrony package installed
+  become: true
+  community.general.zypper:
+    name: chrony
+    state: present
+
+- name: Enable + start chronyd
+  become: true
+  ansible.builtin.systemd:
+    name: chronyd
+    enabled: true
+    state: started
+    daemon_reload: true

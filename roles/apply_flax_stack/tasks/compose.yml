@@ -1,0 +1,51 @@
+---
+- name: Deploy postgresql.conf
+  become: true
+  ansible.builtin.template:
+    src: postgresql.conf.j2
+    dest: /etc/flax/postgres/postgresql.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-stack
+
+- name: Deploy pg_hba.conf
+  become: true
+  ansible.builtin.template:
+    src: pg_hba.conf.j2
+    dest: /etc/flax/postgres/pg_hba.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-stack
+
+- name: Deploy docker-compose.yml
+  become: true
+  ansible.builtin.copy:
+    src: docker-compose.yml
+    dest: "{{ apply_flax_stack_compose_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-stack
+
+- name: Deploy flax-stack.env
+  become: true
+  ansible.builtin.template:
+    src: flax-stack.env.j2
+    dest: "{{ apply_flax_stack_env_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true   # password content
+  notify: Restart flax-stack
+
+- name: Deploy nginx site config
+  become: true
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: /etc/flax/nginx/flax-control.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart nginx in flax-stack

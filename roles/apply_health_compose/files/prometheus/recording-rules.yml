@@ -1,0 +1,36 @@
+groups:
+  - name: unit_renames
+    interval: 30s
+    rules:
+      # Friendly alias: unit_up{name="dnsmasq",bang="bang-fiesta"} = 1/0
+      - record: unit_up
+        expr: |
+          label_replace(
+            label_replace(
+              node_systemd_unit_state{state="active"},
+              "name", "$1", "name", "(.+)\\.service$"
+            ),
+            "name", "$1", "name", "(.+)\\.timer$"
+          )
+
+  - name: derived_icmp
+    interval: 15s
+    rules:
+      - record: probe:loss_ratio:5m
+        expr: 1 - avg_over_time(probe_success[5m])
+
+      - record: probe:loss_ratio:1m
+        expr: 1 - avg_over_time(probe_success[1m])
+
+  - name: derived_priorities
+    interval: 30s
+    rules:
+      # `effective_vrrp_priority` is already exported by chk_services_metric.sh,
+      # but this rule materializes a "would_failover" boolean used by alerts.
+      - record: vrrp:would_failover
+        expr: |
+          (
+            max by (site) (effective_vrrp_priority and on(bang) vrrp_state == 1)
+            <
+            max by (site) (effective_vrrp_priority and on(bang) vrrp_state == 0)
+          )

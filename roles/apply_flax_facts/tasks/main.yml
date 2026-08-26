@@ -1,0 +1,23 @@
+---
+# Render site facts to /etc/flax/site.env on each jumphost. Consumed by
+# /opt/flax/bin/ utilities (macsum, eventually others) that have been
+# updated to source it. Ghost's /etc/flax/bangvars is the legacy
+# fallback — the two files coexist during the alpha→gamma migration.
+
+- name: Ensure /etc/flax directory exists
+  become: true
+  ansible.builtin.file:
+    path: /etc/flax
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Render /etc/flax/site.env from inventory
+  become: true
+  ansible.builtin.template:
+    src: site.env.j2
+    dest: /etc/flax/site.env
+    owner: root
+    group: root
+    mode: "0644"

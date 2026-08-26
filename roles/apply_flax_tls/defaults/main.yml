@@ -1,0 +1,16 @@
+---
+# On-host cert directory — the same path flax-stack + flax-post nginx mount.
+apply_flax_tls_dir: /etc/flax/nginx/tls
+# Committed fleet CA cert (public); lives in the repo's files/certs.
+apply_flax_tls_ca_crt_src: "{{ playbook_dir }}/../files/certs/flax-rootCA.crt"
+# Public DNS zone the host + wildcard names live under.
+apply_flax_tls_domain: flaxadvisors.cloud
+# Leaf validity.
+apply_flax_tls_days: 3650
+# SAN set for the per-host wildcard leaf. <host> = inventory_hostname.
+apply_flax_tls_sans:
+  - "DNS:*.{{ inventory_hostname }}.{{ apply_flax_tls_domain }}"
+  - "DNS:{{ inventory_hostname }}.{{ apply_flax_tls_domain }}"
+  - "DNS:{{ inventory_hostname }}"
+  - "DNS:localhost"
+  - "IP:127.0.0.1"

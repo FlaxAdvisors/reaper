@@ -1,0 +1,434 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REAPER_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+_reaper_usage() {
+  cat >&2 <<'EOF'
+Usage: reaper <subcommand> [<site> [<host>...]]
+
+Subcommands:
+  fetch     Pull device state to local files (includes jump hosts; rebuilds topology.yml)
+  drift     Show what changed on device since last fetch (diff files/before device/after)
+  push      Apply local config files to device (staged if management-critical changes detected)
+  plan      Preview what push would change (diff device/before files/after)
+  setup     Render SSH jump host entries into ~/.ssh/config.d/reaper-jumphosts
+
+Examples:
+  reaper fetch
+  reaper fetch braintree
+  reaper fetch braintree rabbit-lorax
+  reaper drift braintree rabbit-lorax turtle-lorax
+  reaper push braintree
+  reaper push braintree turtle-lorax
+  reaper setup
+EOF
+  exit 1
+}
+
+_reaper_run_playbook() {
+  local site="$1" playbook="$2" extra_flag="${3:-}" limit="${4:-}"
+  local -a cmd=(
+    ansible-playbook
+    -i "${REAPER_ROOT}/inventories/${site}"
+    -e "site_name=${site}"
+    -e "config_output_dir=${REAPER_ROOT}/files/configs"
+    "${REAPER_ROOT}/playbooks/${playbook}"
+  )
+  # shellcheck disable=SC2206
+  [[ -n "$extra_flag" ]] && cmd+=($extra_flag)
+  [[ -n "$limit" ]]      && cmd+=(--limit "$limit")
+  REAPER_SITE="$site" "${cmd[@]}"
+}
+
+_reaper_run_all_sites() {
+  local playbook="$1" extra_flag="${2:-}" limit="${3:-}"
+  local exit_code=0
+  for inv_dir in "${REAPER_ROOT}/inventories"/*/; do
+    local site
+    site=$(basename "$inv_dir")
+    printf '\n==> site: %s\n' "$site"
+    _reaper_run_playbook "$site" "$playbook" "$extra_flag" "$limit" || {
+      printf 'FAIL: %s\n' "$site" >&2
+      exit_code=1
+    }
+  done
+  return $exit_code
+}
+
+_reaper_setup() {
+  local output="${HOME}/.ssh/config.d/reaper-jumphosts"
+  [ -d "${HOME}/.ssh/config.d" ] || mkdir -p "${HOME}/.ssh/config.d"
+  for inv_dir in "${REAPER_ROOT}/inventories"/*/; do
+    local site
+    site=$(basename "$inv_dir")
+    printf '==> setup: %s\n' "$site"
+    REAPER_SITE="$site" ansible-playbook \
+      -i "${inv_dir}" \
+      "${REAPER_ROOT}/playbooks/render_ssh_jumphosts.yml" \
+      -e "output_file=${output}" \
+      -e "site_name=${site}"
+  done
+  printf 'Written: %s\n' "$output"
+}
+
+_reaper_validate_site() {
+  local site="$1"
+  if [[ ! -d "${REAPER_ROOT}/inventories/${site}" ]]; then
+    printf 'ERROR: Unknown site "%s". Available: %s\n' \
+      "$site" "$(ls "${REAPER_ROOT}/inventories/" | tr '\n' ' ')" >&2
+    exit 1
+  fi
+}
+
+_reaper_confirm() {
+  local prompt="$1"
+  printf '\n%s [y/N] ' "$prompt"
+  read -r answer
+  [[ "$answer" =~ ^[Yy]$ ]]
+}
+
+# Read topology.yml and extract a field using Python (avoids yq dependency)
+_topology_field() {
+  local site="$1" field="$2"
+  python3 -c "
+import yaml, sys
+t = yaml.safe_load(open('${REAPER_ROOT}/files/configs/${site}/topology.yml'))
+parts = '${field}'.split('.')
+val = t
+for p in parts:
+    val = val.get(p, '')
+print(val or '')
+"
+}
+
+_reaper_staged_push() {
+  local site="$1" limit="${2:-}"
+  local site_dir="${REAPER_ROOT}/files/configs/${site}"
+  local topo_file="${site_dir}/topology.yml"
+  local changes_file="${site_dir}/.critical_changes.json"
+
+  # ── Topology check ──────────────────────────────────────────────────────────
+  if [[ ! -f "$topo_file" ]]; then
+    printf 'ERROR: topology.yml not found for site "%s".\n' "$site" >&2
+    printf 'Run "reaper fetch %s" first to build topology.\n' "$site" >&2
+    exit 1
+  fi
+
+  # ── Check mode pass ─────────────────────────────────────────────────────────
+  printf '==> Running check mode to detect critical changes...\n'
+  _reaper_run_playbook "$site" "apply_config.yml" "--check" "$limit"
+
+  if [[ ! -f "$changes_file" ]]; then
+    printf 'ERROR: .critical_changes.json not written by apply_config.yml.\n' >&2
+    exit 1
+  fi
+
+  local num_critical
+  num_critical=$(python3 -c "import json; print(len(json.load(open('${changes_file}'))))")
+
+  # ── No critical changes — apply directly ────────────────────────────────────
+  if [[ "$num_critical" -eq 0 ]]; then
+    printf '==> No management-critical changes detected. Proceeding with direct apply.\n'
+    _reaper_run_playbook "$site" "apply_config.yml" "" "$limit"
+    return
+  fi
+
+  # ── Critical changes detected ────────────────────────────────────────────────
+  printf '\nSTAGED PUSH REQUIRED — management-critical changes detected\n\n'
+  python3 -c "
+import json
+changes = json.load(open('${changes_file}'))
+for c in changes:
+    print(f\"  {c.get('device','?')}  {c.get('port','?')}  (peer: {c.get('peer_device','?')}/{c.get('peer_port','?')})\")
+"
+  printf '\nReaper will guide you through 3 stages. Each stage requires confirmation.\n'
+  printf 'Use Ctrl-C at any prompt to abort without changes.\n'
+
+  # ── Pre-flight VLAN consistency check ───────────────────────────────────────
+  printf '\n==> Running pre-flight VLAN consistency check...\n'
+  if ! python3 "${REAPER_ROOT}/scripts/preflight_check.py" "$site_dir" "$changes_file"; then
+    exit 1
+  fi
+  printf '    Pre-flight OK — VLANs are consistent across all changing link pairs.\n'
+
+  # ── Read topology for stage jump hosts ──────────────────────────────────────
+  local stage1_jh stage3_jh stage1_ts stage3_ts single_jumphost
+  stage1_jh=$(_topology_field "$site" "jumphost_pairs.stage1")
+  stage3_jh=$(_topology_field "$site" "jumphost_pairs.stage3")
+
+  # When no alternate jump host is defined, fall back to pushing the switch via
+  # stage1. This is safe when stage1's own ifcfg has no VLAN changes in this
+  # push (it remains reachable throughout Stage 2).
+  single_jumphost=false
+  if [[ -z "$stage3_jh" || "$stage3_jh" == "null" ]]; then
+    single_jumphost=true
+    stage3_jh="$stage1_jh"
+    printf '\nNOTE: No alternate jump host (stage3) — switch will be pushed via %s.\n' "$stage1_jh"
+    printf 'Stage 3 will be skipped. Safe only if %s has no VLAN changes in this push.\n\n' "$stage1_jh"
+  fi
+
+  # Resolve Tailscale IPs from inventory (via ansible-inventory)
+  stage1_ts=$(REAPER_SITE="$site" ansible-inventory \
+    -i "${REAPER_ROOT}/inventories/${site}" \
+    --host "$stage1_jh" 2>/dev/null | python3 -c \
+    "import json,sys; h=json.load(sys.stdin); print(h.get('ansible_host',''))")
+  if [[ "$single_jumphost" == "true" ]]; then
+    stage3_ts="$stage1_ts"
+  else
+    stage3_ts=$(REAPER_SITE="$site" ansible-inventory \
+      -i "${REAPER_ROOT}/inventories/${site}" \
+      --host "$stage3_jh" 2>/dev/null | python3 -c \
+      "import json,sys; h=json.load(sys.stdin); print(h.get('ansible_host',''))")
+  fi
+
+  # ── Stage 1: Update primary jump host ───────────────────────────────────────
+  printf '\n── Stage 1: Update primary jump host (%s) ──\n' "$stage1_jh"
+  printf 'After this stage, %s will have the new VLAN config but the switch\n' "$stage1_jh"
+  printf 'will still have the old one. This is expected — %s temporarily\n' "$stage1_jh"
+  printf 'cannot reach the switch OOB until Stage 2 completes.\n'
+
+  _reaper_confirm "Proceed with Stage 1 (apply to ${stage1_jh})?" || {
+    printf 'Aborted before any changes.\n'; exit 0
+  }
+
+  REAPER_SITE="$site" ansible-playbook \
+    -i "${REAPER_ROOT}/inventories/${site}" \
+    -e "site_name=${site}" \
+    -e "config_output_dir=${REAPER_ROOT}/files/configs" \
+    --limit "$stage1_jh" \
+    "${REAPER_ROOT}/playbooks/apply_jumphost_config.yml"
+
+  printf '\nStage 1 complete.\n'
+
+  # ── Stage 2: Push switch changes via alternate jump host + probe ─────────────
+  printf '\n── Stage 2: Push switch changes via %s ──\n' "$stage3_jh"
+
+  _reaper_confirm "Proceed with Stage 2 (push switch config via ${stage3_jh})?" || {
+    printf 'Aborted. Stage 1 has been applied — %s has the new VLAN config.\n' "$stage1_jh"
+    printf 'To revert %s, restore its ifcfg file from show/ or git history and re-run push.\n' "$stage1_jh"
+    exit 0
+  }
+
+  # Apply switch config via the alternate jump host (override ProxyJump in inventory)
+  local switch_target="$limit"
+  [[ -z "$switch_target" ]] && switch_target="arista:cumulus:cisco"
+
+  REAPER_SITE="$site" ansible-playbook \
+    -i "${REAPER_ROOT}/inventories/${site}" \
+    -e "site_name=${site}" \
+    -e "config_output_dir=${REAPER_ROOT}/files/configs" \
+    -e "ansible_ssh_extra_args=-o ProxyCommand='ssh -W %h:%p -o StrictHostKeyChecking=no ${stage3_ts}'" \
+    --limit "$switch_target" \
+    "${REAPER_ROOT}/playbooks/apply_config.yml"
+
+  printf '\n==> Running connectivity probe: %s → switch via %s...\n' "$stage1_jh" "$stage1_jh"
+
+  local primary_turtle
+  primary_turtle=$(_topology_field "$site" "primary_turtle")
+
+  # Snapshot switch config/ files before probe — used for revert if probe fails
+  local backup_dir="${site_dir}/.stage2_backup"
+  rm -rf "$backup_dir" && mkdir -p "$backup_dir"
+  for dev_dir in "${site_dir}"/*/; do
+    dev=$(basename "$dev_dir")
+    if [[ -d "${dev_dir}/config" ]]; then
+      mkdir -p "${backup_dir}/${dev}/config"
+      cp -a "${dev_dir}/config/." "${backup_dir}/${dev}/config/"
+    fi
+  done
+
+  if REAPER_SITE="$site" ansible-playbook \
+       -i "${REAPER_ROOT}/inventories/${site}" \
+       -e "site_name=${site}" \
+       -e "probe_jump_host=${stage1_ts}" \
+       -e "probe_target=${primary_turtle}" \
+       --limit "${primary_turtle}" \
+       "${REAPER_ROOT}/playbooks/probe_connectivity.yml"; then
+
+    printf '\nConnectivity verified: %s → %s OK.\n' "$stage1_jh" "$primary_turtle"
+    rm -rf "$backup_dir"
+
+  else
+    printf '\nERROR: Connectivity probe FAILED.\n' >&2
+    printf 'Reverting switch config to pre-Stage-2 state via %s...\n' "$stage3_jh" >&2
+
+    # Restore pre-Stage-2 config snapshots and re-apply via stage3 jump host
+    for dev_dir in "${backup_dir}"/*/; do
+      dev=$(basename "$dev_dir")
+      if [[ -d "${site_dir}/${dev}/config" ]]; then
+        cp -a "${dev_dir}/config/." "${site_dir}/${dev}/config/"
+      fi
+    done
+
+    REAPER_SITE="$site" ansible-playbook \
+      -i "${REAPER_ROOT}/inventories/${site}" \
+      -e "site_name=${site}" \
+      -e "config_output_dir=${REAPER_ROOT}/files/configs" \
+      -e "ansible_ssh_extra_args=-o ProxyCommand='ssh -W %h:%p -o StrictHostKeyChecking=no ${stage3_ts}'" \
+      --limit "$switch_target" \
+      "${REAPER_ROOT}/playbooks/apply_config.yml" || true
+
+    rm -rf "$backup_dir"
+    printf '\nSwitch reverted to previous config.\n' >&2
+    printf '%s still has the new VLAN config — you must manually revert it.\n' "$stage1_jh" >&2
+    printf 'Previous config is in files/configs/%s/%s/show/ or git history.\n' "$site" "$stage1_jh" >&2
+    printf 'A probe failure after a clean pre-flight indicates a physical or forwarding problem.\n' >&2
+    exit 1
+  fi
+
+  if [[ "$single_jumphost" == "true" ]]; then
+    printf '\nStage 3 skipped — no alternate jump host defined.\n'
+    printf 'Switch config applied. Management connectivity via %s intact.\n' "$stage1_jh"
+    return
+  fi
+
+  _reaper_confirm "Proceed to Stage 3 (update ${stage3_jh})?" || {
+    printf 'Aborted after Stage 2. %s is not yet updated — do this manually.\n' "$stage3_jh"
+    exit 0
+  }
+
+  # ── Stage 3: Update the alternate jump host ──────────────────────────────────
+  printf '\n── Stage 3: Update alternate jump host (%s) ──\n' "$stage3_jh"
+
+  REAPER_SITE="$site" ansible-playbook \
+    -i "${REAPER_ROOT}/inventories/${site}" \
+    -e "site_name=${site}" \
+    -e "config_output_dir=${REAPER_ROOT}/files/configs" \
+    --limit "$stage3_jh" \
+    "${REAPER_ROOT}/playbooks/apply_jumphost_config.yml"
+
+  printf '\nStage 3 complete. Both jump hosts and the switch agree on the new VLAN.\n'
+  printf 'Full management connectivity restored.\n'
+}
+
+# ── main ──────────────────────────────────────────────────────────────────────
+[[ $# -eq 0 ]] && _reaper_usage
+
+subcmd="$1"; shift
+
+case "$subcmd" in
+  setup)
+    _reaper_setup
+    ;;
+
+  fetch|drift)
+    case "$subcmd" in
+      drift) extra_flag="--check --diff" ;;
+      *)     extra_flag= ;;
+    esac
+
+    site="${1:-}"
+    if [[ -n "$site" ]]; then
+      shift
+      _reaper_validate_site "$site"
+    fi
+    devices=("$@")
+
+    if [[ ${#devices[@]} -gt 0 && -z "$site" ]]; then
+      printf 'ERROR: Specify a site before listing devices.\n' >&2
+      exit 1
+    fi
+
+    limit=""
+    [[ ${#devices[@]} -gt 0 ]] && limit=$(IFS=:; printf '%s' "${devices[*]}")
+
+    if [[ -z "$site" ]]; then
+      _reaper_run_all_sites "collect_config.yml" "$extra_flag" "$limit"
+    else
+      _reaper_run_playbook "$site" "collect_config.yml" "$extra_flag" "$limit"
+    fi
+    ;;
+
+  push)
+    site="${1:-}"
+    if [[ -n "$site" ]]; then
+      shift
+      _reaper_validate_site "$site"
+    fi
+    devices=("$@")
+
+    if [[ ${#devices[@]} -gt 0 && -z "$site" ]]; then
+      printf 'ERROR: Specify a site before listing devices.\n' >&2
+      exit 1
+    fi
+
+    # Split device list into jump hosts (bang-*) and switches.
+    # No devices means push everything — both paths run.
+    jh_devices=() sw_devices=()
+    for _dev in "${devices[@]}"; do
+      if [[ "$_dev" == bang-* ]]; then jh_devices+=("$_dev")
+      else                              sw_devices+=("$_dev")
+      fi
+    done
+    jh_limit="" sw_limit=""
+    [[ ${#jh_devices[@]} -gt 0 ]] && jh_limit=$(IFS=:; printf '%s' "${jh_devices[*]}")
+    [[ ${#sw_devices[@]} -gt 0 ]] && sw_limit=$(IFS=:; printf '%s' "${sw_devices[*]}")
+
+    _push_site() {
+      local s="$1"
+      # Switches — staged push with critical-change detection
+      if [[ ${#devices[@]} -eq 0 || -n "$sw_limit" ]]; then
+        _reaper_staged_push "$s" "$sw_limit"
+      fi
+      # Jump hosts — direct push, no critical-change check
+      if [[ ${#devices[@]} -eq 0 || -n "$jh_limit" ]]; then
+        _reaper_run_playbook "$s" "apply_jumphost_config.yml" "" "$jh_limit"
+      fi
+    }
+
+    if [[ -z "$site" ]]; then
+      for inv_dir in "${REAPER_ROOT}/inventories"/*/; do
+        site=$(basename "$inv_dir")
+        printf '\n==> site: %s\n' "$site"
+        _push_site "$site"
+      done
+    else
+      _push_site "$site"
+    fi
+    ;;
+
+  plan)
+    site="${1:-}"
+    if [[ -n "$site" ]]; then
+      shift
+      _reaper_validate_site "$site"
+    fi
+    devices=("$@")
+
+    jh_devices=() sw_devices=()
+    for _dev in "${devices[@]}"; do
+      if [[ "$_dev" == bang-* ]]; then jh_devices+=("$_dev")
+      else                              sw_devices+=("$_dev")
+      fi
+    done
+    jh_limit="" sw_limit=""
+    [[ ${#jh_devices[@]} -gt 0 ]] && jh_limit=$(IFS=:; printf '%s' "${jh_devices[*]}")
+    [[ ${#sw_devices[@]} -gt 0 ]] && sw_limit=$(IFS=:; printf '%s' "${sw_devices[*]}")
+
+    _plan_site() {
+      local s="$1"
+      if [[ ${#devices[@]} -eq 0 || -n "$sw_limit" ]]; then
+        _reaper_run_playbook "$s" "apply_config.yml" "--check --diff" "$sw_limit"
+      fi
+      if [[ ${#devices[@]} -eq 0 || -n "$jh_limit" ]]; then
+        _reaper_run_playbook "$s" "apply_jumphost_config.yml" "--check --diff" "$jh_limit"
+      fi
+    }
+
+    if [[ -z "$site" ]]; then
+      for inv_dir in "${REAPER_ROOT}/inventories"/*/; do
+        site=$(basename "$inv_dir")
+        printf '\n==> site: %s\n' "$site"
+        _plan_site "$site"
+      done
+    else
+      _plan_site "$site"
+    fi
+    ;;
+
+  *)
+    printf 'ERROR: Unknown subcommand "%s".\n' "$subcmd" >&2
+    _reaper_usage
+    ;;
+esac

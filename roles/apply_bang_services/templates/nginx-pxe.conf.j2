@@ -1,0 +1,100 @@
+# Managed by apply_bang_services. PXE chain + boot asset HTTP.
+
+map $server_addr $vlan {
+{% for v in vlans %}
+    {{ v.gateway_vip }}  {{ v.vid }};
+{% endfor %}
+    {{ bang_mgmt_vip }}  4;
+    default              0;
+}
+
+# Identifies per-VLAN VIPs so the operator-facing trees (/export, /nodes,
+# /share) can return 404 on those addresses while still being served on
+# every other interface — mgmt VIP, primary mgmt iface IP, tailscale,
+# public IP, etc. Denylist (vid VIPs only) rather than allowlist (mgmt
+# VIP only) so operators reach the trees from any operator-facing path.
+map $server_addr $is_vid_vip {
+{% for v in vlans %}
+    {{ v.gateway_vip }}  1;
+{% endfor %}
+    default              0;
+}
+
+server {
+    listen 80 default_server;
+    server_name bang bang.{{ bang_lab_domain }};
+
+    # Health check (used by keepalived's chk_services).
+    location = /healthz {
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    # First iPXE fetch: chain into the per-VLAN tree based on which VIP we
+    # were reached on. The VLAN is the only discriminator — no per-client
+    # query string. Per-host overrides come later via the fleet-readiness
+    # plan (hostname / mac / smbios-product chain dispatch).
+    location = /boot.ipxe {
+        default_type text/plain;
+        return 200 "#!ipxe\nchain http://bang.{{ bang_lab_domain }}/v$vlan/boot.ipxe\n";
+    }
+
+    # Per-VLAN content tree. Each /v<vid>/ holds the family's boot.ipxe,
+    # vmlinuz, initrd.img, kickstart, and any installer image.
+    location ~ ^/v[0-9]+/ {
+        root {{ apply_bang_services_pxe_root }};
+        autoindex off;
+        sendfile on;
+        tcp_nopush on;
+    }
+
+    # Network-install asset trees: served on every VIP (vid + mgmt) so a
+    # DUT in any VLAN can fetch installer ISOs and repo bits. Mirrors the
+    # legacy /etc/apache2/conf.d/install.conf + isos.conf alias pairs.
+    location /install/ {
+        alias /export/install/;
+        autoindex on;
+        sendfile on;
+        tcp_nopush on;
+    }
+    location /isos/ {
+        alias /export/isos/;
+        autoindex on;
+        sendfile on;
+        tcp_nopush on;
+    }
+
+    # Operator-facing trees: returns 404 on any vid VIP so a DUT can't
+    # accidentally browse them. Allowed everywhere else — mgmt VIP, primary
+    # mgmt iface IP, tailscale, public IP. The if+return form is one of
+    # the explicitly-safe `if` patterns in nginx. Mirrors legacy
+    # /etc/apache2/conf.d/{export,nodes,share}.conf.
+    location /export/ {
+        alias /export/;
+        autoindex on;
+        sendfile on;
+        tcp_nopush on;
+    }
+    location /nodes/ {
+        alias /export/nodes/;
+        autoindex on;
+        sendfile on;
+        tcp_nopush on;
+    }
+    location /share/ {
+        alias /export/share/;
+        autoindex on;
+        sendfile on;
+        tcp_nopush on;
+    }
+
+    # Root content tree. Anything at {{ apply_bang_services_pxe_root }}/<file>
+    # is served at http://bang/<file> — used for cross-VLAN shared assets
+    # (NOS installer images, static boot files, operator-staged content).
+    location / {
+        root {{ apply_bang_services_pxe_root }};
+        autoindex off;
+        sendfile on;
+        tcp_nopush on;
+    }
+}

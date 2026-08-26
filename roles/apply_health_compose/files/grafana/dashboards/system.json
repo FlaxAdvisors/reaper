@@ -1,0 +1,60 @@
+{
+  "title": "System Health",
+  "uid": "health-system",
+  "tags": ["health", "system"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 6,
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "bang",
+        "label": "bang",
+        "type": "query",
+        "datasource": {"type": "prometheus"},
+        "query": {"query": "label_values(node_uname_info, bang)", "refId": "bang"},
+        "refresh": 2,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 100,
+      "type": "row",
+      "title": "$bang",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+      "collapsed": false,
+      "repeat": "bang",
+      "repeatDirection": "v",
+      "panels": []
+    },
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Disk usage % per filesystem",
+      "datasource": {"type": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 1},
+      "targets": [
+        {"datasource": {"type": "prometheus"}, "expr": "(1 - node_filesystem_avail_bytes{bang=~\"$bang\",device=~\"/dev/sd[ab].*\"} / node_filesystem_size_bytes{bang=~\"$bang\",device=~\"/dev/sd[ab].*\"}) * 100", "refId": "A", "legendFormat": "{{mountpoint}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100}}
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Network I/O per interface (Mbps)",
+      "datasource": {"type": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 1},
+      "targets": [
+        {"datasource": {"type": "prometheus"}, "expr": "rate(node_network_receive_bytes_total{bang=~\"$bang\",device!~\"lo|veth.*|br-.*|docker.*|cali.*|cilium.*\"}[5m]) * 8 / 1e6", "refId": "A", "legendFormat": "rx {{device}}"},
+        {"datasource": {"type": "prometheus"}, "expr": "rate(node_network_transmit_bytes_total{bang=~\"$bang\",device!~\"lo|veth.*|br-.*|docker.*|cali.*|cilium.*\"}[5m]) * 8 / 1e6", "refId": "B", "legendFormat": "tx {{device}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "Mbits"}}
+    }
+  ]
+}

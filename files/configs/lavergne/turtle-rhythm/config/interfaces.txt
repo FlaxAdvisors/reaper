@@ -1,0 +1,109 @@
+###############################################################################
+#                                                                             #
+#  WARNING : Generated file - Do no edit manually                             #
+#                                                                             #
+###############################################################################
+
+### The loopback interface ####################################################
+
+auto lo
+iface lo inet loopback
+
+### Management port ###########################################################
+
+auto eth0
+iface eth0 inet static
+    address 192.168.88.3/24
+    gateway 192.168.88.1
+
+### Standard ports ############################################################
+
+auto swp1
+iface swp1
+    bridge-pvid 6
+    bridge-vids 2 6
+
+auto swp2
+iface swp2
+    bridge-pvid 6
+    bridge-vids 2 6
+
+auto swp3
+iface swp3
+    bridge-access 6
+
+auto swp4
+iface swp4
+    bridge-access 6
+
+auto swp5
+iface swp5
+    bridge-access 6
+
+auto swp6
+iface swp6
+    bridge-access 6
+
+auto swp7
+iface swp7
+    bridge-access 6
+
+auto swp8
+iface swp8
+    bridge-access 6
+
+auto swp13
+iface swp13
+    bridge-access 10
+
+auto swp14
+iface swp14
+    bridge-access 10
+
+auto swp15
+iface swp15
+    bridge-access 10
+
+auto swp16
+iface swp16
+    bridge-access 10
+
+auto swp43
+iface swp43
+    bridge-access 2
+
+auto swp44
+iface swp44
+    bridge-access 2
+
+auto swp45
+iface swp45
+    bridge-access 6
+
+auto swp46
+iface swp46
+    bridge-access 2
+
+auto swp47
+iface swp47
+    bridge-access 6
+
+auto swp48
+iface swp48
+    bridge-access 2
+
+auto swp49
+iface swp49
+    bridge-vids 2 4 6 8 10 12
+
+auto swp50
+iface swp50
+    bridge-vids 2 4 6 8 10 12
+
+### Bridge ####################################################################
+
+auto bridge
+iface bridge
+    bridge-ports swp1 swp2 swp3 swp4 swp5 swp6 swp7 swp8 swp13 swp14 swp15 swp16 swp43 swp44 swp45 swp46 swp47 swp48 swp49 swp50
+    bridge-vids 1 2 4 6 8 10 12
+    bridge-vlan-aware yes

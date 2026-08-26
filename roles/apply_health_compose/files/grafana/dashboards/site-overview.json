@@ -1,0 +1,855 @@
+{
+  "title": "Site Overview",
+  "uid": "health-site-overview",
+  "tags": [
+    "health",
+    "overview"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 5,
+  "refresh": "30s",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "Braintree site",
+      "gridPos": {
+        "h": 3,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "\u25cf HEALTHY",
+                  "color": "green"
+                }
+              }
+            }
+          ],
+          "noValue": "\u26a0 DEGRADED",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "count(vrrp_state{site=\"braintree\"} == 1) == 1",
+          "refId": "A",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Eindhoven site",
+      "gridPos": {
+        "h": 3,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "\u25cf HEALTHY",
+                  "color": "green"
+                }
+              }
+            }
+          ],
+          "noValue": "\u26a0 DEGRADED",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "count(vrrp_state{site=\"eindhoven\"} == 1) == 1",
+          "refId": "A",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 100,
+      "type": "row",
+      "title": "Per-bang state (per-service rows; columns may stack on narrow screens)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 3
+      }
+    },
+    {
+      "id": 20,
+      "type": "stat",
+      "title": "VRRP role \u2014 Braintree",
+      "gridPos": {
+        "h": 3,
+        "w": 12,
+        "x": 0,
+        "y": 4
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "\u25cf primary",
+                  "color": "green"
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "\u25cb backup",
+                  "color": "blue"
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "2": {
+                  "text": "\u2717 FAULT",
+                  "color": "red"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 2
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "vrrp_state{site=\"braintree\"} == 1",
+          "refId": "A",
+          "legendFormat": "{{bang}}",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "vrrp_state{site=\"braintree\"} == 0",
+          "refId": "B",
+          "legendFormat": "{{bang}}",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "type": "stat",
+      "title": "VRRP role \u2014 Eindhoven",
+      "gridPos": {
+        "h": 3,
+        "w": 12,
+        "x": 12,
+        "y": 4
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "\u25cf primary",
+                  "color": "green"
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "\u25cb backup",
+                  "color": "blue"
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "2": {
+                  "text": "\u2717 FAULT",
+                  "color": "red"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 2
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "vrrp_state{site=\"eindhoven\"} == 1",
+          "refId": "A",
+          "legendFormat": "{{bang}}",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "vrrp_state{site=\"eindhoven\"} == 0",
+          "refId": "B",
+          "legendFormat": "{{bang}}",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 30,
+      "type": "stat",
+      "title": "dnsmasq \u2014 Braintree",
+      "description": "primary should be \u25cf up (green), backup should be \u25cb down (blue, VIP-exclusive)",
+      "gridPos": {
+        "h": 3,
+        "w": 12,
+        "x": 0,
+        "y": 7
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "\u25cf up",
+                  "color": "green"
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "\u25cb down",
+                  "color": "blue"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "unit_up{name=\"dnsmasq\",site=\"braintree\"} and on(bang) (vrrp_state{site=\"braintree\"} == 1)",
+          "refId": "A",
+          "legendFormat": "primary ({{bang}})",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "unit_up{name=\"dnsmasq\",site=\"braintree\"} and on(bang) (vrrp_state{site=\"braintree\"} == 0)",
+          "refId": "B",
+          "legendFormat": "backup ({{bang}})",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 31,
+      "type": "stat",
+      "title": "dnsmasq \u2014 Eindhoven",
+      "gridPos": {
+        "h": 3,
+        "w": 12,
+        "x": 12,
+        "y": 7
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "\u25cf up",
+                  "color": "green"
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "\u25cb down",
+                  "color": "blue"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "unit_up{name=\"dnsmasq\",site=\"eindhoven\"} and on(bang) (vrrp_state{site=\"eindhoven\"} == 1)",
+          "refId": "A",
+          "legendFormat": "primary ({{bang}})",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "unit_up{name=\"dnsmasq\",site=\"eindhoven\"} and on(bang) (vrrp_state{site=\"eindhoven\"} == 0)",
+          "refId": "B",
+          "legendFormat": "backup ({{bang}})",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 36,
+      "type": "stat",
+      "title": "nginx \u2014 Braintree",
+      "description": "active-active: both bangs should be \u25cf up (red on either = real outage)",
+      "gridPos": {
+        "h": 3,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "\u25cf up",
+                  "color": "green"
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "\u2717 DOWN",
+                  "color": "red"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "unit_up{name=\"nginx\",site=\"braintree\"} and on(bang) (vrrp_state{site=\"braintree\"} == 1)",
+          "refId": "A",
+          "legendFormat": "primary ({{bang}})",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "unit_up{name=\"nginx\",site=\"braintree\"} and on(bang) (vrrp_state{site=\"braintree\"} == 0)",
+          "refId": "B",
+          "legendFormat": "backup ({{bang}})",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 37,
+      "type": "stat",
+      "title": "nginx \u2014 Eindhoven",
+      "gridPos": {
+        "h": 3,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "\u25cf up",
+                  "color": "green"
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "\u2717 DOWN",
+                  "color": "red"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "unit_up{name=\"nginx\",site=\"eindhoven\"} and on(bang) (vrrp_state{site=\"eindhoven\"} == 1)",
+          "refId": "A",
+          "legendFormat": "primary ({{bang}})",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "unit_up{name=\"nginx\",site=\"eindhoven\"} and on(bang) (vrrp_state{site=\"eindhoven\"} == 0)",
+          "refId": "B",
+          "legendFormat": "backup ({{bang}})",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 101,
+      "type": "row",
+      "title": "History",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 19
+      }
+    },
+    {
+      "id": 40,
+      "type": "state-timeline",
+      "title": "VRRP role per bang (last 24h)",
+      "gridPos": {
+        "h": 5,
+        "w": 24,
+        "x": 0,
+        "y": 20
+      },
+      "options": {
+        "mergeValues": true,
+        "showValue": "auto",
+        "alignValue": "left",
+        "rowHeight": 0.85,
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "primary",
+                  "color": "green"
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "backup",
+                  "color": "blue"
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "2": {
+                  "text": "FAULT",
+                  "color": "red"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 2
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "max by (bang) (vrrp_state)",
+          "refId": "A",
+          "legendFormat": "{{bang}}"
+        }
+      ],
+      "datasource": {
+        "type": "prometheus"
+      }
+    },
+    {
+      "id": 50,
+      "type": "bargauge",
+      "title": "Coredumps last 24h",
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 25
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "valueMode": "color",
+        "showUnfilled": true,
+        "minVizWidth": 0,
+        "minVizHeight": 10,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 2
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "max by (bang, exe) (increase(coredump_count{exe=~\"[a-zA-Z].+\"}[24h]))",
+          "refId": "A",
+          "legendFormat": "{{bang}}/{{exe}}"
+        }
+      ],
+      "datasource": {
+        "type": "prometheus"
+      }
+    },
+    {
+      "id": 51,
+      "type": "alertlist",
+      "title": "Active alerts",
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 25
+      },
+      "options": {
+        "showOptions": "current",
+        "maxItems": 20,
+        "sortOrder": 3,
+        "dashboardAlerts": false,
+        "alertName": "",
+        "dashboardTitle": "",
+        "tags": [],
+        "stateFilter": {
+          "firing": true,
+          "pending": true
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+---
+# PXE-only redeploy. Sibling to apply_bang_routing.yml — exists so a
+# per-vlan boot.ipxe / TFTP NBP refresh doesn't have to drag the rest of
+# apply_bang_services.yml (dnsmasq, nginx, lease agent, switchport agent,
+# bmc scripts, triage compose) along with it. apply_pxe_payloads is
+# template/file/symlink-only and does not restart any service, so a
+# re-run on a live bang only rewrites /srv/pxe/v<vid>/ + /srv/tftpboot/
+# in place.
+
+- name: Apply PXE payloads (per-vlan boot.ipxe + TFTP NBPs)
+  hosts: jumphosts
+  gather_facts: true
+  serial: 1
+  roles:
+    - apply_pxe_payloads

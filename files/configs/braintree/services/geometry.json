@@ -1,0 +1,14 @@
+[
+  {"port": "et6b1", "ou": "20L", "switch": "rabbit-lorax"},
+  {"port": "et6b2", "ou": "22L", "switch": "rabbit-lorax"},
+  {"port": "et6b3", "ou": "24L", "switch": "rabbit-lorax"},
+  {"port": "et6b4", "ou": "26L", "switch": "rabbit-lorax"},
+  {"port": "et7b1", "ou": "20C", "switch": "rabbit-lorax"},
+  {"port": "et7b2", "ou": "22C", "switch": "rabbit-lorax"},
+  {"port": "et7b3", "ou": "24C", "switch": "rabbit-lorax"},
+  {"port": "et7b4", "ou": "26C", "switch": "rabbit-lorax"},
+  {"port": "et8b1", "ou": "20R", "switch": "rabbit-lorax"},
+  {"port": "et8b2", "ou": "22R", "switch": "rabbit-lorax"},
+  {"port": "et8b3", "ou": "24R", "switch": "rabbit-lorax"},
+  {"port": "et8b4", "ou": "26R", "switch": "rabbit-lorax"}
+]

@@ -1,0 +1,232 @@
+{%- set dhcp = (bang_dhcp_server | default('dnsmasq')) == 'dnsmasq' -%}
+{#- dhcp=true  → dnsmasq mode: emit all DHCP/PXE/v6 directives below.
+    dhcp=false → Kea-cutover mode (bang_dhcp_server=kea): dnsmasq runs
+    DNS + TFTP only; all DHCP directives suppressed so Kea owns port 67. -#}
+# Managed by apply_bang_services. Do not edit.
+# Single dnsmasq daemon serving DHCP + DNS + TFTP for all device-type VLANs.
+# bind-dynamic: pick up VIPs as keepalived adds/removes them.
+
+bind-dynamic
+{% if dhcp -%}
+dhcp-authoritative
+{% endif -%}
+except-interface=lo
+# Never serve DHCP/DNS/TFTP on the WAN-facing ifaces (corp drop + WiFi backup);
+# jumphost_wan_failover owns these in firewalld zone 'external'.
+except-interface={{ bang_wan_iface }}
+except-interface=wlan0
+
+# DNS — authoritative for {{ bang_lab_domain }}, localised so 'bang' resolves
+# to the local-VLAN VIP for whoever's asking.
+domain={{ bang_lab_domain }}
+local=/{{ bang_lab_domain }}/
+expand-hosts
+localise-queries
+no-resolv
+{% for s in apply_bang_services_upstream_dns %}
+server={{ s }}
+{% endfor %}
+
+no-hosts
+# hostsdir= loads every hosts-format file in /etc/dnsmasq.hosts/ via inotify.
+# Both lab-hosts (per-vlan bang aliases, deployed by apply_bang_services) and
+# mgmt (BMCs + switches) live here. Operator-extensible: drop a hosts-format
+# file in this directory and dnsmasq picks it up.
+hostsdir=/etc/dnsmasq.hosts
+
+# TFTP
+enable-tftp
+tftp-root={{ apply_bang_services_tftp_root }}
+tftp-secure
+
+{% if dhcp -%}
+# iPXE detection — clients with iPXE running send option 175 (vendor-class)
+# or user-class "iPXE". Tag matched clients :ipxe.
+dhcp-match=set:ipxe,175
+dhcp-userclass=set:ipxe,iPXE
+
+# Architecture detection (DHCP option 93) — picks the right NBP per ROM type.
+# Without these tags, UEFI clients get the BIOS-mode undionly.kpxe and silently
+# fail to boot. /srv/tftpboot/efi64/ipxe.efi is staged for this path.
+#   arch 0  = legacy x86 BIOS PXE
+#   arch 6  = x86  UEFI    (32-bit; rare but spec'd)
+#   arch 7  = x86_64 UEFI byte-code
+#   arch 9  = x86_64 UEFI native
+dhcp-match=set:bios,option:client-arch,0
+dhcp-match=set:efi32,option:client-arch,6
+dhcp-match=set:efi64,option:client-arch,7
+dhcp-match=set:efi64,option:client-arch,9
+
+# Firmware-PXE boot (no iPXE yet) → arch-specific NBP via TFTP.
+# Files (operator-managed; the role no longer stages stock NBPs, so the
+# custom-built iPXE binaries with embedded `chain http://bang/menu.ipxe`
+# survive across applies).
+dhcp-boot=tag:!ipxe,tag:bios,bios/undionly.kpxe
+dhcp-boot=tag:!ipxe,tag:efi64,efi64/ipxe.efi
+
+# NOTE: no `dhcp-boot=tag:ipxe,...` autoboot URL — the custom-built iPXE
+# binaries embed `chain http://bang/menu.ipxe` directly, so once iPXE is
+# running the embed handles the chain BEFORE iPXE would consult the DHCP
+# filename. A second-stage dhcp-boot=tag:ipxe URL is therefore redundant
+# AND can interfere with the embed. Sites running stock iPXE binaries
+# (no embed) need to add a `dhcp-boot=tag:ipxe,http://bang.<domain>/menu.ipxe`
+# line back here to give iPXE an autoboot URL.
+
+{% endif -%}
+{% if dhcp and (arista_ztp_url | default(false)) -%}
+# Arista EOS Zero-Touch Provisioning is currently DISABLED on this site
+# (and fleet-wide). The bootfile-name option line and the matching
+# `set:` tag emission in the hostsdir render are both off
+# because dnsmasq 2.90 double-frees the per-config netid in every
+# free path that walks a tag: reread_dhcp (c5466ec revert) and
+# clear_dynamic_conf (hostsdir reload). Symbolicated stacks captured
+# bang-gouda 2026-05-17/18. ZTP stays off until either dnsmasq 2.91+
+# is on the bang fleet, or SUSE backports the netid double-free fix
+# to 2.90. The `arista_ztp_url` site var is preserved as a marker of
+# operator intent; re-enable steps are tracked in TODO.md.
+
+{% endif -%}
+{% if dhcp -%}
+# === dhcp-hostsdir (dir + parent created by apply_lease_agent role) ===
+# Static reservation files land here; dnsmasq reads them without a SIGHUP for
+# adds/modifications (SIGHUP only for deletions). (The former per-event
+# dhcp-script hook that fed the decommissioned reaper-leased daemon has been
+# removed — flax-reconcile is the switch writer now.)
+dhcp-hostsdir=/etc/dnsmasq.dhcp-hosts
+
+{# The blank line above is load-bearing: it emits the trailing newline
+   that keeps dnsmasq-mode output byte-identical to the pre-guard baseline.
+   Do not "tidy" it. -#}
+{% endif -%}
+
+{% if dhcp and (reservation_only_dhcp | default(false)) -%}
+# log-dhcp: emit a journal line for every DHCP packet (DISCOVER, OFFER,
+# REQUEST, ACK, NAK). The flax discovery pipeline tails for unanswered
+# DHCPDISCOVER lines (no matching dhcp-host => `static` range responds
+# nothing) and triggers FDB/LL discovery.
+# Without this, dnsmasq stays silent on denials and we have no signal.
+log-dhcp
+
+# quiet-dhcp6 suppresses ROUTINE DHCPv6 packet logging only. v6 errors
+# (parse failures, real problems) still log. Combined with log-dhcp
+# above, we get the v4 visibility the flax discovery pipeline needs
+# without the v6 SOLICIT spam from non-compliant BMCs (currently
+# brycecanyon6b1-bmc 98:03:9b:b5:18:5c, which fires every ~1.5s into
+# the void regardless of RA flags — see TODO.md "stateful DHCPv6 on
+# data VLANs"). The denial watcher only reads `DHCPDISCOVER(` lines
+# (v4); silencing v6 is invisible to it.
+quiet-dhcp6
+
+{% endif -%}
+# Per-VLAN scopes. One block per `vlans:` entry.
+{% for v in vlans %}
+# --- VID {{ v.vid }} : {{ v.phase }}-{{ v.family }} on {{ v.parent }}.{{ v.vid }} ---
+interface={{ v.parent }}.{{ v.vid }}
+{# Assumes /16 CIDR — third/fourth octets baked in as `.0.<pool>` and netmask
+   as 255.255.0.0. Revisit this template if a future vlans entry uses a
+   different prefix length. #}
+{# When reservation_only_dhcp is set (eindhoven 2026-05-12; spec
+   2026-05-12-reservation-only-lab-data-design.md), the `static` keyword
+   tells dnsmasq to serve only configured dhcp-host entries on this
+   network. Pool removed because pool leases created stale-cache loops
+   (see commit 2681d1e). Unknown MACs get denied; the flax discovery
+   pipeline picks them up from the journal and writes a reservation
+   after FDB+LL discovery. Otherwise (lavergne, braintree as of today)
+   the legacy pool form renders.
+
+   Per-VLAN override: `dhcp_mode: pool` on the inventory entry forces
+   the pool form even when the site has reservation_only_dhcp on. Used
+   for integration-work vlans (eindhoven vid 31 grandcanyon 2026-05-13)
+   that need an open pool for third-party gear the flax pipeline
+   shouldn't touch. flax-classify reads the same field via
+   /etc/flax/vlans.json and skips enrollment/steering for those vids.
+
+   The conditional is inline so jinja whitespace control can't
+   accidentally concatenate this line with the following dhcp-option
+   line under ansible's trim_blocks=True (caught eindhoven 2026-05-12).
+   Trailing dash on the comment-close strips the newline after so the
+   rendered output keeps the single blank line between `interface=` and
+   `dhcp-range=` that the lavergne golden file expects. -#}
+{% if dhcp -%}
+{% set net = v.cidr.split('/')[0].split('.') %}
+dhcp-range=set:v{{ v.vid }},{% if (reservation_only_dhcp | default(false)) and (v.dhcp_mode | default('') != 'pool') %}{{ net[0] }}.{{ net[1] }}.0.0,static,255.255.0.0{% else %}{{ net[0] }}.{{ net[1] }}.0.{{ apply_bang_services_dhcp_pool_start }},{{ net[0] }}.{{ net[1] }}.0.{{ apply_bang_services_dhcp_pool_end }},255.255.0.0{% endif %},{{ apply_bang_services_dhcp_lease }}
+dhcp-option=tag:v{{ v.vid }},option:router,{{ v.gateway_vip }}
+dhcp-option=tag:v{{ v.vid }},option:dns-server,{{ v.gateway_vip }}
+dhcp-option=tag:v{{ v.vid }},option:domain-name,{{ bang_lab_domain }}
+{% endif -%}
+{% endfor %}
+
+# Mgmt VLAN 4 also listens (so an ONIE wedge plugged into a turtle access
+# port can DHCP for its first install). No dhcp-range for VLAN 4 — only
+# vendor-class-onie clients get an offer.
+interface={{ bang_mgmt_iface }}
+{% if dhcp -%}
+dhcp-vendorclass=set:onie,OnieDhcpRequest
+dhcp-range=set:onie-mgmt,tag:onie,192.168.88.100,192.168.88.150,255.255.255.0,1h
+dhcp-option=tag:onie-mgmt,option:router,{{ bang_mgmt_vip }}
+dhcp-option=tag:onie-mgmt,option:dns-server,{{ bang_mgmt_vip }}
+
+# Wedge BMC static reservations on the mgmt VLAN. A range covering the
+# subnet is required so dnsmasq doesn't drop DHCPDISCOVER from BMCs
+# (the ONIE range above is tag-gated to ONIE clients only). The
+# dhcp-host entries in /etc/dnsmasq.d/bmc-reservations.conf pin specific
+# MACs to .13/.14 within this declared subnet.
+{% if mgmt_guest_pool is defined %}
+# A dynamic pool covers non-reserved clients (laptops / on-site tooling).
+# `dhcp-host=` reservations still pin BMCs / bang VIPs because dhcp-host
+# overrides ranges. Deliberately omits option:router — laptops keep
+# their WiFi/corp default route; this iface is on-link only.
+dhcp-range=set:guest-mgmt,{{ mgmt_guest_pool.start }},{{ mgmt_guest_pool.end }},255.255.255.0,{{ mgmt_guest_pool.lease }}
+dhcp-option=tag:guest-mgmt,option:dns-server,{{ bang_mgmt_vip }}
+dhcp-option=tag:guest-mgmt,option:domain-name,{{ bang_lab_domain }}
+{% else %}
+# Range mode is `static` — only dhcp-host reservations get offers; all
+# other clients are silently dropped.
+dhcp-range=192.168.88.0,static,255.255.255.0
+{% endif %}
+dhcp-option=tag:bmc,option:router,{{ bang_mgmt_vip }}
+dhcp-option=tag:bmc,option:dns-server,{{ bang_mgmt_vip }}
+dhcp-option=tag:bmc,option:domain-name,{{ bang_lab_domain }}
+conf-file=/etc/dnsmasq.d/bmc-reservations.conf
+{% if legacy_lab_reservations | default(true) %}
+conf-file=/etc/dnsmasq.d/lab-post-reservations.conf
+conf-file=/etc/dnsmasq.d/lab-triage-reservations.conf
+{% endif %}
+
+{% endif -%}
+{% if dhcp and ((mgmt_v6_ra_stateless | default(false)) or (lab_data_v6_ra_stateless | default(false))) %}
+# IPv6 stateful DHCPv6 (2026-05-13 — replaces the previous ra-only /
+# ra-stateless treatment that left dnsmasq logging "no address range
+# available for DHCPv6 request via <iface>" on every SOLICIT because
+# no v6 pool existed to satisfy it).
+#
+# ULA prefix per network: fd00:<vid>::/64 for lab-data vlans
+# (literal decimal VID written as a single hex group — vid 16 →
+# fd00:16::/64, vid 31 → fd00:31::/64); fd00:88::/64 for the mgmt
+# vlan (mnemonic match with the 192.168.88.0/24 v4 prefix). Pool
+# occupies ::100–::1ff per network (256 addrs). The bang carries
+# `<prefix>::<bang_host_suffix>/64` on each iface, statically
+# assigned (see /opt/flax/sbin/bang-v6-addrs.sh) — dnsmasq's range
+# selection matches incoming SOLICITs against the bang's own iface
+# prefix to pick the right pool, so the iface must carry an address
+# in the same /64 the dhcp-range advertises. A plain stateful range
+# (no slaac/ra-only/ra-stateless keyword) makes dnsmasq compute the
+# RA's M flag as 1 — clients use DHCPv6 for addressing only.
+# ra-param=<iface>,0,0 pins RouterLifetime=0 so the bang never
+# advertises itself as a v6 default gateway. No VRRP for v6 yet —
+# both bangs hold the same prefix with different host-suffixes; only
+# the keepalived master's dnsmasq is up, so only one answers SOLICITs.
+enable-ra
+{% if mgmt_v6_ra_stateless | default(false) %}
+# Mgmt network.
+dhcp-range=fd00:88::100,fd00:88::1ff,64,{{ apply_bang_services_dhcp_lease }}
+ra-param={{ bang_mgmt_iface }},0,0
+{% endif %}
+{% if lab_data_v6_ra_stateless | default(false) %}
+# Lab-data vlans.
+{% for v in vlans %}
+dhcp-range=fd00:{{ v.vid }}::100,fd00:{{ v.vid }}::1ff,64,{{ apply_bang_services_dhcp_lease }}
+ra-param={{ v.parent }}.{{ v.vid }},0,0
+{% endfor %}
+{% endif %}
+{% endif %}

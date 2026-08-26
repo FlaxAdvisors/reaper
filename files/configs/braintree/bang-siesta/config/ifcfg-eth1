@@ -1,0 +1,3 @@
+BOOTPROTO='none'
+STARTMODE='auto'
+ZONE=internal

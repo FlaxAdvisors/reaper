@@ -1,0 +1,8 @@
+[
+    {
+        "name": "rabbit-rhythm",
+        "driver": "eos",
+        "host": "rabbit-rhythm",
+        "credentials_key": "eos"
+    }
+]

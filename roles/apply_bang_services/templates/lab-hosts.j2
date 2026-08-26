@@ -1,0 +1,29 @@
+# Managed by apply_bang_services. Loaded by dnsmasq via addn-hosts=.
+# Multiple A records for `bang.{{ bang_lab_domain }}` — `localise-queries` in
+# dnsmasq.conf makes the daemon return only the record whose subnet matches
+# the asker's source IP. So a DUT on VLAN 22 asking for bang gets 172.22.0.10.
+
+{{ bang_mgmt_vip }} bang.{{ bang_lab_domain }} bang
+{% for v in vlans %}
+{{ v.gateway_vip }} bang.{{ bang_lab_domain }} bang
+{% endfor %}
+
+# Static jumphost A records (also localised — each bang always resolves to its
+# fixed suffix on every subnet, regardless of VRRP state).
+{% for bang_name, suffix in bang_host_suffix.items() %}
+192.168.88.{{ 20 + suffix }} {{ bang_name }}.{{ bang_lab_domain }} {{ bang_name }}
+{% endfor %}
+{% for v in vlans %}
+{% for bang_name, suffix in bang_host_suffix.items() %}
+{{ v.cidr.split('/')[0].split('.')[0:3] | join('.') }}.{{ suffix }} {{ bang_name }}.{{ bang_lab_domain }} {{ bang_name }}
+{% endfor %}
+{% endfor %}
+
+# Per-vlan switch SVI A records (.3 = rabbit_primary, .4 = rabbit_secondary,
+# .5 = turtle). Sourced from switch_host_suffix in inventory; sites without
+# switch SVIs leave the map undefined and this section renders empty.
+{% for v in vlans %}
+{% for switch_name, suffix in (switch_host_suffix | default({})).items() %}
+{{ v.cidr.split('/')[0].split('.')[0:3] | join('.') }}.{{ suffix }} {{ switch_name }}.{{ bang_lab_domain }} {{ switch_name }}
+{% endfor %}
+{% endfor %}

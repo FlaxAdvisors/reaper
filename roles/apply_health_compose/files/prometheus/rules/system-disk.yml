@@ -1,0 +1,34 @@
+groups:
+  - name: system-disk
+    rules:
+      - alert: DiskCapacityLow
+        expr: |
+          node_filesystem_avail_bytes{device=~"/dev/sd[ab].*"} < 10e9
+          AND ON (mountpoint, bang) node_filesystem_size_bytes{device=~"/dev/sd[ab].*"} > 1e9
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Disk <10GB free on {{ $labels.bang }}:{{ $labels.mountpoint }}"
+
+      - alert: DiskCapacityCritical
+        expr: |
+          node_filesystem_avail_bytes{device=~"/dev/sd[ab].*"} < 2e9
+          AND ON (mountpoint, bang) node_filesystem_size_bytes{device=~"/dev/sd[ab].*"} > 1e9
+        for: 10m
+        labels: { severity: critical }
+        annotations:
+          summary: "Disk <2GB free on {{ $labels.bang }}:{{ $labels.mountpoint }}"
+
+      - alert: InodeUsageHigh
+        expr: |
+          (1 - node_filesystem_files_free{device=~"/dev/sd[ab].*"} / node_filesystem_files{device=~"/dev/sd[ab].*"}) * 100 > 85
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Inodes >85% on {{ $labels.bang }}:{{ $labels.mountpoint }}"
+
+      - alert: SmartReallocatedSectorsRising
+        expr: increase(smartctl_device_attribute{attribute_name="Reallocated_Sector_Ct"}[24h]) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "Reallocated sectors rising on {{ $labels.bang }}:{{ $labels.device }}"

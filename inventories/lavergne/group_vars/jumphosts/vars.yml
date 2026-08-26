@@ -1,0 +1,7 @@
+---
+ansible_connection: ansible.builtin.ssh
+ansible_user: flax
+ansible_ssh_common_args: >-
+  -o StrictHostKeyChecking=no
+  -o UserKnownHostsFile=/dev/null
+device_role: collect_jumphost

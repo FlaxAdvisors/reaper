@@ -1,0 +1,64 @@
+{
+  "Dhcp6": {
+    "interfaces-config": {
+      "interfaces": [
+{% if apply_kea_v6_lab_vlans %}
+{% for v in vlans %}
+        "{{ v.parent }}.{{ v.vid }}",
+{% endfor %}
+{% endif %}
+        "{{ bang_mgmt_iface }}"
+      ]
+    },
+    "lease-database": {
+      "type": "postgresql", "host": "${KEA_DB_HOST}", "name": "${KEA_DB_NAME}",
+      "user": "${KEA_DB_USER}", "password": "${KEA_DB_PASSWORD}",
+      "max-reconnect-tries": 5
+    },
+    "hosts-database": {
+      "type": "postgresql", "host": "${KEA_DB_HOST}", "name": "${KEA_DB_NAME}",
+      "user": "${KEA_DB_USER}", "password": "${KEA_DB_PASSWORD}"
+    },
+    "mac-sources": ["ipv6-link-local", "duid"],
+    "host-reservation-identifiers": ["hw-address", "duid"],
+    "valid-lifetime": 4000, "renew-timer": 1000, "rebind-timer": 2000,
+    "subnet6": [
+{% if apply_kea_v6_lab_vlans %}
+{% for v in vlans %}
+{# Mirror kea-dhcp4.conf.j2: reservation-only (empty pool) for the same subnets
+   -- gated by reservation_only_dhcp, per-vlan dhcp_mode!=pool, and phase in
+   apply_kea_reservation_only_phases (default ['post']). A diskless host mints a
+   new DUID each boot; with no pool it can never cling to a dynamic address, so a
+   fresh SOLICIT always resolves to its reservation (kea matches by the pxedev
+   link-local MAC). No v4 `authoritative` -- DHCPv6 has no such option. #}
+{% set res_only = (reservation_only_dhcp | default(false)) and (v.dhcp_mode | default('reservation')) != 'pool' and v.phase in (apply_kea_reservation_only_phases | default(['post'])) %}
+      {
+        "id": {{ v.vid }},
+        "subnet": "fd00:{{ v.vid }}::/64",
+        "interface": "{{ v.parent }}.{{ v.vid }}",
+        "reservations-in-subnet": true,
+        "reservations-out-of-pool": true,
+{% if res_only %}
+        "pools": [],
+{% else %}
+        "pools": [{ "pool": "fd00:{{ v.vid }}::{{ apply_kea_v6_lab_pool_lo }} - fd00:{{ v.vid }}::{{ apply_kea_v6_lab_pool_hi }}" }],
+{% endif %}
+        "option-data": [
+          { "name": "bootfile-url",
+            "data": "tftp://[fd00:{{ v.vid }}::{{ bang_host_suffix[inventory_hostname] }}]/{{ apply_kea_v6_bootfile }}" }
+        ]
+      },
+{% endfor %}
+{% endif %}
+      {
+        "id": 88,
+        "subnet": "{{ apply_kea_mgmt_v6_prefix }}::/64",
+        "interface": "{{ bang_mgmt_iface }}",
+        "pools": [{ "pool": "{{ apply_kea_mgmt_v6_prefix }}::{{ apply_kea_v6_pool_lo }} - {{ apply_kea_mgmt_v6_prefix }}::{{ apply_kea_v6_pool_hi }}" }]
+      }
+    ],
+    "loggers": [
+      { "name": "kea-dhcp6", "output_options": [{"output": "stdout"}], "severity": "INFO" }
+    ]
+  }
+}

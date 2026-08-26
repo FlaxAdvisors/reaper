@@ -1,0 +1,50 @@
+---
+# roles/apply_kea/defaults/main.yml
+apply_kea_image_tag: "2.6.3"            # exact tag; cloudsmith has no floating :2.6
+
+# v4 dynamic pool bounds within each /16 lab subnet (matches dnsmasq's
+# apply_bang_services_dhcp_pool_start/end). Reservations live outside this
+# (.<port>.<1|101>), so pool + reservations never overlap.
+apply_kea_pool_start: 50
+apply_kea_pool_end: 200
+apply_kea_lab_domain: "{{ bang_lab_domain }}"
+
+# Which vlan phases go reservation-only (no dynamic pool + authoritative=true)
+# when the site sets reservation_only_dhcp: true. Per-vlan `dhcp_mode: pool`
+# still overrides back to a pool. First cut: post only; add 'triage' once the
+# triage v6-LL reachability path is verified (see the design doc).
+apply_kea_reservation_only_phases: ['post']
+
+# mgmt subnet (192.168.88.0/24)
+apply_kea_mgmt_subnet_id: 4
+apply_kea_mgmt_cidr: "192.168.88.0/24"
+apply_kea_mgmt_vip: "{{ bang_mgmt_vip }}"
+apply_kea_onie_pool_start: "192.168.88.100"
+apply_kea_onie_pool_end: "192.168.88.150"
+
+# v6: stateful per-vlan ULA, eindhoven scheme. Pool ::100-::1ff per /64.
+apply_kea_v6_pool_lo: "100"
+apply_kea_v6_pool_hi: "1ff"
+# Lab v6 dynamic pool relocated to ::f000-::ffff so it is disjoint from the
+# per-device reservation space (fd00:<vid>::0..::ff turtle, ::<1..52>:<0..ff>
+# rabbit). The old ::100-::1ff range overlapped turtle bmc/vm reservations.
+apply_kea_v6_lab_pool_lo: "f000"
+apply_kea_v6_lab_pool_hi: "ffff"
+apply_kea_mgmt_v6_prefix: "fd00:88"
+
+# UEFI-over-IPv6 netboot: the DHCPv6 bootfile-url (option 59) handed to lab v6
+# clients. Address is the MASTER's own per-vlan static fd00:<vid>::<host_suffix>
+# (NOT a VIP) — kea-dhcp6 is VIP-exclusive (only the master answers) and dnsmasq
+# TFTP is active-active listening on each bang's static, so the master always
+# serves a URL pointing at its own live TFTP. Failover needs no reconfig.
+# Legacy BIOS can't netboot v6 (UEFI-only) + the fleet is x86_64, so a single
+# efi64 NBP suffices — no arch client-classing like dhcp4 needs.
+apply_kea_v6_bootfile: "efi64/ipxe.efi"
+
+# Whether kea-dhcp6 covers the lab vlans (true) or mgmt-only (false).
+# braintree opts in via lab_data_v6_ra_stateless; default mgmt-only.
+apply_kea_v6_lab_vlans: "{{ lab_data_v6_ra_stateless | default(false) }}"
+
+# Vault-supplied (unchanged from Plan 5).
+apply_kea_db_password: ""
+apply_kea_hook_db_password: ""

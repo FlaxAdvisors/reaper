@@ -1,0 +1,157 @@
+---
+# Fail-fast on missing vault wiring.
+- name: Assert apply_kea passwords are wired
+  ansible.builtin.assert:
+    that:
+      - apply_kea_db_password | length > 0
+      - apply_kea_hook_db_password | length > 0
+    fail_msg: |
+      apply_kea passwords are empty. Check inventory:
+        (1) inventories/<site>/group_vars/all/vault.yml has
+            vault_flax_stack_db_passwords.kea + .flax_kea_hook
+        (2) inventories/<site>/group_vars/all/vars.yml wires both to
+            apply_kea_db_password and apply_kea_hook_db_password
+  no_log: true
+
+- name: Create /etc/flax/kea + /var/run/kea
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /etc/flax/kea
+    - /var/run/kea
+
+- name: Ensure /opt/flax/sbin exists
+  become: true
+  ansible.builtin.file:
+    path: /opt/flax/sbin
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy kea-dhcp4.env
+  become: true
+  ansible.builtin.template:
+    src: kea.env.j2
+    dest: /etc/flax/kea/kea.env
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify:
+    - Restart kea-dhcp4
+    - Restart kea-dhcp6
+
+# Deploy the config TEMPLATE -- envsubst materializes the real config
+# at unit start (so the password isn't on disk in clear text).
+- name: Deploy kea-dhcp4.conf template (envsubst-substituted at start)
+  become: true
+  ansible.builtin.template:
+    src: kea-dhcp4.conf.j2
+    dest: /etc/flax/kea/kea-dhcp4.conf.template
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart kea-dhcp4
+
+- name: Deploy kea-dhcp4.service
+  become: true
+  ansible.builtin.template:
+    src: kea-dhcp4.service.j2
+    dest: /etc/systemd/system/kea-dhcp4.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart kea-dhcp4
+
+- name: Deploy kea-dhcp6.conf template (envsubst-substituted at start)
+  become: true
+  ansible.builtin.template:
+    src: kea-dhcp6.conf.j2
+    dest: /etc/flax/kea/kea-dhcp6.conf.template
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart kea-dhcp6
+
+- name: Deploy kea-dhcp6.service
+  become: true
+  ansible.builtin.template:
+    src: kea-dhcp6.service.j2
+    dest: /etc/systemd/system/kea-dhcp6.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart kea-dhcp6
+
+# bang-fiesta hosts: external zone allow for DHCP. Kea uses UDP 67/68;
+# they're already open in the existing dnsmasq deployment so this is
+# a no-op there, but harmless to re-apply.
+- name: Check if DHCP server port (UDP 67) is already open in zone external (permanent)
+  become: true
+  ansible.builtin.command:
+    cmd: firewall-cmd --permanent --zone=external --query-port=67/udp
+  register: apply_kea_67_query
+  changed_when: false
+  failed_when: false
+
+- name: Open DHCP server port in zone external (permanent)
+  become: true
+  ansible.builtin.command:
+    cmd: firewall-cmd --permanent --zone=external --add-port=67/udp
+  when: apply_kea_67_query.rc != 0
+  changed_when: true
+  notify: Reload firewalld
+
+- name: Open DHCP server port in zone external (runtime)
+  become: true
+  ansible.builtin.command:
+    cmd: firewall-cmd --zone=external --add-port=67/udp
+  when: apply_kea_67_query.rc != 0
+  changed_when: true
+
+- name: Check if DHCPv6 server port (UDP 547) is open in zone external (permanent)
+  become: true
+  ansible.builtin.command:
+    cmd: firewall-cmd --permanent --zone=external --query-port=547/udp
+  register: apply_kea_547_query
+  changed_when: false
+  failed_when: false
+
+- name: Open DHCPv6 server port in zone external (permanent)
+  become: true
+  ansible.builtin.command:
+    cmd: firewall-cmd --permanent --zone=external --add-port=547/udp
+  when: apply_kea_547_query.rc != 0
+  changed_when: true
+  notify: Reload firewalld
+
+- name: Open DHCPv6 server port in zone external (runtime)
+  become: true
+  ansible.builtin.command:
+    cmd: firewall-cmd --zone=external --add-port=547/udp
+  when: apply_kea_547_query.rc != 0
+  changed_when: true
+
+# NOT started or enabled here -- the cutover playbook in Phase F
+# does the bring-up explicitly. Disabled by default because Kea claims
+# a DHCP interface; starting it while dnsmasq still has eth0.17 would
+# create two competing servers.
+- name: Install kea-dhcp4 + kea-dhcp6 (disabled; cutover/keepalived starts them)
+  become: true
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: false
+    daemon_reload: true
+  loop:
+    - kea-dhcp4.service
+    - kea-dhcp6.service

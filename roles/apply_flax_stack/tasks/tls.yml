@@ -1,0 +1,18 @@
+---
+# TLS material is now authored by the apply_flax_tls role (fleet CA + per-host
+# wildcard leaf), which runs earlier in apply_bang_services.yml. flax-stack no
+# longer generates a self-signed cert; it only asserts the leaf is present so a
+# standalone `--tags flax_stack` run fails fast instead of nginx crash-looping.
+
+- name: Assert the flax_tls leaf is present
+  become: true
+  ansible.builtin.stat:
+    path: /etc/flax/nginx/tls/server.crt
+  register: flax_tls_cert
+
+- name: Fail if the TLS leaf is missing
+  ansible.builtin.assert:
+    that: flax_tls_cert.stat.exists
+    fail_msg: >-
+      /etc/flax/nginx/tls/server.crt is missing. Run the apply_flax_tls role
+      first: `ansible-playbook ... --tags flax_tls --limit {{ inventory_hostname }}`.

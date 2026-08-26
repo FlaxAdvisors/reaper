@@ -1,0 +1,154 @@
+---
+# Fleet CA + per-host wildcard leaf. Decoupled from flax-stack so it also
+# covers lavergne (Apache-only, no flax-stack). Signing is delegate_to
+# localhost — the CA key never touches a bang.
+
+- name: Ensure on-host TLS dir exists
+  become: true
+  ansible.builtin.file:
+    path: "{{ apply_flax_tls_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Distribute the fleet CA cert to the host
+  become: true
+  ansible.builtin.copy:
+    src: "{{ apply_flax_tls_ca_crt_src }}"
+    dest: "{{ apply_flax_tls_dir }}/flax-rootCA.crt"
+    owner: root
+    group: root
+    mode: "0644"
+
+# --- Per-host wildcard leaf (signed on the control node) ---
+
+- name: Read SANs of the leaf already on the host (if any)
+  become: true
+  ansible.builtin.command:
+    cmd: "openssl x509 -in {{ apply_flax_tls_dir }}/server.crt -noout -ext subjectAltName"
+  register: apply_flax_tls_existing_san
+  changed_when: false
+  failed_when: false
+
+- name: Decide whether the leaf needs (re)generation
+  ansible.builtin.set_fact:
+    # Regenerate if the cert is missing OR the wildcard SAN for this host is
+    # absent (covers first-run replacement of the old self-signed leaf, which
+    # has no "*.<host>" SAN, and any future SAN drift).
+    apply_flax_tls_needs_leaf: >-
+      {{ apply_flax_tls_existing_san.rc != 0
+         or ('DNS:*.' ~ inventory_hostname ~ '.' ~ apply_flax_tls_domain)
+            not in apply_flax_tls_existing_san.stdout }}
+
+- name: Sign + install a fresh wildcard leaf
+  when: apply_flax_tls_needs_leaf | bool
+  block:
+    - name: Make a control-node build dir
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: "flax-tls-{{ inventory_hostname }}-"
+      delegate_to: localhost
+      become: false
+      register: apply_flax_tls_build
+
+    - name: Stage the CA key on the control node
+      delegate_to: localhost
+      become: false
+      no_log: true
+      ansible.builtin.copy:
+        content: "{{ item.content }}"
+        dest: "{{ apply_flax_tls_build.path }}/{{ item.name }}"
+        mode: "0600"
+      loop:
+        - { name: ca.key, content: "{{ apply_flax_tls_ca_key }}" }
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Copy CA cert + render openssl.cnf into the build dir
+      delegate_to: localhost
+      become: false
+      block:
+        - name: Copy CA cert into build dir
+          ansible.builtin.copy:
+            src: "{{ apply_flax_tls_ca_crt_src }}"
+            dest: "{{ apply_flax_tls_build.path }}/ca.crt"
+            mode: "0644"
+        - name: Render openssl.cnf into build dir
+          ansible.builtin.template:
+            src: openssl.cnf.j2
+            dest: "{{ apply_flax_tls_build.path }}/openssl.cnf"
+            mode: "0644"
+
+    - name: Generate leaf key + CSR
+      delegate_to: localhost
+      become: false
+      ansible.builtin.command:
+        chdir: "{{ apply_flax_tls_build.path }}"
+        cmd: >
+          openssl req -new -newkey rsa:4096 -nodes
+            -keyout server.key -out server.csr -config openssl.cnf
+        creates: "{{ apply_flax_tls_build.path }}/server.csr"
+
+    - name: Sign the CSR with the fleet CA (SANs via -extfile)
+      delegate_to: localhost
+      become: false
+      no_log: true
+      ansible.builtin.command:
+        chdir: "{{ apply_flax_tls_build.path }}"
+        cmd: >
+          openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key
+            -CAcreateserial -out leaf.crt -days {{ apply_flax_tls_days }}
+            -sha256 -extfile openssl.cnf -extensions v3_req
+        creates: "{{ apply_flax_tls_build.path }}/leaf.crt"
+
+    - name: Assemble the served chain (leaf + CA)
+      delegate_to: localhost
+      become: false
+      ansible.builtin.shell:
+        chdir: "{{ apply_flax_tls_build.path }}"
+        cmd: "cat leaf.crt ca.crt > server.crt"
+        creates: "{{ apply_flax_tls_build.path }}/server.crt"
+
+    - name: Slurp the built key + chain
+      delegate_to: localhost
+      become: false
+      no_log: true
+      ansible.builtin.slurp:
+        src: "{{ apply_flax_tls_build.path }}/{{ item }}"
+      loop: [server.key, server.crt]
+      register: apply_flax_tls_built
+
+    - name: Install the leaf key on the host
+      become: true
+      no_log: true
+      ansible.builtin.copy:
+        content: "{{ apply_flax_tls_built.results[0].content | b64decode }}"
+        dest: "{{ apply_flax_tls_dir }}/server.key"
+        owner: root
+        group: root
+        mode: "0600"
+      notify:
+        - Reload flax-stack nginx (tls)
+        - Reload flax-post nginx (tls)
+
+    - name: Install the leaf chain on the host
+      become: true
+      ansible.builtin.copy:
+        content: "{{ apply_flax_tls_built.results[1].content | b64decode }}"
+        dest: "{{ apply_flax_tls_dir }}/server.crt"
+        owner: root
+        group: root
+        mode: "0644"
+      notify:
+        - Reload flax-stack nginx (tls)
+        - Reload flax-post nginx (tls)
+
+  always:
+    - name: Remove the control-node build dir (CA key hygiene)
+      delegate_to: localhost
+      become: false
+      ansible.builtin.file:
+        path: "{{ apply_flax_tls_build.path }}"
+        state: absent
+      when: apply_flax_tls_build.path is defined

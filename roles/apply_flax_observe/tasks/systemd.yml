@@ -1,0 +1,41 @@
+---
+- name: Ensure /etc/flax/flax-observe exists
+  become: true
+  ansible.builtin.file:
+    path: /etc/flax/flax-observe
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Deploy flax-observe.env
+  become: true
+  ansible.builtin.template:
+    src: flax-observe.env.j2
+    dest: /etc/flax/flax-observe/flax-observe.env
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart flax-observe
+
+- name: Deploy flax-observe.service unit
+  become: true
+  ansible.builtin.template:
+    src: flax-observe.service.j2
+    dest: /etc/systemd/system/flax-observe.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-observe
+
+- name: Enable flax-observe (start via VIP-gate handler / notify_master)
+  become: true
+  ansible.builtin.systemd:
+    name: flax-observe.service
+    # VIP-exclusive — see project_keepalived_failback_trap. MUST be enabled:false:
+    # enabled:true autostarts on a cold boot into BACKUP -> two bangs both probing
+    # BMCs + writing observe_state -> split-brain. The Restart handler (VIP-gated by
+    # ExecStartPre) + notify_master start it on the master.
+    enabled: false
+    daemon_reload: true

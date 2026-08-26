@@ -1,0 +1,35 @@
+{# roles/apply_flax_post/templates/flax-post.service.j2 #}
+[Unit]
+Description=flax-post — Eindhoven Post Servers viewer (source=post + lease convergence)
+After=docker.service network-online.target flax-stack.service
+Wants=network-online.target
+Requires=docker.service flax-stack.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/flax/flax-post/flax-post.env
+# VIP-gate — bash one-liner (no container spin-up) so the gate adds <100ms.
+ExecStartPre=/bin/bash -c '. /etc/flax/site.env && ip -o -4 addr | grep -qE " $${MGMT_VIP}/"'
+{# Mounts below for post-UI actions (PWR/IDNT/INV/POP): ghost helpers self-load BMC creds,
+   viewer shells ghost powertriage/identtriage/macinv binaries, and reads recon dumps. #}
+ExecStart=/usr/bin/docker run --rm --init --name flax-post \
+    --network host \
+    --env-file /etc/flax/flax-post/flax-post.env \
+    -e PATH=/opt/flax/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    -v /etc/hostname:/etc/rackname:ro \
+    -v /etc/flax/site.env:/etc/flax/site.env:ro \
+    -v /etc/flax/bmc-firmware-versions.json:/etc/flax/bmc-firmware-versions.json:ro \
+    -v /etc/flax/post_fw.json:/etc/flax/post_fw.json:ro \
+    -v /etc/flax/post-geometry.json:/etc/flax/post-geometry.json:ro \
+    -v /etc/flax/credentials-bmc.json:/etc/flax/credentials-bmc.json:ro \
+    -v /opt/flax/bin:/opt/flax/bin:ro \
+    -v /export/nodes:/export/nodes:ro \
+    -v /opt/flax/node_config:/opt/flax/node_config:ro \
+    flax-control:${FLAX_POST_IMAGE_TAG} \
+    uvicorn flax_post.app:app --host 0.0.0.0 --port {{ apply_flax_post_web_port }} --proxy-headers
+ExecStop=/usr/bin/docker stop flax-post
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

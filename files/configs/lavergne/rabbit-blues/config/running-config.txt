@@ -1,0 +1,281 @@
+! Command: show running-config
+! device: rabbit-blues (WEDGE100S12V, EOS-4.27.0F)
+!
+! boot system flash:/EOS-4.27.0F.swi
+!
+no aaa root
+!
+username admin role network-admin secret sha512 $6$xqEbFEkyhFLma71D$DhJrxjvlZ6Mvt5RvOi3ehiWe2g.fgA2/FU.YwESiwWOHxIAqejsdw.tXibb3la4g4Wjo8QqcF2mkA0Ee3uHFk1
+!
+service routing protocols model ribd
+!
+hostname rabbit-blues
+ip name-server vrf default 192.168.88.1
+!
+spanning-tree mode mstp
+!
+service unsupported-transceiver sesame f71a13ed
+!
+vlan 2
+   name external
+!
+vlan 4
+   name rhythm
+!
+vlan 6
+   name mgmt
+!
+vlan 8
+   name blues
+!
+vlan 10
+   name howlin
+!
+interface Ethernet1/1
+   switchport trunk allowed vlan 8
+   switchport mode trunk
+!
+interface Ethernet2/1
+!
+interface Ethernet3/1
+!
+interface Ethernet4/1
+!
+interface Ethernet5/1
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet5/2
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet5/3
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet5/4
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet6/1
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet6/2
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet6/3
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet6/4
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet7/1
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet7/2
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet7/3
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet7/4
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet8/1
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet8/2
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet8/3
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet8/4
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet9/1
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet9/2
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet9/3
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet9/4
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet10/1
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet10/2
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet10/3
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet10/4
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet11/1
+!
+interface Ethernet12/1
+!
+interface Ethernet13/1
+!
+interface Ethernet14/1
+!
+interface Ethernet15/1
+!
+interface Ethernet16/1
+!
+interface Ethernet17/1
+!
+interface Ethernet18/1
+!
+interface Ethernet19/1
+!
+interface Ethernet20/1
+!
+interface Ethernet21/1
+!
+interface Ethernet22/1
+!
+interface Ethernet23/1
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet23/2
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet23/3
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet23/4
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet24/1
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet24/2
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet24/3
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet24/4
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet25/1
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet25/2
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet25/3
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet25/4
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet26/1
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet26/2
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet26/3
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet26/4
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet27/1
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet27/2
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet27/3
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet27/4
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet28/1
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet28/2
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet28/3
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet28/4
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet29/1
+!
+interface Ethernet30/1
+!
+interface Ethernet31/1
+!
+interface Ethernet32/1
+   switchport trunk allowed vlan 2-20,102-200
+   switchport mode trunk
+!
+interface Management1
+   ip address dhcp
+!
+no ip routing
+!
+ip route 0.0.0.0/0 192.168.88.1
+!
+ntp server 0.pool.ntp.org
+ntp server 1.pool.ntp.org
+ntp server 2.pool.ntp.org
+!
+end

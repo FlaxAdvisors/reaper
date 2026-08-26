@@ -1,0 +1,13 @@
+{
+  "role": "post",
+  "universe": {
+    "switches": {{ flax_role_post_switches | default(['rabbit-edam']) | to_json }},
+    "switch_prefixes": {{ flax_role_post_prefixes | default(['turtle']) | to_json }},
+    "catch_all": {{ flax_role_post_catch_all | default(true) | to_json }}
+  },
+  "capabilities": {"reconcile_switch": false, "dhcp_reservations": true, "firmware": true, "observe": true},
+  "policy": {"vid": {"default": 24,
+                      "by_family": {{ flax_role_post_vid_by_family | default({}) | to_json }}},
+             "lifecycle": {"linkdown_evict_secs": 300, "replace_debounce_cycles": 2, "sticky_slots": true}},
+  "record_keys": ["customer", "order"]
+}

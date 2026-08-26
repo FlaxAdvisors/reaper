@@ -1,0 +1,23 @@
+[Unit]
+# Static IPv6 ULA address assignment for bang lab-data + mgmt interfaces.
+# Required for dnsmasq's stateful DHCPv6 dhcp-range selection (the iface
+# must carry an address in the matching /64). See bang-v6-addrs.sh.
+Description=Assign IPv6 ULA addresses to lab-data and mgmt interfaces
+After=network-online.target wicked.service
+Wants=network-online.target
+# Re-run if dnsmasq restarts — covers the case where dnsmasq came up
+# before we did (the addresses must exist before dnsmasq tries to bind
+# its v6 listener) and the iface state has since drifted.
+Before=dnsmasq.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/flax/sbin/bang-v6-addrs.sh
+RemainAfterExit=yes
+# Wicked sometimes flushes addresses on reconfiguration; let systemd
+# restart us if a network unit kicks the boot-time assignment loose.
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

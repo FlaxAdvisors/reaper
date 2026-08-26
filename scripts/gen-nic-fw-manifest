@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+# scripts/gen-nic-fw-manifest
+"""Generate /etc/flax/nic-firmware-versions.json from the curated PSID->image
+intent (ported from ghost post/update_mellanox.sh FWMAP), enriching each entry
+with the authoritative target_version + target_psid queried from the bin via
+`mstflint -i` on a booted node. Usage:
+  gen-nic-fw-manifest <ssh-host-ip>   # SSHes the node (host creds) to query bins
+"""
+import json
+import sys
+
+INTENT = {
+    "MT_2450112034": {"dir": "MCX4411A-ACQN", "bin": "fw-ConnectX4Lx-rel-14_32_1010-MCX4411A-ACQ_Ax-UEFI-14.25.17-FlexBoot-3.6.502.bin"},
+    "MT_2450111034": {"dir": "MCX4411A-ACAN", "bin": "fw-ConnectX4Lx-rel-14_32_1010-MCX4411A-ACA_Bx-UEFI-14.25.17-FlexBoot-3.6.502.bin"},
+    "FB_2450111034": {"dir": "MCX4411A-ACQN", "bin": "fw-ConnectX4Lx-rel-14_32_1010-MCX4411A-ACQ_Ax-UEFI-14.25.17-FlexBoot-3.6.502.bin"},
+    "FB_0000000005": {"dir": "MCX4411A-ACQN", "bin": "fw-ConnectX4Lx-rel-14_32_1010-MCX4411A-ACQ_Ax-UEFI-14.25.17-FlexBoot-3.6.502.bin"},
+    "MT_2420110034": {"dir": "MT_2420110034", "bin": "fw-ConnectX4Lx-rel-14_32_1010-MCX4121A-ACA_Ax-UEFI-14.25.17-FlexBoot-3.6.502.bin"},
+    "HP_2420110034": {"dir": "MT_2420110034", "bin": "fw-ConnectX4Lx-rel-14_32_1010-MCX4121A-ACA_Ax-UEFI-14.25.17-FlexBoot-3.6.502.bin"},
+}
+
+
+def build_manifest(intent: dict, query_bin) -> dict:
+    """query_bin(dir, bin) -> (target_version, target_psid). A bin that fails to
+    query (missing on share / bad file) is skipped with a warning."""
+    seen, out = {}, {}
+    for psid, i in intent.items():
+        key = (i["dir"], i["bin"])
+        if key not in seen:
+            try:
+                seen[key] = query_bin(i["dir"], i["bin"])
+            except Exception as e:  # noqa: BLE001
+                sys.stderr.write("WARN skip %s (%s/%s): %s\n" % (psid, i["dir"], i["bin"], e))
+                seen[key] = None
+        got = seen[key]
+        if got is None:
+            continue
+        tv, tp = got
+        out[psid] = {"dir": i["dir"], "bin": i["bin"], "target_version": tv, "target_psid": tp}
+    return out
+
+
+def _query_bin_over_ssh(ip):
+    from flax_post.biosd import creds, driver
+    u, p = creds.load_host_creds()
+
+    def query_bin(d, b):
+        url = "http://bang/export/share/mellanox/%s/%s.zip" % (d, b)
+        script = ("set -e\nT=$(mktemp -d)\ncurl -fsS %s -o $T/f.zip\nunzip -o $T/f.zip -d $T\n"
+                  "BIN=$(ls $T/%s* | head -1)\nmstflint -i $BIN query\n" % (url, b))
+        rc, out = driver.run_over_ssh(u, p, ip, script, timeout=120)
+        if rc != 0:
+            raise RuntimeError("query rc=%d" % rc)
+        cards = driver.parse_cards("===CARD bin===\n" + out + "\n===UEFI bin===\n")
+        if not cards:
+            raise RuntimeError("no FW/PSID parsed")
+        return cards[0]["current"], cards[0]["psid"]
+    return query_bin
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        sys.exit("usage: gen-nic-fw-manifest <booted-node-ip>")
+    manifest = build_manifest(INTENT, _query_bin_over_ssh(sys.argv[1]))
+    print(json.dumps(manifest, indent=2))

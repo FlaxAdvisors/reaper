@@ -1,0 +1,39 @@
+#!/bin/bash
+# Called from keepalived's notify_master.sh when this bang becomes MASTER.
+# Promotes the local Postgres replica to primary if it's currently a standby.
+#
+# On a standalone bang (no standby) this no-ops because Postgres is never in
+# recovery. On braintree (bang-siesta is a streaming standby) pg_ctl promote is
+# load-bearing: it makes the newly-MASTER bang's Postgres writable before the
+# flax single-writer services start.
+set -u
+
+COMPOSE={{ apply_flax_stack_compose_path }}
+
+# Is the local Postgres currently in standby (recovery) mode?
+in_recovery=$(docker compose -f "$COMPOSE" exec -T postgres \
+  psql -U postgres -d flax -tAc "SELECT pg_is_in_recovery()" 2>/dev/null || echo "error")
+
+case "$in_recovery" in
+  t)
+    # Use pg_promote() (SQL) with wait:=true — it BLOCKS until promotion finishes
+    # (up to wait_seconds) so the flax services started immediately after (by
+    # notify_master.sh) connect to a WRITABLE primary. `pg_ctl promote` proved
+    # unreliable through `docker compose exec` (signal not delivered to the
+    # postmaster); pg_promote() is the robust path and returns t/f.
+    logger -t notify_master_postgres "promoting local Postgres to primary via pg_promote()"
+    result=$(docker compose -f "$COMPOSE" exec -T postgres \
+      psql -U postgres -d flax -tAc "SELECT pg_promote(true, 60)" 2>/dev/null | tr -d '[:space:]')
+    if [ "$result" = "t" ]; then
+      logger -t notify_master_postgres "promotion complete (writable)"
+    else
+      logger -t notify_master_postgres "WARN: pg_promote returned '$result' — node may still be in recovery"
+    fi
+    ;;
+  f)
+    logger -t notify_master_postgres "already primary; no action"
+    ;;
+  *)
+    logger -t notify_master_postgres "WARN: could not determine recovery state ($in_recovery)"
+    ;;
+esac

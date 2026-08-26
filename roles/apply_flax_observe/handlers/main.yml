@@ -1,0 +1,13 @@
+---
+- name: Restart flax-observe
+  become: true
+  ansible.builtin.systemd:
+    name: flax-observe.service
+    state: restarted
+    daemon_reload: true
+
+- name: Reload firewalld
+  become: true
+  ansible.builtin.command:
+    cmd: firewall-cmd --reload
+  changed_when: true

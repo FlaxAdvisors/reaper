@@ -1,0 +1,56 @@
+[Unit]
+Description=flax-observe — per-port BMC/host state machine on switch_facts
+After=docker.service network-online.target flax-stack.service
+Wants=network-online.target
+Requires=docker.service flax-stack.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/flax/flax-observe/flax-observe.env
+# VIP-gate — bash one-liner (no container spin-up) so the gate adds <100ms.
+ExecStartPre=/bin/bash -c '. /etc/flax/site.env && ip -o -4 addr | grep -qE " $${MGMT_VIP}/"'
+
+# --init: tini as PID 1 reaps orphaned children. flax-observe forks ssh/ipmitool
+# for BMC reach probes; without a reaper those orphans accumulate as zombies
+# under the python PID 1 (see feedback_ios_ssh_controlmaster_session_is_a_trap).
+ExecStart=/usr/bin/docker run --rm --init --name flax-observe \
+    --network host \
+    --env-file /etc/flax/flax-observe/flax-observe.env \
+    -v /etc/flax/geometry.json:/etc/flax/geometry.json:ro \
+    -v /etc/flax/turtle-geometry.json:/etc/flax/turtle-geometry.json:ro \
+    -v /etc/flax/no-steer-ports.json:/etc/flax/no-steer-ports.json:ro \
+    -v /etc/flax/vlans.json:/etc/flax/vlans.json:ro \
+    -v /etc/flax/credentials.json:/etc/flax/credentials.json:ro \
+    -v /etc/flax/credentials-bmc.json:/etc/flax/credentials-bmc.json:ro \
+    -v /etc/flax/credentials-redfish.json:/etc/flax/credentials-redfish.json:ro \
+    -v /etc/flax/credentials-host.json:/etc/flax/credentials-host.json:ro \
+    -v /etc/flax/macmath:/etc/flax/macmath:ro \
+    -v /etc/flax/site.env:/etc/flax/site.env:ro \
+    -v /var/lib/misc/dnsmasq.leases:/var/lib/misc/dnsmasq.leases:ro \
+    -v /etc/dnsmasq.dhcp-hosts:/etc/dnsmasq.dhcp-hosts:ro \
+    -v /var/log/nginx:/var/log/nginx:ro \
+    -v /export/nodes:/export/nodes:ro \
+    -v /run/flax:/run/flax \
+    flax-control:${FLAX_OBSERVE_IMAGE_TAG} \
+    python -m flax_observe \
+        --geometry /etc/flax/geometry.json \
+        --turtle-geometry /etc/flax/turtle-geometry.json \
+        --no-steer /etc/flax/no-steer-ports.json \
+        --vlans /etc/flax/vlans.json \
+        --enroll-resync-secs {{ apply_flax_observe_enroll_resync_secs | default(30) }} \
+        --credentials /etc/flax/credentials.json \
+        --bmc-credentials /etc/flax/credentials-bmc.json \
+        --redfish-credentials /etc/flax/credentials-redfish.json \
+        --host-credentials /etc/flax/credentials-host.json \
+        --macmath-dir /etc/flax/macmath \
+        --cycle-secs {{ apply_flax_observe_cycle_secs }} \
+        --healthz-port {{ apply_flax_observe_healthz_port }} \
+        --healthz-stale-secs {{ apply_flax_observe_healthz_stale_secs }}
+
+ExecStop=/usr/bin/docker stop flax-observe
+
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

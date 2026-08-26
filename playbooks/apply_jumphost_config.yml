@@ -1,0 +1,10 @@
+---
+# Apply jump host network config and authorized_keys.
+# The assemble step runs delegate_to: localhost inside the role so it is not
+# excluded when ansible-playbook is invoked with --limit bang-<name>.
+
+- name: Apply jump host config
+  hosts: jumphosts
+  gather_facts: false
+  roles:
+    - apply_jumphost

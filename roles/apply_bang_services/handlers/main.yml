@@ -1,0 +1,21 @@
+---
+# Order matters — handlers run in definition order. The apparmor profile
+# reload must complete before dnsmasq restart so the daemon comes up under
+# the updated profile.
+- name: reload apparmor dnsmasq profile
+  become: true
+  ansible.builtin.command: apparmor_parser -r /etc/apparmor.d/usr.sbin.dnsmasq
+  changed_when: false
+
+- name: restart dnsmasq
+  become: true
+  ansible.builtin.systemd:
+    name: dnsmasq
+    state: "{{ 'restarted' if inventory_hostname == apply_keepalived_master_host else 'stopped' }}"
+    daemon_reload: true
+
+- name: reload nginx
+  become: true
+  ansible.builtin.systemd:
+    name: nginx
+    state: reloaded

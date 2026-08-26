@@ -1,0 +1,18 @@
+---
+apply_flax_reconcile_image_tag: "0.9.83"
+apply_flax_reconcile_healthz_port: 10996
+apply_flax_reconcile_healthz_stale_secs: 1800
+apply_flax_reconcile_db_password: ""
+
+# /etc/flax/reconcile.json tunables (spec §14; defaults = reaper values)
+apply_flax_reconcile_config:
+  sweep_interval_secs: 900
+  flap_hold_seconds: 2
+  kick_cooldown_secs: 60
+  bmc_ll_probe_interval_secs: 60
+  max_attempts: 3
+  sentinel_grace_secs: 30
+  debounce_secs: 2
+  flap_circuit_threshold: 3
+  flap_circuit_window_secs: 300
+  flap_circuit_backoff_secs: 900

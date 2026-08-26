@@ -1,0 +1,14 @@
+[
+  {
+    "family": "capri",
+    "label": "capri2",
+    "bmc_mac": "4c38.d51e.efe6",
+    "host_mac": "0c42.a17b.e42d"
+  },
+  {
+    "family": "tiogapass",
+    "label": "mitac-tp-swp38",
+    "bmc_mac": "0022.4dda.ebb0",
+    "host_mac": "0c42.a134.9860"
+  }
+]

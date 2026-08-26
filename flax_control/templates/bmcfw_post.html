@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% import "_components.html" as c %}
+{% block title %}flax-control — BMC FW · Post{% endblock %}
+{% block content %}
+{{ c.page_header('BMC firmware · Post', 'Read-only BMC/NIC/BIOS firmware state per post DUT port — merged from the post fw file stores (/etc/flax/post_fw.json, post_nic_fw.json, post_bios_fw.json), sole-written by flax_post/fwd. Flashing is performed by the post fw agent; this page never writes.') }}
+<p class="page-sub mono">Store updated: {{ updated_str }} · Now: {{ now_str }}</p>
+
+<div class="section">
+  {% if rows %}
+  <div class="filter-bar">
+    <label>filter <input class="table-filter" data-table="bmcfw-post-tbl" type="search" placeholder="port, bmc ip, version…"></label>
+    <span class="muted">{{ rows | length }} port{{ '' if rows|length == 1 else 's' }}</span>
+  </div>
+  <div class="table-scroll"><table class="data-table sortable" id="bmcfw-post-tbl"><thead><tr>
+    <th>port</th><th>bmc ip</th>
+    <th>bmc</th><th>nic</th><th>bios</th>
+  </tr></thead><tbody>
+    {% for r in rows %}
+    <tr>
+      <td><code>{{ r.port }}</code></td>
+      <td class="muted">{{ r.bmc_ip or "—" }}</td>
+      <td>
+        <code>{{ r.bmc.current_version or "—" }}→{{ r.bmc.target_version or "—" }}</code>
+        {% if r.bmc.phase %}{{ c.badge(r.bmc.phase, r.bmc_badge) }}{% endif %}
+      </td>
+      <td>{% if r.nic.phase %}{{ c.badge(r.nic.phase, r.nic_badge) }}{% endif %}</td>
+      <td>{% if r.bios.phase %}{{ c.badge(r.bios.phase, r.bios_badge) }}{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </tbody></table></div>
+  {% else %}
+  <p class="empty">No post firmware rows known to the post fw file stores on this host.</p>
+  {% endif %}
+</div>
+
+{% endblock %}

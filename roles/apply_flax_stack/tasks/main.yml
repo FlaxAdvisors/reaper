@@ -1,0 +1,66 @@
+---
+# Fail-fast on missing vault wiring. Without this assertion an empty password
+# silently propagates into /etc/flax/flax-stack/flax-stack.env → docker compose
+# interpolates empty string → postgres container refuses to init with the
+# confusing "Database is uninitialized and superuser password is not specified"
+# error. The fix is always: add the vault entries to all/vault.yml AND wire
+# them in all/vars.yml.
+- name: Assert flax-stack secrets are wired
+  ansible.builtin.assert:
+    that:
+      - apply_flax_stack_postgres_superuser_password | length > 0
+      - (apply_flax_stack_db_passwords.flax_control       | default('')) | length > 0
+      - (apply_flax_stack_db_passwords.flax_switch_sense  | default('')) | length > 0
+      - (apply_flax_stack_db_passwords.flax_discover      | default('')) | length > 0
+      - (apply_flax_stack_db_passwords.flax_classify      | default('')) | length > 0
+      - (apply_flax_stack_db_passwords.flax_reconcile     | default('')) | length > 0
+      - (apply_flax_stack_db_passwords.flax_observe       | default('')) | length > 0
+      - (apply_flax_stack_db_passwords.flax_post          | default('')) | length > 0
+      - (apply_flax_stack_db_passwords.flax_kea_hook      | default('')) | length > 0
+      - (apply_flax_stack_db_passwords.kea                | default('')) | length > 0
+    fail_msg: |
+      apply_flax_stack passwords are empty or unset. Check both:
+        (1) inventories/<site>/group_vars/all/vault.yml has the vault_flax_stack_* entries
+        (2) inventories/<site>/group_vars/all/vars.yml wires them to apply_flax_stack_*
+  no_log: true
+
+- name: Apply filesystem layout
+  ansible.builtin.import_tasks: filesystem.yml
+
+- name: Apply TLS cert
+  ansible.builtin.import_tasks: tls.yml
+
+# Pre-stage the systemd unit BEFORE the compose templates. compose.yml notifies
+# "Restart flax-stack", and main.yml flushes that handler (below) before
+# systemd.yml deploys the unit — on a first-ever deploy (e.g. a fresh standby)
+# the service would not yet exist and the handler would fail with
+# "flax-stack.service not found". Dropping the unit here guarantees the restart
+# handler always has a target. Idempotent (systemd.yml re-templates the same file).
+- name: Pre-stage flax-stack.service unit (first-deploy handler ordering)
+  become: true
+  ansible.builtin.template:
+    src: flax-stack.service.j2
+    dest: /etc/systemd/system/flax-stack.service
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Apply compose + env templates
+  ansible.builtin.import_tasks: compose.yml
+
+# Flush handlers BEFORE the systemd tasks so any pending Restart-flax-stack
+# (queued by compose.yml's postgresql.conf / pg_hba.conf changes) actually
+# fires before the alembic migrations run. Without this, postgres serves the
+# stale config until end-of-play and migrations connecting via TCP get
+# rejected by the un-updated pg_hba.
+- name: Flush handlers so Postgres picks up config changes before migrations
+  ansible.builtin.meta: flush_handlers
+
+- name: Apply systemd unit
+  ansible.builtin.import_tasks: systemd.yml
+
+- name: Apply firewalld rule
+  ansible.builtin.import_tasks: firewall.yml
+
+- name: Apply keepalived promote/demote scaffolding
+  ansible.builtin.import_tasks: keepalived.yml

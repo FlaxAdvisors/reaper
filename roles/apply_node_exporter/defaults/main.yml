@@ -1,0 +1,7 @@
+---
+# Per-bang host metrics exporter. Lives on the host (not in compose)
+# because node_exporter needs unshared PID/net/mount namespaces.
+
+apply_node_exporter_textfile_dir: /var/lib/node_exporter/textfile_collector
+apply_node_exporter_port: 9100
+apply_node_exporter_firewalld_zone: external

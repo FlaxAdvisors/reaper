@@ -1,0 +1,17 @@
+---
+site_name: lavergne
+config_output_dir: "{{ playbook_dir }}/../files/configs"
+ansible_ssh_common_args: >-
+  -o StrictHostKeyChecking=no
+  -o UserKnownHostsFile=/dev/null
+site_jumphosts:
+  - { name: bang-rhythm, ts_ip: "{{ bang_rhythm_ts_ip }}" }
+  - { name: bang-blues,  ts_ip: "{{ bang_blues_ts_ip }}"  }
+primary_rabbit: rabbit-rhythm
+primary_turtle: turtle-rhythm
+turtle_type: cumulus
+
+# Fleet TLS CA private key (PEM). Signs per-host wildcard leaves on the control
+# node only (apply_flax_tls, delegate_to localhost) -- never copied to a bang.
+# Same plaintext across all sites; encrypted separately per site vault.
+apply_flax_tls_ca_key: "{{ vault_flax_tls_ca_key }}"

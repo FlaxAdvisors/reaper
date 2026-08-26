@@ -1,0 +1,10 @@
+---
+apply_flax_discover_image_tag: "0.9.46"
+apply_flax_discover_healthz_port: 10995
+apply_flax_discover_cycle_secs: 30
+apply_flax_discover_debounce_secs: 1.5
+apply_flax_discover_healthz_stale_secs: 120
+apply_flax_discover_match_retry_max_secs: 3600
+
+# Vault-supplied. defaults blank — assertion fails loud if missing.
+apply_flax_discover_db_password: ""

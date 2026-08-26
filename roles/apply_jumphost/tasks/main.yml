@@ -1,0 +1,83 @@
+---
+# Applies jump host network config and authorized_keys.
+# Connects directly via Tailscale as flax user — no ProxyJump.
+
+- name: Assemble authorized_keys from files/ssh/flax/keys/*.pub
+  delegate_to: localhost
+  ansible.builtin.assemble:
+    src: "{{ playbook_dir }}/../files/ssh/flax/keys"
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/config/authorized_keys"
+    regexp: ".*\\.pub$"
+    mode: "0600"
+
+- name: Ensure authorized_keys ends with a newline
+  delegate_to: localhost
+  # `grep -qx ''` returning 1 means "no trailing newline" -- the expected path,
+  # handled by the `||`. Precedence: (set && (tail|grep)) || echo.
+  # pipefail + bash (dash lacks it) satisfies ansible-lint risky-shell-pipe.
+  # Note it does NOT make a missing file fail here: the `||` still catches it
+  # and appends. That is fine -- the preceding assemble task always creates the
+  # file -- but do not read this as an error-surfacing guard.
+  ansible.builtin.shell:
+    cmd: set -o pipefail && tail -c1 {{ dest }} | grep -qx '' || echo >> {{ dest }}
+    executable: /bin/bash
+  vars:
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/config/authorized_keys"
+  changed_when: false
+  check_mode: false
+
+- name: Find local ifcfg-* files to deploy (excluding -lo and *.bak)
+  delegate_to: localhost
+  ansible.builtin.find:
+    paths: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/config"
+    patterns: "ifcfg-*"
+    excludes:
+      - "ifcfg-lo"
+      - "*.bak"
+      - "*~"
+    file_type: file
+  register: apply_jumphost_local_ifcfg_files
+
+# template:, not copy: -- ifcfg-wlan* carries WIRELESS_WPA_PSK as a
+# {{ vault_cfg_wlan_wpa_psk }} placeholder (collect_jumphost redacts it on
+# fetch, RULE ZERO). Rendering here is what puts the real PSK on the bang.
+# Every other ifcfg-* is plain text with no Jinja, so templating them is a
+# no-op transform. no_log because the rendered content contains the PSK.
+- name: Deploy ifcfg-* files
+  ansible.builtin.template:
+    src: "{{ item.path }}"
+    dest: "/etc/sysconfig/network/{{ item.path | basename }}"
+    owner: root
+    group: root
+    mode: "0600"
+  become: true
+  loop: "{{ apply_jumphost_local_ifcfg_files.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  no_log: true
+  notify: reload network
+
+- name: Deploy /etc/sysconfig/network/config (NETCONFIG_*) when present
+  ansible.builtin.copy:
+    src: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/config/network-config"
+    dest: /etc/sysconfig/network/config
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  when: >
+    (config_output_dir + '/' + site_name + '/' + inventory_hostname + '/config/network-config')
+    is file
+  notify: reload netconfig
+
+- name: Deploy authorized_keys
+  ansible.builtin.copy:
+    src: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/config/authorized_keys"
+    dest: "~/.ssh/authorized_keys"
+    mode: "0600"
+  when: >
+    (config_output_dir + '/' + site_name + '/' + inventory_hostname + '/config/authorized_keys')
+    is file
+
+- name: Flush handlers
+  ansible.builtin.meta: flush_handlers

@@ -1,0 +1,19 @@
+# Managed by Ansible (apply_bang_router role) — do not edit.
+# Loaded after 90-default — overrides defaults for the bang router role.
+net.ipv4.ip_forward = 1
+net.ipv4.conf.all.rp_filter = 2
+net.ipv4.conf.all.arp_announce = 2
+net.ipv4.conf.all.arp_ignore = 1
+
+# Per-iface forwarding=1 — Linux freezes <iface>.forwarding from
+# default.forwarding at iface-creation time; ip_forward=1 (above) doesn't
+# propagate to ifaces that came up before this drop-in was installed.
+# Sysctl variable path uses '/' for dots in iface names (eth0.2 → eth0/2).
+#
+# Reconsider when a bang gains a backup WAN — the eindhoven
+# jumphost_wan_failover pattern intentionally sets WAN forwarding=0 to
+# prevent WAN-to-WAN transit loops, which conflicts with masq's return
+# leg. That is a real architectural tension the role does not currently
+# resolve; cross that bridge when a multi-WAN bang appears.
+net.ipv4.conf.{{ bang_mgmt_iface }}.forwarding = 1
+net.ipv4.conf.{{ bang_wan_iface | replace('.', '/') }}.forwarding = 1

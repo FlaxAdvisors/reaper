@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<zone>
+  <short>External</short>
+  <description>For use on external networks. You do not trust the other computers on networks to not harm your computer. Only selected incoming connections are accepted.</description>
+  <service name="ssh"/>
+  <service name="dhcp"/>
+  <service name="dhcpv6"/>
+  <service name="samba"/>
+  <service name="vnc-server"/>
+  <port port="21" protocol="udp"/>
+  <port port="22" protocol="udp"/>
+  <port port="80" protocol="tcp"/>
+  <port port="443" protocol="tcp"/>
+  <port port="5000" protocol="tcp"/>
+  <port port="8080" protocol="tcp"/>
+  <masquerade/>
+  <interface name="public"/>
+  <forward/>
+</zone>

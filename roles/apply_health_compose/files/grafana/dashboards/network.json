@@ -1,0 +1,124 @@
+{
+  "title": "Network Health",
+  "uid": "health-network",
+  "tags": ["health", "network"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 3,
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "bang",
+        "label": "bang",
+        "type": "query",
+        "datasource": {"type": "prometheus"},
+        "query": {"query": "label_values(node_uname_info, bang)", "refId": "bang"},
+        "refresh": 2,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "sort": 1
+      },
+      {
+        "name": "switch",
+        "label": "switch",
+        "type": "query",
+        "datasource": {"type": "prometheus"},
+        "query": {"query": "label_values(snmp_scrape_duration_seconds, switch)", "refId": "switch"},
+        "refresh": 2,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 100,
+      "type": "row",
+      "title": "$bang — probes",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+      "collapsed": false,
+      "repeat": "bang",
+      "repeatDirection": "v",
+      "panels": []
+    },
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Internet uplink loss% (5m)",
+      "datasource": {"type": "prometheus"},
+      "gridPos": {"h": 6, "w": 8, "x": 0, "y": 1},
+      "targets": [
+        {"datasource": {"type": "prometheus"}, "expr": "probe:loss_ratio:5m{probe_kind=\"internet_uplink\",bang=~\"$bang\"} * 100", "refId": "A", "legendFormat": "{{instance}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100}}
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Peer-bang reachability (1=up, 0=down)",
+      "datasource": {"type": "prometheus"},
+      "gridPos": {"h": 6, "w": 8, "x": 8, "y": 1},
+      "targets": [
+        {"datasource": {"type": "prometheus"}, "expr": "probe_success{probe_kind=\"peer_bang_mgmt\",bang=~\"$bang\"}", "refId": "A", "legendFormat": "{{instance}}"}
+      ],
+      "fieldConfig": {"defaults": {"min": 0, "max": 1}}
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Own-site switch reachability (ICMP)",
+      "datasource": {"type": "prometheus"},
+      "gridPos": {"h": 6, "w": 8, "x": 16, "y": 1},
+      "targets": [
+        {"datasource": {"type": "prometheus"}, "expr": "probe_success{probe_kind=\"own_site_switch\",bang=~\"$bang\"}", "refId": "A", "legendFormat": "{{instance}}"}
+      ],
+      "fieldConfig": {"defaults": {"min": 0, "max": 1}}
+    },
+    {
+      "id": 200,
+      "type": "row",
+      "title": "$switch — SNMP scrape health",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 7},
+      "collapsed": false,
+      "repeat": "switch",
+      "repeatDirection": "v",
+      "panels": []
+    },
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "Target up",
+      "datasource": {"type": "prometheus"},
+      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 8},
+      "targets": [
+        {"datasource": {"type": "prometheus"}, "expr": "up{job=\"snmp_switches\",switch=~\"$switch\"}", "refId": "A", "legendFormat": "{{bang}} scraping"}
+      ],
+      "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "1": {"text": "UP", "color": "green"}}}]}}
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Scrape duration (s)",
+      "datasource": {"type": "prometheus"},
+      "gridPos": {"h": 6, "w": 9, "x": 6, "y": 8},
+      "targets": [
+        {"datasource": {"type": "prometheus"}, "expr": "snmp_scrape_duration_seconds{switch=~\"$switch\"}", "refId": "A", "legendFormat": "{{bang}}/{{module}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "PDUs returned (walk size)",
+      "datasource": {"type": "prometheus"},
+      "gridPos": {"h": 6, "w": 9, "x": 15, "y": 8},
+      "targets": [
+        {"datasource": {"type": "prometheus"}, "expr": "snmp_scrape_pdus_returned{switch=~\"$switch\"}", "refId": "A", "legendFormat": "{{bang}}/{{module}}"}
+      ]
+    }
+  ]
+}

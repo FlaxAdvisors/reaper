@@ -1,0 +1,26 @@
+---
+apply_flax_classify_image_tag: "0.9.105"
+apply_flax_classify_healthz_port: 10991
+apply_flax_classify_cycle_secs: 30
+apply_flax_classify_debounce_secs: 1.5
+apply_flax_classify_healthz_stale_secs: 120
+
+# Phase 3a materializer mode. Any value other than "shadow" or "enforce" is
+# rejected by flax_classify/materializer.py's parse_enforce_config (logs an
+# error and forces shadow) -- see docs/refactor-phase-plan.md. "enforce"
+# alone arms nothing: it is only the first half of the two-key arming below
+# (mode=="enforce" AND a non-empty, registry-intersected
+# apply_flax_classify_materializer_enforce_roles list).
+apply_flax_classify_materializer_mode: "shadow"
+
+# Phase 3a: per-role enforce allowlist + apply-layer circuit breaker.
+# Empty roles list -> default-shadow (MATERIALIZER_MODE=shadow already forces
+# this globally regardless of the roles list; see materializer.py). A role
+# name here also arms nothing unless it is in the ACTIVE role registry --
+# __main__._effective_enforced_roles strips anything the registry doesn't
+# hold and logs an error, leaving that role's legacy write path active.
+apply_flax_classify_materializer_enforce_roles: ""
+apply_flax_classify_materializer_max_deletes: 20
+
+# Vault-supplied. defaults blank — assertion fails loud if missing.
+apply_flax_classify_db_password: ""

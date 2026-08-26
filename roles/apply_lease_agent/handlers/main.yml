@@ -1,0 +1,4 @@
+---
+# No handlers. This role only writes /etc/flax config + the role registry;
+# the consuming flax-* containers pick changes up on their own restart cadence
+# (roles.d needs a manual flax-classify restart, noted in tasks/main.yml).

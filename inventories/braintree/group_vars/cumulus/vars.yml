@@ -1,0 +1,11 @@
+---
+# Cumulus Linux 3.7.3 on Accton/Edgecore AS4610 — plain SSH transport.
+# community.network.cumulus cliconf is not supported in ansible-core 2.20.x.
+# Using ansible.builtin.ssh with ansible.builtin.command/shell tasks (spec fallback c).
+# Cumulus is Debian under the hood — standard SSH + shell works reliably.
+ansible_connection: ansible.builtin.ssh
+ansible_user: "{{ vault_cumulus_user }}"
+ansible_password: "{{ vault_cumulus_password }}"
+
+# Which device-specific role collect_config delegates to
+device_role: cumulus_linux

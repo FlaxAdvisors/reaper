@@ -1,0 +1,21 @@
+---
+# Operator users that get added to the docker group so `docker ps`,
+# `docker compose ...`, etc. work without sudo. The compose stacks
+# themselves run as root via apply_triage_compose; this list is
+# operator-UX, not role-functional.
+apply_docker_users:
+  - flax
+  - dbahi
+  - harlan
+
+# docker0 (default bridge) IP/prefix and the address-pool docker uses
+# to allocate user-defined networks for compose stacks. Both must stay
+# OUT of the lab VLAN range (vid 16-31 each on 172.<vid>.0.0/16) and
+# the bang mgmt subnet 192.168.88.0/24 — otherwise the kernel sees two
+# routes for the same /16 and container egress collides with lab-VLAN
+# reachability. 192.168.0.0/24 for docker0 plus 192.168.100.0/22
+# (carved into /24s) for compose-created networks gives 4 user-defined
+# subnets clear of mgmt and lab.
+apply_docker_bip: "192.168.0.1/24"
+apply_docker_pool_base: "192.168.100.0/22"
+apply_docker_pool_size: 24

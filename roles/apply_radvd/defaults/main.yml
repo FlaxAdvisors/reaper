@@ -1,0 +1,10 @@
+---
+# roles/apply_radvd/defaults/main.yml
+# radvd runs as a HOST package (the distro ships radvd.service reading
+# /etc/radvd.conf), started VIP-exclusively by keepalived. No container image:
+# radvd sends RAs on the host's real vlan sub-interfaces, and the distro
+# package is a trusted source.
+apply_radvd_mgmt_v6_prefix: "fd00:88"
+# Cover the lab vlans (true) or mgmt-only (false). braintree opts in via
+# lab_data_v6_ra_stateless.
+apply_radvd_v6_lab_vlans: "{{ lab_data_v6_ra_stateless | default(false) }}"

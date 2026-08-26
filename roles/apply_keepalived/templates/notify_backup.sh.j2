@@ -1,0 +1,45 @@
+#!/bin/bash
+# Runs on the bang that just left MASTER. dnsmasq is VIP-exclusive
+# (stale dhcp-hosts on the backup, plus dual-active offers cause
+# split-brain); stop it here. Master-only docker compose stacks
+# (apply_keepalived_compose_stacks) are stopped below.
+logger -t keepalived "Transitioned to BACKUP on {{ inventory_hostname }}"
+
+# Health-dashboard hook — record VRRP transition for textfile collector.
+/opt/flax/sbin/health_hooks/vrrp_state.sh BACKUP || true
+
+{% if (bang_dhcp_server | default('dnsmasq')) == 'kea' %}
+# Kea owns DHCP. Stop the VIP-exclusive Kea trio so the backup serves no
+# DHCP. Leave dnsmasq running (DNS+TFTP active-active).
+for u in kea-dhcp4 kea-dhcp6 radvd; do
+  systemctl stop "$u" 2>/dev/null || true
+done
+{% else %}
+# Demote dnsmasq on this host -- backup must not serve DHCP.
+systemctl stop dnsmasq 2>/dev/null || true
+{% endif %}
+
+# Demote the flax-* pipeline on this host — these are single-writer services
+# (observe → observe_state, classify → kea.hosts); two of them racing across
+# both bangs would corrupt/churn those tables. Stop them on the backup.
+for u in flax-switch-sense flax-observe flax-classify flax-discover flax-reconcile flax-post flax-post-fwd flax-post-biosd flax-post-nicd flax-post-sol flax-post-nginx; do
+  systemctl stop "$u" 2>/dev/null || true
+done
+
+# Postgres demotion is log-only in v1 (the old primary stays primary until an
+# operator runs the pg_rewind failback runbook). Deployed by apply_flax_stack.
+if [ -x /opt/flax/sbin/notify_backup_postgres.sh ]; then
+  /opt/flax/sbin/notify_backup_postgres.sh || logger -t keepalived "notify_backup_postgres failed"
+fi
+
+{# keepalived.service has ProtectHome=yes (masks /home AND /root); docker
+   CLI tries to create ~/.docker/ on first invocation. Redirect to
+   /tmp/.docker which is writable inside the sandbox. (`stop` happens to
+   not need it, but keeping symmetry with notify_master/notify_fault.)
+   Compose project pinned to `prod` so the right project's containers
+   are stopped on demotion (matches apply_triage_compose_project). #}
+export DOCKER_CONFIG=/tmp/.docker
+{% for stack in apply_keepalived_compose_stacks %}
+logger -t keepalived "Stopping compose stack: {{ stack }}"
+docker compose -p prod -f {{ stack }} stop 2>&1 | logger -t keepalived
+{% endfor %}

@@ -1,0 +1,6 @@
+BOOTPROTO='static'
+IPADDR='172.28.0.2/16'
+STARTMODE='auto'
+ETHERDEVICE='eth1'
+VLAN_ID='28'
+ZONE=lab-data

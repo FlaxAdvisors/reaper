@@ -1,0 +1,11 @@
+---
+# radvd-only redeploy. Sibling to apply_lease_agent.yml -- exists so a
+# radvd.conf refresh doesn't drag the rest of apply_bang_services.yml.
+- name: Apply radvd (IPv6 RA for Kea DHCPv6)
+  hosts: jumphosts
+  gather_facts: true
+  serial: 1
+  tasks:
+    - name: Apply role apply_radvd
+      ansible.builtin.import_role:
+        name: apply_radvd

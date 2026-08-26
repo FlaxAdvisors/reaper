@@ -1,0 +1,11 @@
+<div class="flow" id="pipeline">
+  {% for s in pipeline.stages %}
+  <div class="stage {{ s.state }}">
+    <a class="card" href="/events?service={{ s.service }}">
+      <div class="top"><span class="dot {{ s.state }}"></span><b>{{ s.label }}</b></div>
+      <div class="svc mono">{{ s.service }}</div>
+      <div class="ack mono">{{ s.action or s.state }}</div>
+    </a>
+  </div>
+  {% endfor %}
+</div>

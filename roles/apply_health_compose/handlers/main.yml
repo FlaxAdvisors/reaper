@@ -1,0 +1,22 @@
+---
+- name: Reload firewalld
+  become: true
+  ansible.builtin.command:
+    cmd: firewall-cmd --reload
+  changed_when: true
+
+- name: Reload prometheus
+  become: true
+  ansible.builtin.command:
+    cmd: "docker compose -p {{ apply_health_compose_project }} exec -T prometheus killall -HUP prometheus"
+    chdir: "{{ apply_health_compose_path }}"
+  changed_when: true
+  failed_when: false
+
+- name: Reload alertmanager
+  become: true
+  ansible.builtin.command:
+    cmd: "docker compose -p {{ apply_health_compose_project }} exec -T alertmanager killall -HUP alertmanager"
+    chdir: "{{ apply_health_compose_path }}"
+  changed_when: true
+  failed_when: false

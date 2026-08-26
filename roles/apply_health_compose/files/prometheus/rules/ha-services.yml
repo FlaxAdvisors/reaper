@@ -1,0 +1,59 @@
+groups:
+  - name: ha-services
+    rules:
+      - alert: UnitDown
+        expr: |
+          unit_up{name=~"dnsmasq|nginx|keepalived"} == 0
+          AND ON (bang) vrrp_state == 1
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "MASTER unit {{ $labels.name }} down on {{ $labels.bang }}"
+
+      - alert: UnitDownBackup
+        expr: |
+          unit_up{name=~"nginx"} == 0
+          AND ON (bang) vrrp_state == 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "BACKUP active-active unit {{ $labels.name }} down on {{ $labels.bang }}"
+
+      - alert: VRRPUnexpectedTransition
+        expr: changes(vrrp_state[5m]) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "VRRP transition on {{ $labels.instance }} in last 5m"
+
+      - alert: EffectivePriorityInverted
+        expr: vrrp:would_failover > 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "Effective priority inverted at {{ $labels.site }} — failover imminent"
+
+      - alert: ServiceCoredumped
+        expr: increase(coredump_count[1h]) > 0
+        labels: { severity: critical }
+        annotations:
+          summary: "Coredump captured for {{ $labels.exe }} on {{ $labels.bang }}"
+
+      - alert: ServiceCoredumpedRapid
+        expr: increase(coredump_count[1h]) >= 2
+        labels: { severity: critical }
+        annotations:
+          summary: "Crash loop: {{ $labels.exe }} cored >=2x in 1h on {{ $labels.bang }}"
+
+      - alert: DnsmasqLeaseLeakSuspected
+        expr: deriv(dnsmasq_active_leases[1h]) > 1
+        for: 1h
+        labels: { severity: warning }
+        annotations:
+          summary: "DHCP lease count growing rapidly on {{ $labels.bang }}"
+
+      - alert: ChronyDrifted
+        expr: abs(node_timex_offset_seconds) > 1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Clock drifted >1s on {{ $labels.bang }}"
