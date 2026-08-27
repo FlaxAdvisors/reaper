@@ -243,6 +243,16 @@ cat /proc/cpuinfo 2>&1 > $logdir/cpuinfo.txt
 cat /proc/meminfo 2>&1 > $logdir/meminfo.txt
 cat /proc/scsi/scsi 2>&1 > $logdir/scsi.txt
 /opt/flax/bin/dimmsum     2>&1 > $logdir/dimmsum.txt
+# dimmsum is DIMM *inventory* (size/locator/mfg/serial/part/speed from
+# dmidecode); dimmerr is DIMM *health* -- per-DIMM EDAC correctable and
+# uncorrectable counts mapped to the BIOS silkscreen locator + serial. Until
+# now the only way to see CE/UE was post stage 61 running dimmerr ad hoc over
+# ansible and printing to the operator's terminal, so nothing durable landed in
+# the node dump and the triage UI could not show DIMM health at all.
+# Degrades quietly: no EDAC nodes under /sys (module not loaded, or a platform
+# EDAC does not cover) means the glob matches nothing and the file is empty --
+# the same "absent, not healthy" signal an empty smartctl--all.txt carries.
+/opt/flax/bin/dimmerr     2>&1 > $logdir/dimmerr.txt
 /opt/flax/bin/alldisks -v 2>&1 > $logdir/alldisks-v.txt
 /opt/flax/bin/lsnet       2>&1 > $logdir/lsnet.txt
 /opt/flax/bin/bootorder   2>&1 > $logdir/bootorder.txt
