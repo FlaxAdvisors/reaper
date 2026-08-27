@@ -242,6 +242,33 @@ ip -d address 2>&1 > $logdir/ip-d_address.txt
 cat /proc/cpuinfo 2>&1 > $logdir/cpuinfo.txt
 cat /proc/meminfo 2>&1 > $logdir/meminfo.txt
 cat /proc/scsi/scsi 2>&1 > $logdir/scsi.txt
+# Refresh /opt/flax/bin from the bang before the tool calls below.
+#
+# These are invoked by absolute path, but /opt/flax/bin on a live-booted DUT is
+# populated by a SEPARATE ansible stage (ghost flax_user.yml, donum 54) whose
+# with_items list can drift from what post.sh needs -- or stop running at all.
+# It did: a tab-indented list item made that playbook unparseable for two
+# commits, so dimmerr never reached a single node and dimmerr.txt came back
+# 0 bytes on every fresh inventory while dimmsum/lsnet/bootorder beside it were
+# fine (they had been pushed by the last parseable version).
+#
+# ssh/rsync to root@bang is the same path the dump rsync at the end of this
+# script already uses, so this adds no new dependency or credential. -a without
+# --delete only adds and updates; nothing on the node is removed.
+#
+# Best-effort on purpose: a DUT that cannot reach the bang must still complete
+# its inventory, so on failure fall back to the copies post.tgz bundles
+# alongside this script -- which is exactly the six tools invoked below.
+mkdir -p /opt/flax/bin
+if ! rsync -a --timeout=20 \
+        -e "ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10" \
+        ${dst}:/opt/flax/bin/ /opt/flax/bin/ ; then
+    echo "post.sh: bin refresh from ${dst} failed -- falling back to the post.tgz bundle"
+    for b in macinv dimmerr dimmsum lsnet alldisks bootorder ; do
+        [ -f "$(dirname "$0")/$b" ] && install -m 0755 "$(dirname "$0")/$b" /opt/flax/bin/
+    done
+fi
+
 /opt/flax/bin/dimmsum     2>&1 > $logdir/dimmsum.txt
 # dimmsum is DIMM *inventory* (size/locator/mfg/serial/part/speed from
 # dmidecode); dimmerr is DIMM *health* -- per-DIMM EDAC correctable and
