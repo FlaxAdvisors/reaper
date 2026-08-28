@@ -16,7 +16,14 @@ dst="${FLAX_BANG_SSH:-root@bang}"
 
 mac="${FLAX_BOOTIF_MAC:-}"
 if [ -z "$mac" ]; then
-    mac=$(sed -re 's/^.*BOOTIF=01-([^ ]+).*$/\1/' /proc/cmdline 2>/dev/null | tr -d '-')
+    # FLAX_CMDLINE_FILE lets tests point this at a stub file; production
+    # always defaults to the real /proc/cmdline.
+    cmdline_file="${FLAX_CMDLINE_FILE:-/proc/cmdline}"
+    # -n + the trailing p is load-bearing: without it, sed prints every
+    # input line whether or not BOOTIF= matched, so a cmdline with no
+    # BOOTIF stanza would silently become the WHOLE cmdline (dashes
+    # stripped) instead of empty, defeating the skip path below.
+    mac=$(sed -nre 's/^.*BOOTIF=01-([^ ]+).*$/\1/p' "$cmdline_file" 2>/dev/null | tr -d '-')
 fi
 if [ -z "$mac" ]; then
     echo "bios_gate_report: no BOOTIF mac; skipping"
