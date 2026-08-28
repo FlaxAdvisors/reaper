@@ -121,6 +121,14 @@ if [ $action == "inventory" ]; then
     for n in "${TP_NAMES[@]}"; do
         if echo "${productname} ${boardname}" | grep -qiF "$n"; then tioga="yes"; break; fi
     done
+    # TP BIOS gate (triage): report this node's in-band BIOS version to the
+    # bang. On ACK this powers the node off and the biosfw agent flashes it --
+    # so this must come BEFORE any inventory work, and the node comes back on
+    # the next boot to collect inventory with the NEW BIOS already in place.
+    # Never fatal: no agent / no answer / unreadable version all fall through.
+    if [ -n "$tioga" ]; then
+        ./bios_gate_report.sh || true
+    fi
     if [ -n "$leopard" ] || [ -n "$tioga" ]; then
         # update subset of mellanox nics (per-card PSID->image)
         ./update_mellanox.sh
