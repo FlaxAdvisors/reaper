@@ -40,3 +40,16 @@
     mode: "0755"
   loop: "{{ apply_bmc_scripts_files }}"
   no_log: true
+
+# bios_gate has no variables to render (it delegates entirely into the
+# bios_fw container over docker exec), so it goes through copy, not
+# template -- it must never be added to apply_bmc_scripts_files above.
+- name: Deploy plain (non-templated) operator scripts
+  become: true
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../scripts/{{ item.src }}"
+    dest: "{{ apply_bmc_scripts_dest_dir }}/{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ apply_bmc_scripts_plain | default([]) }}"

@@ -1,0 +1,11 @@
+#!/bin/bash
+# Thin wrapper: run the biosfw gate CLI inside the bios_fw container.
+#
+# Delegating rather than reimplementing guarantees this answers with the SAME
+# manifest, gate directory and decision logic as the worker that will act on
+# the result. If the container is not running, docker exec fails non-zero and
+# prints nothing that starts with ACK -- post.sh then simply continues its
+# normal action, which is the intended fail-open behaviour.
+set -u
+CONTAINER="${BIOS_FW_CONTAINER:-prod-bios_fw-1}"
+exec docker exec -i "$CONTAINER" python -m biosfw.gate_cli "$@"
