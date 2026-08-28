@@ -73,7 +73,7 @@ def fleet_rows(store):
     """
     rows = []
     for port, rec in (store or {}).items():
-        phase = rec.get("phase") or "unheard-of"
+        phase = rec.get("phase") or "unknown"
         rows.append({
             "port": rec.get("port") or port,
             "current_version": rec.get("current_version") or "—",
