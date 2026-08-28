@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% import "_components.html" as c %}
+{% block title %}flax-control — BIOS FW{% endblock %}
+{% block content %}
+{{ c.page_header('BIOS FW', 'Read-only triage BIOS firmware state per node — joined from /etc/flax/host-firmware-versions.json and the biosfw worker store (/etc/flax/biosfw.json). \'blocked\' means the staging gate is deliberately holding the node (the DIMM-debugging hold); flashing is performed by the biosfw worker (enforce mode), this page never writes.') }}
+<p class="page-sub mono">Store updated: {{ updated_str }} · Now: {{ now_str }}</p>
+
+{% set _kind = {'ok': 'g', 'warn': 'w', 'fail': 'c', 'inprogress': 'a', 'neutral': 'n'} %}
+<div class="section">
+  {% if targets %}
+  <p class="muted" style="font-size:0.82rem;">
+    Target{{ 's' if targets|length > 1 else '' }}:
+    {% for t in targets %}
+      {{ c.badge(t.target_version, 'g') }}
+      <span class="muted">({{ t.platform }}{{ ', auto' if t.auto else '' }})</span>
+    {% endfor %}
+  </p>
+  {% endif %}
+
+  {% if rows %}
+  <div class="filter-bar">
+    <label>filter <input class="table-filter" data-table="biosfw-tbl" type="search" placeholder="port, version, gate…"></label>
+    <span class="muted">{{ rows | length }} node{{ '' if rows|length == 1 else 's' }}</span>
+  </div>
+  <div class="table-scroll"><table class="data-table sortable" id="biosfw-tbl"><thead><tr>
+    <th>port</th>
+    <th>current</th><th>target</th><th>gate</th><th>phase</th>
+  </tr></thead><tbody>
+    {% for r in rows %}
+    <tr>
+      <td><code>{{ r.port }}</code></td>
+      <td><code>{{ r.current_version }}</code></td>
+      <td><code>{{ r.target_version }}</code></td>
+      <td>{{ c.badge(r.gate, 'w' if r.gate == 'blocked' else 'g') }}</td>
+      <td>
+        {{ c.badge(r.phase, _kind.get(r.phase_pill, 'n')) }}
+        {% if r.fault_reason %}<span class="muted" title="{{ r.fault_reason }}">⚠</span>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody></table></div>
+  {% else %}
+  <p class="empty">No nodes known to the biosfw worker store on this host.</p>
+  {% endif %}
+</div>
+
+{% endblock %}
