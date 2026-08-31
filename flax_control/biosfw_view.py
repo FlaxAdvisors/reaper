@@ -107,18 +107,21 @@ def note_for(rec):
 
     phase = rec.get("phase")
     hold_reason = rec.get("hold_reason") or ""
+    # A stranded_by_hold row's needs_attention text already quotes the
+    # operator's note, so repeating it below reads like two separate holds.
+    # This covers BOTH shapes: the hold_set form, and the `held` form -- a
+    # held row that startup recovery also flagged, which its gate branch does
+    # produce (a held row with a leftover authorized gate entry).
+    hold_already_stated = bool(attention) and bool(rec.get("stranded_by_hold"))
     if phase == "held":
-        parts.append(hold_reason
-                     or "pinned off by an operator; no reason recorded")
-    elif rec.get("hold_set") and not rec.get("stranded_by_hold"):
+        if not hold_already_stated:
+            parts.append(hold_reason
+                         or "pinned off by an operator; no reason recorded")
+    elif rec.get("hold_set") and not hold_already_stated:
         # A hold file exists for this port but the row has not reached `held`
         # -- the operator pinned a node that is faulted, blocked, mid-sequence
         # or not yet known. Saying so is the whole point: otherwise the one
         # confirmation that the hold took never appears anywhere.
-        #
-        # Skipped for stranded_by_hold rows: recovery's needs_attention text
-        # already quotes the operator's note, and printing it twice on one
-        # line reads like two separate holds.
         parts.append("hold set, power-on will be withheld"
                      + (": " + hold_reason if hold_reason else ""))
 
