@@ -110,11 +110,15 @@ def note_for(rec):
     if phase == "held":
         parts.append(hold_reason
                      or "pinned off by an operator; no reason recorded")
-    elif rec.get("hold_set"):
+    elif rec.get("hold_set") and not rec.get("stranded_by_hold"):
         # A hold file exists for this port but the row has not reached `held`
         # -- the operator pinned a node that is faulted, blocked, mid-sequence
         # or not yet known. Saying so is the whole point: otherwise the one
         # confirmation that the hold took never appears anywhere.
+        #
+        # Skipped for stranded_by_hold rows: recovery's needs_attention text
+        # already quotes the operator's note, and printing it twice on one
+        # line reads like two separate holds.
         parts.append("hold set, power-on will be withheld"
                      + (": " + hold_reason if hold_reason else ""))
 
