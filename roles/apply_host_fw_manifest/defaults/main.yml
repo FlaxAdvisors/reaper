@@ -15,3 +15,8 @@ host_fw_platforms:
       method: redfish-update-multipart
       artifact: "SXC-Lab_OCP-Updates/OEM-TP-wiwynn-FW-2021-02-23/TPC_P26F.tar"
     auto: true
+
+# Per-port power-on hold directory, read by the triage biosfw worker
+# (BIOS_FW_HOLD_DIR). One file per switch port; presence = that node stays
+# powered off after its flash. Persistent by design -- see tasks/main.yml.
+bios_fw_hold_dir: /etc/flax/bios-fw-hold

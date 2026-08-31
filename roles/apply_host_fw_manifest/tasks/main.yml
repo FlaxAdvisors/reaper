@@ -26,3 +26,26 @@
     owner: root
     group: root
     mode: "0600"
+
+# PERSISTENT, NOT TMPFS -- AND DELIBERATELY SO.
+# The biosfw GATE lives in /run/flax/bios-fw-gate (tmpfs) because losing it on
+# a reboot re-blocks every node, which fails safe. A HOLD is the opposite: it
+# pins one node powered-OFF so an engineer can investigate it while the rest of
+# a campaign proceeds. If a reboot silently released it, the worker's first
+# pass afterwards would power on the very node somebody was working on, and
+# nobody would be told. So it is seeded under /etc/flax and it outlives
+# reboots. Do not "make this consistent" with the gate by moving it to /run.
+#
+# Set:     echo "who, when, why" > /etc/flax/bios-fw-hold/<port>
+# Release: rm /etc/flax/bios-fw-hold/<port>
+# The worker powers the node on again on its next scan pass.
+- name: Ensure the per-port BIOS power-on hold directory exists
+  become: true
+  ansible.builtin.file:
+    path: "{{ bios_fw_hold_dir }}"
+    state: directory
+    owner: root
+    group: root
+    # 0755, not 0700: an operator sets a hold by touching a file here as
+    # themselves via sudo, and flax_control (read-only) never needs to write.
+    mode: "0755"
