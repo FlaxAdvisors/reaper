@@ -87,19 +87,36 @@ def note_for(rec):
       1. needs_attention -- the worker declined to power this node on after a
          management-host restart because a BMC-side flash may still be live on
          the shared BIOS SPI. Nothing else on the page outranks that.
-      2. held           -- pinned off by an operator; show the reason THEY
+      2. held / hold_set -- pinned off by an operator; show the reason THEY
          wrote, so the page answers "which nodes are pinned off, and why".
+         hold_set covers a hold on a row that has NOT reached `held` (a
+         faulted, blocked or not-yet-flashed node), which is otherwise
+         invisible -- the operator gets no confirmation the hold took.
       3. fault          -- distinguishes "still retrying" from "gave up", and
          carries the original fault_reason either way.
+
+    More than one can apply (a held node that also needs attention, a faulted
+    node that has just been pinned), so they are joined rather than ranked to
+    a single winner.
     """
+    parts = []
+
     attention = rec.get("needs_attention")
     if attention:
-        return str(attention)
+        parts.append(str(attention))
 
     phase = rec.get("phase")
+    hold_reason = rec.get("hold_reason") or ""
     if phase == "held":
-        return (rec.get("hold_reason")
-                or "pinned off by an operator; no reason recorded")
+        parts.append(hold_reason
+                     or "pinned off by an operator; no reason recorded")
+    elif rec.get("hold_set"):
+        # A hold file exists for this port but the row has not reached `held`
+        # -- the operator pinned a node that is faulted, blocked, mid-sequence
+        # or not yet known. Saying so is the whole point: otherwise the one
+        # confirmation that the hold took never appears anywhere.
+        parts.append("hold set, power-on will be withheld"
+                     + (": " + hold_reason if hold_reason else ""))
 
     if phase == "fault":
         reason = rec.get("fault_reason") or "no reason recorded"
@@ -107,14 +124,19 @@ def note_for(rec):
         limit = rec.get("max_attempts")
         if rec.get("gave_up"):
             if attempts:
-                return "gave up after %s attempt%s: %s" % (
-                    attempts, "" if attempts == 1 else "s", reason)
-            return "gave up: %s" % (reason,)
-        if attempts and limit:
-            return "retrying (attempt %s of %s): %s" % (attempts, limit, reason)
-        return reason
+                parts.append("gave up after %s attempt%s: %s" % (
+                    attempts, "" if attempts == 1 else "s", reason))
+            else:
+                parts.append("gave up: %s" % (reason,))
+        elif attempts and limit:
+            parts.append("retrying (attempt %s of %s): %s"
+                         % (attempts, limit, reason))
+        else:
+            parts.append(reason)
 
-    return rec.get("fault_reason") or ""
+    if not parts:
+        return rec.get("fault_reason") or ""
+    return " · ".join(parts)
 
 
 def fleet_rows(store):
@@ -139,6 +161,10 @@ def fleet_rows(store):
             "gate": "blocked" if phase == "blocked" else "authorized",
             "fault_reason": rec.get("fault_reason") or "",
             "held": phase == "held",
+            # hold_set answers "does this PORT have a hold file", which is a
+            # different question from "has this ROW reached phase held" -- a
+            # hold on a faulted or not-yet-flashed node shows up only here.
+            "hold_set": bool(rec.get("hold_set")) or phase == "held",
             "hold_reason": rec.get("hold_reason") or "",
             "needs_attention": rec.get("needs_attention") or "",
             "note": note_for(rec),
@@ -148,9 +174,13 @@ def fleet_rows(store):
 
 
 def held_count(rows):
-    """How many nodes are pinned off right now -- shown in the page header so
-    an in-flight hold is visible without reading the table."""
-    return sum(1 for r in (rows or []) if r.get("held"))
+    """How many PORTS have a hold set right now -- shown in the page header so
+    a hold is visible without reading the table.
+
+    Counts hold_set, not phase == "held": an operator who pins a node that is
+    currently faulted, blocked, or not yet flashed must still get confirmation
+    on the page that the hold took."""
+    return sum(1 for r in (rows or []) if r.get("hold_set"))
 
 
 def attention_count(rows):

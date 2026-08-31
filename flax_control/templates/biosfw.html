@@ -13,7 +13,7 @@
   {% endif %}
   {% if held_count %}
     {{ c.badge(held_count ~ ' pinned off', 'w') }}
-    <span class="muted">power-on withheld by a per-port hold in /etc/flax/bios-fw-hold/</span>
+    <span class="muted">a per-port hold in /etc/flax/bios-fw-hold/ is withholding power-on — counts every port with a hold file, not only rows that already reached <code>held</code></span>
   {% endif %}
 </p>
 {% endif %}
@@ -52,7 +52,7 @@
       {# The note is TEXT, not a tooltip: 'which nodes are pinned off and why'
          has to be answerable by scanning the page, and 'still retrying' has
          to be distinguishable from 'gave up' without hovering. #}
-      <td class="{{ 'muted' if not (r.held or r.needs_attention) else '' }}">{{ r.note }}</td>
+      <td class="{{ 'muted' if not (r.hold_set or r.needs_attention) else '' }}">{{ r.note }}</td>
     </tr>
     {% endfor %}
   </tbody></table></div>
