@@ -367,6 +367,33 @@ def bmc_fw_redirect():
     return RedirectResponse(url="/bmc-fw-triage", status_code=303)
 
 
+from . import biosfw_view  # noqa: E402
+
+
+@app.get("/bios-fw", response_class=HTMLResponse)
+def bios_fw_page(request: Request) -> HTMLResponse:
+    """Read-only triage BIOS-firmware fleet: one row per node known to the
+    biosfw worker store, current->target version and gate/phase (joined from
+    the host-firmware-versions.json manifest and /etc/flax/biosfw.json). The
+    gate column collapses phase to blocked/authorized -- 'blocked' is a node
+    with a known BIOS delta the staging gate is deliberately holding, the
+    normal condition during a DIMM-debugging campaign. 'held' is the separate
+    per-port power-on hold: flashed, but pinned off by an operator. This route
+    is READ-ONLY and stays that way -- holds are set and cleared by touching
+    or removing /etc/flax/bios-fw-hold/<port> on the management host."""
+    store = biosfw_view.read_store()
+    rows = biosfw_view.fleet_rows(store)
+    now = datetime.datetime.now().timestamp()
+    store_updated = bmcfw_view.store_last_updated(store)
+    return templates.TemplateResponse(request, "biosfw.html", _ctx(
+        rows=rows, targets=biosfw_view.targets(), scope="triage",
+        held_count=biosfw_view.held_count(rows),
+        attention_count=biosfw_view.attention_count(rows),
+        store_updated=store_updated,
+        updated_str=bmcfw_view.fmt_updated(store_updated, now),
+        now_str=bmcfw_view.fmt_ts(now)))
+
+
 from . import post_bmcfw_view  # noqa: E402
 
 

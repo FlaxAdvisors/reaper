@@ -1,0 +1,8 @@
+---
+# Render the host (BIOS) firmware target manifest + an empty biosfw.json state
+# stub onto the bang. Read by the triage biosfw worker and the bios_gate CLI.
+- name: Apply host firmware manifest
+  hosts: jumphosts
+  gather_facts: false
+  roles:
+    - apply_host_fw_manifest

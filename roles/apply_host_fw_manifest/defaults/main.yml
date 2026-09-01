@@ -1,0 +1,22 @@
+---
+# Path the manifest is written to (read by the triage biosfw worker and the
+# bios_gate CLI via the /etc/flax mount).
+host_fw_manifest_path: /etc/flax/host-firmware-versions.json
+
+# Named host- not bios-: /etc/flax/bios-firmware-versions.json already exists,
+# is post-lane, and carries an afulnx-shaped schema read by flax_post/biosd.
+# 'Host' also matches the BMC's own VersionPurpose.Host.
+host_fw_platforms:
+  tiogapass-bios:
+    match:
+      product_name: ["(?i)tioga", "(?i)sv7220g3"]
+    target_version: "TPC_P26F"
+    flash:
+      method: redfish-update-multipart
+      artifact: "SXC-Lab_OCP-Updates/OEM-TP-wiwynn-FW-2021-02-23/TPC_P26F.tar"
+    auto: true
+
+# Per-port power-on hold directory, read by the triage biosfw worker
+# (BIOS_FW_HOLD_DIR). One file per switch port; presence = that node stays
+# powered off after its flash. Persistent by design -- see tasks/main.yml.
+bios_fw_hold_dir: /etc/flax/bios-fw-hold

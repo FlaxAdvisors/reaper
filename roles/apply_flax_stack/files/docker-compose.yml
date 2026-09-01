@@ -79,6 +79,14 @@ services:
       - /etc/flax/post_fw.json:/etc/flax/post_fw.json:ro
       - /etc/flax/post_nic_fw.json:/etc/flax/post_nic_fw.json:ro
       - /etc/flax/post_bios_fw.json:/etc/flax/post_bios_fw.json:ro
+      # Triage BIOS FW page: target manifest + the biosfw worker's state store.
+      # biosfw/store.py writes IN PLACE (truncate+write), so this file mount does
+      # not go stale the way bmcfw.json does. Do not switch it to os.replace --
+      # that swaps the inode on every write (tempfile.mkstemp + os.replace),
+      # which is exactly what leaves bmcfw.json's bind mount pinned to a stale
+      # snapshot -- measured in production serving seven-week-old data.
+      - /etc/flax/host-firmware-versions.json:/etc/flax/host-firmware-versions.json:ro
+      - /etc/flax/biosfw.json:/etc/flax/biosfw.json:ro
 
   nginx:
     image: nginx:1.27-alpine
