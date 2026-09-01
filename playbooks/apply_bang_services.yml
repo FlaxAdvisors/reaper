@@ -115,6 +115,7 @@
     - name: Apply role apply_bmc_scripts
       ansible.builtin.import_role:
         name: apply_bmc_scripts
+      tags: [bmc_scripts]
 
     - name: Apply role apply_triage_firewall
       ansible.builtin.import_role:
