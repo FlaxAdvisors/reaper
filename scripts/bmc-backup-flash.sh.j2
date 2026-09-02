@@ -33,11 +33,40 @@ CACHE_DIR="${BMC_BACKUP_CACHE:-/run/flax/bmc-backup}"
 # than seeking to the measured offset 909503 means no offset is hardcoded, so a
 # future image that moves the FIT blob still reads correctly. Costs ~2-4 s and
 # puts ~30 bytes on the wire.
-READ_FMT='dd if=/dev/mtd%s bs=64k count=64 2>/dev/null | strings -n 8 | grep -oE "flax-onetree-[0-9.]+-[0-9]+" | head -n 1'
+# The BACKUP chip's version is not known in advance, so it must be matched by
+# pattern. Deliberately PERMISSIVE: builds have shipped as both
+# flax-onetree-1.1.1-202608281924 and plain flax-onetree-1.1.1, and any future
+# suffix must read too. Over-matching is harmless -- the string simply differs
+# from target and the chip is rewritten. UNDER-matching is the dangerous case:
+# a populated chip that matches nothing reads as blank, and bmcfw.is_chip_blank
+# would authorise writing it. Never narrow this to a specific version scheme.
+READ_FMT='dd if=/dev/mtd%s bs=64k count=64 2>/dev/null | strings -n 8 | grep -oE "flax-onetree-[A-Za-z0-9._-]+" | head -n 1'
 
-bmc() { sshpass -e ssh -n -T $SSH_OPTS "root@$1" "$2"; }
+# The CANARY does not pattern-match at all: it asks whether mtd0 literally
+# contains the string /etc/os-release reports. Format-agnostic by construction,
+# because it never parses a version. The previous form extracted mtd0's version
+# with READ_FMT and compared the two -- so a build whose version did not fit the
+# pattern failed its own canary and took the entire feature down. That is
+# precisely what plain 'flax-onetree-1.1.1' did across the fleet.
+CANARY_FMT='dd if=/dev/mtd0 bs=64k count=64 2>/dev/null | strings -n 8 | grep -qF %s'
+
+# Remote executor. FLAX_BMC_REMOTE_EXEC lets the test suite point this at a
+# stub that runs the same pipeline against fixture files instead of a real BMC;
+# production always leaves it unset and goes over ssh. Same shape as
+# bios_gate_report.sh's FLAX_CMDLINE_FILE hook.
+bmc() {
+    if [ -n "${FLAX_BMC_REMOTE_EXEC:-}" ]; then
+        "$FLAX_BMC_REMOTE_EXEC" "$1" "$2"
+        return $?
+    fi
+    sshpass -e ssh -n -T $SSH_OPTS "root@$1" "$2"
+}
 
 json_err() { printf '{"error":"%s"}\n' "$1"; exit 1; }
+
+# Single-quote a value for the remote shell. $active_os is read off the BMC, so
+# it is not fully trusted; sshd re-parses the command with the remote shell.
+_sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
 read_chip() { bmc "$1" "$(printf "$READ_FMT" "$2")" 2>/dev/null; }
 
@@ -51,12 +80,12 @@ cmd_version() {
     active_os=$(bmc "$ip" 'sed -n "s/^VERSION_ID=//p" /etc/os-release' 2>/dev/null | tr -d '"\\')
     [ -n "$active_os" ] || json_err ssh_unreachable
 
-    active_chip=$(read_chip "$ip" 0)
-    # CANARY. Reading mtd0 with this same primitive must reproduce
-    # /etc/os-release. If it does not, the READER is broken and the mtd5 answer
-    # cannot be trusted -- report unknown rather than a value someone would act
-    # on. This costs one extra 4 MiB read and buys the whole design its honesty.
-    if [ "$active_chip" != "$active_os" ]; then
+    # CANARY. mtd0 must literally contain what /etc/os-release reports. If it
+    # does not, the READER is broken -- and with it the chip-select mapping, so
+    # mtd5 might not even be the backup chip. Report unknown rather than a value
+    # someone would act on, and never authorise a write from here (see
+    # bmcfw.backup.is_chip_blank, which excludes this error for that reason).
+    if ! bmc "$ip" "$(printf "$CANARY_FMT" "$(_sq "$active_os")")" 2>/dev/null; then
         printf '{"backup_version":null,"active_version":"%s","error":"reader_canary_failed"}\n' "$active_os"
         exit 1
     fi
