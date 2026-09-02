@@ -1,0 +1,115 @@
+#!/bin/bash
+# bmc-backup-flash -- read and write the TiogaPass BMC backup EEPROM (FMC CS1).
+#
+# RENDERED FROM THE SITE VAULT by roles/apply_bmc_scripts. The password below is
+# the BMC ROOT SHELL credential, which is NOT the credentials-bmc.json
+# Redfish/IPMI entry -- Redfish creds fail for ssh. RULE ZERO: never echo it.
+# sshpass -e keeps it out of argv and out of ps.
+#
+# The backup chip is a physically separate device (spi0.1 / CE1) from the active
+# chip (spi0.0 / CE0), both mx66l51235f 64 MiB. Writing it cannot touch the
+# running BMC, which is why guide 6.2 needs no reboot and no host power-off.
+#
+#   version <bmc-ip>             -> {"backup_version":...,"active_version":...}
+#   write   <bmc-ip> <tar-url>   -> progress records, then {"ok":true}
+#   verify  <bmc-ip> <expected>  -> exit 0 iff the chip reads <expected>
+set -u
+
+export SSHPASS='{{ bmc_root_password }}'
+SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10"
+CACHE_DIR="${BMC_BACKUP_CACHE:-/run/flax/bmc-backup}"
+
+# The BMC is BusyBox: head -n N, never head -N. Scanning the first 4 MiB rather
+# than seeking to the measured offset 909503 means no offset is hardcoded, so a
+# future image that moves the FIT blob still reads correctly. Costs ~2-4 s and
+# puts ~30 bytes on the wire.
+READ_FMT='dd if=/dev/mtd%s bs=64k count=64 2>/dev/null | strings -n 8 | grep -oE "flax-onetree-[0-9.]+-[0-9]+" | head -n 1'
+
+bmc() { sshpass -e ssh -n -T $SSH_OPTS "root@$1" "$2"; }
+
+json_err() { printf '{"error":"%s"}\n' "$1"; exit 1; }
+
+read_chip() { bmc "$1" "$(printf "$READ_FMT" "$2")" 2>/dev/null; }
+
+cmd_version() {
+    ip="$1"
+    active_os=$(bmc "$ip" 'sed -n "s/^VERSION_ID=//p" /etc/os-release' 2>/dev/null | tr -d '"')
+    [ -n "$active_os" ] || json_err ssh_unreachable
+
+    active_chip=$(read_chip "$ip" 0)
+    # CANARY. Reading mtd0 with this same primitive must reproduce
+    # /etc/os-release. If it does not, the READER is broken and the mtd5 answer
+    # cannot be trusted -- report unknown rather than a value someone would act
+    # on. This costs one extra 4 MiB read and buys the whole design its honesty.
+    if [ "$active_chip" != "$active_os" ]; then
+        printf '{"backup_version":null,"active_version":"%s","error":"reader_canary_failed"}\n' "$active_os"
+        exit 1
+    fi
+
+    backup=$(read_chip "$ip" 5)
+    if [ -z "$backup" ]; then
+        # Guide 6.1's "partition not found" is a HARDWARE FACT, not a transient.
+        # Reporting it distinctly lets the worker fault at once instead of
+        # burning three retries on a socket that is empty.
+        if ! bmc "$ip" 'grep -q bmc-backup /proc/mtd' 2>/dev/null; then
+            printf '{"backup_version":null,"active_version":"%s","error":"chip_absent"}\n' "$active_os"
+            exit 1
+        fi
+        printf '{"backup_version":null,"active_version":"%s","error":"read_failed"}\n' "$active_os"
+        exit 1
+    fi
+    printf '{"backup_version":"%s","active_version":"%s"}\n' "$backup" "$active_os"
+}
+
+cmd_write() {
+    ip="$1"; url="$2"
+    mkdir -p "$CACHE_DIR" || json_err cache_unwritable
+    tarname=$(basename "$url")
+    img="$CACHE_DIR/${tarname%.tar}.image-bmc"
+
+    # One extract shared by every node: 24 nodes x 36 MB is ~880 MB of pointless
+    # transfer otherwise.
+    if [ ! -s "$img" ]; then
+        tmptar="$CACHE_DIR/.fetch.$$.tar"
+        curl -fsS -o "$tmptar" "$url" || { rm -f "$tmptar"; json_err fetch_failed; }
+        if ! tar -xf "$tmptar" -C "$CACHE_DIR" image-bmc; then
+            rm -f "$tmptar"; json_err extract_failed
+        fi
+        mv "$CACHE_DIR/image-bmc" "$img"
+        rm -f "$tmptar"
+    fi
+
+    printf '{"phase":"backup_writing","percent":5}\n'
+    sshpass -e scp $SSH_OPTS "$img" "root@$ip:/tmp/image-bmc" >/dev/null 2>&1 \
+        || json_err scp_failed
+    printf '{"phase":"backup_writing","percent":25}\n'
+
+    out=$(bmc "$ip" '/sbin/backup-bmc-flash /tmp/image-bmc 2>&1; echo "RC=$?"')
+    # Unconditional cleanup, success or not: BMC /tmp is RAM-backed tmpfs on a
+    # 489 MB board, so a leaked 35 MB image is a real cost.
+    bmc "$ip" 'rm -f /tmp/image-bmc' >/dev/null 2>&1
+
+    case "$out" in
+        *"MTD partition not found"*) json_err chip_absent ;;
+        *RC=0*) printf '{"phase":"backup_writing","percent":100}\n{"ok":true}\n' ;;
+        *) json_err flash_failed ;;
+    esac
+}
+
+cmd_verify() {
+    ip="$1"; want="$2"
+    got=$(read_chip "$ip" 5)
+    if [ "$got" = "$want" ]; then
+        printf '{"backup_version":"%s","verified":true}\n' "$got"
+    else
+        printf '{"backup_version":"%s","verified":false}\n' "${got:-}"
+        exit 1
+    fi
+}
+
+case "${1:-}" in
+    version) [ $# -eq 2 ] || { echo "usage: bmc-backup-flash version <bmc-ip>" >&2; exit 2; }; cmd_version "$2" ;;
+    write)   [ $# -eq 3 ] || { echo "usage: bmc-backup-flash write <bmc-ip> <tar-url>" >&2; exit 2; }; cmd_write "$2" "$3" ;;
+    verify)  [ $# -eq 3 ] || { echo "usage: bmc-backup-flash verify <bmc-ip> <version>" >&2; exit 2; }; cmd_verify "$2" "$3" ;;
+    *) echo "usage: bmc-backup-flash {version|write|verify} ..." >&2; exit 2 ;;
+esac
