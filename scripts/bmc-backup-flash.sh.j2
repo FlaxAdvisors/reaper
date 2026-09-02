@@ -20,7 +20,12 @@
 # flash_failed.
 set -u
 
-export SSHPASS='{{ bmc_root_password }}'
+# I7: NO surrounding quotes -- ansible's `quote` filter emits its own, correctly,
+# for any value. Hand-wrapping in single quotes broke (or worse: ran shell) the
+# moment a vaulted password contained a single quote of its own. RULE ZERO holds
+# either way: the rendered value is never echoed, and sshpass -e keeps it out of
+# argv and ps.
+export SSHPASS={{ bmc_root_password | quote }}
 SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10"
 CACHE_DIR="${BMC_BACKUP_CACHE:-/run/flax/bmc-backup}"
 
@@ -36,6 +41,11 @@ json_err() { printf '{"error":"%s"}\n' "$1"; exit 1; }
 
 read_chip() { bmc "$1" "$(printf "$READ_FMT" "$2")" 2>/dev/null; }
 
+# CONTRACT with bmcfw.worker: the worker IGNORES this bin's exit code and takes
+# the FIRST record carrying a "backup_version" key (bmcfw.backup.version_from).
+# So no failure path here may ever emit a non-null backup_version -- an error
+# record must carry null, or omit the key entirely. Emitting a last-known value
+# alongside an error would be read as a successful chip read.
 cmd_version() {
     ip="$1"
     active_os=$(bmc "$ip" 'sed -n "s/^VERSION_ID=//p" /etc/os-release' 2>/dev/null | tr -d '"\\')
@@ -71,17 +81,47 @@ cmd_write() {
     mkdir -p "$CACHE_DIR" || json_err cache_unwritable
     tarname=$(basename "$url")
     img="$CACHE_DIR/${tarname%.tar}.image-bmc"
+    sizef="$img.size"
+
+    # Spec section 5: a cache entry is VALIDATED BY SIZE before reuse and
+    # re-fetched on mismatch. `-s` alone (non-empty) is not that check: a
+    # truncated image passes it, and a truncated image flashcp'd onto the cold
+    # spare inverts the whole point of this feature -- the spare exists so a
+    # technician's hand-swap is a recovery, not a second outage. The URL's
+    # Content-Length is the TAR's size, not the extracted member's, so it cannot
+    # serve as the expected value; the extracted size is recorded beside the
+    # image instead (written and renamed BEFORE the image, so anything that
+    # finds $img always finds a size to judge it by). No size, or a size that
+    # disagrees, means throw it away and fetch again.
+    want=$(cat "$sizef" 2>/dev/null)
+    have=$(wc -c < "$img" 2>/dev/null | tr -d ' ')
+    if [ -z "$want" ] || [ "$have" != "$want" ]; then
+        rm -f "$img" "$sizef"
+    fi
 
     # One extract shared by every node: 24 nodes x 36 MB is ~880 MB of pointless
     # transfer otherwise.
     if [ ! -s "$img" ]; then
         tmptar="$CACHE_DIR/.fetch.$$.tar"
         curl -fsS -o "$tmptar" "$url" || { rm -f "$tmptar"; json_err fetch_failed; }
-        if ! tar -xf "$tmptar" -C "$CACHE_DIR" image-bmc; then
-            rm -f "$tmptar"; json_err extract_failed
+        # PER-RUN PRIVATE extract dir. worker.py drives up to MAX_PARALLEL=24
+        # slots in concurrent threads, each invoking its own copy of this bin, so
+        # two cold-cache runs both fail the -s test above and both used to
+        # extract the tar member to the same fixed path $CACHE_DIR/image-bmc.
+        # `mv` is a rename: run A's mv handed run B's still-open fd the very
+        # inode that had just become $img, while A scp'd it to a BMC -- i.e. a
+        # half-extracted image flashcp'd onto a cold spare. Extracting private
+        # and renaming into place makes every publish atomic: concurrent runs
+        # race, but the loser is overwritten by a WHOLE, self-consistent file.
+        tmpd="$CACHE_DIR/.x.$$"
+        mkdir -p "$tmpd" || { rm -f "$tmptar"; json_err cache_unwritable; }
+        if ! tar -xf "$tmptar" -C "$tmpd" image-bmc; then
+            rm -rf "$tmpd" "$tmptar"; json_err extract_failed
         fi
-        mv "$CACHE_DIR/image-bmc" "$img"
-        rm -f "$tmptar"
+        sz=$(wc -c < "$tmpd/image-bmc" 2>/dev/null | tr -d ' ')
+        printf '%s\n' "$sz" > "$tmpd/size" && mv "$tmpd/size" "$sizef"
+        mv "$tmpd/image-bmc" "$img"
+        rm -rf "$tmpd" "$tmptar"
     fi
 
     printf '{"phase":"backup_writing","percent":5}\n'
