@@ -13,6 +13,11 @@
 #   version <bmc-ip>             -> {"backup_version":...,"active_version":...}
 #   write   <bmc-ip> <tar-url>   -> progress records, then {"ok":true}
 #   verify  <bmc-ip> <expected>  -> exit 0 iff the chip reads <expected>
+#
+# Error codes emitted as {"error":"<code>"} (or inline as an "error" field on
+# a version record): chip_absent, read_failed, reader_canary_failed,
+# ssh_unreachable, fetch_failed, extract_failed, cache_unwritable, scp_failed,
+# flash_failed.
 set -u
 
 export SSHPASS='{{ bmc_root_password }}'
@@ -33,7 +38,7 @@ read_chip() { bmc "$1" "$(printf "$READ_FMT" "$2")" 2>/dev/null; }
 
 cmd_version() {
     ip="$1"
-    active_os=$(bmc "$ip" 'sed -n "s/^VERSION_ID=//p" /etc/os-release' 2>/dev/null | tr -d '"')
+    active_os=$(bmc "$ip" 'sed -n "s/^VERSION_ID=//p" /etc/os-release' 2>/dev/null | tr -d '"\\')
     [ -n "$active_os" ] || json_err ssh_unreachable
 
     active_chip=$(read_chip "$ip" 0)
@@ -80,8 +85,10 @@ cmd_write() {
     fi
 
     printf '{"phase":"backup_writing","percent":5}\n'
-    sshpass -e scp $SSH_OPTS "$img" "root@$ip:/tmp/image-bmc" >/dev/null 2>&1 \
-        || json_err scp_failed
+    if ! sshpass -e scp $SSH_OPTS "$img" "root@$ip:/tmp/image-bmc" >/dev/null 2>&1; then
+        bmc "$ip" 'rm -f /tmp/image-bmc' >/dev/null 2>&1
+        json_err scp_failed
+    fi
     printf '{"phase":"backup_writing","percent":25}\n'
 
     out=$(bmc "$ip" '/sbin/backup-bmc-flash /tmp/image-bmc 2>&1; echo "RC=$?"')
