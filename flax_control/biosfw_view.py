@@ -5,14 +5,31 @@ Reads two already-mounted, read-only sources — no DB, no HTTP to the worker:
   - /etc/flax/host-firmware-versions.json : target manifest
   - /etc/flax/biosfw.json                 : biosfw worker store
 
-"blocked" is the interesting phase here: a node with a known BIOS delta that
-the staging gate is deliberately holding (detect mode, or not in the
-allowlist). That is the DIMM-debugging hold, and it is what an operator
-watches during a campaign. Every other phase (authorized, powering_off,
-flashing, powering_on, done, held, fault, up_to_date) means the gate has let
-the node through -- the `gate` column on each row collapses that distinction
-to just "blocked" vs "authorized" so it reads at a glance, while the `phase`
-column keeps the detail.
+"blocked" USED TO BE the interesting phase here, and is not any more. It once
+meant "a node with a known BIOS delta that the staging gate is deliberately
+holding". Since the worker began keeping a row for every managed candidate
+(2026-09-02), it is the DEFAULT phase of a perfectly healthy node that has
+simply not reported in band yet, and blocked rows outnumber everything else.
+
+Keying "interesting" off the phase alone therefore painted the whole page
+amber for a healthy fleet while a genuinely confirmed-good node rendered
+grey -- the signal exactly inverted. So interest is decided from the ROW, not
+the phase: a blocked row is only held-with-a-delta when a current AND a target
+version are both known and differ. `pill_for` stays phase-only for callers
+that have nothing else; `pill_for_row` is what the table uses.
+
+The `gate` column is three-valued for the same reason:
+  "blocked"     -- a real delta the staging gate is holding (the DIMM-
+                   debugging hold): the thing an operator watches in a campaign
+  "no report"   -- blocked, but nothing is known about this node's BIOS yet.
+                   Not a problem, and must not look like one.
+  "cleared"     -- the node reported in band at target and the gate confirmed
+                   it. This is the only state that proves the node BOOTED AND
+                   RAN that BIOS.
+  "authorized"  -- the gate let it through: every downstream phase
+                   (powering_off/flashing/powering_on/done/held/fault/
+                   up_to_date). A `held` node WAS authorized and WAS flashed;
+                   what is withheld is its power-on, a different question.
 
 "held" is the OTHER hold, and it is not the same thing. The flash COMPLETED
 and the worker then deliberately did not power the node back on, because an
@@ -39,14 +56,24 @@ FLAX_CONFIG_DIR = os.environ.get("FLAX_CONFIG_DIR", "/etc/flax")
 
 # Worker phase -> CSS pill class (classes already exist in static/style.css).
 _STATE_PILL = {
-    "up_to_date": "ok", "done": "ok",
+    # "confirmed" is the only green that means the node BOOTED AND RAN this
+    # BIOS -- an in-band report through the gate. It outranks every other ok.
+    "up_to_date": "ok", "done": "ok", "confirmed": "ok",
+    # Terminal and waiting on hands at the rack: the flash succeeded but the
+    # PSU never returned power-good, so only pulling the sled clears it. Red,
+    # because no amount of waiting or retrying fixes it.
+    "needs_power_cycle": "fail",
     # "held" sits with the other deliberate holds, NOT with fault and NOT
     # with done: the node is off on purpose and somebody is waiting on a
     # human, but nothing is broken.
-    "blocked": "warn", "authorized": "warn", "held": "warn",
+    # NOT warn any more: blocked is the healthy default for a node that has
+    # not reported in band. pill_for_row() re-raises it to warn when the row
+    # actually carries a known delta.
+    "blocked": "neutral",
+    "authorized": "warn", "held": "warn",
     "fault": "fail",
     "powering_off": "inprogress", "flashing": "inprogress",
-    "powering_on": "inprogress",
+    "verifying": "inprogress", "powering_on": "inprogress",
 }
 
 
@@ -68,7 +95,37 @@ def read_store():
 
 
 def pill_for(phase):
+    """Phase -> pill, for callers holding nothing but a phase string."""
     return _STATE_PILL.get(phase, "neutral")
+
+
+def has_known_delta(rec):
+    """True when this row actually knows the node is off target.
+
+    Both versions present AND different. An empty current_version means "no
+    in-band report yet", which is not a delta -- treating it as one is what
+    turned a healthy fleet amber."""
+    cur = (rec or {}).get("current_version") or ""
+    tgt = (rec or {}).get("target_version") or ""
+    return bool(cur) and bool(tgt) and cur != tgt
+
+
+def pill_for_row(rec):
+    """Row -> pill. Use this for the table; `pill_for` cannot see the delta."""
+    phase = (rec or {}).get("phase") or "unknown"
+    if phase == "blocked" and has_known_delta(rec):
+        return "warn"
+    return pill_for(phase)
+
+
+def gate_for(rec):
+    """The three-valued gate column -- see the module docstring."""
+    phase = (rec or {}).get("phase") or "unknown"
+    if phase == "confirmed":
+        return "cleared"
+    if phase == "blocked":
+        return "blocked" if has_known_delta(rec) else "no report"
+    return "authorized"
 
 
 def targets():
@@ -149,12 +206,11 @@ def note_for(rec):
 def fleet_rows(store):
     """One row per store entry, sorted by port.
 
-    `gate` collapses phase to the two states an operator cares about at a
-    glance: "blocked" (the staging gate is holding this node) or
-    "authorized" (the gate let it through -- includes every downstream
-    phase: powering_off/flashing/powering_on/done/held/fault/up_to_date).
-    A `held` node WAS authorized and WAS flashed; what is being withheld is
-    its power-on, which is a different question from the gate.
+    `gate` is three-valued -- blocked / no report / cleared / authorized -- and
+    `phase_pill` comes from pill_for_row, not pill_for, so a blocked row is
+    only amber when it carries a known delta. Both are explained at length in
+    the module docstring; the short version is that "blocked" stopped meaning
+    "interesting" the day the worker started keeping a row per candidate.
     """
     rows = []
     for port, rec in (store or {}).items():
@@ -164,8 +220,8 @@ def fleet_rows(store):
             "current_version": rec.get("current_version") or "—",
             "target_version": rec.get("target_version") or "—",
             "phase": phase,
-            "phase_pill": pill_for(phase),
-            "gate": "blocked" if phase == "blocked" else "authorized",
+            "phase_pill": pill_for_row(rec),
+            "gate": gate_for(rec),
             "fault_reason": rec.get("fault_reason") or "",
             "held": phase == "held",
             # hold_set answers "does this PORT have a hold file", which is a

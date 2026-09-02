@@ -2,7 +2,7 @@
 {% import "_components.html" as c %}
 {% block title %}flax-control — BIOS FW{% endblock %}
 {% block content %}
-{{ c.page_header('BIOS FW', 'Read-only triage BIOS firmware state per node — joined from /etc/flax/host-firmware-versions.json and the biosfw worker store (/etc/flax/biosfw.json). \'blocked\' means the staging gate is deliberately holding the node (the DIMM-debugging hold); \'held\' means the flash completed but an operator has pinned that node powered-off via /etc/flax/bios-fw-hold/<port>. Flashing is performed by the biosfw worker (enforce mode); this page never writes — set and clear holds by touching or removing the file on the management host.') }}
+{{ c.page_header('BIOS FW', 'Read-only triage BIOS firmware state per node — joined from /etc/flax/host-firmware-versions.json and the biosfw worker store (/etc/flax/biosfw.json). \'no report\' means the node simply has not reported its BIOS in band yet — the normal state of a healthy node, and not a problem; \'blocked\' means a real delta IS known and the staging gate is holding it (the DIMM-debugging hold); \'cleared\' means the node booted and reported at target; \'held\' means the flash completed but an operator has pinned that node powered-off via /etc/flax/bios-fw-hold/<port>. Flashing is performed by the biosfw worker (enforce mode); this page never writes — set and clear holds by touching or removing the file on the management host.') }}
 <p class="page-sub mono">Store updated: {{ updated_str }} · Now: {{ now_str }}</p>
 
 {% if attention_count or held_count %}
@@ -19,6 +19,8 @@
 {% endif %}
 
 {% set _kind = {'ok': 'g', 'warn': 'w', 'fail': 'c', 'inprogress': 'a', 'neutral': 'n'} %}
+{# The gate column is three-valued now: only a KNOWN delta is amber. #}
+{% set _gate_kind = {'blocked': 'w', 'no report': 'n', 'cleared': 'g', 'authorized': 'g'} %}
 <div class="section">
   {% if targets %}
   <p class="muted" style="font-size:0.82rem;">
@@ -44,7 +46,7 @@
       <td><code>{{ r.port }}</code></td>
       <td><code>{{ r.current_version }}</code></td>
       <td><code>{{ r.target_version }}</code></td>
-      <td>{{ c.badge(r.gate, 'w' if r.gate == 'blocked' else 'g') }}</td>
+      <td>{{ c.badge(r.gate, _gate_kind.get(r.gate, 'g')) }}</td>
       <td>
         {{ c.badge(r.phase, _kind.get(r.phase_pill, 'n')) }}
         {% if r.needs_attention %}<span title="{{ r.needs_attention }}">⚠</span>{% endif %}
