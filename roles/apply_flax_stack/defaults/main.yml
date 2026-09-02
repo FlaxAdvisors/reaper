@@ -13,7 +13,7 @@ apply_flax_stack_env_path: /etc/flax/flax-stack/flax-stack.env
 
 # Image now hosts flax_control (+ queries/triage_compat per Plan 3.5),
 # flax_switch_sense, and flax_observe.
-apply_flax_stack_flax_control_image_tag: "0.9.122"
+apply_flax_stack_flax_control_image_tag: "0.9.123"
 apply_flax_stack_postgres_image: "postgres:16"
 apply_flax_stack_nginx_image: "nginx:1.27-alpine"
 
