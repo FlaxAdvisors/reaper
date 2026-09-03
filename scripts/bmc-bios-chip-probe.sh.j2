@@ -13,13 +13,16 @@
 # writes.
 #
 # WHY THE MUX MATTERS MORE THAN THE READ: leaving the mux at BMC makes the
-# host unbootable. The EXIT trap returns it on every path, and success is not
-# reported until the GPIO reads back at PCH.
+# host unbootable. The EXIT trap returns it on every path that actually took
+# the bus, and success is not reported until the GPIO reads back at PCH --
+# read BEFORE the export directory is torn down, never assumed from its
+# absence (a torn-down/absent readback is mux_stuck, never PCH; see
+# restore_bus below).
 #
 #   probe <bmc-ip>  -> {"chip":"populated"|"blank"|"bootblock_blank"}
 #
 # Errors as {"error":"<code>"}: ssh_unreachable, host_not_off, bind_failed,
-# chip_absent, mux_stuck.
+# chip_absent, read_failed, mux_stuck.
 #
 # CONTRACT with bmcfw.worker: no failure path may emit a "chip" key --
 # bios_chip.state_from takes the FIRST record carrying one.
@@ -60,24 +63,74 @@ bmc() {
 json_err() { printf '{"error":"%s"}\n' "$1"; exit 1; }
 
 IP=""
-_cleanup_done=0
-cleanup() {
-    [ "$_cleanup_done" = 1 ] && return
-    _cleanup_done=1
-    [ -n "$IP" ] || return
+
+# _bus_taken is set ONLY by take_bus, once the mux/bind sequence has actually
+# been sent. ssh_unreachable and host_not_off exit before that ever happens,
+# so restore_bus below must never touch a bus it never took (review finding:
+# "the EXIT trap mutates the bus on paths that never took it").
+_bus_taken=0
+_mux_confirmed=0
+
+take_bus() {
+    _bus_taken=1
     bmc "$IP" '
-        SPI=/sys/bus/platform/drivers/spi-aspeed-smc
-        [ -e "$SPI/1e630000.spi" ] && echo -n 1e630000.spi > "$SPI/unbind" 2>/dev/null
         B=$(sort -n /sys/class/gpio/gpiochip*/base 2>/dev/null | head -n 1)
         G=$((B + 109))
-        if [ -d /sys/class/gpio/gpio$G ]; then
-            echo 0  > /sys/class/gpio/gpio$G/value     2>/dev/null
-            echo in > /sys/class/gpio/gpio$G/direction 2>/dev/null
-            echo $G > /sys/class/gpio/unexport         2>/dev/null
-        fi
+        [ -d /sys/class/gpio/gpio$G ] || echo $G > /sys/class/gpio/export
+        echo out > /sys/class/gpio/gpio$G/direction
+        echo 1   > /sys/class/gpio/gpio$G/value
+        sleep 1
+        SPI=/sys/bus/platform/drivers/spi-aspeed-smc
+        [ -e "$SPI/1e630000.spi" ] && { echo -n 1e630000.spi > "$SPI/unbind"; sleep 1; }
+        echo -n 1e630000.spi > "$SPI/bind"
+        sleep 2
     ' >/dev/null 2>&1
 }
-trap cleanup EXIT
+
+# Unbind, mux back to PCH, and PROVE it landed there -- all in ONE remote
+# call, reading the GPIO value BEFORE it is unexported. Review finding
+# (Critical): the previous version unexported first and read back after,
+# so a successful cleanup always made the directory disappear and the
+# readback's "else echo 0" branch fired every time -- "GPIO absent" was
+# silently read as "mux at PCH", which is exactly the conflation this bin
+# exists to avoid. Here, "cannot read" (absent, empty, non-numeric) is
+# never treated as PCH; only a literal "0" readback counts.
+#
+# Retries a few times (review finding: the trap must not be a no-op on the
+# one path where the mux is known wrong) before giving up. Idempotent: once
+# confirmed, later calls (the EXIT trap after an explicit call already
+# succeeded) are free.
+restore_bus() {
+    [ "$_bus_taken" = 1 ] || return 0
+    [ "$_mux_confirmed" = 1 ] && return 0
+    i=1
+    while [ "$i" -le 3 ]; do
+        val=$(bmc "$IP" '
+            SPI=/sys/bus/platform/drivers/spi-aspeed-smc
+            [ -e "$SPI/1e630000.spi" ] && echo -n 1e630000.spi > "$SPI/unbind" 2>/dev/null
+            B=$(sort -n /sys/class/gpio/gpiochip*/base 2>/dev/null | head -n 1)
+            G=$((B + 109))
+            if [ -d /sys/class/gpio/gpio$G ]; then
+                echo 0  > /sys/class/gpio/gpio$G/value     2>/dev/null
+                echo in > /sys/class/gpio/gpio$G/direction 2>/dev/null
+                cat /sys/class/gpio/gpio$G/value 2>/dev/null
+                echo $G > /sys/class/gpio/unexport         2>/dev/null
+            else
+                echo absent
+            fi
+        ' 2>/dev/null | tr -d '\r ')
+        if [ "$val" = 0 ]; then
+            _mux_confirmed=1
+            return 0
+        fi
+        i=$((i + 1))
+        sleep 1
+    done
+    return 1
+}
+# Best-effort last resort on every exit path: a no-op if the bus was never
+# taken or was already confirmed restored; otherwise one more retry burst.
+trap 'restore_bus >/dev/null 2>&1' EXIT
 
 cmd_probe() {
     IP="$1"
@@ -92,18 +145,7 @@ cmd_probe() {
     esac
 
     # 2. Take the bus: mux to BMC, then unbind/rebind so JEDEC re-probes.
-    bmc "$IP" '
-        B=$(sort -n /sys/class/gpio/gpiochip*/base 2>/dev/null | head -n 1)
-        G=$((B + 109))
-        [ -d /sys/class/gpio/gpio$G ] || echo $G > /sys/class/gpio/export
-        echo out > /sys/class/gpio/gpio$G/direction
-        echo 1   > /sys/class/gpio/gpio$G/value
-        sleep 1
-        SPI=/sys/bus/platform/drivers/spi-aspeed-smc
-        [ -e "$SPI/1e630000.spi" ] && { echo -n 1e630000.spi > "$SPI/unbind"; sleep 1; }
-        echo -n 1e630000.spi > "$SPI/bind"
-        sleep 2
-    ' >/dev/null 2>&1
+    take_bus
 
     # 3. Find the pnor MTD. Its mere registration is the CANARY: it proves
     #    JEDEC answered, which proves the mux switched. At PCH nothing binds,
@@ -120,6 +162,31 @@ cmd_probe() {
     done
     [ -n "$mtd" ] || json_err bind_failed
 
+    # Shape-guard $mtd before it goes anywhere near a remote command string:
+    # it is untrusted remote output (review finding, minor). It is always
+    # interpolated as a bare device suffix, never quoted into a value that
+    # could itself contain shell metacharacters, so a strict "mtdN" shape
+    # check is sufficient here (unlike bmc-backup-flash.sh.j2's _sq(), which
+    # guards a value that IS placed inside quotes).
+    case "$mtd" in
+        mtd*) mtd_n=${mtd#mtd} ;;
+        *)    mtd_n="" ;;
+    esac
+    case "$mtd_n" in
+        ''|*[!0-9]*) json_err bind_failed ;;
+    esac
+
+    # Read-only note (review finding, minor): a /dev/mtdroN node would give a
+    # free never-write guarantee at the device-node level. This BMC image
+    # exposes only /dev/mtd$mtd_n for pnor -- no mtdro counterpart was found
+    # in this bin's siblings or in any doc in this repo, and this dev host has
+    # no BMC to confirm the /sys/class/mtd layout against. Falling back to
+    # /dev/mtd$mtd_n as instructed; the read-only guarantee here is instead
+    # that this bin only ever pipes the device through dd|tr|wc (count only,
+    # never `of=`) -- see the read step below. Revisit if a future BMC image
+    # is confirmed to expose mtdro.
+    dev="/dev/mtd$mtd_n"
+
     # 4. Plausible size, or we are misreading the device. UNCONDITIONAL: never
     #    gated on PROBE_BLOCKS, which only ever overrides the block count below.
     size=$(bmc "$IP" "cat /sys/class/mtd/$mtd/size 2>/dev/null" 2>/dev/null | tr -d '\r ')
@@ -133,19 +200,20 @@ cmd_probe() {
     # 5. Two 64 KiB windows. Only a byte count crosses the wire. NEVER sample
     #    the middle: a HEALTHY image has 12 MiB of all-0xFF interior
     #    (spec 2.5), so an interior window reads blank on a good chip.
-    head_n=$(bmc "$IP" "dd if=/dev/$mtd bs=64k count=1 2>/dev/null | tr -d '\377' | wc -c" 2>/dev/null | tr -d '\r ')
-    top_n=$(bmc "$IP" "dd if=/dev/$mtd bs=64k skip=$top count=1 2>/dev/null | tr -d '\377' | wc -c" 2>/dev/null | tr -d '\r ')
-    case "$head_n" in ''|*[!0-9]*) head_n=0 ;; esac
-    case "$top_n"  in ''|*[!0-9]*) top_n=0  ;; esac
+    #
+    #    A failed read (ssh drop mid-run, EIO, device busy) must NEVER be
+    #    coerced to a byte count: two failed reads read as two zeros, which
+    #    is exactly the "blank" verdict that authorises writing a BIOS image
+    #    (review finding, Critical). An unreadable result is read_failed,
+    #    same as bmc-backup-flash.sh.j2's cmd_version distinguishes
+    #    read_failed from a value rather than guessing one.
+    head_n=$(bmc "$IP" "dd if=$dev bs=64k count=1 2>/dev/null | tr -d '\377' | wc -c" 2>/dev/null | tr -d '\r ')
+    case "$head_n" in ''|*[!0-9]*) json_err read_failed ;; esac
+    top_n=$(bmc "$IP" "dd if=$dev bs=64k skip=$top count=1 2>/dev/null | tr -d '\377' | wc -c" 2>/dev/null | tr -d '\r ')
+    case "$top_n" in ''|*[!0-9]*) json_err read_failed ;; esac
 
     # 6. Release the bus and PROVE it went back, before reporting anything.
-    cleanup
-    mux=$(bmc "$IP" '
-        B=$(sort -n /sys/class/gpio/gpiochip*/base 2>/dev/null | head -n 1)
-        G=$((B + 109))
-        if [ -d /sys/class/gpio/gpio$G ]; then cat /sys/class/gpio/gpio$G/value; else echo 0; fi
-    ' 2>/dev/null | tr -d '\r ')
-    [ "$mux" = 0 ] || json_err mux_stuck
+    restore_bus || json_err mux_stuck
 
     # 7. Verdict. The top block is the x86 reset vector: erased means the host
     #    cannot boot, whatever else the chip holds.
