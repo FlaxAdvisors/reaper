@@ -61,6 +61,13 @@ chmod +x "$work/bin"
 # mutant in one of them alone (review finding, Important -- reverting only
 # head_raw's check, or only top_raw's, both passed 27/27 against the old
 # fixtures).
+#
+# FIX_TR_BREAK=yes replaces `tr -d` with `false` in the REAL remote script,
+# leaving dd and the temp file untouched -- models tr itself failing to
+# run or being killed with zero output despite a perfectly good read (review
+# finding, Important, round 4 -- a MEASUREMENT failure, not a READ failure:
+# the raw-count gates above only prove dd's read was complete, and said
+# nothing about the stage that actually measures it).
 cat > "$work/stub" <<'STUB'
 #!/bin/bash
 cmd="$2"
@@ -94,6 +101,14 @@ case "$cmd" in
           sandboxed=$(echo "$cmd" | sed \
               -e "s#/sys/class/gpio#${FIX_SYSROOT:-/nonexistent}/class/gpio#g" \
               -e "s#/sys/bus/platform/drivers/spi-aspeed-smc#${FIX_SYSROOT:-/nonexistent}/bus/spi-aspeed-smc#g")
+          # Log the POST-rewrite command distinctly from the pre-rewrite
+          # $cmd already logged above, so a test can assert the rewrite
+          # itself actually happened, not just that SOME command ran.
+          # $sandboxed is multi-line, so it is fenced between markers rather
+          # than prefixed on one line (its own first line is blank).
+          if [ -n "${FIX_CMDLOG:-}" ]; then
+              { echo "===SANDBOXED-BEGIN==="; printf '%s\n' "$sandboxed"; echo "===SANDBOXED-END==="; } >> "$FIX_CMDLOG"
+          fi
           echo "$sandboxed" | bash
       else
           echo "$FIX_MUX"
@@ -131,6 +146,17 @@ case "$cmd" in
                       rewritten=$(echo "$rewritten" | sed 's#> "$f"#| head -c 32768 > "$f"#')
                   fi ;;
           esac
+          # FIX_TR_BREAK: break ONLY the measurement stage, not the read --
+          # dd/the temp file are untouched, but `tr -d` is replaced with
+          # `false` (which ignores its arguments, including the now-stray
+          # '\377', and always produces zero stdout). Models tr failing to
+          # exec or being killed with zero output despite a perfectly good
+          # dd (review finding, Important -- the route neither raw-count
+          # gate could see, because it lives entirely in the measurement
+          # stage, after a fully successful read).
+          if [ "${FIX_TR_BREAK:-no}" = yes ]; then
+              rewritten=$(echo "$rewritten" | sed 's#tr -d#false#')
+          fi
           echo "$rewritten" | bash
       fi ;;
   *)
@@ -298,6 +324,25 @@ else
     echo "       got: $out"; fail=$((fail+1))
 fi
 
+# IMPORTANT (round 4 review): a MEASUREMENT failure, not a READ failure.
+# dd can succeed perfectly (raw == 65536, both prior gates pass) while the
+# STAGE THAT MEASURES the read -- tr -- fails to run or is killed with zero
+# output. Demonstrated by the reviewer: a populated fixture, dd fully
+# succeeding, only tr broken, produced {"chip":"blank"}. FIX_TR_BREAK
+# replaces `tr -d` with `false` (dd and the temp file are untouched) --
+# closed by the sentinel byte prepended before tr in read_window(), which
+# makes a healthy measurement structurally unable to report 0.
+out=$(FLAX_PROBE_BLOCKS=8 FLAX_BMC_REMOTE_EXEC="$work/stub" \
+      FIX_STATE=Off FIX_PNOR=yes FIX_MTD="mtd5" FIX_SIZE="$PLAUSIBLE" \
+      FIX_MUX=0 FIX_CHIP="$work/chip_pop" FIX_TR_BREAK=yes \
+      "$work/bin" probe 1.2.3.4 2>&1)
+if [[ "$out" == *'"error":"read_failed"'* ]]; then
+    echo "ok   - tr stage broken on a populated fixture reports read_failed, never blank"; pass=$((pass+1))
+else
+    echo "FAIL - tr stage broken on a populated fixture should report read_failed"
+    echo "       got: $out"; fail=$((fail+1))
+fi
+
 run_case "mux stuck at BMC is mux_stuck" \
     '"error":"mux_stuck"' Off yes "$PLAUSIBLE" 1 "$work/chip_pop"
 
@@ -315,13 +360,34 @@ run_case "unreadable mux state (gpio absent) is mux_stuck, never silently OK" \
 # "else echo 0" (Critical 1's exact conflation, reintroduced INSIDE the
 # remote body) passed all tests, because none of them executed the real
 # script. FIX_MUX_REAL=yes closes that: the stub runs the ACTUAL remote
-# restore_bus command for real (same mechanism already used for the real
-# dd|tr|wc read pipeline), against this dev host's own filesystem.
-# /sys/class/gpio does not exist here, so the real script's own "else echo
-# absent" branch fires -- this is the genuine remote body being exercised,
-# not a canned answer.
+# restore_bus command for real, with every /sys path rewritten under
+# $FIX_SYSROOT (a directory the suite never creates) first -- see FIX_SYSROOT
+# above. That rewritten path can never exist, so the real script's own
+# "else echo absent" branch fires for a STRUCTURAL reason (the rewrite
+# target is guaranteed absent), not because this particular dev host
+# happens not to export the pin -- this stays correct on a host that does.
+#
+# Minor (3rd round review): the rewrite itself was previously unasserted --
+# deleting the FIX_SYSROOT sed reddened no test on this host, so the sandbox
+# could rot silently. cmdlog2 below captures the POST-rewrite command the
+# stub actually ran (not the pre-rewrite $cmd the top-of-stub logger
+# captures, which legitimately always contains the real /sys path) and
+# asserts it targets $FIX_SYSROOT, never the bare /sys path.
+cmdlog="$work/cmdlog_mux_real"; : > "$cmdlog"
 run_case "real remote restore script: gpio absent here really answers absent -> mux_stuck" \
-    '"error":"mux_stuck"' Off yes "$PLAUSIBLE" 0 "$work/chip_pop" no "" no yes
+    '"error":"mux_stuck"' Off yes "$PLAUSIBLE" 0 "$work/chip_pop" no "$cmdlog" no yes
+sandboxed_block=$(sed -n '/===SANDBOXED-BEGIN===/,/===SANDBOXED-END===/p' "$cmdlog")
+rewrite_ok=yes
+[[ "$sandboxed_block" == *"$FIX_SYSROOT/class/gpio"* ]] || rewrite_ok=no
+[[ "$sandboxed_block" == *"$FIX_SYSROOT/bus/spi-aspeed-smc"* ]] || rewrite_ok=no
+[[ "$sandboxed_block" == *"/sys/class/gpio"* ]] && rewrite_ok=no
+[[ "$sandboxed_block" == *"/sys/bus/platform/drivers/spi-aspeed-smc"* ]] && rewrite_ok=no
+if [ "$rewrite_ok" = yes ]; then
+    echo "ok   - the /sys rewrite actually happened before the real script ran"; pass=$((pass+1))
+else
+    echo "FAIL - the /sys rewrite did not happen as expected (or the raw path leaked through)"
+    echo "       cmdlog block: $sandboxed_block"; fail=$((fail+1))
+fi
 
 # Important 5: assert the restore command was actually SENT on the mux_stuck
 # path -- not just that the bin fabricated an error locally.

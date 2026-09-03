@@ -135,7 +135,7 @@ trap 'restore_bus >/dev/null 2>&1' EXIT
 # Read ONE 64 KiB window with ONE dd invocation, then measure the SAME bytes
 # TWICE (raw byte count, and non-0xFF byte count) in that same remote round
 # trip, via a temp file under /tmp (tmpfs on the BMC), removed
-# UNCONDITIONALLY by a remote trap -- not a best-effort rm at the end.
+# UNCONDITIONALLY by a remote trap.
 #
 # Reading the window with TWO SEPARATE dd calls (one to size-check, one to
 # compute the verdict) was tried and rejected (review finding, Critical --
@@ -146,12 +146,34 @@ trap 'restore_bus >/dev/null 2>&1' EXIT
 # check -- the exact original bug, one call later. Splitting the read in two
 # also doubled the mux's exposure window. One dd, two measurements, the same
 # bytes, closes both problems at once.
+#
+# The trap fires on EXIT, INT, TERM, AND HUP -- NOT "EXIT" alone (review
+# finding, minor). This shell is BusyBox ash on the BMC, not bash: verified
+# with dash that "trap ... EXIT" alone does not fire for an untrapped fatal
+# signal -- SIGHUP, SIGTERM and SIGINT all leak the file. An ssh drop is
+# precisely SIGHUP, and /tmp is tmpfs on a 489 MB board.
+#
+# nff is measured over `{ printf 'X'; cat "$f"; } | tr -d '\377' | wc -c`,
+# NOT bare `tr -d '\377' < "$f" | wc -c` (review finding, Important -- a
+# route neither of the prior two rounds closed). The raw-byte-count gates
+# above only prove dd's OWN read was complete; they say nothing about the
+# tr stage that actually measures it. If dd succeeds perfectly but tr itself
+# fails to run or is killed with zero output (exec failure, an OOM kill on
+# this board), wc counts an empty pipe and prints a clean numeric "0" --
+# raw is still 65536, the size gate passes, and the verdict is "blank": a
+# MEASUREMENT failure, not a READ failure, reaching the same false verdict
+# by a different route. The prepended sentinel byte ('X', never 0xFF, so
+# tr -d '\377' never strips it) makes a zero count structurally impossible
+# for a pipeline that actually ran to completion: a correct run always
+# emits at least "1" (the sentinel alone, for an all-0xFF window). The
+# caller requires nff >= 1 and subtracts 1 to recover the true non-0xFF
+# count.
 read_window() {  # $1 = extra dd args, e.g. "" for the head window or "skip=$top" for the top window
     bmc "$IP" "f=/tmp/.bcp.\$\$
-trap 'rm -f \"\$f\"' EXIT
+trap 'rm -f \"\$f\"' EXIT INT TERM HUP
 dd if=$dev bs=64k count=1 $1 2>/dev/null > \"\$f\"
 raw=\$(wc -c < \"\$f\" 2>/dev/null)
-nff=\$(tr -d '\\377' < \"\$f\" 2>/dev/null | wc -c)
+nff=\$({ printf 'X'; cat \"\$f\"; } 2>/dev/null | tr -d '\\377' | wc -c)
 printf '%s %s' \"\$raw\" \"\$nff\"" 2>/dev/null | tr -d '\r'
 }
 
@@ -226,29 +248,42 @@ cmd_probe() {
     top=$((blocks - 1))
 
     # 5. Two 64 KiB windows, each via ONE dd read measured twice (see
-    #    read_window above -- one dd, two measurements, the same bytes).
-    #    NEVER sample the middle: a HEALTHY image has 12 MiB of all-0xFF
-    #    interior (spec 2.5), so an interior window reads blank on a good chip.
+    #    read_window above -- one dd, two measurements, the same bytes, plus
+    #    a sentinel byte that makes a healthy measurement's count structurally
+    #    nonzero). NEVER sample the middle: a HEALTHY image has 12 MiB of
+    #    all-0xFF interior (spec 2.5), so an interior window reads blank on a
+    #    good chip.
     #
-    #    The raw count gates the verdict: anything other than exactly 65536
-    #    (short, zero, or non-numeric -- ssh drop, EIO, device busy, a stale
-    #    ro node) is read_failed, checked BEFORE the non-0xFF count from that
-    #    SAME read is trusted at all. A short read is a failed read, not a
-    #    blank chip. Same principle as bmc-backup-flash.sh.j2's cmd_version
-    #    distinguishing read_failed from a value rather than guessing one.
+    #    Two independent gates, both checked BEFORE the non-0xFF count is
+    #    trusted:
+    #      - the raw count must be exactly 65536 (short, zero, or non-numeric
+    #        -- ssh drop, EIO, device busy, a stale ro node) -- a READ
+    #        failure, never a verdict.
+    #      - the measured (sentinel-inclusive) count must be >= 1 -- a
+    #        MEASUREMENT failure (tr itself failing to run, or killed with
+    #        zero output, despite a perfectly good dd) is structurally
+    #        impossible for a healthy pipeline once the sentinel is counted,
+    #        so a numeric 0 here can only mean the pipeline never completed.
+    #    Either failure is read_failed, never a blank chip. Same principle as
+    #    bmc-backup-flash.sh.j2's cmd_version distinguishing read_failed from
+    #    a value rather than guessing one.
     result=$(read_window "")
     head_raw=${result%% *}
-    head_n=${result#* }
+    head_nff=${result#* }
     case "$head_raw" in ''|*[!0-9]*) json_err read_failed ;; esac
     [ "$head_raw" -eq 65536 ] || json_err read_failed
-    case "$head_n" in ''|*[!0-9]*) json_err read_failed ;; esac
+    case "$head_nff" in ''|*[!0-9]*) json_err read_failed ;; esac
+    [ "$head_nff" -ge 1 ] || json_err read_failed
+    head_n=$((head_nff - 1))
 
     result=$(read_window "skip=$top")
     top_raw=${result%% *}
-    top_n=${result#* }
+    top_nff=${result#* }
     case "$top_raw" in ''|*[!0-9]*) json_err read_failed ;; esac
     [ "$top_raw" -eq 65536 ] || json_err read_failed
-    case "$top_n" in ''|*[!0-9]*) json_err read_failed ;; esac
+    case "$top_nff" in ''|*[!0-9]*) json_err read_failed ;; esac
+    [ "$top_nff" -ge 1 ] || json_err read_failed
+    top_n=$((top_nff - 1))
 
     # 6. Release the bus and PROVE it went back, before reporting anything.
     restore_bus || json_err mux_stuck
