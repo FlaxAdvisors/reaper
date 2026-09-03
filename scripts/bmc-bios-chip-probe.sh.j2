@@ -132,49 +132,126 @@ restore_bus() {
 # taken or was already confirmed restored; otherwise one more retry burst.
 trap 'restore_bus >/dev/null 2>&1' EXIT
 
-# Read ONE 64 KiB window with ONE dd invocation, then measure the SAME bytes
-# TWICE (raw byte count, and non-0xFF byte count) in that same remote round
-# trip, via a temp file under /tmp (tmpfs on the BMC), removed
-# UNCONDITIONALLY by a remote trap.
+# Read ONE 64 KiB window with ONE dd invocation into a temp file, then DECIDE
+# whether that window is erased with `cmp -s` against a freshly generated,
+# EXACTLY-IDENTIFIED 64 KiB all-0xFF reference block -- all in the same remote
+# round trip.
 #
-# Reading the window with TWO SEPARATE dd calls (one to size-check, one to
-# compute the verdict) was tried and rejected (review finding, Critical --
-# demonstrated reachable twice): the size-checked read and the
-# verdict-computing read were then two INDEPENDENT reads of the same region,
-# so a runtime dd failure (EIO, device busy, the mux slipping between round
-# trips) in the SECOND read alone was invisible to the first read's size
-# check -- the exact original bug, one call later. Splitting the read in two
-# also doubled the mux's exposure window. One dd, two measurements, the same
-# bytes, closes both problems at once.
+# WHY cmp AND NOT A BYTE COUNT (the lesson of five failed rounds). Every
+# earlier design measured the window by counting bytes
+# (`... | tr -d '\377' | wc -c`) and then gated the count with a threshold.
+# That can never be made safe, because EVERY count is also a legitimate value:
+# a pipeline that dies with zero output prints a clean numeric "0", which is
+# indistinguishable from a window that genuinely held zero non-0xFF bytes --
+# i.e. from `blank`, the verdict that authorises writing a BIOS image. Each
+# round closed one stage and left the adjacent one open (a failed dd coerced
+# to 0; then a runtime dd failure printing a numeric 0; then a size-checked
+# read that was not the read that produced the verdict; then a `tr` that could
+# die leaving `wc` to count an empty pipe; then a sentinel byte whose count of
+# exactly 1 survived `cat` being broken). Counting is the defect: it has no
+# error value.
+#
+# `cmp` does. Verified on the live BMC (172.17.10.101, BusyBox v1.36.1,
+# /usr/bin/cmp):
+#     cmp -s A B  ->  0 = identical, 1 = differ, 2 = ERROR (missing/unreadable)
+# So the decision now carries its own, structurally distinct failure signal:
+# rc 0 and rc 1 are the two verdicts, and ANYTHING else -- 2, 127 (cmp itself
+# missing), empty (ssh dropped mid-answer), or any non-{0,1} text -- is
+# read_failed. There is no number to misread as a verdict.
+#
+# THE REFERENCE BLOCK is generated here, in the same round trip that uses it,
+# and identified EXACTLY -- not counted:
+#     dd if=/dev/zero bs=64k count=1 | tr '\000' '\377'
+# and its md5 must equal FF64K_MD5 below. Generating it in one call and using
+# it in another would reintroduce round 3's exact bug (a checked operation
+# that is not the operation the verdict came from). The md5 is an IDENTITY,
+# not a threshold: dd failing, tr missing, tr degrading to a passthrough of
+# zeros (which would make an all-0x00 window -- what the SPI bus reads with
+# the mux at PCH -- compare "identical" and yield a FALSE blank), or md5sum
+# itself failing all produce a string that is not FF64K_MD5, and every one of
+# them is read_failed. If a future BMC image lacks md5sum the bin fails
+# CLOSED (always read_failed, never a verdict) -- the correct direction for a
+# bin whose blank verdict triggers a reflash.
+#
+# `head -c` IS NOT AVAILABLE on this platform (BusyBox head has no -c; this
+# project has been bitten by GNU-only flags before -- see the `head -n 1`
+# note). Nothing here uses it.
+#
+# The raw byte count of the dd output is still checked (== 65536) BEFORE the
+# cmp result is trusted: that gate proves dd wrote a complete window, which
+# cmp alone cannot tell us (a short window vs. a full one both just "differ").
+# It is the ONLY count left, and it gates a READ, never a verdict.
 #
 # The trap fires on EXIT, INT, TERM, AND HUP -- NOT "EXIT" alone (review
-# finding, minor). This shell is BusyBox ash on the BMC, not bash: verified
-# with dash that "trap ... EXIT" alone does not fire for an untrapped fatal
-# signal -- SIGHUP, SIGTERM and SIGINT all leak the file. An ssh drop is
-# precisely SIGHUP, and /tmp is tmpfs on a 489 MB board.
+# finding, minor). This shell is BusyBox on the BMC, not bash: verified with
+# dash that "trap ... EXIT" alone does not fire for an untrapped fatal signal
+# -- SIGHUP, SIGTERM and SIGINT all leak the file. An ssh drop is precisely
+# SIGHUP, and /tmp is tmpfs on a 489 MB board.
 #
-# nff is measured over `{ printf 'X'; cat "$f"; } | tr -d '\377' | wc -c`,
-# NOT bare `tr -d '\377' < "$f" | wc -c` (review finding, Important -- a
-# route neither of the prior two rounds closed). The raw-byte-count gates
-# above only prove dd's OWN read was complete; they say nothing about the
-# tr stage that actually measures it. If dd succeeds perfectly but tr itself
-# fails to run or is killed with zero output (exec failure, an OOM kill on
-# this board), wc counts an empty pipe and prints a clean numeric "0" --
-# raw is still 65536, the size gate passes, and the verdict is "blank": a
-# MEASUREMENT failure, not a READ failure, reaching the same false verdict
-# by a different route. The prepended sentinel byte ('X', never 0xFF, so
-# tr -d '\377' never strips it) makes a zero count structurally impossible
-# for a pipeline that actually ran to completion: a correct run always
-# emits at least "1" (the sentinel alone, for an all-0xFF window). The
-# caller requires nff >= 1 and subtracts 1 to recover the true non-0xFF
-# count.
+# Emits "<raw> <refsum> <cmprc>" on one line.
+FF64K_MD5=ecb99e6ffea7be1e5419350f725da86b   # md5 of 65536 bytes of 0xFF; confirmed identical on 172.17.10.101 and here
 read_window() {  # $1 = extra dd args, e.g. "" for the head window or "skip=$top" for the top window
     bmc "$IP" "f=/tmp/.bcp.\$\$
-trap 'rm -f \"\$f\"' EXIT INT TERM HUP
+r=/tmp/.bcpr.\$\$
+trap 'rm -f \"\$f\" \"\$r\"' EXIT INT TERM HUP
 dd if=$dev bs=64k count=1 $1 2>/dev/null > \"\$f\"
 raw=\$(wc -c < \"\$f\" 2>/dev/null)
-nff=\$({ printf 'X'; cat \"\$f\"; } 2>/dev/null | tr -d '\\377' | wc -c)
-printf '%s %s' \"\$raw\" \"\$nff\"" 2>/dev/null | tr -d '\r'
+dd if=/dev/zero bs=64k count=1 2>/dev/null | tr '\\000' '\\377' > \"\$r\"
+sum=\$(md5sum < \"\$r\" 2>/dev/null)
+sum=\${sum%% *}
+cmp -s \"\$f\" \"\$r\"
+rc=\$?
+printf '%s %s %s' \"\$raw\" \"\$sum\" \"\$rc\"" 2>/dev/null | tr -d '\r'
+}
+
+# Validate ONE window's "<raw> <refsum> <cmprc>" answer and publish its
+# verdict bit in _w_blank (1 = this window is erased, 0 = it holds content).
+#
+# ONE shared validator, deliberately: the review found the previous per-window
+# copies MUTUALLY MASKING (deleting head's gate alone passed 31/0; deleting
+# top's alone passed 31/0), because the only fixtures that exercised them were
+# short for BOTH windows at once. A single validator makes asymmetric gating
+# structurally impossible -- there is no "the other window's gate" to fall
+# back on. It is called from the MAIN shell, never in a command substitution,
+# so json_err's `exit 1` really exits the bin (and still runs the EXIT trap
+# that returns the mux); a $(...) call would swallow the error record into a
+# variable instead. Per-window mutation fixtures in the test suite break each
+# stage for ONE window at a time (keyed on `skip=`) regardless.
+_w_blank=""
+check_window() {  # $1 = the raw "<raw> <refsum> <cmprc>" answer
+    _w_rest="${1#* }"
+    _w_raw="${1%% *}"
+    _w_sum="${_w_rest%% *}"
+    _w_rc="${_w_rest#* }"
+
+    # 1. The READ must be complete: dd wrote a whole 64 KiB window. Short,
+    #    empty, or garbage (ssh drop, EIO, device busy, a stale ro node) is a
+    #    read failure, never a verdict.
+    #
+    #    ONE gate, and it is a STRING equality, not `-eq`. There used to be
+    #    two here -- a non-numeric `case` and a numeric `-eq` -- and mutation
+    #    testing showed they were MUTUALLY MASKING: deleting the `case` alone
+    #    changed nothing, because `[ "dd:" -eq 65536 ]` errors in bash and so
+    #    the `-eq` gate caught non-numeric input too. Relying on a comparison
+    #    ERRORING is exactly the kind of adjacent, unproven behaviour that
+    #    produced five rounds of false verdicts. `=` needs no coercion: "",
+    #    "dd:", "32768" and "065536" all simply are not "65536".
+    [ "$_w_raw" = 65536 ] || json_err read_failed
+
+    # 2. The REFERENCE must be exactly 64 KiB of 0xFF. An identity check, not
+    #    a threshold -- see FF64K_MD5 above for why a degraded reference is
+    #    the one way cmp could hand back a false "blank".
+    [ "$_w_sum" = "$FF64K_MD5" ] || json_err read_failed
+
+    # 3. The DECISION must be one of cmp's two verdict codes. 2 (cmp errored),
+    #    127 (cmp missing), "" (ssh dropped mid-answer), or anything else is a
+    #    measurement failure with its own unambiguous signal -- no counting
+    #    pipeline, so there is no plausible number to mistake for an answer.
+    case "$_w_rc" in
+        0) _w_blank=1 ;;
+        1) _w_blank=0 ;;
+        *) json_err read_failed ;;
+    esac
 }
 
 cmd_probe() {
@@ -229,8 +306,9 @@ cmd_probe() {
     # of time, and a hard dependency on an unconfirmed node would turn a
     # safety nicety into an outage. Test for it and fall back to the plain
     # node if it is absent -- the read-only guarantee then falls back to what
-    # it always was: this bin only ever pipes the device through dd|tr|wc
-    # (count only, never `of=`) -- see the read step below.
+    # it always was: this bin only ever reads the device with `dd if=` into a
+    # temp file it then measures and compares -- never `of=`, never a write of
+    # any kind -- see read_window above.
     dev="/dev/mtd$mtd_n"
     ro_dev="${dev}ro"
     if [ "$(bmc "$IP" "[ -e $ro_dev ] && echo yes" 2>/dev/null | tr -d '\r ')" = yes ]; then
@@ -247,52 +325,25 @@ cmd_probe() {
     [ "$blocks" -gt 0 ] || blocks=$((size / 65536))
     top=$((blocks - 1))
 
-    # 5. Two 64 KiB windows, each via ONE dd read measured twice (see
-    #    read_window above -- one dd, two measurements, the same bytes, plus
-    #    a sentinel byte that makes a healthy measurement's count structurally
-    #    nonzero). NEVER sample the middle: a HEALTHY image has 12 MiB of
-    #    all-0xFF interior (spec 2.5), so an interior window reads blank on a
-    #    good chip.
-    #
-    #    Two independent gates, both checked BEFORE the non-0xFF count is
-    #    trusted:
-    #      - the raw count must be exactly 65536 (short, zero, or non-numeric
-    #        -- ssh drop, EIO, device busy, a stale ro node) -- a READ
-    #        failure, never a verdict.
-    #      - the measured (sentinel-inclusive) count must be >= 1 -- a
-    #        MEASUREMENT failure (tr itself failing to run, or killed with
-    #        zero output, despite a perfectly good dd) is structurally
-    #        impossible for a healthy pipeline once the sentinel is counted,
-    #        so a numeric 0 here can only mean the pipeline never completed.
-    #    Either failure is read_failed, never a blank chip. Same principle as
-    #    bmc-backup-flash.sh.j2's cmd_version distinguishing read_failed from
-    #    a value rather than guessing one.
-    result=$(read_window "")
-    head_raw=${result%% *}
-    head_nff=${result#* }
-    case "$head_raw" in ''|*[!0-9]*) json_err read_failed ;; esac
-    [ "$head_raw" -eq 65536 ] || json_err read_failed
-    case "$head_nff" in ''|*[!0-9]*) json_err read_failed ;; esac
-    [ "$head_nff" -ge 1 ] || json_err read_failed
-    head_n=$((head_nff - 1))
+    # 5. Two 64 KiB windows. Each is ONE dd read, size-gated, then decided by
+    #    `cmp -s` against a freshly generated and exactly-identified all-0xFF
+    #    reference in the SAME remote round trip (see read_window above).
+    #    NEVER sample the middle: a HEALTHY image has 12 MiB of all-0xFF
+    #    interior (spec 2.5), so an interior window reads blank on a good chip.
+    check_window "$(read_window "")"
+    head_blank="$_w_blank"
 
-    result=$(read_window "skip=$top")
-    top_raw=${result%% *}
-    top_nff=${result#* }
-    case "$top_raw" in ''|*[!0-9]*) json_err read_failed ;; esac
-    [ "$top_raw" -eq 65536 ] || json_err read_failed
-    case "$top_nff" in ''|*[!0-9]*) json_err read_failed ;; esac
-    [ "$top_nff" -ge 1 ] || json_err read_failed
-    top_n=$((top_nff - 1))
+    check_window "$(read_window "skip=$top")"
+    top_blank="$_w_blank"
 
     # 6. Release the bus and PROVE it went back, before reporting anything.
     restore_bus || json_err mux_stuck
 
     # 7. Verdict. The top block is the x86 reset vector: erased means the host
     #    cannot boot, whatever else the chip holds.
-    if [ "$top_n" -gt 0 ]; then
+    if [ "$top_blank" = 0 ]; then
         printf '{"chip":"populated"}\n'
-    elif [ "$head_n" -gt 0 ]; then
+    elif [ "$head_blank" = 0 ]; then
         printf '{"chip":"bootblock_blank"}\n'
     else
         printf '{"chip":"blank"}\n'
