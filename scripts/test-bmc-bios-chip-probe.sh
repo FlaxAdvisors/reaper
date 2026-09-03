@@ -283,6 +283,25 @@ fi
 run_case "no pnor after bind is bind_failed" \
     '"error":"bind_failed"' Off no "$PLAUSIBLE" 0 "$work/chip_pop"
 
+# ...but ONLY when the mux really did go back to the PCH. The case above is
+# the control for this one: same failure, same fixture, mux 0 vs mux 1.
+#
+# bind_failed and chip_absent deliberately do NOT block power-on
+# (bmcfw.bios_chip.blocks_power_on) -- they mean "we could not inspect the
+# chip", and a healthy node must not be left dark by a probe that could not
+# run. That is only safe while the mux is back at the PCH. json_err used to
+# print BEFORE the EXIT trap attempted the restore, so a failed restore on
+# this path was reported as a non-blocking bind_failed and the worker powered
+# the host on with the SPI bus possibly still pointed at the BMC. The mux is
+# the harder fact, so it overrides the error code.
+run_case "a failed restore on the bind_failed path is reported as mux_stuck" \
+    '"error":"mux_stuck"' Off no "$PLAUSIBLE" 1 "$work/chip_pop"
+
+# Same argument for the other non-blocking error code, so neither can be the
+# one path that still slips a stuck mux past the worker.
+run_case "a failed restore on the chip_absent path is reported as mux_stuck" \
+    '"error":"mux_stuck"' Off yes 1024 1 "$work/chip_pop"
+
 # The size-plausibility check runs UNCONDITIONALLY -- it is never gated on
 # FLAX_PROBE_BLOCKS (which only overrides how many blocks are read once a
 # plausible chip is found). FLAX_PROBE_BLOCKS=8 is still set here (via

@@ -60,7 +60,31 @@ bmc() {
     sshpass -e ssh -n -T $SSH_OPTS "root@$1" "$2"
 }
 
-json_err() { printf '{"error":"%s"}\n' "$1"; exit 1; }
+# ORDER IS LOAD-BEARING (final review): restore the mux BEFORE emitting, not
+# after. The EXIT trap does run restore_bus on every path -- but it runs
+# AFTER this function has already printed, so a json_err raised once the bus
+# was taken reported e.g. bind_failed (which bmcfw.bios_chip deliberately
+# treats as non-blocking, "we could not inspect the chip") and the worker
+# then powered the host on while the trap was still failing to put the mux
+# back. A mux we cannot return to the PCH is a HARDER fact than whatever
+# error we were about to report, so it overrides the code: mux_stuck is the
+# one error bios_chip.blocks_power_on refuses to power on through.
+# restore_bus is idempotent and a no-op when the bus was never taken, so the
+# ssh_unreachable / host_not_off paths are unchanged.
+json_err() {
+    _err="$1"
+    # Not on the mux_stuck call site itself: that one is reached by
+    # `restore_bus || json_err mux_stuck`, so the burst has just run and
+    # failed. Repeating it there would add a third burst of remote round
+    # trips to a node whose mux is already known stuck, and would change the
+    # 3-explicit + 3-trap attempt budget this bin's tests pin down.
+    if [ "$_err" != mux_stuck ] \
+       && [ "${_bus_taken:-0}" = 1 ] && [ "${_mux_confirmed:-0}" != 1 ]; then
+        restore_bus >/dev/null 2>&1 || _err=mux_stuck
+    fi
+    printf '{"error":"%s"}\n' "$_err"
+    exit 1
+}
 
 IP=""
 
