@@ -30,6 +30,17 @@ chmod +x "$work/bin"
 # on the bin's OWN local fabrication of a readback, never on whether the
 # restore command reached the wire) -- and, now, which device node a read
 # pipeline actually targeted (mtd<N>ro vs mtd<N>).
+#
+# FIX_MUX_REAL=yes is the one exception to "answer, don't execute": it makes
+# the gpio/unexport case run the REAL remote restore_bus body (the same way
+# the dd|tr|wc read pipeline already runs for real against a fixture), so
+# that command's own internal branching gets exercised, not just simulated
+# via FIX_MUX (review finding, minor -- a mutant that reverted the remote
+# script's "else echo absent" back to "else echo 0" was undetected by any
+# test, because every test answers FIX_MUX directly). On THIS dev host,
+# /sys/class/gpio does not exist at all, so the real script's own "absent"
+# branch fires deterministically and safely (verified separately: no writes
+# are attempted, nothing errors beyond what is already redirected away).
 cat > "$work/stub" <<'STUB'
 #!/bin/bash
 cmd="$2"
@@ -56,7 +67,11 @@ case "$cmd" in
       # value the pin reads back as; "absent" simulates a readback that
       # cannot be trusted -- the fixed bin must treat that as mux_stuck,
       # never silently as PCH (the exact bug being regression-guarded here).
-      echo "$FIX_MUX" ;;
+      if [ "${FIX_MUX_REAL:-no}" = yes ]; then
+          echo "$cmd" | bash
+      else
+          echo "$FIX_MUX"
+      fi ;;
   *'dd if=/dev/'*)
       if [ "${FIX_READ_FAIL:-no}" = yes ]; then
           # A real ssh drop or EIO mid-pipeline lands here as unreadable,
@@ -91,18 +106,23 @@ mk_pop()      { mk_blank "$1"; printf 'BIOSHEAD' | dd of="$1" conv=notrunc 2>/de
                 printf 'RESETVEC' | dd of="$1" bs=64k seek=7 conv=notrunc 2>/dev/null; }
 mk_bootblank(){ mk_blank "$1"; printf 'BIOSHEAD' | dd of="$1" conv=notrunc 2>/dev/null; }
 
+mk_short() { dd if=/dev/zero bs=32k count=1 2>/dev/null | tr '\0' '\377' > "$1"; }  # 32768 of 65536 bytes: a short read
+mk_zero()  { : > "$1"; }                                                              # 0 bytes: dd reads nothing at all
+
 mk_pop "$work/chip_pop"; mk_blank "$work/chip_blank"; mk_bootblank "$work/chip_bb"
+mk_short "$work/chip_short"; mk_zero "$work/chip_zero"
 
 PLAUSIBLE=16777216   # MIN_SIZE in the bin -- a real, plausible pnor size.
 
-run_case() {  # $1=name $2=want-substring $3=state $4=pnor(yes/no) $5=size $6=mux $7=chip-fixture $8=read-fail(yes/no,opt) $9=cmdlog(opt) $10=ro(yes/no,opt)
+run_case() {  # $1=name $2=want-substring $3=state $4=pnor(yes/no) $5=size $6=mux $7=chip-fixture $8=read-fail(yes/no,opt) $9=cmdlog(opt) $10=ro(yes/no,opt) $11=mux-real(yes/no,opt)
     local name="$1" want="$2" state="$3" pnor="$4" size="$5" mux="$6" chip="$7"
-    local readfail="${8:-no}" cmdlog="${9:-}" ro="${10:-no}"
+    local readfail="${8:-no}" cmdlog="${9:-}" ro="${10:-no}" muxreal="${11:-no}"
     local out
     out=$(FLAX_PROBE_BLOCKS=8 FLAX_BMC_REMOTE_EXEC="$work/stub" \
           FIX_STATE="$state" FIX_PNOR="$pnor" FIX_MTD="mtd5" \
           FIX_SIZE="$size" FIX_MUX="$mux" FIX_CHIP="$chip" \
           FIX_READ_FAIL="$readfail" FIX_CMDLOG="$cmdlog" FIX_RO="$ro" \
+          FIX_MUX_REAL="$muxreal" \
           "$work/bin" probe 1.2.3.4 2>&1)
     if [[ "$out" == *"$want"* ]]; then
         echo "ok   - $name"; pass=$((pass+1))
@@ -125,8 +145,19 @@ run_case "powered-on host refuses" \
 
 # ssh_unreachable: the power-state command itself returns nothing, as it
 # would if ssh dropped before any output arrived.
+cmdlog="$work/cmdlog_ssh_unreachable"; : > "$cmdlog"
 run_case "unreachable BMC reports ssh_unreachable" \
-    '"error":"ssh_unreachable"' "" yes "$PLAUSIBLE" 0 "$work/chip_pop"
+    '"error":"ssh_unreachable"' "" yes "$PLAUSIBLE" 0 "$work/chip_pop" no "$cmdlog"
+# Minor (2nd round review): host_not_off was the only case asserting the bus
+# was never touched -- ssh_unreachable exits even earlier and deserves the
+# same guard, not just an inference from the other case.
+if grep -qE 'gpio|1e630000\.spi' "$cmdlog"; then
+    echo "FAIL - a bus/mux command was sent on a path that never took the bus (ssh_unreachable)"
+    echo "       cmdlog: $(cat "$cmdlog")"
+    fail=$((fail+1))
+else
+    echo "ok   - no bus/mux command sent on the ssh_unreachable path"; pass=$((pass+1))
+fi
 
 run_case "no pnor after bind is bind_failed" \
     '"error":"bind_failed"' Off no "$PLAUSIBLE" 0 "$work/chip_pop"
@@ -157,6 +188,39 @@ else
     echo "ok   - a failed read is not silently reported as blank"; pass=$((pass+1))
 fi
 
+# Important (2nd round review): the non-numeric check above does NOT catch a
+# read that fails at RUNTIME -- dd hitting EIO/device-busy/a stale ro node
+# discards stderr and simply produces an empty or truncated pipe, and wc -c
+# reports that as a perfectly numeric byte count. Two such "reads" would
+# still sail through the old check and read as {"chip":"blank"}. Guarded now
+# by requiring the RAW byte count to be exactly 65536 before the non-0xFF
+# count is trusted at all. These two fixtures are genuinely short/empty
+# files -- the real dd|tr|wc pipeline runs against them for real, so this is
+# not a simulated failure.
+run_case "short read (32768 of 65536 bytes) reports read_failed, never blank" \
+    '"error":"read_failed"' Off yes "$PLAUSIBLE" 0 "$work/chip_short"
+out=$(FLAX_PROBE_BLOCKS=8 FLAX_BMC_REMOTE_EXEC="$work/stub" \
+      FIX_STATE=Off FIX_PNOR=yes FIX_MTD="mtd5" FIX_SIZE="$PLAUSIBLE" \
+      FIX_MUX=0 FIX_CHIP="$work/chip_short" \
+      "$work/bin" probe 1.2.3.4 2>&1)
+if [[ "$out" == *'"chip":"blank"'* ]]; then
+    echo "FAIL - a short read must never be reported as a blank verdict"; fail=$((fail+1))
+else
+    echo "ok   - a short read is not silently reported as blank"; pass=$((pass+1))
+fi
+
+run_case "zero-byte read reports read_failed, never blank" \
+    '"error":"read_failed"' Off yes "$PLAUSIBLE" 0 "$work/chip_zero"
+out=$(FLAX_PROBE_BLOCKS=8 FLAX_BMC_REMOTE_EXEC="$work/stub" \
+      FIX_STATE=Off FIX_PNOR=yes FIX_MTD="mtd5" FIX_SIZE="$PLAUSIBLE" \
+      FIX_MUX=0 FIX_CHIP="$work/chip_zero" \
+      "$work/bin" probe 1.2.3.4 2>&1)
+if [[ "$out" == *'"chip":"blank"'* ]]; then
+    echo "FAIL - a zero-byte read must never be reported as a blank verdict"; fail=$((fail+1))
+else
+    echo "ok   - a zero-byte read is not silently reported as blank"; pass=$((pass+1))
+fi
+
 run_case "mux stuck at BMC is mux_stuck" \
     '"error":"mux_stuck"' Off yes "$PLAUSIBLE" 1 "$work/chip_pop"
 
@@ -168,15 +232,38 @@ run_case "mux stuck at BMC is mux_stuck" \
 run_case "unreadable mux state (gpio absent) is mux_stuck, never silently OK" \
     '"error":"mux_stuck"' Off yes "$PLAUSIBLE" absent "$work/chip_pop"
 
+# Minor (2nd round review): the case above is still simulated -- the stub
+# answers FIX_MUX directly rather than running restore_bus's own remote
+# script. A mutant reverting that script's "else echo absent" back to
+# "else echo 0" (Critical 1's exact conflation, reintroduced INSIDE the
+# remote body) passed all tests, because none of them executed the real
+# script. FIX_MUX_REAL=yes closes that: the stub runs the ACTUAL remote
+# restore_bus command for real (same mechanism already used for the real
+# dd|tr|wc read pipeline), against this dev host's own filesystem.
+# /sys/class/gpio does not exist here, so the real script's own "else echo
+# absent" branch fires -- this is the genuine remote body being exercised,
+# not a canned answer.
+run_case "real remote restore script: gpio absent here really answers absent -> mux_stuck" \
+    '"error":"mux_stuck"' Off yes "$PLAUSIBLE" 0 "$work/chip_pop" no "" no yes
+
 # Important 5: assert the restore command was actually SENT on the mux_stuck
 # path -- not just that the bin fabricated an error locally.
+#
+# Important 4 regression guard (minor, 2nd round review): a single-burst
+# regression -- the trap going back to being a no-op -- must also fail a
+# test, not just "was it sent at all". restore_bus retries 3 times
+# explicitly in step 6, and (per Important 4's fix) the EXIT trap retries
+# ANOTHER 3 times when that first burst never confirmed PCH -- 6 total
+# gpio/unexport calls. Counting exactly 6 catches a regression to a single
+# burst (3) as readily as a regression back to no retry at all (1).
 cmdlog="$work/cmdlog_mux_stuck"; : > "$cmdlog"
 run_case "mux_stuck path actually sends the restore command" \
     '"error":"mux_stuck"' Off yes "$PLAUSIBLE" 1 "$work/chip_pop" no "$cmdlog"
-if grep -q 'gpio/unexport' "$cmdlog"; then
-    echo "ok   - restore command was sent on the mux_stuck path"; pass=$((pass+1))
+n=$(grep -c 'gpio/unexport' "$cmdlog")
+if [ "$n" = 6 ]; then
+    echo "ok   - restore command was sent 6 times (3 explicit + 3 from the trap)"; pass=$((pass+1))
 else
-    echo "FAIL - restore command was never sent on the mux_stuck path"; fail=$((fail+1))
+    echo "FAIL - expected 6 restore attempts (3 explicit + 3 trap retries), got $n"; fail=$((fail+1))
 fi
 
 # Important 3 regression guard: on paths that never took the bus

@@ -202,18 +202,34 @@ cmd_probe() {
     [ "$blocks" -gt 0 ] || blocks=$((size / 65536))
     top=$((blocks - 1))
 
-    # 5. Two 64 KiB windows. Only a byte count crosses the wire. NEVER sample
-    #    the middle: a HEALTHY image has 12 MiB of all-0xFF interior
-    #    (spec 2.5), so an interior window reads blank on a good chip.
+    # 5. Two 64 KiB windows. For each, read BOTH the RAW byte count and the
+    #    non-0xFF byte count, and require the raw count to be exactly 65536.
+    #    NEVER sample the middle: a HEALTHY image has 12 MiB of all-0xFF
+    #    interior (spec 2.5), so an interior window reads blank on a good chip.
     #
-    #    A failed read (ssh drop mid-run, EIO, device busy) must NEVER be
-    #    coerced to a byte count: two failed reads read as two zeros, which
-    #    is exactly the "blank" verdict that authorises writing a BIOS image
-    #    (review finding, Critical). An unreadable result is read_failed,
-    #    same as bmc-backup-flash.sh.j2's cmd_version distinguishes
+    #    A failed read (ssh drop mid-run, EIO, device busy, an ro node that
+    #    exists but will not read) must NEVER be coerced to a byte count.
+    #    Two routes to that coercion, both closed here:
+    #      - a non-numeric/empty result (the wire itself broke) -> read_failed
+    #      - a SHORT or ZERO-length raw read: dd failing at runtime discards
+    #        stderr and simply produces an empty or truncated pipe, and
+    #        wc -c reports that as a perfectly numeric "0" or short count --
+    #        which sails through the non-numeric check above and would still
+    #        read as "blank", the verdict that authorises writing a BIOS
+    #        image (review finding, Important -- Critical 2 by a second
+    #        route). A short read is a failed read, not a blank chip: the
+    #        raw count is checked BEFORE the non-0xFF count is trusted at all.
+    #    Same principle as bmc-backup-flash.sh.j2's cmd_version distinguishing
     #    read_failed from a value rather than guessing one.
+    head_raw=$(bmc "$IP" "dd if=$dev bs=64k count=1 2>/dev/null | wc -c" 2>/dev/null | tr -d '\r ')
+    case "$head_raw" in ''|*[!0-9]*) json_err read_failed ;; esac
+    [ "$head_raw" -eq 65536 ] || json_err read_failed
     head_n=$(bmc "$IP" "dd if=$dev bs=64k count=1 2>/dev/null | tr -d '\377' | wc -c" 2>/dev/null | tr -d '\r ')
     case "$head_n" in ''|*[!0-9]*) json_err read_failed ;; esac
+
+    top_raw=$(bmc "$IP" "dd if=$dev bs=64k skip=$top count=1 2>/dev/null | wc -c" 2>/dev/null | tr -d '\r ')
+    case "$top_raw" in ''|*[!0-9]*) json_err read_failed ;; esac
+    [ "$top_raw" -eq 65536 ] || json_err read_failed
     top_n=$(bmc "$IP" "dd if=$dev bs=64k skip=$top count=1 2>/dev/null | tr -d '\377' | wc -c" 2>/dev/null | tr -d '\r ')
     case "$top_n" in ''|*[!0-9]*) json_err read_failed ;; esac
 
