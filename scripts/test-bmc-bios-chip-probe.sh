@@ -21,14 +21,15 @@ sed 's/{{ bmc_root_password | quote }}/'"'"'test-dummy'"'"'/' \
     "$here/bmc-bios-chip-probe.sh.j2" > "$work/bin"
 chmod +x "$work/bin"
 
-# The stub. FIX_STATE/FIX_PNOR/FIX_MTD/FIX_SIZE/FIX_MUX/FIX_CHIP/FIX_READ_FAIL
-# describe one scenario; the stub answers each command shape the bin sends.
-# FIX_CMDLOG, when set, gets every command the bin sends appended to it, so a
-# case can assert a particular remote call was (or was not) actually made --
-# in particular, that the mux-restore command was sent (review finding:
-# Important 5 asked for this, since the previous test only asserted on the
-# bin's OWN local fabrication of a readback, never on whether the restore
-# command reached the wire).
+# The stub. FIX_STATE/FIX_PNOR/FIX_MTD/FIX_SIZE/FIX_MUX/FIX_CHIP/FIX_READ_FAIL/
+# FIX_RO describe one scenario; the stub answers each command shape the bin
+# sends. FIX_CMDLOG, when set, gets every command the bin sends appended to
+# it, so a case can assert a particular remote call was (or was not) actually
+# made -- in particular, that the mux-restore command was sent (review
+# finding: Important 5 asked for this, since the previous test only asserted
+# on the bin's OWN local fabrication of a readback, never on whether the
+# restore command reached the wire) -- and, now, which device node a read
+# pipeline actually targeted (mtd<N>ro vs mtd<N>).
 cat > "$work/stub" <<'STUB'
 #!/bin/bash
 cmd="$2"
@@ -42,6 +43,12 @@ case "$cmd" in
       [ "$FIX_PNOR" = yes ] && echo "$FIX_MTD" ;;
   *'/size'*)
       echo "$FIX_SIZE" ;;
+  *'] && echo yes'*)
+      # ro-node preference check: "[ -e /dev/mtd<N>ro ] && echo yes".
+      # FIX_RO=yes simulates a BMC image that exposes the ro twin (confirmed
+      # live on 172.17.10.101); FIX_RO=no/unset simulates one that doesn't --
+      # the bin must fall back to the plain node in that case, never fail.
+      [ "${FIX_RO:-no}" = yes ] && echo yes ;;
   *'gpio/unexport'*)
       # restore_bus: unbind + gpio value 0 + readback + unexport, all in ONE
       # remote call (Critical 1 fix -- the readback must happen before the
@@ -56,7 +63,13 @@ case "$cmd" in
           # non-numeric stdout -- never a clean byte count.
           echo "dd: read error: Input/output error"
       else
-          echo "$cmd" | sed "s#/dev/$FIX_MTD#$FIX_CHIP#" | bash
+          # Match /dev/mtd<N> with an OPTIONAL "ro" suffix as ONE token, not
+          # just the "/dev/mtd5" prefix -- a plain substring match would also
+          # hit inside "/dev/mtd5ro" and leave a stray "ro" tacked onto the
+          # fixture path. NOTE: "(ro)?" -- NOT "ro?", which only makes the
+          # trailing "o" optional and requires a literal "r", so it silently
+          # fails to match a plain (non-ro) path at all.
+          echo "$cmd" | sed -E "s#/dev/mtd[0-9]+(ro)?#$FIX_CHIP#" | bash
       fi ;;
   *)
       # take_bus's bind sequence: fire-and-forget, output discarded by the
@@ -82,14 +95,14 @@ mk_pop "$work/chip_pop"; mk_blank "$work/chip_blank"; mk_bootblank "$work/chip_b
 
 PLAUSIBLE=16777216   # MIN_SIZE in the bin -- a real, plausible pnor size.
 
-run_case() {  # $1=name $2=want-substring $3=state $4=pnor(yes/no) $5=size $6=mux $7=chip-fixture $8=read-fail(yes/no,opt) $9=cmdlog(opt)
+run_case() {  # $1=name $2=want-substring $3=state $4=pnor(yes/no) $5=size $6=mux $7=chip-fixture $8=read-fail(yes/no,opt) $9=cmdlog(opt) $10=ro(yes/no,opt)
     local name="$1" want="$2" state="$3" pnor="$4" size="$5" mux="$6" chip="$7"
-    local readfail="${8:-no}" cmdlog="${9:-}"
+    local readfail="${8:-no}" cmdlog="${9:-}" ro="${10:-no}"
     local out
     out=$(FLAX_PROBE_BLOCKS=8 FLAX_BMC_REMOTE_EXEC="$work/stub" \
           FIX_STATE="$state" FIX_PNOR="$pnor" FIX_MTD="mtd5" \
           FIX_SIZE="$size" FIX_MUX="$mux" FIX_CHIP="$chip" \
-          FIX_READ_FAIL="$readfail" FIX_CMDLOG="$cmdlog" \
+          FIX_READ_FAIL="$readfail" FIX_CMDLOG="$cmdlog" FIX_RO="$ro" \
           "$work/bin" probe 1.2.3.4 2>&1)
     if [[ "$out" == *"$want"* ]]; then
         echo "ok   - $name"; pass=$((pass+1))
@@ -191,6 +204,39 @@ dd if=/dev/zero bs=64k count=4 2>/dev/null | tr '\0' '\377' \
    | dd of="$work/chip_hole" bs=64k seek=2 conv=notrunc 2>/dev/null
 run_case "blank interior is still populated" \
     '"chip":"populated"' Off yes "$PLAUSIBLE" 0 "$work/chip_hole"
+
+# ro-node preference (coordinator resolved Minor 7 against a live BMC,
+# 172.17.10.101: /dev carries mtd<N>ro alongside mtd<N> for every MTD).
+# Prefer the ro twin -- a free never-write guarantee at the device-node
+# level -- but never require it: pnor only exists during the mux window, so
+# its ro twin can't be verified ahead of time, and a hard dependency on an
+# unconfirmed node would turn a safety nicety into an outage.
+# NOTE: the log also carries the ro-EXISTENCE-CHECK command itself
+# ("[ -e /dev/mtd5ro ] && echo yes"), which legitimately mentions "mtd5ro"
+# on BOTH paths -- checking for it is not the same as USING it. The
+# assertions below grep specifically for the "dd if=..." READ command, never
+# just for the device name anywhere in the log.
+cmdlog="$work/cmdlog_ro_present"; : > "$cmdlog"
+run_case "ro node present: reads go through mtd5ro" \
+    '"chip":"populated"' Off yes "$PLAUSIBLE" 0 "$work/chip_pop" no "$cmdlog" yes
+if grep -q 'dd if=/dev/mtd5ro ' "$cmdlog"; then
+    echo "ok   - read pipeline used the ro node when present"; pass=$((pass+1))
+else
+    echo "FAIL - read pipeline did not use the ro node when present"
+    echo "       cmdlog: $(cat "$cmdlog")"; fail=$((fail+1))
+fi
+
+cmdlog="$work/cmdlog_ro_absent"; : > "$cmdlog"
+run_case "ro node absent: falls back to mtd5 and still verdicts correctly" \
+    '"chip":"populated"' Off yes "$PLAUSIBLE" 0 "$work/chip_pop" no "$cmdlog" no
+if grep -q 'dd if=/dev/mtd5ro ' "$cmdlog"; then
+    echo "FAIL - read pipeline used a ro node that was reported absent"; fail=$((fail+1))
+elif grep -q 'dd if=/dev/mtd5 ' "$cmdlog"; then
+    echo "ok   - read pipeline fell back to the plain node when ro is absent"; pass=$((pass+1))
+else
+    echo "FAIL - read pipeline referenced neither node as expected"
+    echo "       cmdlog: $(cat "$cmdlog")"; fail=$((fail+1))
+fi
 
 # No failure path may emit a chip key (worker contract). Reuses the
 # bind_failed scenario, which is a genuine error path.

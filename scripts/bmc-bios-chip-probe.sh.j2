@@ -176,16 +176,21 @@ cmd_probe() {
         ''|*[!0-9]*) json_err bind_failed ;;
     esac
 
-    # Read-only note (review finding, minor): a /dev/mtdroN node would give a
-    # free never-write guarantee at the device-node level. This BMC image
-    # exposes only /dev/mtd$mtd_n for pnor -- no mtdro counterpart was found
-    # in this bin's siblings or in any doc in this repo, and this dev host has
-    # no BMC to confirm the /sys/class/mtd layout against. Falling back to
-    # /dev/mtd$mtd_n as instructed; the read-only guarantee here is instead
-    # that this bin only ever pipes the device through dd|tr|wc (count only,
-    # never `of=`) -- see the read step below. Revisit if a future BMC image
-    # is confirmed to expose mtdro.
+    # Read-only node preference (review finding, minor; confirmed live against
+    # 172.17.10.101 by the coordinator): this BMC image exposes /dev/mtd<N>ro
+    # alongside /dev/mtd<N> for every MTD -- a free never-write guarantee at
+    # the device-node level. Prefer it, but NEVER require it: pnor only
+    # exists during the mux window, so its ro twin cannot be verified ahead
+    # of time, and a hard dependency on an unconfirmed node would turn a
+    # safety nicety into an outage. Test for it and fall back to the plain
+    # node if it is absent -- the read-only guarantee then falls back to what
+    # it always was: this bin only ever pipes the device through dd|tr|wc
+    # (count only, never `of=`) -- see the read step below.
     dev="/dev/mtd$mtd_n"
+    ro_dev="${dev}ro"
+    if [ "$(bmc "$IP" "[ -e $ro_dev ] && echo yes" 2>/dev/null | tr -d '\r ')" = yes ]; then
+        dev="$ro_dev"
+    fi
 
     # 4. Plausible size, or we are misreading the device. UNCONDITIONAL: never
     #    gated on PROBE_BLOCKS, which only ever overrides the block count below.
