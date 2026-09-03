@@ -132,6 +132,29 @@ restore_bus() {
 # taken or was already confirmed restored; otherwise one more retry burst.
 trap 'restore_bus >/dev/null 2>&1' EXIT
 
+# Read ONE 64 KiB window with ONE dd invocation, then measure the SAME bytes
+# TWICE (raw byte count, and non-0xFF byte count) in that same remote round
+# trip, via a temp file under /tmp (tmpfs on the BMC), removed
+# UNCONDITIONALLY by a remote trap -- not a best-effort rm at the end.
+#
+# Reading the window with TWO SEPARATE dd calls (one to size-check, one to
+# compute the verdict) was tried and rejected (review finding, Critical --
+# demonstrated reachable twice): the size-checked read and the
+# verdict-computing read were then two INDEPENDENT reads of the same region,
+# so a runtime dd failure (EIO, device busy, the mux slipping between round
+# trips) in the SECOND read alone was invisible to the first read's size
+# check -- the exact original bug, one call later. Splitting the read in two
+# also doubled the mux's exposure window. One dd, two measurements, the same
+# bytes, closes both problems at once.
+read_window() {  # $1 = extra dd args, e.g. "" for the head window or "skip=$top" for the top window
+    bmc "$IP" "f=/tmp/.bcp.\$\$
+trap 'rm -f \"\$f\"' EXIT
+dd if=$dev bs=64k count=1 $1 2>/dev/null > \"\$f\"
+raw=\$(wc -c < \"\$f\" 2>/dev/null)
+nff=\$(tr -d '\\377' < \"\$f\" 2>/dev/null | wc -c)
+printf '%s %s' \"\$raw\" \"\$nff\"" 2>/dev/null | tr -d '\r'
+}
+
 cmd_probe() {
     IP="$1"
 
@@ -202,35 +225,29 @@ cmd_probe() {
     [ "$blocks" -gt 0 ] || blocks=$((size / 65536))
     top=$((blocks - 1))
 
-    # 5. Two 64 KiB windows. For each, read BOTH the RAW byte count and the
-    #    non-0xFF byte count, and require the raw count to be exactly 65536.
+    # 5. Two 64 KiB windows, each via ONE dd read measured twice (see
+    #    read_window above -- one dd, two measurements, the same bytes).
     #    NEVER sample the middle: a HEALTHY image has 12 MiB of all-0xFF
     #    interior (spec 2.5), so an interior window reads blank on a good chip.
     #
-    #    A failed read (ssh drop mid-run, EIO, device busy, an ro node that
-    #    exists but will not read) must NEVER be coerced to a byte count.
-    #    Two routes to that coercion, both closed here:
-    #      - a non-numeric/empty result (the wire itself broke) -> read_failed
-    #      - a SHORT or ZERO-length raw read: dd failing at runtime discards
-    #        stderr and simply produces an empty or truncated pipe, and
-    #        wc -c reports that as a perfectly numeric "0" or short count --
-    #        which sails through the non-numeric check above and would still
-    #        read as "blank", the verdict that authorises writing a BIOS
-    #        image (review finding, Important -- Critical 2 by a second
-    #        route). A short read is a failed read, not a blank chip: the
-    #        raw count is checked BEFORE the non-0xFF count is trusted at all.
-    #    Same principle as bmc-backup-flash.sh.j2's cmd_version distinguishing
-    #    read_failed from a value rather than guessing one.
-    head_raw=$(bmc "$IP" "dd if=$dev bs=64k count=1 2>/dev/null | wc -c" 2>/dev/null | tr -d '\r ')
+    #    The raw count gates the verdict: anything other than exactly 65536
+    #    (short, zero, or non-numeric -- ssh drop, EIO, device busy, a stale
+    #    ro node) is read_failed, checked BEFORE the non-0xFF count from that
+    #    SAME read is trusted at all. A short read is a failed read, not a
+    #    blank chip. Same principle as bmc-backup-flash.sh.j2's cmd_version
+    #    distinguishing read_failed from a value rather than guessing one.
+    result=$(read_window "")
+    head_raw=${result%% *}
+    head_n=${result#* }
     case "$head_raw" in ''|*[!0-9]*) json_err read_failed ;; esac
     [ "$head_raw" -eq 65536 ] || json_err read_failed
-    head_n=$(bmc "$IP" "dd if=$dev bs=64k count=1 2>/dev/null | tr -d '\377' | wc -c" 2>/dev/null | tr -d '\r ')
     case "$head_n" in ''|*[!0-9]*) json_err read_failed ;; esac
 
-    top_raw=$(bmc "$IP" "dd if=$dev bs=64k skip=$top count=1 2>/dev/null | wc -c" 2>/dev/null | tr -d '\r ')
+    result=$(read_window "skip=$top")
+    top_raw=${result%% *}
+    top_n=${result#* }
     case "$top_raw" in ''|*[!0-9]*) json_err read_failed ;; esac
     [ "$top_raw" -eq 65536 ] || json_err read_failed
-    top_n=$(bmc "$IP" "dd if=$dev bs=64k skip=$top count=1 2>/dev/null | tr -d '\377' | wc -c" 2>/dev/null | tr -d '\r ')
     case "$top_n" in ''|*[!0-9]*) json_err read_failed ;; esac
 
     # 6. Release the bus and PROVE it went back, before reporting anything.

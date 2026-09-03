@@ -11,6 +11,13 @@
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
+# A directory that is NEVER created. Used to sandbox the one place a test
+# runs a REAL remote script body (FIX_MUX_REAL below): every /sys path in
+# that script is rewritten under this root before execution, so the test
+# never touches whatever /sys/class/gpio genuinely contains on the host
+# running the suite -- it does not rely on this dev host merely happening
+# not to export the pin (review finding, minor).
+export FIX_SYSROOT="$work/fakesys"
 pass=0; fail=0
 
 # Render the Jinja template with a dummy credential -- never a real one.
@@ -31,16 +38,29 @@ chmod +x "$work/bin"
 # restore command reached the wire) -- and, now, which device node a read
 # pipeline actually targeted (mtd<N>ro vs mtd<N>).
 #
-# FIX_MUX_REAL=yes is the one exception to "answer, don't execute": it makes
-# the gpio/unexport case run the REAL remote restore_bus body (the same way
-# the dd|tr|wc read pipeline already runs for real against a fixture), so
-# that command's own internal branching gets exercised, not just simulated
-# via FIX_MUX (review finding, minor -- a mutant that reverted the remote
+# FIX_MUX_REAL=yes is one exception to "answer, don't execute": it makes the
+# gpio/unexport case run the REAL remote restore_bus body (the same way the
+# dd|tr|wc read pipeline already runs for real against a fixture), so that
+# command's own internal branching gets exercised, not just simulated via
+# FIX_MUX (review finding, minor -- a mutant that reverted the remote
 # script's "else echo absent" back to "else echo 0" was undetected by any
-# test, because every test answers FIX_MUX directly). On THIS dev host,
-# /sys/class/gpio does not exist at all, so the real script's own "absent"
-# branch fires deterministically and safely (verified separately: no writes
-# are attempted, nothing errors beyond what is already redirected away).
+# test, because every test answers FIX_MUX directly). Every /sys path in the
+# script is rewritten under $FIX_SYSROOT (a directory that is never created)
+# before it runs, so this is sandboxed -- not dependent on this dev host
+# happening not to export the pin -- and the real "absent" branch fires
+# deterministically because that rewritten path can never exist.
+#
+# FIX_HEAD_SHORT=yes / FIX_TOP_SHORT=yes are the other exception: each
+# splices `| head -c 32768` into the REAL remote read_window script for ONLY
+# the targeted window (identified by the presence or absence of "skip=" in
+# the command -- exactly how the bin itself distinguishes the two calls),
+# truncating that window's materialized read to less than 65536 bytes while
+# the OTHER window reads the SAME real fixture normally. This proves each
+# window's raw-count gate independently: a uniformly short/empty fixture
+# (chip_short/chip_zero below) would be caught by EITHER gate, masking a
+# mutant in one of them alone (review finding, Important -- reverting only
+# head_raw's check, or only top_raw's, both passed 27/27 against the old
+# fixtures).
 cat > "$work/stub" <<'STUB'
 #!/bin/bash
 cmd="$2"
@@ -68,14 +88,24 @@ case "$cmd" in
       # cannot be trusted -- the fixed bin must treat that as mux_stuck,
       # never silently as PCH (the exact bug being regression-guarded here).
       if [ "${FIX_MUX_REAL:-no}" = yes ]; then
-          echo "$cmd" | bash
+          # Sandboxed (see FIX_SYSROOT above): rewrite the real script's
+          # absolute /sys paths under a directory that is never created,
+          # before executing it for real.
+          sandboxed=$(echo "$cmd" | sed \
+              -e "s#/sys/class/gpio#${FIX_SYSROOT:-/nonexistent}/class/gpio#g" \
+              -e "s#/sys/bus/platform/drivers/spi-aspeed-smc#${FIX_SYSROOT:-/nonexistent}/bus/spi-aspeed-smc#g")
+          echo "$sandboxed" | bash
       else
           echo "$FIX_MUX"
       fi ;;
   *'dd if=/dev/'*)
+      # read_window: ONE dd per window, its output measured twice (raw byte
+      # count, non-0xFF byte count) over a temp file, all in the SAME remote
+      # round trip -- see the bin's read_window() for why two SEPARATE dd
+      # calls (one checked, one not) was the bug this replaced.
       if [ "${FIX_READ_FAIL:-no}" = yes ]; then
-          # A real ssh drop or EIO mid-pipeline lands here as unreadable,
-          # non-numeric stdout -- never a clean byte count.
+          # A real ssh drop or a wholly broken response lands here as
+          # unreadable, non-numeric stdout -- never a clean byte count.
           echo "dd: read error: Input/output error"
       else
           # Match /dev/mtd<N> with an OPTIONAL "ro" suffix as ONE token, not
@@ -84,7 +114,24 @@ case "$cmd" in
           # fixture path. NOTE: "(ro)?" -- NOT "ro?", which only makes the
           # trailing "o" optional and requires a literal "r", so it silently
           # fails to match a plain (non-ro) path at all.
-          echo "$cmd" | sed -E "s#/dev/mtd[0-9]+(ro)?#$FIX_CHIP#" | bash
+          rewritten=$(echo "$cmd" | sed -E "s#/dev/mtd[0-9]+(ro)?#$FIX_CHIP#")
+          # FIX_HEAD_SHORT / FIX_TOP_SHORT: truncate ONLY the targeted
+          # window's materialized read to 32768 bytes -- via `head -c`
+          # spliced ahead of the real script's own "> \$f" redirect, so the
+          # REAL dd/trap/wc/tr still run, just against a deliberately short
+          # write. "skip=" in the command is exactly how the bin's own
+          # read_window() distinguishes the top window from the head window.
+          case "$cmd" in
+              *'skip='*)
+                  if [ "${FIX_TOP_SHORT:-no}" = yes ]; then
+                      rewritten=$(echo "$rewritten" | sed 's#> "$f"#| head -c 32768 > "$f"#')
+                  fi ;;
+              *)
+                  if [ "${FIX_HEAD_SHORT:-no}" = yes ]; then
+                      rewritten=$(echo "$rewritten" | sed 's#> "$f"#| head -c 32768 > "$f"#')
+                  fi ;;
+          esac
+          echo "$rewritten" | bash
       fi ;;
   *)
       # take_bus's bind sequence: fire-and-forget, output discarded by the
@@ -219,6 +266,36 @@ if [[ "$out" == *'"chip":"blank"'* ]]; then
     echo "FAIL - a zero-byte read must never be reported as a blank verdict"; fail=$((fail+1))
 else
     echo "ok   - a zero-byte read is not silently reported as blank"; pass=$((pass+1))
+fi
+
+# IMPORTANT (3rd round review): the two fixtures above are short/empty for
+# BOTH windows, so whichever raw-count gate (head's or top's) survives a
+# mutation still catches them -- reverting EITHER check alone still passed
+# 27/27. These two use FIX_HEAD_SHORT / FIX_TOP_SHORT to truncate ONLY one
+# window's real, materialized read while the other window reads the SAME
+# real, full fixture (chip_pop) normally -- so each gate is exercised in
+# isolation, and reverting either check alone must be caught by exactly one
+# of the two cases below (verified by mutation -- see the report).
+out=$(FLAX_PROBE_BLOCKS=8 FLAX_BMC_REMOTE_EXEC="$work/stub" \
+      FIX_STATE=Off FIX_PNOR=yes FIX_MTD="mtd5" FIX_SIZE="$PLAUSIBLE" \
+      FIX_MUX=0 FIX_CHIP="$work/chip_pop" FIX_HEAD_SHORT=yes \
+      "$work/bin" probe 1.2.3.4 2>&1)
+if [[ "$out" == *'"error":"read_failed"'* ]]; then
+    echo "ok   - head window short (top window full) reports read_failed"; pass=$((pass+1))
+else
+    echo "FAIL - head window short (top window full) should report read_failed"
+    echo "       got: $out"; fail=$((fail+1))
+fi
+
+out=$(FLAX_PROBE_BLOCKS=8 FLAX_BMC_REMOTE_EXEC="$work/stub" \
+      FIX_STATE=Off FIX_PNOR=yes FIX_MTD="mtd5" FIX_SIZE="$PLAUSIBLE" \
+      FIX_MUX=0 FIX_CHIP="$work/chip_pop" FIX_TOP_SHORT=yes \
+      "$work/bin" probe 1.2.3.4 2>&1)
+if [[ "$out" == *'"error":"read_failed"'* ]]; then
+    echo "ok   - top window short (head window full) reports read_failed"; pass=$((pass+1))
+else
+    echo "FAIL - top window short (head window full) should report read_failed"
+    echo "       got: $out"; fail=$((fail+1))
 fi
 
 run_case "mux stuck at BMC is mux_stuck" \
