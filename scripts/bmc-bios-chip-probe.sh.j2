@@ -1,0 +1,164 @@
+#!/bin/bash
+# bmc-bios-chip-probe -- is the HOST BIOS SPI chip (pnor) blank?
+#
+# RENDERED FROM THE SITE VAULT by roles/apply_bmc_scripts. The password below
+# is the BMC ROOT SHELL credential, NOT the credentials-bmc.json Redfish
+# entry. RULE ZERO: never echo it. sshpass -e keeps it out of argv and ps.
+#
+# The host BIOS flash is spi1.0 ("pnor") on 1e630000.spi, MUXED between the
+# BMC and the PCH by GPIO N5 (BIOS_SPI_BMC_CTRL). At rest the mux is at PCH,
+# the JEDEC probe reads all-zeros, and spi-nor does not bind -- so there is no
+# pnor MTD to read. The sequence below is taken verbatim from the BMC's own
+# /usr/sbin/bios-update; the only difference is that this reads and never
+# writes.
+#
+# WHY THE MUX MATTERS MORE THAN THE READ: leaving the mux at BMC makes the
+# host unbootable. The EXIT trap returns it on every path, and success is not
+# reported until the GPIO reads back at PCH.
+#
+#   probe <bmc-ip>  -> {"chip":"populated"|"blank"|"bootblock_blank"}
+#
+# Errors as {"error":"<code>"}: ssh_unreachable, host_not_off, bind_failed,
+# chip_absent, mux_stuck.
+#
+# CONTRACT with bmcfw.worker: no failure path may emit a "chip" key --
+# bios_chip.state_from takes the FIRST record carrying one.
+set -u
+
+# I7: NO surrounding quotes -- ansible's `quote` filter emits its own, correctly,
+# for any value. Hand-wrapping in single quotes breaks (or worse: runs shell)
+# the moment a vaulted password contains a single quote of its own. RULE ZERO
+# holds either way: the rendered value is never echoed.
+export SSHPASS={{ bmc_root_password | quote }}
+SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10"
+
+# 32 MiB / 64 KiB = 512 blocks. Overridable ONLY so the test suite can use a
+# small fixture; production always computes it from the registered MTD size.
+# This NEVER substitutes for the size-plausibility check below -- it only
+# changes how many 64 KiB blocks are addressed once a plausible chip is found.
+PROBE_BLOCKS="${FLAX_PROBE_BLOCKS:-0}"
+
+# Plausible pnor sizes: 16 MiB .. 128 MiB. Anything else means we are not
+# reading the device we think we are -- report chip_absent, never a verdict.
+# This check runs UNCONDITIONALLY: PROBE_BLOCKS overrides only the block
+# count used for reading, never whether the size looks like a real chip.
+MIN_SIZE=16777216
+MAX_SIZE=134217728
+
+# Remote executor. FLAX_BMC_REMOTE_EXEC lets the test suite point this at a
+# stub that runs the same pipeline against fixture files instead of a real BMC;
+# production always leaves it unset and goes over ssh. Same shape as
+# bmc-backup-flash.sh.j2's FLAX_BMC_REMOTE_EXEC hook.
+bmc() {
+    if [ -n "${FLAX_BMC_REMOTE_EXEC:-}" ]; then
+        "$FLAX_BMC_REMOTE_EXEC" "$1" "$2"
+        return $?
+    fi
+    sshpass -e ssh -n -T $SSH_OPTS "root@$1" "$2"
+}
+
+json_err() { printf '{"error":"%s"}\n' "$1"; exit 1; }
+
+IP=""
+_cleanup_done=0
+cleanup() {
+    [ "$_cleanup_done" = 1 ] && return
+    _cleanup_done=1
+    [ -n "$IP" ] || return
+    bmc "$IP" '
+        SPI=/sys/bus/platform/drivers/spi-aspeed-smc
+        [ -e "$SPI/1e630000.spi" ] && echo -n 1e630000.spi > "$SPI/unbind" 2>/dev/null
+        B=$(sort -n /sys/class/gpio/gpiochip*/base 2>/dev/null | head -n 1)
+        G=$((B + 109))
+        if [ -d /sys/class/gpio/gpio$G ]; then
+            echo 0  > /sys/class/gpio/gpio$G/value     2>/dev/null
+            echo in > /sys/class/gpio/gpio$G/direction 2>/dev/null
+            echo $G > /sys/class/gpio/unexport         2>/dev/null
+        fi
+    ' >/dev/null 2>&1
+}
+trap cleanup EXIT
+
+cmd_probe() {
+    IP="$1"
+
+    # 1. The host MUST be off. Belt and braces: the worker checks this too,
+    #    but the bin must never assume its caller got it right.
+    state=$(bmc "$IP" 'obmcutil state 2>/dev/null | sed -n "s/.*CurrentPowerState *: *//p"' 2>/dev/null)
+    [ -n "$state" ] || json_err ssh_unreachable
+    case "$state" in
+        *Off*) ;;
+        *) json_err host_not_off ;;
+    esac
+
+    # 2. Take the bus: mux to BMC, then unbind/rebind so JEDEC re-probes.
+    bmc "$IP" '
+        B=$(sort -n /sys/class/gpio/gpiochip*/base 2>/dev/null | head -n 1)
+        G=$((B + 109))
+        [ -d /sys/class/gpio/gpio$G ] || echo $G > /sys/class/gpio/export
+        echo out > /sys/class/gpio/gpio$G/direction
+        echo 1   > /sys/class/gpio/gpio$G/value
+        sleep 1
+        SPI=/sys/bus/platform/drivers/spi-aspeed-smc
+        [ -e "$SPI/1e630000.spi" ] && { echo -n 1e630000.spi > "$SPI/unbind"; sleep 1; }
+        echo -n 1e630000.spi > "$SPI/bind"
+        sleep 2
+    ' >/dev/null 2>&1
+
+    # 3. Find the pnor MTD. Its mere registration is the CANARY: it proves
+    #    JEDEC answered, which proves the mux switched. At PCH nothing binds,
+    #    so "no pnor" and "blank chip" stay structurally distinguishable.
+    mtd=""
+    i=1
+    while [ "$i" -le 5 ]; do
+        mtd=$(bmc "$IP" 'for f in /sys/class/mtd/mtd*/name; do
+                  [ "$(cat "$f" 2>/dev/null)" = pnor ] && basename "$(dirname "$f")" && break
+              done' 2>/dev/null | tr -d '\r')
+        [ -n "$mtd" ] && break
+        sleep 2
+        i=$((i + 1))
+    done
+    [ -n "$mtd" ] || json_err bind_failed
+
+    # 4. Plausible size, or we are misreading the device. UNCONDITIONAL: never
+    #    gated on PROBE_BLOCKS, which only ever overrides the block count below.
+    size=$(bmc "$IP" "cat /sys/class/mtd/$mtd/size 2>/dev/null" 2>/dev/null | tr -d '\r ')
+    case "$size" in ''|*[!0-9]*) json_err chip_absent ;; esac
+    [ "$size" -ge "$MIN_SIZE" ] && [ "$size" -le "$MAX_SIZE" ] || json_err chip_absent
+
+    blocks="$PROBE_BLOCKS"
+    [ "$blocks" -gt 0 ] || blocks=$((size / 65536))
+    top=$((blocks - 1))
+
+    # 5. Two 64 KiB windows. Only a byte count crosses the wire. NEVER sample
+    #    the middle: a HEALTHY image has 12 MiB of all-0xFF interior
+    #    (spec 2.5), so an interior window reads blank on a good chip.
+    head_n=$(bmc "$IP" "dd if=/dev/$mtd bs=64k count=1 2>/dev/null | tr -d '\377' | wc -c" 2>/dev/null | tr -d '\r ')
+    top_n=$(bmc "$IP" "dd if=/dev/$mtd bs=64k skip=$top count=1 2>/dev/null | tr -d '\377' | wc -c" 2>/dev/null | tr -d '\r ')
+    case "$head_n" in ''|*[!0-9]*) head_n=0 ;; esac
+    case "$top_n"  in ''|*[!0-9]*) top_n=0  ;; esac
+
+    # 6. Release the bus and PROVE it went back, before reporting anything.
+    cleanup
+    mux=$(bmc "$IP" '
+        B=$(sort -n /sys/class/gpio/gpiochip*/base 2>/dev/null | head -n 1)
+        G=$((B + 109))
+        if [ -d /sys/class/gpio/gpio$G ]; then cat /sys/class/gpio/gpio$G/value; else echo 0; fi
+    ' 2>/dev/null | tr -d '\r ')
+    [ "$mux" = 0 ] || json_err mux_stuck
+
+    # 7. Verdict. The top block is the x86 reset vector: erased means the host
+    #    cannot boot, whatever else the chip holds.
+    if [ "$top_n" -gt 0 ]; then
+        printf '{"chip":"populated"}\n'
+    elif [ "$head_n" -gt 0 ]; then
+        printf '{"chip":"bootblock_blank"}\n'
+    else
+        printf '{"chip":"blank"}\n'
+    fi
+}
+
+case "${1:-}" in
+    probe) [ $# -eq 2 ] || { echo "usage: bmc-bios-chip-probe probe <bmc-ip>" >&2; exit 2; }; cmd_probe "$2" ;;
+    *) echo "usage: bmc-bios-chip-probe probe <bmc-ip>" >&2; exit 2 ;;
+esac
