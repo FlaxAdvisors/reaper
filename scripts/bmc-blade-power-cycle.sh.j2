@@ -1,0 +1,199 @@
+#!/bin/bash
+# bmc-blade-power-cycle -- remote 12V power cycle of a sled's hot-swap
+# controller, to recover a node whose BMC accepts a power-on request but the
+# host never asserts power-good after a BIOS flash. Guide 8.5's remedy is a
+# full AC-cycle of the chassis (someone walks to the rack); this is the
+# remote equivalent, for the one path where the fallback is already
+# "send a human".
+#
+# RENDERED FROM THE SITE VAULT by roles/apply_bmc_scripts. The password below
+# is the BMC ROOT SHELL credential, NOT the credentials-bmc.json Redfish
+# entry -- Redfish creds fail for ssh. RULE ZERO: never echo it. sshpass -e
+# keeps it out of argv and out of ps.
+#
+# Design: docs/superpowers/specs/2026-09-03-blade-power-cycle-design.md
+#
+# THE DEVICE (measured 2026-09-03). /sys/bus/i2c/devices/7-0045 is an
+# ADM1275 hot-swap controller, adm1275 driver BOUND, gating 12V to the sled.
+# The BMC itself runs off the sled's standby rail through the SAME FET, so a
+# successful write takes the issuing ssh session down with it --
+# THERE IS NO CLEAN RETURN ON A SUCCESSFUL WRITE; a clean return means the
+# write did NOT do what we expect. `i2cset -f -y 7 0x45 0xd9 c` power-cycles
+# the output. `-f` is required BECAUSE the adm1275 driver owns the address;
+# without it the write is refused -- this is unavoidable, not an oversight
+# (design D5). Register 0xd9's datasheet meaning is NOT confirmed (it is in
+# the ADI manufacturer-specific block): behaviour over five runs is the
+# entire basis for trusting it (design S2, S8 open question 1).
+#
+#   cycle <bmc-ip>  -> {"cycled":true,"down_s":<n>,"up_s":<n>}
+#
+# Errors as {"error":"<code>"}: bmc_unreachable, thermtrip_latched,
+# thermtrip_unknown, no_effect, never_returned, identity_changed,
+# bmc_degraded.
+#
+# CONTRACT with biosfw.machine: no failure path may emit a "cycled" key -- a
+# caller takes the FIRST record carrying one, exactly as the rule
+# bmc-bios-chip-probe and bmc-backup-flash already follow.
+#
+# ONE ATTEMPT, EVER, PER CALL. This bin never retries the write internally --
+# a sled that does not return from one cycle will not return from three, and
+# each attempt is a hard 12V cut (design S6). The caller (biosfw) is what
+# enforces "never retried across calls, ever, per flash"; this bin's half of
+# that contract is simply that it never loops the write itself.
+set -u
+
+# I7: NO surrounding quotes -- ansible's `quote` filter emits its own,
+# correctly, for any value. Hand-wrapping in single quotes breaks (or worse:
+# runs shell) the moment a vaulted password contains a single quote of its
+# own. RULE ZERO holds either way: the rendered value is never echoed.
+export SSHPASS={{ bmc_root_password | quote }}
+# ServerAlive*, UNLIKE the siblings: this bin's own write is EXPECTED to kill
+# the session mid-command (the BMC's standby rail is the same FET being
+# cycled), so noticing a dead connection promptly matters here in a way it
+# never does for a probe or a flash. Bounds a hung ssh call to a few seconds
+# instead of whatever the kernel's own TCP timeout would otherwise be.
+SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10 -o ServerAliveInterval=2 -o ServerAliveCountMax=1"
+
+# D4: 300s, drawn from the measured WORST case of four nodes cycled together
+# (110-200s; the last two returned at ~200s) plus margin -- deliberately NOT
+# the 20s single-node figure. A timeout written against 20s faults nodes
+# that are booting normally (design S2, D4).
+BLADE_CYCLE_TIMEOUT="${BLADE_CYCLE_TIMEOUT:-300}"
+# How long to wait for the BMC to go DOWN before concluding the write did not
+# take (S4.1 step 4). Independent of BLADE_CYCLE_TIMEOUT: this bounds "did
+# anything happen at all", not the recovery itself -- a write that did
+# nothing must not cost the caller a 300s wait for a reboot that was never
+# coming.
+DOWN_WAIT="${FLAX_DOWN_WAIT:-30}"
+# Polling interval for both waits. Overridable so the test suite never
+# spends real wall-clock time anywhere near the 30s/300s caps.
+POLL_INTERVAL="${FLAX_POLL_INTERVAL:-2}"
+
+# Remote executor. FLAX_BMC_REMOTE_EXEC lets the test suite point this at a
+# stub that answers each command shape against fixture state instead of a
+# real BMC; production always leaves it unset and goes over ssh. Same shape
+# as bmc-bios-chip-probe.sh.j2 / bmc-backup-flash.sh.j2's identical hook.
+bmc() {
+    if [ -n "${FLAX_BMC_REMOTE_EXEC:-}" ]; then
+        "$FLAX_BMC_REMOTE_EXEC" "$1" "$2"
+        return $?
+    fi
+    sshpass -e ssh -n -T $SSH_OPTS "root@$1" "$2"
+}
+
+json_err() { printf '{"error":"%s"}\n' "$1"; exit 1; }
+
+# ONE round trip returns BOTH halves of identity: the BMC's mgmt MAC (stable
+# across a reboot) and its /etc/os-release VERSION_ID (build identity). A
+# blank MAC means the round trip failed outright. Reused for THREE things: the
+# S4.1 step-1 preflight ("does the BMC answer right now"), the step-2
+# baseline, and the step-5-tail post-return comparison -- one command shape
+# to fixture in tests, not three.
+identity() {
+    bmc "$1" 'printf "MAC=%s\n" "$(cat /sys/class/net/eth0/address 2>/dev/null)"
+printf "OS=%s\n" "$(sed -n "s/^VERSION_ID=//p" /etc/os-release 2>/dev/null)"' 2>/dev/null | tr -d '\r"\\'
+}
+
+# Cheap liveness probe reused by BOTH the down-wait and the up-wait, so (as
+# with identity() above) the fixture stub only ever has to answer ONE command
+# shape for "is the BMC there right now" -- not a ping variant and a separate
+# ssh variant. A BMC that cannot even echo a literal string back is not up in
+# any sense this bin cares about.
+alive() {
+    [ -n "$(bmc "$1" 'echo alive' 2>/dev/null | tr -d '\r')" ]
+}
+
+now_s() { date +%s; }
+
+wait_down() {  # $1 = ip; 0 once the BMC stops answering, 1 on the DOWN_WAIT cap
+    local ip="$1" deadline=$(( $(now_s) + DOWN_WAIT ))
+    while :; do
+        alive "$ip" || return 0
+        [ "$(now_s)" -lt "$deadline" ] || return 1
+        sleep "$POLL_INTERVAL"
+    done
+}
+
+wait_up() {  # $1 = ip; 0 once the BMC answers again, 1 on the BLADE_CYCLE_TIMEOUT cap
+    local ip="$1" deadline=$(( $(now_s) + BLADE_CYCLE_TIMEOUT ))
+    while :; do
+        alive "$ip" && return 0
+        [ "$(now_s)" -lt "$deadline" ] || return 1
+        sleep "$POLL_INTERVAL"
+    done
+}
+
+cmd_cycle() {
+    IP="$1"
+    t0=$(now_s)
+
+    # 1+2. Preflight, and the identity baseline, in ONE round trip (S4.1
+    # steps 1-2). Cycling a sled we cannot reach converts an unknown state
+    # into a LONGER unknown state, and the postflight check would have no
+    # baseline to compare against either way.
+    base=$(identity "$IP")
+    mac0=$(printf '%s\n' "$base" | sed -n 's/^MAC=//p')
+    os0=$(printf '%s\n' "$base"  | sed -n 's/^OS=//p')
+    [ -n "$mac0" ] || json_err bmc_unreachable
+
+    # 3. THE THERMTRIP GUARD (design S6). Read BEFORE the write, always, no
+    # bypass -- this is the one guard the live investigation produced that
+    # was not obvious beforehand. A `lo` reading on EITHER CPU means the node
+    # is thermally tripped: cycling it clears the latch, the node powers on,
+    # and the CPU trips again ~25s later (design S2.2) -- that node wants a
+    # heatsink and a human, not a power cycle. `/sys/kernel/debug/gpio` lines
+    # read "gpio-NNN (LABEL...) dir val"; the value is the last
+    # whitespace-separated field.
+    gpio=$(bmc "$IP" 'cat /sys/kernel/debug/gpio 2>/dev/null' 2>/dev/null | tr -d '\r')
+    c0=$(printf '%s\n' "$gpio" | grep -E 'CPU0_THERMTRIP_LATCH\b' | sed 's/.* //' | head -n 1)
+    c1=$(printf '%s\n' "$gpio" | grep -E 'CPU1_THERMTRIP_LATCH\b' | sed 's/.* //' | head -n 1)
+    case "$c0" in lo) json_err thermtrip_latched ;; esac
+    case "$c1" in lo) json_err thermtrip_latched ;; esac
+    # FAIL CLOSED on anything that is not a confirmed "hi" either: an
+    # unreadable, truncated, or missing gpio line is not proof the node is
+    # SAFE, and this guard exists precisely so a node that cannot be vouched
+    # for is never cycled -- "not lo" must never be waved through as "hi".
+    case "$c0" in hi) ;; *) json_err thermtrip_unknown ;; esac
+    case "$c1" in hi) ;; *) json_err thermtrip_unknown ;; esac
+
+    # 4. Issue the write. FIRE AND FORGET: the session dying mid-command IS
+    # the expected outcome on success (S2 -- the BMC runs on the same
+    # standby rail this FET gates), so neither bmc()'s exit code nor its
+    # output is ever inspected here. A CLEAN RETURN IS NOT SUCCESS; see
+    # wait_down immediately below, which is what actually decides that.
+    bmc "$IP" 'i2cset -f -y 7 0x45 0xd9 c' >/dev/null 2>&1 || :
+
+    # 5. Wait for DOWN, capped at DOWN_WAIT. If the BMC never stops
+    # answering, the write did not do what we expect -- report it now and do
+    # NOT go on to wait BLADE_CYCLE_TIMEOUT for a reboot that was never
+    # coming.
+    wait_down "$IP" || json_err no_effect
+    down_s=$(( $(now_s) - t0 ))
+
+    # 6. Wait for RETURN, capped at BLADE_CYCLE_TIMEOUT (D4).
+    wait_up "$IP" || json_err never_returned
+    up_s=$(( $(now_s) - t0 ))
+
+    # ...then confirm the SAME machine answered -- a sled that returns as a
+    # DIFFERENT machine means the write did something other than what we
+    # think, and that is worse than not knowing.
+    post=$(identity "$IP")
+    mac1=$(printf '%s\n' "$post" | sed -n 's/^MAC=//p')
+    os1=$(printf '%s\n' "$post"  | sed -n 's/^OS=//p')
+    if [ "$mac1" != "$mac0" ] || [ "$os1" != "$os0" ]; then
+        json_err identity_changed
+    fi
+
+    # 7. Verify power control. A read that fails here means the BMC answers
+    # (identity matched) but is not yet serving power-state queries -- up,
+    # but degraded.
+    state=$(bmc "$IP" 'obmcutil state 2>/dev/null | sed -n "s/.*CurrentPowerState *: *//p"' 2>/dev/null | tr -d '\r')
+    [ -n "$state" ] || json_err bmc_degraded
+
+    printf '{"cycled":true,"down_s":%s,"up_s":%s}\n' "$down_s" "$up_s"
+}
+
+case "${1:-}" in
+    cycle) [ $# -eq 2 ] || { echo "usage: bmc-blade-power-cycle cycle <bmc-ip>" >&2; exit 2; }; cmd_cycle "$2" ;;
+    *) echo "usage: bmc-blade-power-cycle cycle <bmc-ip>" >&2; exit 2 ;;
+esac
