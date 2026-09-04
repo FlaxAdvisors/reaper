@@ -194,8 +194,23 @@ cmd_cycle() {
     # read "gpio-NNN (LABEL...) dir val"; the value is the last
     # whitespace-separated field.
     gpio=$(bmc "$IP" 'cat /sys/kernel/debug/gpio 2>/dev/null' 2>/dev/null | tr -d '\r')
-    c0=$(printf '%s\n' "$gpio" | grep -E 'CPU0_THERMTRIP_LATCH\b' | sed 's/.* //' | head -n 1)
-    c1=$(printf '%s\n' "$gpio" | grep -E 'CPU1_THERMTRIP_LATCH\b' | sed 's/.* //' | head -n 1)
+    # EXTRACT POSITIONALLY, after the direction field -- NOT by last field.
+    # Live et23b4/et23b3 output (2026-09-04), verbatim:
+    #   gpio-612 (CPU0_THERMTRIP_LATCH|host-error-monitor  ) in  hi IRQ ACTIVE LOW
+    #   gpio-613 (CPU1_THERMTRIP_LATCH|host-error-monitor  ) in  lo IRQ ACTIVE LOW
+    # The label carries a "|consumer" suffix and internal padding, "in"/"out"
+    # is followed by variable spacing, and the value is trailed by IRQ/ACTIVE
+    # flags -- so "the value is the last whitespace-separated field" (the
+    # first version of this line) is FALSE on real hardware: it extracted
+    # "LOW", which is neither hi nor lo, so the fail-closed branch fired on
+    # every node and the feature never fired at all (first live run,
+    # et23b4). Anchored on the LAST ")" then the direction field instead --
+    # verified against both lines above. A line that does not match this
+    # shape at all passes through unsubstituted, which still is not "hi",
+    # so the fail-closed guard below still holds for a truly unrecognised
+    # format.
+    c0=$(printf '%s\n' "$gpio" | grep -E 'CPU0_THERMTRIP_LATCH\b' | sed -E 's/.*\) +(in|out) +(lo|hi).*/\2/' | head -n 1)
+    c1=$(printf '%s\n' "$gpio" | grep -E 'CPU1_THERMTRIP_LATCH\b' | sed -E 's/.*\) +(in|out) +(lo|hi).*/\2/' | head -n 1)
     case "$c0" in lo) json_err thermtrip_latched ;; esac
     case "$c1" in lo) json_err thermtrip_latched ;; esac
     # FAIL CLOSED on anything that is not a confirmed "hi" either: an

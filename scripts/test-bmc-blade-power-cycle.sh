@@ -85,9 +85,18 @@ case "$cmd" in
       # some other token), which is the other way this guard must fail
       # closed.
       if [ "${FIX_GPIO_EMPTY:-no}" != yes ]; then
-          printf 'gpio-621 (BIOS_SPI_BMC_CTRL           ) out hi\n'
-          printf 'gpio-622 (CPU0_THERMTRIP_LATCH         ) in  %s\n' "${FIX_THERM0:-hi}"
-          printf 'gpio-623 (CPU1_THERMTRIP_LATCH         ) in  %s\n' "${FIX_THERM1:-hi}"
+          # VERBATIM real-hardware shape (et23b4/et23b3, captured
+          # 2026-09-04) -- this is the DEFAULT fixture for every thermtrip
+          # case below, not a special one: a wrong parser must not be able
+          # to pass by testing against a tidied-up line. The label carries
+          # a "|consumer" suffix and internal padding, "in" is followed by
+          # TWO spaces, and the value is trailed by IRQ/ACTIVE flags -- all
+          # three are exactly what broke the first "last field" parser on
+          # real hardware (it extracted "LOW", not "hi"/"lo", and failed
+          # closed on every node).
+          printf ' gpio-611 (BIOS_SPI_BMC_CTRL|some-other-consumer  ) out hi IRQ ACTIVE LOW\n'
+          printf ' gpio-612 (CPU0_THERMTRIP_LATCH|host-error-monitor  ) in  %s IRQ ACTIVE LOW\n' "${FIX_THERM0:-hi}"
+          printf ' gpio-613 (CPU1_THERMTRIP_LATCH|host-error-monitor  ) in  %s IRQ ACTIVE LOW\n' "${FIX_THERM1:-hi}"
       fi ;;
   *'i2cset'*)
       : ;;  # fire-and-forget write; nothing to answer, exit code discarded
@@ -281,6 +290,45 @@ if grep -q 'i2cset' "$cmdlog"; then
     echo "FAIL - a write was sent with CPU1's latch unreadable"; fail=$((fail+1))
 else
     echo "ok   - no write sent with CPU1's latch unreadable"; pass=$((pass+1))
+fi
+
+# ------------------------------------------ the thermtrip PARSE itself -----
+#
+# THIS is the test that would have caught the real-hardware bug (first live
+# run against et23b4, 2026-09-04): "the value is the last whitespace-
+# separated field" is FALSE on real hardware -- the label carries a
+# "|consumer" suffix and padding, "in"/"out" is followed by variable
+# spacing, and the value is trailed by IRQ/ACTIVE flags, so a last-field
+# parser extracted "LOW" (neither hi nor lo) and failed closed on EVERY
+# node. Independent of the state-machine-level tests above (which now also
+# use this same verbatim shape as their default fixture, but exercise it
+# indirectly through the whole bin): this pins the exact sed pattern the
+# bin uses, directly, against the VERBATIM lines captured live.
+THERM_PATTERN='s/.*\) +(in|out) +(lo|hi).*/\2/'
+
+# Structural pin FIRST: the bin must actually use this exact pattern, or the
+# direct extraction check below would be testing a string this test made up
+# rather than what ships.
+if grep -qF "sed -E '$THERM_PATTERN'" "$here/bmc-blade-power-cycle.sh.j2"; then
+    echo "ok   - the bin's thermtrip sed pattern matches what this test pins"; pass=$((pass+1))
+else
+    echo "FAIL - the bin's thermtrip sed pattern has drifted from what this test verifies"; fail=$((fail+1))
+fi
+
+got=$(printf ' gpio-612 (CPU0_THERMTRIP_LATCH|host-error-monitor  ) in  hi IRQ ACTIVE LOW\n' | sed -E "$THERM_PATTERN")
+if [ "$got" = hi ]; then
+    echo "ok   - thermtrip parse extracts 'hi' from the verbatim not-latched line (et23b4)"; pass=$((pass+1))
+else
+    echo "FAIL - thermtrip parse on the verbatim not-latched line"
+    echo "       want: hi"; echo "       got:  $got"; fail=$((fail+1))
+fi
+
+got=$(printf ' gpio-613 (CPU1_THERMTRIP_LATCH|host-error-monitor  ) in  lo IRQ ACTIVE LOW\n' | sed -E "$THERM_PATTERN")
+if [ "$got" = lo ]; then
+    echo "ok   - thermtrip parse extracts 'lo' from the verbatim latched line (et23b3, CPU1 tripped)"; pass=$((pass+1))
+else
+    echo "FAIL - thermtrip parse on the verbatim latched line"
+    echo "       want: lo"; echo "       got:  $got"; fail=$((fail+1))
 fi
 
 # -------------------------------------------------------------- no_effect ---
