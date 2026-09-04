@@ -27,9 +27,9 @@
 #
 #   cycle <bmc-ip>  -> {"cycled":true,"down_s":<n>,"up_s":<n>}
 #
-# Errors as {"error":"<code>"}: bmc_unreachable, thermtrip_latched,
-# thermtrip_unknown, no_effect, never_returned, identity_changed,
-# bmc_degraded.
+# Errors as {"error":"<code>"}: bmc_unreachable, identity_unavailable,
+# thermtrip_latched, thermtrip_unknown, no_effect, never_returned,
+# identity_changed, bmc_degraded.
 #
 # CONTRACT with biosfw.machine: no failure path may emit a "cycled" key -- a
 # caller takes the FIRST record carrying one, exactly as the rule
@@ -69,6 +69,35 @@ DOWN_WAIT="${FLAX_DOWN_WAIT:-30}"
 # spends real wall-clock time anywhere near the 30s/300s caps.
 POLL_INTERVAL="${FLAX_POLL_INTERVAL:-2}"
 
+# --- review finding 2026-09-03: a single alive() sample can fabricate a
+# --- cycled:true for a BMC that never lost power. ssh has failure modes
+# --- ICMP does not -- session exhaustion (a documented quirk of this fleet,
+# --- see biosfw/worker.py's comments on it) and this bin's OWN
+# --- ServerAliveInterval=2/ServerAliveCountMax=1 dropping an established
+# --- session after a ~4s stall. ONE spurious probe failure on a BMC that
+# --- never went down would otherwise read as down -> up -> identity
+# --- matches -> a reported power cycle that never happened. Two
+# --- INDEPENDENT guards, because either alone is weak:
+
+# 1. DEBOUNCE: "down" is not declared on the first failed probe -- it takes
+#    DOWN_CONFIRM_N CONSECUTIVE failures. A single ssh hiccup that does not
+#    repeat on the very next poll never gets treated as "down" at all; it
+#    just resets the streak and wait_down keeps waiting (and, if the BMC
+#    genuinely never goes down, eventually reports no_effect off the
+#    DOWN_WAIT cap below, same as today).
+DOWN_CONFIRM_N="${FLAX_DOWN_CONFIRM_N:-2}"
+
+# 2. MINIMUM PLAUSIBLE DOWN DURATION: even a DEBOUNCED "down" can be a burst
+#    of unrelated ssh failures (a MaxStartups rejection storm, session
+#    exhaustion) rather than an actual 12V loss, if the BMC answers normally
+#    again moments later. No cycle measured across five runs has ever
+#    returned in under ~20s -- design S2's single-node figure (~20s) is the
+#    FASTEST any real cycle has taken, batch runs took 110-200s. An observed
+#    down-to-up span shorter than that floor is therefore stronger evidence
+#    of a probe glitch than of a completed cycle, and is reported exactly
+#    like never going down at all (no_effect) rather than as a success.
+MIN_DOWN_S="${FLAX_MIN_DOWN_S:-20}"
+
 # Remote executor. FLAX_BMC_REMOTE_EXEC lets the test suite point this at a
 # stub that answers each command shape against fixture state instead of a
 # real BMC; production always leaves it unset and goes over ssh. Same shape
@@ -105,10 +134,15 @@ alive() {
 
 now_s() { date +%s; }
 
-wait_down() {  # $1 = ip; 0 once the BMC stops answering, 1 on the DOWN_WAIT cap
-    local ip="$1" deadline=$(( $(now_s) + DOWN_WAIT ))
+wait_down() {  # $1 = ip; 0 once DOWN_CONFIRM_N CONSECUTIVE probes fail, 1 on the DOWN_WAIT cap
+    local ip="$1" deadline=$(( $(now_s) + DOWN_WAIT )) streak=0
     while :; do
-        alive "$ip" || return 0
+        if alive "$ip"; then
+            streak=0            # any single answer resets the streak --
+        else                    # the debounce requires CONSECUTIVE failures
+            streak=$((streak + 1))
+            [ "$streak" -ge "$DOWN_CONFIRM_N" ] && return 0
+        fi
         [ "$(now_s)" -lt "$deadline" ] || return 1
         sleep "$POLL_INTERVAL"
     done
@@ -131,10 +165,25 @@ cmd_cycle() {
     # steps 1-2). Cycling a sled we cannot reach converts an unknown state
     # into a LONGER unknown state, and the postflight check would have no
     # baseline to compare against either way.
+    #
+    # TWO DIFFERENT FAILURES, TWO DIFFERENT CODES (review finding 2026-09-03):
+    # a totally empty round trip means ssh never got a remote shell at all --
+    # THAT is bmc_unreachable. identity()'s remote script always emits the
+    # literal "MAC=" / "OS=" line prefixes once the remote shell runs, even
+    # when the value substituted in is empty, so a NON-empty $base with an
+    # EMPTY mac0 means the round trip worked but the identity read itself
+    # did not (e.g. the mgmt interface is not eth0 on this image). Collapsing
+    # that into bmc_unreachable would silently disable this feature on any
+    # fleet where the eth0 assumption is wrong -- a perfectly reachable BMC
+    # would report "unreachable" forever, indistinguishable from "nothing
+    # needed it". Confirmed eth0 is correct on the fleet today (four nodes,
+    # 2026-09-03); this split is what keeps a future wrong assumption from
+    # being silent.
     base=$(identity "$IP")
+    [ -n "$base" ] || json_err bmc_unreachable
     mac0=$(printf '%s\n' "$base" | sed -n 's/^MAC=//p')
     os0=$(printf '%s\n' "$base"  | sed -n 's/^OS=//p')
-    [ -n "$mac0" ] || json_err bmc_unreachable
+    [ -n "$mac0" ] || json_err identity_unavailable
 
     # 3. THE THERMTRIP GUARD (design S6). Read BEFORE the write, always, no
     # bypass -- this is the one guard the live investigation produced that
@@ -163,10 +212,10 @@ cmd_cycle() {
     # wait_down immediately below, which is what actually decides that.
     bmc "$IP" 'i2cset -f -y 7 0x45 0xd9 c' >/dev/null 2>&1 || :
 
-    # 5. Wait for DOWN, capped at DOWN_WAIT. If the BMC never stops
-    # answering, the write did not do what we expect -- report it now and do
-    # NOT go on to wait BLADE_CYCLE_TIMEOUT for a reboot that was never
-    # coming.
+    # 5. Wait for DOWN (debounced -- see DOWN_CONFIRM_N above), capped at
+    # DOWN_WAIT. If the BMC never stops answering, the write did not do what
+    # we expect -- report it now and do NOT go on to wait
+    # BLADE_CYCLE_TIMEOUT for a reboot that was never coming.
     wait_down "$IP" || json_err no_effect
     down_s=$(( $(now_s) - t0 ))
 
@@ -174,12 +223,26 @@ cmd_cycle() {
     wait_up "$IP" || json_err never_returned
     up_s=$(( $(now_s) - t0 ))
 
+    # THE SECOND independent guard against a false cycled:true (review
+    # finding 2026-09-03; see MIN_DOWN_S above): even a DEBOUNCED "down" can
+    # be a burst of unrelated ssh failures rather than an actual 12V loss, if
+    # the BMC answers normally again moments later. down_s and up_s are both
+    # measured from the same t0, so their difference is exactly the observed
+    # down-to-up span -- shorter than the fastest cycle ever measured is not
+    # evidence of a completed cycle.
+    down_span=$((up_s - down_s))
+    [ "$down_span" -ge "$MIN_DOWN_S" ] || json_err no_effect
+
     # ...then confirm the SAME machine answered -- a sled that returns as a
     # DIFFERENT machine means the write did something other than what we
-    # think, and that is worse than not knowing.
+    # think, and that is worse than not knowing. Same split as the preflight
+    # above: an empty mac1 means the identity READ failed (identity_unavailable),
+    # not that a different machine answered (identity_changed) -- alive()
+    # already proved a shell is there.
     post=$(identity "$IP")
     mac1=$(printf '%s\n' "$post" | sed -n 's/^MAC=//p')
     os1=$(printf '%s\n' "$post"  | sed -n 's/^OS=//p')
+    [ -n "$mac1" ] || json_err identity_unavailable
     if [ "$mac1" != "$mac0" ] || [ "$os1" != "$os0" ]; then
         json_err identity_changed
     fi
