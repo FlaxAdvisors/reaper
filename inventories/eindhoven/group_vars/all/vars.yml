@@ -209,6 +209,37 @@ apply_flax_post_sol_image_tag: "0.9.117"
 # which is all it has ever effectively been.
 apply_flax_post_nic_fw_mode: "detect"
 
+# BIOS firmware: pinned to 'detect' 2026-09-06, by operator decision, and this
+# one must NOT be armed until post's BIOS agent reaches triage parity on the
+# post-flash recovery path. It relies on the role default today; pinned here so
+# a future default change cannot arm it silently (which is exactly how
+# apply_flax_post_nic_fw_mode came to be armed).
+#
+# Triage's blade-power-cycle design records the measured behaviour of THIS
+# fleet: a BIOS flash ends with the host powered off, and it "frequently cannot
+# be powered back on" -- the BMC drives POWER_OUT, waits for PS_PWROK, and the
+# power-good watchdog expires after ~8 s. Triage handles that with a
+# needs_power_cycle phase and an i2c 12 V sled cycle (bmc-blade-power-cycle),
+# plus an entity-manager cache clear (bmc-clear-entity-cache).
+#
+# flax_post/biosd has NONE of it, and cannot: it mounts neither /opt/flax/bin
+# (so it cannot call those bins -- the gap triage fixed for itself in 0b0eb2f)
+# nor credentials-bmc.json (so it has no BMC path at all), and there is no
+# needs_power_cycle phase in flax_post.
+#
+# The failure is silent, not loud. biosd/service._reprobe_inflight does
+#     rc, out = deps.run(ip, check_script); if rc != 0: return
+# and its only fault branch requires `current == baseline`, which requires a
+# SUCCESSFUL ssh read. A host that never powers back on therefore never trips
+# FLASH_TIMEOUT_S: the port stays 'flashing' with the registry claim held
+# forever, no fault and no alarm. On a rack whose only post node is et10b3,
+# that is the whole pipeline stopped, needing hands on a customer site.
+#
+# Prerequisites before arming: mount /opt/flax/bin; give biosd credentials-bmc;
+# add needs_power_cycle + the blade cycle; give _reprobe_inflight a wall-clock
+# timeout that fires when the host NEVER answers; port the entity-cache clear.
+apply_flax_post_bios_fw_mode: "detect"
+
 # Role registry (spine migration phase 1) universe for the post role,
 # rendered into /etc/flax/roles.d/post.json by apply_lease_agent. Values
 # match the flax_role_post_* template defaults -- pinned explicitly here so
