@@ -187,6 +187,28 @@ apply_flax_post_image_tag: "0.9.124"  # 0.9.124 = BIOS/BMC version checks at tri
 # SOL console (flax-post-sol Node relay + flax_post/web SOL modal), 2026-07-10.
 apply_flax_post_sol_image_tag: "0.9.117"
 
+# NIC firmware: pinned to 'detect' 2026-09-06. The role default is 'enforce'
+# (the only one of the three agents that ships armed) -- see
+# roles/apply_flax_post/defaults/main.yml.
+#
+# Post nodes already have their Mellanox cards flashed IN BAND: post.sh runs
+# ./update_mellanox.sh on the live ISO for every Leopard/Tioga Pass chassis,
+# from that script's own embedded FWREL/FWMAP (14_32_1912). flax_post/nicd is
+# a SECOND flasher for the same cards, over SSH, from a separate source of
+# truth (/etc/flax/nic-firmware-versions.json). Nothing keeps the two maps in
+# step, and nothing arbitrates between them.
+#
+# nicd has never actually flashed here -- its gate (nicd/classify.flash_eligible)
+# additionally requires fw_bmc_phase AND fw_bios_phase == 'up_to_date', and
+# neither holds on the edam rack today. But that is a temporary accident, not a
+# design: bringing BMC to flax-onetree-1.1.1 and BIOS to TPC_P26F -- which is
+# exactly what the current work is doing -- opens the gate and makes nicd a
+# live second writer. Pin it now, while the choice is still ours to make.
+#
+# 'detect' keeps the agent as a reporter (probe + classify into the viewer),
+# which is all it has ever effectively been.
+apply_flax_post_nic_fw_mode: "detect"
+
 # Role registry (spine migration phase 1) universe for the post role,
 # rendered into /etc/flax/roles.d/post.json by apply_lease_agent. Values
 # match the flax_role_post_* template defaults -- pinned explicitly here so
