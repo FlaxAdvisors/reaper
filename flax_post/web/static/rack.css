@@ -107,7 +107,7 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .facets .mono{font-family:ui-monospace,monospace}
 .facets .ok{color:var(--green)} .facets .no{color:var(--muted)}
 .ver-ok{color:var(--green);font-weight:600} .ver-warn{color:var(--amber);font-weight:600}
-.ver-hi{color:var(--violet);font-weight:600} .ver-na{color:var(--dim)}
+.ver-na{color:var(--dim)}
 .section-l{font-size:.66rem;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin:.7rem 0 .35rem}
 .checklist{display:flex;flex-direction:column;gap:.5rem}
 .phase{border:1px solid var(--border);border-radius:6px;padding:.4rem .5rem;background:var(--panel2)}

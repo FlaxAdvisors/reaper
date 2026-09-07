@@ -7,16 +7,15 @@ JSONB merge never clobbers a sibling fw_bios slice added in Plan C).
 """
 from . import manifest
 
-_VER_CLASS = {"same": "ver-ok", "older": "ver-warn", "newer": "ver-hi"}
+# No ordering exists (triage-parity: version.compare is same|differs), so a
+# mismatch is one class. "ver-hi" (was: current newer than target) is gone.
+_VER_CLASS = {"same": "ver-ok", "differs": "ver-warn"}
 
 
 def _ver_class(current, target):
     if not current or current == "—" or not target:
         return "ver-na"
-    try:
-        return _VER_CLASS.get(manifest.compare(current, target), "ver-na")
-    except ValueError:
-        return "ver-na"
+    return _VER_CLASS.get(manifest.compare(current, target), "ver-na")
 
 
 def fw_bmc_slice(row):

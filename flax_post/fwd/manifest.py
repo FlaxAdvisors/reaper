@@ -1,4 +1,4 @@
-"""BMC firmware manifest matcher + flax-onetree version comparison.
+"""BMC firmware manifest matcher.
 
 The manifest (/etc/flax/bmc-firmware-versions.json) maps a platform name to an
 entry: {match:{product_name:[regex...], bmc_kind}, target_version, check:{method,id},
@@ -6,15 +6,15 @@ flash:{method, artifact}, auto}. We match a probed product_name against the
 regexes (same gate as flax_control/bmcfw_view), but return the FULL entry so the
 flasher can reach flash.artifact + check.id.
 
-Version compare is exact-equal on the normalized token: strip a known
-'flax-onetree-' prefix, then tuple-compare (major, minor, patch, build_minute).
-A loose date-prefix match would wrongly accept any build that day — do not soften.
+Version comparison lives in `version.py` (parity with triage bmcfw), and is
+re-exported here so existing call sites keep working.
 """
 import json
 import os
 import re
 
-_PREFIX = "flax-onetree-"
+from . import version
+
 
 
 class Matcher:
@@ -113,22 +113,7 @@ def artifact_rel_path(entry: dict) -> str:
     return entry["flash"]["artifact"]
 
 
-def _parse(s: str):
-    s = s.strip()
-    if s.startswith(_PREFIX):
-        s = s[len(_PREFIX):]
-    ver, _, build = s.partition("-")
-    try:
-        parts = tuple(int(x) for x in ver.split("."))
-        build_n = int(build) if build else 0
-    except ValueError as e:
-        raise ValueError("unparseable version: %r" % s) from e
-    return parts + (build_n,)
 
-
-def compare(reported: str, target: str) -> str:
-    """'same' | 'older' | 'newer' (reported relative to target)."""
-    r, t = _parse(reported), _parse(target)
-    if r == t:
-        return "same"
-    return "older" if r < t else "newer"
+# Version comparison is triage-parity semantics; see flax_post/fwd/version.py.
+compare = version.compare
+needs_update = version.needs_update

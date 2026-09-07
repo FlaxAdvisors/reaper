@@ -80,12 +80,10 @@ def probe_one(port, client, matcher, set_row) -> str:
         # prior current_version so a node that reached the target stays shown at it.
         return _unreachable(set_row, port, "BMC unreachable: %s" % detail,
                             target_version=target)
-    try:
-        cmp = manifest.compare(current, target)
-    except ValueError as e:
-        return _fault(set_row, port, str(e),
-                      current_version=current, target_version=target)
-    phase = "needs_update" if cmp == "older" else "up_to_date"
+    # Triage parity: same|differs, no ordering. Any difference is an update --
+    # the previous "not older -> up_to_date" reported a stamped build that
+    # differed from the target as CURRENT, hiding a needed flash.
+    phase = "up_to_date" if manifest.compare(current, target) == "same" else "needs_update"
     set_row(port, phase=phase, current_version=current, target_version=target,
             fault_reason="", percent=0)
     return phase
@@ -107,18 +105,14 @@ def flash_one(port, client, matcher, fetch, set_row, share_base,
         return _unreachable(set_row, port, "BMC unreachable: %s" % detail, target_version=target)
     set_row(port, phase="checking", current_version=current, target_version=target,
             fault_reason="", percent=0)
-    try:
-        cmp = manifest.compare(current, target)
-    except ValueError as e:
-        return _fault(set_row, port, str(e))
-    if cmp == "same":
+    # Triage parity: "if the strings differ, the image differs, so flash."
+    # There is no ordering, so there is no downgrade to refuse -- the old
+    # "newer" branch faulted every node whose build stamp differed from an
+    # unstamped target.
+    if manifest.compare(current, target) == "same":
         set_row(port, phase="up_to_date")
         return "up_to_date"
-    if cmp == "newer":
-        return _fault(set_row, port,
-                      "current %s is newer than target %s; refusing downgrade"
-                      % (current, target))
-    # cmp == "older" -> proceed to gate + flash
+    # versions differ -> proceed to gate + flash
 
     # 2. gate — flash only a powered-ON (idle) host. Keeping the host NIC up lets
     # the BMC re-establish NC-SI cleanly after the activation reboot (an OFF host
@@ -177,11 +171,8 @@ def flash_one(port, client, matcher, fetch, set_row, share_base,
                             percent=last_pct)
 
     # 6. verifying
-    try:
-        if manifest.compare(returned, target) == "same":
-            set_row(port, phase="done", current_version=returned, percent=100, fault_reason="")
-            return "done"
-    except ValueError as e:
-        return _fault(set_row, port, str(e), percent=last_pct)
+    if manifest.compare(returned, target) == "same":
+        set_row(port, phase="done", current_version=returned, percent=100, fault_reason="")
+        return "done"
     return _fault(set_row, port, "post-flash version mismatch: %s" % returned,
                   current_version=returned, percent=last_pct)

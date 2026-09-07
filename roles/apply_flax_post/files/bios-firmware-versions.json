@@ -2,10 +2,10 @@
   {
     "platform": "Wiwynn Tioga Pass",
     "dmi_match": "SV7220G3",
-    "target": "TPC_P26C",
+    "target": "TPC_P26F",
     "afulnx_url": "http://bang/export/share/SXC-Lab_OCP-Updates/Linux_Flash_Utilities/afulnx_64_Wiwynn_Tioga_Pass",
-    "bin_url": "http://bang/export/share/SXC-Lab_OCP-Updates/OEM-TP-wiwynn-FW-2021-02-23/TPC_P26C.zip",
-    "bin_path": "TPC_P26C/TPC_P26C.bin",
+    "bin_url": "http://bang/export/share/SXC-Lab_OCP-Updates/OEM-TP-wiwynn-FW-2021-02-23/TPC_P26F.tar",
+    "bin_path": "image-bios",
     "flags": ["/X", "/B", "/P", "/K", "/N", "/ME", "/REBOOT"]
   }
 ]
