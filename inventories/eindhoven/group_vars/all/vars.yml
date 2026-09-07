@@ -240,6 +240,36 @@ apply_flax_post_nic_fw_mode: "detect"
 # timeout that fires when the host NEVER answers; port the entity-cache clear.
 apply_flax_post_bios_fw_mode: "detect"
 
+# BMC firmware: pinned to 'detect' 2026-09-06, by operator decision. Like the
+# BIOS pin above this relied on the role default; pin it so it cannot be armed
+# by a default change.
+#
+# Arming this is not just "flash the BMC". flax_post/fwd/enforce.run_node calls
+# client.set_boot_pxe() and client.power_on() BEFORE any flash, and set_boot_pxe
+# PATCHes BootSourceOverrideEnabled=Continuous -- a PERSISTENT boot-order flip,
+# not one-shot. Braintree's vars carry the standing site constraint verbatim:
+# devices that boot from disk are LEFT ALONE, nothing may alter a node's boot
+# order, and "do not arm any of the three without revisiting" it.
+#
+# Post's BMC agent is also behind triage's on the flash path itself. Triage
+# shipped dual-chip management on 2026-09-02 -- it reports BOTH BMC flash chips
+# and refreshes the cold spare from the same artifact (backup_version,
+# backup_state, backup_attempts, backup_write_attempted in bmcfw.json).
+# flax_post/fwd has NO backup handling at all. And per the frontier note the
+# flash -> backup -> power-on path has never been exercised on hardware in
+# either agent; only the in-service backup-only branch has.
+#
+# The one post node's Redfish is currently flapping as well (TCP 443 accepts,
+# GET .../FirmwareInventory/bmc_active intermittently times out; the store row
+# oscillates unreachable <-> needs_update), which is not a BMC to commit to a
+# ~13 minute flash plus activation reboot.
+#
+# Note this also keeps flax_post/biosd disarmed in practice regardless of the
+# pin above: biosd's flash_eligible requires fw_bmc_phase == 'up_to_date', and
+# with the BMC agent in detect the edam rack stays at
+# flax-onetree-1.0.9-202607032146 against target flax-onetree-1.1.1.
+apply_flax_post_fw_mode: "detect"
+
 # Role registry (spine migration phase 1) universe for the post role,
 # rendered into /etc/flax/roles.d/post.json by apply_lease_agent. Values
 # match the flax_role_post_* template defaults -- pinned explicitly here so
