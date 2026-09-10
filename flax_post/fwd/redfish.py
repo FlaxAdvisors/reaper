@@ -179,16 +179,20 @@ class RedfishClient:
         fallback for chassis input power (verified 2026-09-10 against et10b1/et26b2/
         et6b1: the sensor answers in well under a second even when `ipmitool sdr`
         itself times out, since Redfish reads don't share the BMC's IPMI/RMCP+
-        session table). Walks Chassis -> the member whose object exposes a Sensors
-        link (deliberately NOT Members[0]: this fleet lists a powerless "Cpld"
-        chassis first) -> its Sensors collection -> the HSC-input-power sensor,
-        matched by id substring rather than a hardcoded "TiogaPass_Baseboard" name
-        so a differently-named chassis on other hardware still resolves. Returns
-        (watts_float, detail); (None, detail) on any failure or an unpopulated
-        fleet (e.g. no PowerSupplies/Sensors exposed at all)."""
+        session table). Walks every Chassis member that exposes a Sensors link,
+        checking EACH ONE's Sensors collection for the HSC-input-power sensor
+        (matched by id substring, not a hardcoded "TiogaPass_Baseboard" name) --
+        deliberately does not stop at the first member with a Sensors link, nor
+        assume Members[0]: this fleet's "Cpld" chassis is listed first AND has
+        its own (unrelated) Sensors collection, so both a naive Members[0] pick
+        and a naive first-Sensors-link pick land on the wrong chassis and find
+        nothing, even though the real sensor is one member over. Returns
+        (watts_float, detail); (None, detail) if no member's Sensors collection
+        has the sensor, or on any transport failure."""
         coll, detail = self._get_json("/redfish/v1/Chassis")
         if coll is None:
             return None, detail
+        last_detail = "no Chassis member exposes Sensors"
         for m in (coll.get("Members") or []):
             odata = m.get("@odata.id")
             if not odata:
@@ -201,7 +205,8 @@ class RedfishClient:
                 continue
             scoll, sdetail = self._get_json(sensors_link)
             if scoll is None:
-                return None, sdetail
+                last_detail = sdetail
+                continue
             for s in (scoll.get("Members") or []):
                 sid = s.get("@odata.id") or ""
                 name = sid.rsplit("/", 1)[-1].lower()
@@ -216,8 +221,8 @@ class RedfishClient:
                         return float(reading), "ok"
                     except (TypeError, ValueError):
                         return None, "non-numeric Reading: %r" % (reading,)
-            return None, "no HSC input-power sensor in %s" % sensors_link
-        return None, "no Chassis member exposes Sensors"
+            last_detail = "no HSC input-power sensor in %s" % sensors_link
+        return None, last_detail
 
     def get_serial(self):
         """Board serial via Redfish (the IPMI-FRU fallback for Redfish-only AMI
