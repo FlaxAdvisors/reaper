@@ -174,6 +174,51 @@ class RedfishClient:
         state = obj.get("PowerState")
         return (state or None), ("ok" if state else "no PowerState")
 
+    def get_power_watts(self):
+        """MB HSC Input Power sensor reading via Redfish, in Watts — the IPMI-timeout
+        fallback for chassis input power (verified 2026-09-10 against et10b1/et26b2/
+        et6b1: the sensor answers in well under a second even when `ipmitool sdr`
+        itself times out, since Redfish reads don't share the BMC's IPMI/RMCP+
+        session table). Walks Chassis -> the member whose object exposes a Sensors
+        link (deliberately NOT Members[0]: this fleet lists a powerless "Cpld"
+        chassis first) -> its Sensors collection -> the HSC-input-power sensor,
+        matched by id substring rather than a hardcoded "TiogaPass_Baseboard" name
+        so a differently-named chassis on other hardware still resolves. Returns
+        (watts_float, detail); (None, detail) on any failure or an unpopulated
+        fleet (e.g. no PowerSupplies/Sensors exposed at all)."""
+        coll, detail = self._get_json("/redfish/v1/Chassis")
+        if coll is None:
+            return None, detail
+        for m in (coll.get("Members") or []):
+            odata = m.get("@odata.id")
+            if not odata:
+                continue
+            cobj, cdetail = self._get_json(odata)
+            if cobj is None or "Sensors" not in cobj:
+                continue
+            sensors_link = (cobj.get("Sensors") or {}).get("@odata.id")
+            if not sensors_link:
+                continue
+            scoll, sdetail = self._get_json(sensors_link)
+            if scoll is None:
+                return None, sdetail
+            for s in (scoll.get("Members") or []):
+                sid = s.get("@odata.id") or ""
+                name = sid.rsplit("/", 1)[-1].lower()
+                if "hsc" in name and "input" in name and "power" in name:
+                    sobj, xdetail = self._get_json(sid)
+                    if sobj is None:
+                        return None, xdetail
+                    reading = sobj.get("Reading")
+                    if reading is None:
+                        return None, "sensor has no Reading"
+                    try:
+                        return float(reading), "ok"
+                    except (TypeError, ValueError):
+                        return None, "non-numeric Reading: %r" % (reading,)
+            return None, "no HSC input-power sensor in %s" % sensors_link
+        return None, "no Chassis member exposes Sensors"
+
     def get_serial(self):
         """Board serial via Redfish (the IPMI-FRU fallback for Redfish-only AMI
         boards). Prefer Systems.SerialNumber (SMBIOS-backed -> blank when the host

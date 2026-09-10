@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import subprocess
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 
 from .. import queries, records, state
@@ -42,6 +43,10 @@ IPMITOOL_TIMEOUT_SECS = 15
 # Power is read on a separate FAST lane (run_power_once) with a short timeout, so a
 # dead/slow BMC can't stall the cheap power read behind the heavy serial/SDR/SEL pass.
 POWER_TIMEOUT_SECS = int(os.environ.get("FLAX_POST_POWER_TIMEOUT", "4"))
+# `sdr` alone measured 10-14s on this fleet's Tioga Pass BMCs, essentially the whole
+# of IPMITOOL_TIMEOUT_SECS -- combining it with `power status` in one session (below)
+# still needs more room than a single generic call, so this gets its own wider budget.
+SDR_TIMEOUT_SECS = int(os.environ.get("FLAX_POST_SDR_TIMEOUT", "25"))
 # Fan-out: one IPMI session per BMC is independent, so probe them concurrently.
 DEFAULT_WORKERS = int(os.environ.get("FLAX_POST_OBSERVE_WORKERS", "48"))
 
@@ -80,14 +85,19 @@ def _load_redfish_creds(path=None):
     return out
 
 
-def _default_make_redfish(redfish_creds):
-    """Factory: bmc_ip -> RedfishClient (or None if no redfish creds are configured,
-    so the fallback is a no-op). Local import avoids pulling the fwd package at
-    module load (and keeps the IPMI producer importable in minimal test envs)."""
-    if not redfish_creds:
+def _default_make_redfish(redfish_creds, bmc_creds=None):
+    """Factory: bmc_ip -> RedfishClient (or None if no creds are usable, so the
+    fallback is a no-op). Prefers dedicated credentials-redfish.json; falls back to
+    the IPMI bmc_creds when that file is empty/absent -- verified 2026-09-10 that
+    this fleet's Basic-auth Redfish accepts the same USERID/PASSW0RD pair as IPMI
+    (credentials-bmc.json cred[1]), so eindhoven (whose redfish creds file is empty)
+    isn't left with no fallback at all. Local import avoids pulling the fwd package
+    at module load (and keeps the IPMI producer importable in minimal test envs)."""
+    creds = redfish_creds or bmc_creds or []
+    if not creds:
         return lambda ip: None
     from ..fwd.redfish import RedfishClient
-    return lambda ip: RedfishClient(ip, redfish_creds)
+    return lambda ip: RedfishClient(ip, creds)
 
 
 def _default_ipmi_runner(host, user, password, args, timeout=IPMITOOL_TIMEOUT_SECS):
@@ -108,6 +118,25 @@ def _default_power_runner(host, user, password, args, timeout=POWER_TIMEOUT_SECS
     """ipmi_runner for the fast power lane — same call, short timeout so a dead BMC
     fails fast instead of stalling the cheap power read for the full 15s."""
     return _default_ipmi_runner(host, user, password, args, timeout=timeout)
+
+
+def _power_and_sdr(ip, user, password, ipmi_runner):
+    """`power status` + `sdr` in ONE RMCP+ session via `ipmitool ... exec <script>`,
+    mirroring flax_observe.bmc_probe.bmc_power_and_sdr_traditional. Cuts the per-BMC
+    IPMI session count (one auth handshake instead of two) and lets the two reads
+    share the wider SDR_TIMEOUT_SECS budget the slow `sdr` walk actually needs,
+    instead of each getting its own separate clock. Returns combined stdout text —
+    caller parses both `_parse_power` and `_parse_watts`/`_parse_sdr` out of it."""
+    tmp = tempfile.NamedTemporaryFile(mode="w", prefix="ipmi-cmds-", suffix=".txt", delete=False)
+    try:
+        tmp.write("power status\nsdr\n")
+        tmp.close()
+        return ipmi_runner(ip, user, password, ["exec", tmp.name], timeout=SDR_TIMEOUT_SECS)
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except FileNotFoundError:
+            pass
 
 
 def _default_ping(ip, timeout=1):
@@ -217,13 +246,10 @@ def probe_blade(ip, creds, ipmi_runner, redfish_client=None):
         except Exception:
             continue
         try:
-            result["power_on"] = _parse_power(ipmi_runner(ip, u, p, ["power", "status"]))
-        except Exception:
-            pass
-        try:
-            sdr_txt = ipmi_runner(ip, u, p, ["sdr"])
-            result["watts"] = _parse_watts(sdr_txt)
-            result["sdr"] = _parse_sdr(sdr_txt)
+            combined_txt = _power_and_sdr(ip, u, p, ipmi_runner)
+            result["power_on"] = _parse_power(combined_txt)
+            result["watts"] = _parse_watts(combined_txt)
+            result["sdr"] = _parse_sdr(combined_txt)
         except Exception:
             pass
         try:
@@ -236,8 +262,8 @@ def probe_blade(ip, creds, ipmi_runner, redfish_client=None):
 
 
 def _redfish_fill(result, redfish_client):
-    """Backfill serial/power from Redfish for fields IPMI left unread. No-op when
-    IPMI already supplied them (fallback only) or no client is configured."""
+    """Backfill serial/power/watts from Redfish for fields IPMI left unread. No-op
+    when IPMI already supplied them (fallback only) or no client is configured."""
     if redfish_client is None:
         return
     if not result.get("serial"):
@@ -255,6 +281,13 @@ def _redfish_fill(result, redfish_client):
                 result["power_on"] = p
         except Exception:
             log.exception("redfish power fallback failed")
+    if result.get("watts") is None:
+        try:
+            w, _ = redfish_client.get_power_watts()
+            if w is not None:
+                result["watts"] = "%.2f W" % w
+        except Exception:
+            log.exception("redfish watts fallback failed")
 
 
 def probe_power(ip, creds, ipmi_runner, redfish_client=None):
@@ -293,10 +326,19 @@ def _process_blade(d, hosts, creds, ipmi_runner, ping, set_state, upsert_node, o
     rc = make_redfish(bmc_ip) if (make_redfish and bmc_ip) else None
     fields = probe_blade(bmc_ip, creds, ipmi_runner, redfish_client=rc) if bmc_ip else {
         "serial": None, "power_on": None, "watts": None, "sdr": {}, "sel": [], "fru": {}}
+    # watts/sdr both come from the one power+sdr session: a timeout on that call
+    # (the slow leg — SDR_TIMEOUT_SECS) leaves them at their None/{} defaults. Omit
+    # them from this pass's write rather than merging None/{} over a previously-good
+    # reading — this pass "didn't get an answer this time", not "the answer is now
+    # unknown". Only write what this pass actually read.
+    live_fields = {"serial": fields["serial"], "sel": fields["sel"]}
+    if fields["watts"] is not None:
+        live_fields["watts"] = fields["watts"]
+    if fields["sdr"]:
+        live_fields["sdr"] = fields["sdr"]
     try:
-        set_state(port, switch=switch, bmc_mac=d.get("mac"), serial=fields["serial"],
-                  order_no=order_no, watts=fields["watts"],
-                  sdr=fields["sdr"], sel=fields["sel"], host_pinged=host_pinged)
+        set_state(port, switch=switch, bmc_mac=d.get("mac"), order_no=order_no,
+                  host_pinged=host_pinged, **live_fields)
     except Exception:
         log.exception("ipmi: failed to write post_state for %s", port)
     if d.get("mac"):
@@ -358,7 +400,7 @@ def run_once(devices=None, creds=None, ipmi_runner=None, ping=None,
         log.warning("ipmi: no BMC credentials; skipping pass")
         return
     if make_redfish is None:
-        make_redfish = _default_make_redfish(_load_redfish_creds())
+        make_redfish = _default_make_redfish(_load_redfish_creds(), bmc_creds=creds)
 
     if switch is None:
         switch = _post_switch()
@@ -408,7 +450,7 @@ def run_power_once(devices=None, creds=None, ipmi_runner=None, ping=None,
         log.warning("ipmi: no BMC credentials; skipping power pass")
         return
     if make_redfish is None:
-        make_redfish = _default_make_redfish(_load_redfish_creds())
+        make_redfish = _default_make_redfish(_load_redfish_creds(), bmc_creds=creds)
 
     if switch is None:
         switch = _post_switch()
