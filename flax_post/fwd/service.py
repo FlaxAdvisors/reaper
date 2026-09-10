@@ -5,7 +5,11 @@ deps is injected (real wiring in __main__, fakes in tests) and supplies:
   post_bmcs() -> [device dict]   (kind == 'bmc' rows from queries.post_devices)
   client_for(bmc_ip) -> RedfishClient
   matcher, fetch(share_base, rel)->bytes, set_row(port, **f), share_base
+  sweep_stale(live_ports) -> [port]   (optional -- getattr-discovered like the
+    phase-4 record_flash/record_action hooks, so bare deps in existing tests
+    keep working without it)
 """
+import logging
 import os
 import threading
 import time
@@ -15,6 +19,8 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from . import enforce, flasher
+
+log = logging.getLogger("flax-post.fwd.service")
 
 # Each BMC probe is an independent Redfish session; fan out so a 48-blade pass is
 # bounded by one slow BMC, not their sum. Set 1 to force the sequential path (tests).
@@ -57,8 +63,20 @@ def probe_once(deps, registry=None, workers=None) -> None:
     Skips any port the registry reports as mid-flash — the flash's own state
     writes (checking/monitoring/done) are authoritative while it runs. `workers`
     defaults to FLAX_POST_FWD_WORKERS (48); set 1 to force the sequential path.
+
+    Also sweeps stale post_fw.json rows (ports with no current post reservation
+    at all) before probing — best-effort, and independent of whether any BMC is
+    reachable this pass, so a bad probe cycle can't leave orphaned rows piling up.
     """
-    bmcs = [d for d in deps.post_bmcs()
+    all_bmcs = deps.post_bmcs()
+    sweep_stale = getattr(deps, "sweep_stale", None)
+    if sweep_stale is not None:
+        try:
+            sweep_stale({d["port"] for d in all_bmcs if d.get("port")})
+        except Exception:
+            log.exception("stale post_fw.json row sweep failed")
+
+    bmcs = [d for d in all_bmcs
             if not (registry is not None and registry.is_flashing(d["port"]))]
     if not bmcs:
         return

@@ -42,6 +42,12 @@ class _Deps:
     def post_bmcs(self):
         return [d for d in queries.post_devices() if d.get("kind") == "bmc"]
 
+    def sweep_stale(self, live_ports):
+        removed = store.sweep(live_ports)
+        if removed:
+            log.info("swept %d stale post_fw.json row(s): %s", len(removed), ", ".join(removed))
+        return removed
+
     def client_for(self, bmc_ip):
         return RedfishClient(bmc_ip, self._creds)
 
