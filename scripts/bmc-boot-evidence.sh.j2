@@ -1,0 +1,123 @@
+#!/bin/bash
+# bmc-boot-evidence -- what does ONE PXE power-on of this node do?
+#
+# RENDERED FROM THE SITE VAULT by roles/apply_bmc_scripts. The password below
+# is the BMC ROOT SHELL credential. RULE ZERO: never echo it. sshpass -e keeps
+# it out of argv and ps.
+#
+# Design: docs/superpowers/specs/2026-09-10-bios-chip-boot-evidence-design.md
+#
+# This bin NEVER touches the host BIOS SPI bus (GPIO 109 / 1e630000.spi).
+# It requests host On through x86-power-control's normal path and then
+# watches three things the BMC already knows: the power-control journal,
+# PS_PWROK, and the POST-code service's records for the NEW boot cycle.
+# POST codes are port-0x80 writes by BIOS code; an erased chip writes none
+# and a dead CPU0 writes only 0xFF, so 0xFF is never "executing" (spec D4).
+#
+#   check <bmc-ip> -> {"outcome":"bios_executing"|"no_bios_executing"|"power_good_failed",
+#                      "cycle":N,"codes":N,"nonff":N,"pwrok_s":N,"elapsed_s":N}
+#
+# Errors as {"error":"<code>"}: ssh_unreachable, host_not_off,
+# request_rejected, window_unreadable.
+#
+# CONTRACT with bmcfw.bios_boot: no failure path may emit an "outcome" key --
+# the parser takes the FIRST record carrying one.
+#
+# Measured healthy reference (et26b2, 2026-09-10): PS_PWROK at 3 s, first
+# POST code at 5 s. FLAX_BOOT_WINDOW defaults to 60 s: generous, and the
+# 8 s power-good watchdog ends the power_good_failed case long before it.
+set -u
+
+# I7: NO surrounding quotes -- ansible's `quote` filter emits its own,
+# correctly, for any value. Hand-wrapping in single quotes breaks (or worse:
+# runs shell) the moment a vaulted password contains a single quote of its
+# own. RULE ZERO holds either way: the rendered value is never echoed.
+export SSHPASS={{ bmc_root_password | quote }}
+SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10"
+WINDOW="${FLAX_BOOT_WINDOW:-60}"
+POLL="${FLAX_POLL_INTERVAL:-2}"
+
+# Remote executor. FLAX_BMC_REMOTE_EXEC lets the test suite point this at a
+# stub that answers each command shape against fixture state instead of a
+# real BMC; production always leaves it unset and goes over ssh. Same shape
+# as bmc-blade-power-cycle.sh.j2 / bmc-bios-chip-probe.sh.j2's identical hook.
+bmc() {
+    if [ -n "${FLAX_BMC_REMOTE_EXEC:-}" ]; then
+        "$FLAX_BMC_REMOTE_EXEC" "$1" "$2"
+        return $?
+    fi
+    sshpass -e ssh -n -T $SSH_OPTS "root@$1" "$2"
+}
+
+json_err() { printf '{"error":"%s"}\n' "$1"; exit 1; }
+emit() {  # outcome cycle codes nonff pwrok_s elapsed_s
+    printf '{"outcome":"%s","cycle":%s,"codes":%s,"nonff":%s,"pwrok_s":%s,"elapsed_s":%s}\n' \
+        "$1" "$2" "$3" "$4" "$5" "$6"
+    exit 0
+}
+
+PC_SVC="xyz.openbmc_project.State.Boot.PostCode0"
+PC_OBJ="/xyz/openbmc_project/State/Boot/PostCode0"
+PC_IF="xyz.openbmc_project.State.Boot.PostCode"
+HOST_SVC="xyz.openbmc_project.State.Host"
+HOST_OBJ="/xyz/openbmc_project/state/host0"
+CHASSIS_SVC="xyz.openbmc_project.State.Chassis"
+CHASSIS_OBJ="/xyz/openbmc_project/state/chassis0"
+
+power_state() {
+    bmc "$IP" "busctl get-property $CHASSIS_SVC $CHASSIS_OBJ xyz.openbmc_project.State.Chassis CurrentPowerState 2>/dev/null" \
+        | sed -n 's/.*PowerState\.\([A-Za-z]*\).*/\1/p'
+}
+cycle_count() {
+    bmc "$IP" "busctl get-property $PC_SVC $PC_OBJ $PC_IF CurrentBootCycleCount 2>/dev/null" | awk '{print $2}'
+}
+pwrok() {
+    bmc "$IP" 'grep PS_PWROK /sys/kernel/debug/gpio 2>/dev/null' | grep -q ' hi ' && echo hi || echo lo
+}
+pgood_failed() {
+    bmc "$IP" "journalctl -u xyz.openbmc_project.Chassis.Control.Power@0.service --since '-${WINDOW}s' --no-pager 2>/dev/null" \
+        | grep -q 'power good failed to assert'
+}
+# Prints "<codes> <nonff>" for cycle $1. GetPostCodes answers
+# "a(tay) N c1 0 c2 0 ..." -- the codes are every other value after N.
+postcodes() {
+    out=$(bmc "$IP" "busctl call $PC_SVC $PC_OBJ $PC_IF GetPostCodes q $1 2>/dev/null")
+    printf '%s\n' "$out" | awk '{
+        n=$2; codes=0; nonff=0;
+        for (i=3; i<=NF; i+=2) { codes++; if ($i != 255) nonff++ }
+        print codes, nonff }'
+}
+
+cmd_check() {
+    IP="$1"
+    state=$(power_state) || true
+    [ -n "$state" ] || json_err ssh_unreachable
+    [ "$state" = Off ] || json_err host_not_off
+    c0=$(cycle_count); case "$c0" in ''|*[!0-9]*) json_err window_unreadable ;; esac
+    bmc "$IP" "busctl set-property $HOST_SVC $HOST_OBJ $HOST_SVC RequestedHostTransition s xyz.openbmc_project.State.Host.Transition.On" \
+        >/dev/null 2>&1 || json_err request_rejected
+    t0=$(date +%s); pwrok_s=-1; cycle="$c0"; codes=0; nonff=0
+    while :; do
+        sleep "$POLL"
+        now=$(( $(date +%s) - t0 ))
+        if pgood_failed; then emit power_good_failed "$cycle" "$codes" "$nonff" "$pwrok_s" "$now"; fi
+        if [ "$pwrok_s" -lt 0 ] && [ "$(pwrok)" = hi ]; then pwrok_s=$now; fi
+        c=$(cycle_count); case "$c" in ''|*[!0-9]*) c="$c0" ;; esac
+        if [ "$c" != "$c0" ]; then
+            cycle="$c"
+            read -r codes nonff <<EOF
+$(postcodes "$c")
+EOF
+            [ "${nonff:-0}" -gt 0 ] && emit bios_executing "$cycle" "$codes" "$nonff" "$pwrok_s" "$now"
+        fi
+        if [ "$now" -ge "$WINDOW" ]; then
+            [ "$pwrok_s" -ge 0 ] || emit power_good_failed "$cycle" "$codes" "$nonff" "$pwrok_s" "$now"
+            emit no_bios_executing "$cycle" "$codes" "$nonff" "$pwrok_s" "$now"
+        fi
+    done
+}
+
+case "${1:-}" in
+    check) [ $# -eq 2 ] || { echo "usage: bmc-boot-evidence check <bmc-ip>" >&2; exit 2; }; cmd_check "$2" ;;
+    *) echo "usage: bmc-boot-evidence check <bmc-ip>" >&2; exit 2 ;;
+esac
