@@ -11,6 +11,10 @@
 #   d. one non-0xFF code in the NEW cycle is bios_executing, even at t=window
 #   e. rails up and no non-0xFF code after the window is no_bios_executing
 #   f. every error path emits no "outcome" key
+#   h. the journal --since anchor is the BMC's own clock at the On request
+#      (an absolute epoch), never a relative window that slides with "now"
+#      and could let a stale failure line from a PREVIOUS attempt leak in
+#      (review finding 2026-09-10)
 #
 # Run: bash scripts/test-bmc-boot-evidence.sh
 set -u
@@ -33,6 +37,13 @@ chmod +x "$work/bin"
 # a marker file the RequestedHostTransition case touches; CurrentBootCycleCount
 # echoes FIX_CYCLE_AFTER once that marker exists, FIX_CYCLE (or its default)
 # before.
+#
+# FIX_NOW: the BMC-side "date +%s" answer, fixed (default 1789000000) rather
+# than the real clock -- the bin only calls this ONCE per invocation now (to
+# anchor the journal --since window before the On request; elapsed_s stays
+# on the bin's own local clock, see bmc-boot-evidence.sh.j2), so a fixed
+# answer never stalls the window-timeout cases (c/e), and case h can pin an
+# exact value to assert against.
 cat > "$work/stub" <<'STUB'
 #!/bin/bash
 ip="$1"; cmd="$2"
@@ -42,6 +53,7 @@ case "$cmd" in
   *CurrentBootCycleCount*)  if [ -e "${FIX_ON_SEEN:-/tmp/on-seen}" ]; then echo "q ${FIX_CYCLE_AFTER:-${FIX_CYCLE:-12}}"; else echo "q ${FIX_CYCLE:-12}"; fi ;;
   *RequestedHostTransition*) touch "${FIX_ON_SEEN:-/tmp/on-seen}"; [ "${FIX_ACCEPT:-yes}" = yes ] && exit 0 || exit 1 ;;
   *PS_PWROK*)               echo " gpio-526 (PS_PWROK            |power-control       ) in  ${FIX_PWROK:-lo} IRQ " ;;
+  *'date +%s'*)             echo "${FIX_NOW:-1789000000}" ;;
   *journalctl*)             printf '%s\n' "${FIX_JOURNAL:-}" ;;
   *GetPostCodes*)           n=0; for c in ${FIX_CODES:-}; do n=$((n+1)); done
                             printf 'a(tay) %s' "$n"; for c in ${FIX_CODES:-}; do printf ' %s 0' "$c"; done; echo ;;
@@ -103,6 +115,28 @@ unset FIX_ACCEPT
 rm -f "$FIX_ON_SEEN"
 export FLAX_BMC_REMOTE_EXEC="$work/nonexistent-stub"
 out=$(run); check g-unreach '"error":"ssh_unreachable"' "$out"; nokey g-no-outcome outcome "$out"
+
+# h. the journal window is anchored to the BMC's own clock at the On
+# request (an absolute epoch via "--since @<t0>"), not a relative window
+# that slides with every poll -- review finding 2026-09-10: a relative
+# window would let a stale "power good failed to assert" line from a
+# PREVIOUS attempt leak into a brand-new invocation's first poll. The stub
+# is not a real journal (it answers FIX_JOURNAL regardless of --since, so
+# case b above is unaffected either way); the assertion here is on the
+# exact argument the bin sent.
+rm -f "$FIX_ON_SEEN"
+export FLAX_BMC_REMOTE_EXEC="$work/stub"
+export FIX_NOW=1789000000 FIX_JOURNAL='power-control[9]: PowerControl: power supply power good failed to assert (stale)' \
+       FIX_PWROK=lo FIX_CODES="" FIX_CMDLOG="$work/log.h"; : > "$FIX_CMDLOG"
+out=$(run)
+check h-outcome '"outcome":"power_good_failed"' "$out"
+if grep -qF -- '--since "@1789000000"' "$FIX_CMDLOG"; then
+    pass=$((pass+1))
+else
+    fail=$((fail+1)); echo "FAIL h-anchor: journalctl command did not carry --since \"@1789000000\""
+    echo "       cmdlog:"; cat "$FIX_CMDLOG"
+fi
+unset FIX_NOW FIX_JOURNAL FIX_CMDLOG
 
 echo "passed=$pass failed=$fail"
 [ "$fail" -eq 0 ]

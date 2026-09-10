@@ -74,8 +74,18 @@ cycle_count() {
 pwrok() {
     bmc "$IP" 'grep PS_PWROK /sys/kernel/debug/gpio 2>/dev/null' | grep -q ' hi ' && echo hi || echo lo
 }
+# The BMC's OWN clock, not this host's -- journalctl's --since window and
+# elapsed_s both anchor to it, so a stale "power good failed to assert" line
+# from a PREVIOUS attempt (within the journalctl lookback the old relative
+# "-${WINDOW}s" window would have covered) can never leak into a brand-new
+# invocation's first poll. Review finding 2026-09-10: a relative --since
+# slides with "now" on every poll, so it always covers however far back the
+# window reaches, not just this attempt.
+bmc_now() {
+    bmc "$IP" 'date +%s' 2>/dev/null
+}
 pgood_failed() {
-    bmc "$IP" "journalctl -u xyz.openbmc_project.Chassis.Control.Power@0.service --since '-${WINDOW}s' --no-pager 2>/dev/null" \
+    bmc "$IP" "journalctl -u xyz.openbmc_project.Chassis.Control.Power@0.service --since \"@${t0}\" --no-pager 2>/dev/null" \
         | grep -q 'power good failed to assert'
 }
 # Prints "<codes> <nonff>" for cycle $1. GetPostCodes answers
@@ -94,12 +104,22 @@ cmd_check() {
     [ -n "$state" ] || json_err ssh_unreachable
     [ "$state" = Off ] || json_err host_not_off
     c0=$(cycle_count); case "$c0" in ''|*[!0-9]*) json_err window_unreadable ;; esac
+    # Anchor BEFORE the On request, off the BMC's own clock -- see pgood_failed
+    # above. An unreadable BMC clock is the same class of failure as an
+    # unreadable cycle count: we cannot trust the journal window either way.
+    # elapsed_s stays on THIS host's local clock (deliberately -- one BMC
+    # round trip for the anchor is enough; re-querying the BMC clock every
+    # poll just to measure our own wait would add a round trip that buys
+    # nothing, since local and BMC clocks drifting a couple of seconds apart
+    # cannot itself produce a stale-journal-line false positive the way a
+    # sliding relative --since window did).
+    t0=$(bmc_now); case "$t0" in ''|*[!0-9]*) json_err window_unreadable ;; esac
     bmc "$IP" "busctl set-property $HOST_SVC $HOST_OBJ $HOST_SVC RequestedHostTransition s xyz.openbmc_project.State.Host.Transition.On" \
         >/dev/null 2>&1 || json_err request_rejected
-    t0=$(date +%s); pwrok_s=-1; cycle="$c0"; codes=0; nonff=0
+    start=$(date +%s); pwrok_s=-1; cycle="$c0"; codes=0; nonff=0
     while :; do
         sleep "$POLL"
-        now=$(( $(date +%s) - t0 ))
+        now=$(( $(date +%s) - start ))
         if pgood_failed; then emit power_good_failed "$cycle" "$codes" "$nonff" "$pwrok_s" "$now"; fi
         if [ "$pwrok_s" -lt 0 ] && [ "$(pwrok)" = hi ]; then pwrok_s=$now; fi
         c=$(cycle_count); case "$c" in ''|*[!0-9]*) c="$c0" ;; esac
