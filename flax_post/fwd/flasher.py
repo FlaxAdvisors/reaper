@@ -16,7 +16,7 @@ injected so the whole machine is unit-testable without a BMC or real sleeps.
 import os
 import time
 
-from . import manifest
+from . import entity_cache, manifest
 
 
 def _fault(set_row, port, reason, **extra):
@@ -90,7 +90,8 @@ def probe_one(port, client, matcher, set_row) -> str:
 
 
 def flash_one(port, client, matcher, fetch, set_row, share_base,
-              *, sleep=time.sleep, max_wait_s=1200, poll_s=20) -> str:
+              *, sleep=time.sleep, max_wait_s=1200, poll_s=20,
+              clear_entity_cache=entity_cache.clear_entity_cache) -> str:
     """Run the gate-only flash for one node. Returns the terminal phase."""
     # 1. checking
     product, _ = client.get_product_name()
@@ -123,6 +124,22 @@ def flash_one(port, client, matcher, fetch, set_row, share_base,
         return _unreachable(set_row, port, "BMC unreachable (power read failed): %s" % pdetail)
     if power != "On":
         return _fault(set_row, port, "host powered %s; power on (idle) before flashing" % power)
+
+    # 2b. entity-manager cache clear (triage parity) -- BEST EFFORT, never gates
+    # the flash. /var/configuration/system.json survives a flash and is
+    # self-perpetuating (EntityManager loads it at boot, rebuilds its model,
+    # writes it back), so a correctly flashed BMC can still report the PREVIOUS
+    # build's stale sensors/SDR entries without this. No `systemctl restart`
+    # needed or wanted: the flash's own activation reboot restarts EntityManager
+    # for free. A clear failure is recorded, not raised -- refusing to flash
+    # over a cache file would leave a node on old firmware to dodge stale
+    # sensors, which is the wrong trade. See entity_cache.py for the full
+    # rationale and why this needs no new mount/credential.
+    try:
+        cleared, reason = clear_entity_cache(client.bmc_ip)
+    except Exception as e:
+        cleared, reason = False, str(e)
+    set_row(port, entity_cache_cleared=cleared, entity_cache_reason=reason)
 
     # 3. flashing
     try:
