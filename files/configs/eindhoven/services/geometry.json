@@ -7,6 +7,10 @@
   {"port": "et7b2",  "ou": "22L", "switch": "rabbit-gouda"},
   {"port": "et7b3",  "ou": "24L", "switch": "rabbit-gouda"},
   {"port": "et7b4",  "ou": "26L", "switch": "rabbit-gouda"},
+  {"port": "et8b1",  "ou": "31L", "switch": "rabbit-gouda"},
+  {"port": "et8b2",  "ou": "33L", "switch": "rabbit-gouda"},
+  {"port": "et8b3",  "ou": "35L", "switch": "rabbit-gouda"},
+  {"port": "et8b4",  "ou": "37L", "switch": "rabbit-gouda"},
   {"port": "et23b1", "ou": "12C", "switch": "rabbit-gouda"},
   {"port": "et23b2", "ou": "14C", "switch": "rabbit-gouda"},
   {"port": "et23b3", "ou": "16C", "switch": "rabbit-gouda"},
@@ -15,6 +19,10 @@
   {"port": "et10b2", "ou": "22C", "switch": "rabbit-gouda"},
   {"port": "et10b3", "ou": "24C", "switch": "rabbit-gouda"},
   {"port": "et10b4", "ou": "26C", "switch": "rabbit-gouda"},
+  {"port": "et24b1", "ou": "31C", "switch": "rabbit-gouda"},
+  {"port": "et24b2", "ou": "33C", "switch": "rabbit-gouda"},
+  {"port": "et24b3", "ou": "35C", "switch": "rabbit-gouda"},
+  {"port": "et24b4", "ou": "37C", "switch": "rabbit-gouda"},
   {"port": "et28b1", "ou": "12R", "switch": "rabbit-gouda"},
   {"port": "et28b2", "ou": "14R", "switch": "rabbit-gouda"},
   {"port": "et28b3", "ou": "16R", "switch": "rabbit-gouda"},
@@ -22,5 +30,9 @@
   {"port": "et25b1", "ou": "20R", "switch": "rabbit-gouda"},
   {"port": "et25b2", "ou": "22R", "switch": "rabbit-gouda"},
   {"port": "et25b3", "ou": "24R", "switch": "rabbit-gouda"},
-  {"port": "et25b4", "ou": "26R", "switch": "rabbit-gouda"}
+  {"port": "et25b4", "ou": "26R", "switch": "rabbit-gouda"},
+  {"port": "et26b1", "ou": "31R", "switch": "rabbit-gouda"},
+  {"port": "et26b2", "ou": "33R", "switch": "rabbit-gouda"},
+  {"port": "et26b3", "ou": "35R", "switch": "rabbit-gouda"},
+  {"port": "et26b4", "ou": "37R", "switch": "rabbit-gouda"}
 ]
