@@ -142,3 +142,30 @@ server {
         proxy_read_timeout 30s;
     }
 }
+
+# post_fleet_viewer (apply_post_fleet_viewer role) — read-only live viewer
+# for post_state/post_node + the firmware stores. Loopback-only backend,
+# same pattern as console/post/triage above.
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name view.{{ inventory_hostname }}.flaxadvisors.cloud;
+
+    ssl_certificate     /etc/nginx/tls/server.crt;
+    ssl_certificate_key /etc/nginx/tls/server.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    set_real_ip_from 127.0.0.1;
+    real_ip_header X-Forwarded-For;
+
+    location / {
+        proxy_pass         http://127.0.0.1:8799;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_read_timeout 30s;
+    }
+}

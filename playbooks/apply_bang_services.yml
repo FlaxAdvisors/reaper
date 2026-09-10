@@ -81,6 +81,12 @@
         name: apply_flax_post
       tags: [flax_post]
 
+    - name: Apply role apply_post_fleet_viewer   # read-only db/firmware viewer, eindhoven only
+      ansible.builtin.import_role:
+        name: apply_post_fleet_viewer
+      tags: [post_fleet_viewer]
+      when: inventory_hostname == 'bang-gouda'
+
     - name: Apply role apply_flax_classify
       ansible.builtin.import_role:
         name: apply_flax_classify

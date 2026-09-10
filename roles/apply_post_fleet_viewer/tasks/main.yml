@@ -1,0 +1,46 @@
+---
+# Read-only live viewer for the post fleet: post_state/post_node in the flax
+# db + the post firmware JSON stores. No secrets involved -- serials, MACs,
+# switch ports, firmware phases only. Runs --local (docker exec / cat on the
+# bang itself, no ssh hop) behind flax-stack's nginx vhost.
+
+- name: Ensure {{ apply_post_fleet_viewer_dest_dir }} exists
+  become: true
+  ansible.builtin.file:
+    path: "{{ apply_post_fleet_viewer_dest_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# Plain copy, NOT template: the script's own CSS/JS use literal {{ }} for its
+# str.format() placeholders (see PAGE = """...""" in the script) -- running
+# it through Jinja would corrupt those braces. Same reasoning as bios_gate in
+# apply_bmc_scripts.
+- name: Deploy post_fleet_viewer.py
+  become: true
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../scripts/{{ apply_post_fleet_viewer_script }}"
+    dest: "{{ apply_post_fleet_viewer_dest_dir }}/{{ apply_post_fleet_viewer_script }}"
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart flax-post-fleet-viewer
+
+- name: Deploy flax-post-fleet-viewer systemd unit
+  become: true
+  ansible.builtin.template:
+    src: flax-post-fleet-viewer.service.j2
+    dest: /etc/systemd/system/flax-post-fleet-viewer.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-post-fleet-viewer
+
+- name: Enable + start flax-post-fleet-viewer
+  become: true
+  ansible.builtin.systemd:
+    name: flax-post-fleet-viewer
+    enabled: true
+    state: started
+    daemon_reload: true
