@@ -182,10 +182,13 @@ def poll_target(target, *, make_client=_default_make_client, store=_state,
     try:
         health = client.health()
     except QualUnreachable:
-        # A node that already PASSED was intentionally powered off by the Done tail;
-        # don't regress its green tile (phase + Qualify bar) to unreachable/pending.
+        # A node with a verdict is latched (spec 2026-09-11 §2): a passed one was
+        # powered off by the Done tail, a failed one may be powered off by the
+        # operator. Either way its qualify evidence (which step failed, the run
+        # id) stays on the tile; and a failed blade is not relaunched until the
+        # power lane clears the latch on the next off->on.
         live = store.read_state().get(target["port"], {}) if hasattr(store, "read_state") else {}
-        if (live.get("done") or {}).get("verdict") == "pass":
+        if (live.get("done") or {}).get("verdict") is not None:
             return live.get("qual") or {}
         # Firmware complete, agent not up yet -> trigger the postautomate launch,
         # debounced: skip if we launched within LAUNCH_COOLDOWN_S (the launch is not

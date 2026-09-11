@@ -149,7 +149,16 @@ def _qualify_steps(st):
     for name in PHASE_STEPS["Qualify"]:
         status = (qsteps.get(name) or {}).get("status", "pending")
         out[name] = _QUAL_MAP.get(status, "pending")
+    # population-check is the engine's own step and vars.pop is its own slice,
+    # written by the same poll; read it from there so the verdict survives a
+    # later rewrite of qual.steps (rows from before the latch lost them).
+    popv = (st.get("pop") or {}).get("verdict")
+    if popv in _POP_MAP:
+        out["population-check"] = _POP_MAP[popv]
     return out
+
+
+_POP_MAP = {"green": "done", "red": "fault", "grey": "pending"}
 
 
 def _step_notes(st) -> dict:
