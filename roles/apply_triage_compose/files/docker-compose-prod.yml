@@ -1,17 +1,31 @@
+version: '3.5'
+
 services:
 
   server:
-    image: prod-server:latest
+    build:
+      context: .
+      dockerfile: monitor/server/Dockerfile
     command: npm run start
+    # command: ["/bin/bash", "-c", "env | grep PORT && npm run start"]
+    # PID 1 is `npm run start` (node), which does NOT reap orphaned children.
+    # Each SOL session spawns bash -> soltriage -> ipmitool; on disconnect the
+    # pty is killed and the grandchildren reparent to PID 1 and pile up as
+    # <defunct> zombies (seen accumulating since Jun 23), churning BMC RMCP+
+    # sessions. A real init (tini) reaps them. Same pattern as [ios_driver_ssh].
+    init: true
     restart: always
     network_mode: host
     environment:
       - PORT=5559
     volumes:
       - /etc/flax/:/etc/flax/
+      - /opt/flax/bin:/usr/local/sbin:ro
 
   api:
-    image: prod-api:latest
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
     command: gunicorn --bind 0.0.0.0:5555 -w 3 manage:app
     restart: always
     network_mode: host
@@ -20,9 +34,139 @@ services:
     volumes:
       - /export/nodes:/export/nodes:ro
       - /etc/flax/:/etc/flax/
+      - /opt/flax/bin:/usr/local/sbin:ro
+      # Backup EEPROM refresh marker channel, shared with bmc_fw.
+      - /run/flax/:/run/flax/
     environment:
       - VERSION=${version}
       # Plan 3.5: flax-control's /api/v1/{port,ports,rackous} replaces
       # switchportrecond's on :10988. Same shape; both are network_mode:host so
       # 127.0.0.1:8000 reaches the flax-control uvicorn directly (no TLS).
       - SWITCHPORTRECON_URL=http://localhost:8000
+      # Marker directory shared with bmc_fw (Backup EEPROM on-demand refresh);
+      # must match bmc_fw's BMC_BACKUP_REFRESH_DIR.
+      - BMC_BACKUP_REFRESH_DIR=/run/flax/bmc-backup-refresh
+
+#  inventory_api:
+#    build:
+#      context: .
+#      dockerfile: services/inventory_api/Dockerfile
+#    environment:
+#      - LOCATION=${LOCATION}
+#      - VERSION=${version}
+#    command: gunicorn -t 60 --bind 0.0.0.0:8001 --log-level debug -w 3 manage:app
+#    restart: always
+#    ports:
+#      - 5556:8001
+#    env_file:
+#      - ./.env_prod
+#    volumes:
+#      - /export/nodes:/export/nodes/:ro
+#      - /export/disks:/export/disks/:ro
+#      - /etc/flax/:/etc/flax/
+#
+#  at_cache:
+#    build:
+#      context: .
+#      dockerfile: services/at_cache/Dockerfile
+#    command: gunicorn --bind 0.0.0.0:8002 manage:app
+#    environment:
+#      - VERSION=${version}
+#    ports:
+#      - 5557:8002
+#    restart: always
+#    env_file:
+#      - ./.env_prod
+#    volumes:
+#      - /etc/flax/:/etc/flax/
+#
+#  sheets:
+#    build:
+#      context: .
+#      dockerfile: services/sheets/Dockerfile
+#    command: gunicorn --bind 0.0.0.0:8003 manage:app
+#    ports:
+#      - 5558:8003
+#    volumes:
+#      - /etc/flax/:/etc/flax/
+
+  # BMC firmware updater worker (Phase C). Master-only via the VIP-exclusive
+  # triage stack. Ships SAFE: BMC_FW_MODE=detect reports needs_update per slot
+  # and NEVER flashes. Stage 4 flips to enforce + a single-port allowlist.
+  bmc_fw:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    command: python -m bmcfw.worker
+    restart: always
+    network_mode: host
+    env_file:
+      - ./.env_prod
+    volumes:
+      - /etc/flax/:/etc/flax/
+      - /run/flax/:/run/flax/
+      - /opt/flax/bin:/usr/local/sbin:ro
+    environment:
+      - SWITCHPORTRECON_URL=http://localhost:8000
+      - BMC_FW_BIN=/usr/local/sbin
+      - BMC_FW_DB=/etc/flax/bmcfw.json
+      - BMC_FW_MANIFEST=/etc/flax/bmc-firmware-versions.json
+      - BMC_FW_SHARE_BASE=http://bang/export/share
+      - BMC_FW_MODE=enforce
+      - BMC_FW_ENABLE_PORTS=
+      - BMC_FW_POWER_ON=true
+      # Backup EEPROM (spec 2026-09-01-bmc-backup-chip-design.md). The cache
+      # holds ONE extracted image-bmc shared by every node; /run is a 13 GB
+      # tmpfs on bang-gouda. The refresh dir is the api->worker marker channel.
+      - BMC_BACKUP_CACHE=/run/flax/bmc-backup
+      - BMC_BACKUP_REFRESH_DIR=/run/flax/bmc-backup-refresh
+
+  bios_fw:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    command: python -m biosfw.worker
+    restart: always
+    network_mode: host
+    env_file:
+      - ./.env_prod
+    volumes:
+      - /etc/flax/:/etc/flax/
+      - /run/flax/:/run/flax/
+      - /opt/flax/bin:/usr/local/sbin:ro
+    environment:
+      - SWITCHPORTRECON_URL=http://localhost:8000
+      # Container-side override of the host-path default in
+      # biosfw.worker.BIN -- must match the mount above's destination
+      # (/usr/local/sbin), the same pattern bmc_fw uses for BMC_FW_BIN.
+      - BIOS_FW_BIN=/usr/local/sbin
+      - BIOS_FW_DB=/etc/flax/biosfw.json
+      - BIOS_FW_MANIFEST=/etc/flax/host-firmware-versions.json
+      - BIOS_FW_GATE_DIR=/run/flax/bios-fw-gate
+      # Read-only cross-check into bmc_fw's own store (same file bmc_fw's
+      # BMC_FW_DB above writes -- /etc/flax is mounted whole into this
+      # container too) so biosfw can refuse to flash a node whose BMC
+      # firmware bmc_fw has not yet brought to target. Explicit, not left to
+      # the code default: see the BIOS_FW_BIN concern in
+      # docs/superpowers/sdd/biosfw-bin-mount-report.md for why an
+      # env-var-driven container path should never rely on a default match.
+      - BMC_FW_DB=/etc/flax/bmcfw.json
+      # Per-port power-on hold. /etc/flax, NOT /run: the gate is tmpfs so a
+      # reboot re-blocks every node (fail-safe), but a hold released by a
+      # reboot would power on the node an engineer is investigating. It must
+      # outlive reboots -- do not move it to /run to match the gate.
+      - BIOS_FW_HOLD_DIR=/etc/flax/bios-fw-hold
+      - BIOS_FW_SHARE_BASE=http://bang/export/share
+      # How stale the BMC-attested BIOS reading may get before it is re-read.
+      # DECORATION ONLY -- it never gates a flash. Event-driven (never read, a
+      # blade swap, post-flash) with this as the slow backstop, because these
+      # BMCs have shown auth quirks and session exhaustion under polling.
+      - BIOS_FW_BMC_TTL=3600
+      - BIOS_FW_MODE=enforce
+      # Fleet-wide power-on override, unchanged. The per-port hold is
+      # additional, not a replacement for this.
+      - BIOS_FW_POWER_ON=true
+      # Staged bring-up (A.5.2): ONLY this port may be authorised. Every
+      # other port stays blocked even if it reports a delta. Widen with a
+      # glob (et10b*) or empty (= all) once the flash is proven on metal.
+      - BIOS_FW_ENABLE_PORTS=
