@@ -14,3 +14,9 @@
 # (The dhcp-script exec rules for the decommissioned reaper-leased hook —
 # shell-fork + /opt/flax/var/reaper-leased spool — were removed with the
 # dhcp-script line itself: dnsmasq no longer forks a shell.)
+
+# log-facility=/var/log/dnsmasq/dnsmasq.log — the stock profile only allows
+# /var/log/dnsmasq*.log (a file directly under /var/log); ours is in a
+# directory so it can be bind-mounted read-only into flax-post-observe.
+/var/log/dnsmasq/ r,
+/var/log/dnsmasq/*.log w,

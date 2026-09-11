@@ -8,6 +8,38 @@
     group: root
     mode: "0750"
 
+# PERSISTENT hold directory (mirrors triage's bios-fw-hold): touching
+# <dir>/<port> stops the slot ladder from powering that blade on; touch+rm
+# is the operator's "reset a faulted ladder" gesture. Never tmpfs.
+- name: Ensure the per-port post power-on hold directory exists
+  become: true
+  ansible.builtin.file:
+    path: "{{ apply_flax_post_power_hold_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure the SOL capture directory exists (sol writes, observe reads)
+  become: true
+  ansible.builtin.file:
+    path: "{{ apply_flax_post_sol_capture_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# /run is tmpfs: this only seeds the dir until the next reboot; claims.claim()
+# also mkdir -p's it, so a missing dir after reboot is harmless.
+- name: Ensure the reconcile claim directory exists
+  become: true
+  ansible.builtin.file:
+    path: "{{ apply_flax_post_claim_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
 - name: Ensure an empty post_fw.json exists for the read-only bind mount
   become: true
   ansible.builtin.copy:

@@ -32,3 +32,12 @@ apply_flax_post_nic_bmc_reset_timeout: 300
 apply_flax_post_nic_flash_timeout: 900
 apply_flax_post_nic_fw_force_bmc_reset: "false"
 apply_flax_post_state_gc_grace_secs: 300
+
+# Slot ladder (spec 2026-09-11 post-slot-ladder)
+apply_flax_post_biosd_control_port: 8449
+apply_flax_post_nicd_control_port: 8450
+apply_flax_post_ladder_ports: ""            # comma list; empty = every slot
+apply_flax_post_power_hold_dir: /etc/flax/post-power-hold
+apply_flax_post_sol_capture_dir: /var/lib/flax/post-sol
+apply_flax_post_claim_dir: /run/flax/bmc-fw-active
+apply_flax_post_dnsmasq_log_dir: /var/log/dnsmasq

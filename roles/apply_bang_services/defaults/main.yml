@@ -11,3 +11,7 @@ apply_bang_services_upstream_dns:
 # Path to site-agnostic role-input files (apparmor override) relocated
 # out of roles/apply_bang_services/files/ for operator visibility.
 apply_bang_services_shared_inputs_dir: "{{ playbook_dir }}/../files/services/_common"
+
+# dnsmasq logs to a FILE (not only journald) so the post slot ladder can scrape
+# tftp lines from a read-only bind mount (spec 2026-09-11 post-slot-ladder §6).
+apply_bang_services_dnsmasq_log_dir: /var/log/dnsmasq

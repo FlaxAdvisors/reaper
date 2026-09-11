@@ -173,6 +173,33 @@
   when: not (legacy_lab_reservations | default(true))
   notify: restart dnsmasq
 
+- name: Ensure the dnsmasq log directory exists (owned by the dnsmasq runtime user)
+  become: true
+  ansible.builtin.file:
+    path: "{{ apply_bang_services_dnsmasq_log_dir }}"
+    state: directory
+    owner: dnsmasq
+    group: dnsmasq
+    mode: "0755"
+
+- name: Rotate the dnsmasq log in place (copytruncate keeps the container's bind-mounted inode)
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/logrotate.d/dnsmasq-flax
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      {{ apply_bang_services_dnsmasq_log_dir }}/dnsmasq.log {
+          daily
+          rotate 7
+          compress
+          delaycompress
+          missingok
+          notifempty
+          copytruncate
+      }
+
 - name: Deploy dnsmasq.conf
   become: true
   ansible.builtin.template:
