@@ -381,11 +381,6 @@ def clear_fields_for(prior_row, mac, power, now=None) -> dict:
         return {}
     if (prior_row.get("ladder") or {}).get("power_on_pending"):
         return {}
-    # Reset if the row has a ladder or is latched (has a verdict)
-    has_ladder = prior_row.get("ladder") is not None
-    is_latched = (prior_row.get("done") or {}).get("verdict") is not None
-    if not (has_ladder or is_latched):
-        return {}
     from . import ladder as _ladder
     out = {s: {} for s in _LATCH_SLICES}
     out["ladder"] = _ladder.human_reset(now if now is not None else time.time())
