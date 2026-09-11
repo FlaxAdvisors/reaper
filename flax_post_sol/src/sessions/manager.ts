@@ -9,6 +9,7 @@ import * as pty from "node-pty";
 import { IPty } from "node-pty";
 import { Server } from "socket.io";
 import { logger } from "../utils/logger";
+import { appendCapture } from "./capture";
 import { LockManager } from "./lock";
 import { Session } from "./types";
 
@@ -54,6 +55,7 @@ export function attachPtyEvents(io: Server, session: Session) {
 
     ptyProcess.onData((data: string) => {
         try {
+            appendCapture(session.ip, data);
             session.historyBuffer.push(data);
 
             // Calculate current size
