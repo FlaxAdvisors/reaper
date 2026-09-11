@@ -337,13 +337,17 @@
 
 # === Per-VLAN /srv/pxe/v<vid>/ content ===
 
+# dnsmasq ownership, matching apply_pxe_payloads' "Ensure /srv/pxe/v<vid> dirs
+# exist with dnsmasq ownership" task that runs later in the same play. Until
+# 2026-09-11 this task said root:root, so every full run flipped the
+# ownership twice and both tasks reported changed forever.
 - name: Ensure each /srv/pxe/v<vid>/ directory exists
   become: true
   ansible.builtin.file:
     path: "{{ apply_bang_services_pxe_root }}/v{{ item.vid }}"
     state: directory
-    owner: root
-    group: root
+    owner: dnsmasq
+    group: dnsmasq
     mode: "0755"
   loop: "{{ vlans }}"
   loop_control:
