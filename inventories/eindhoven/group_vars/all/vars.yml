@@ -183,7 +183,19 @@ apply_flax_post_db_password: "{{ vault_flax_stack_db_passwords.flax_post }}"
 # image explicitly (was tracking the role default). 0.9.113 = main + the
 # post-UI-actions branch. Viewer unit gains creds-bmc/opt-flax-bin/export/
 # node_config mounts; image adds nmap/jq/curl for the ghost helpers.
-apply_flax_post_image_tag: "0.9.131"  # 0.9.131 = drop the power-lane occupant-change reset (wiped a swapped-in blade every pass while two reservations overlapped); 0.9.130 = fail-verdict evidence survives power-off (poller keeps qual on any verdict; population-check from vars.pop); 0.9.129 = completion latch (tile holds Done/fail after power-off, verified power-off, latch clears on swap/restart/off->on), post_node.vars.result, artifact modals, fio no-storage; 0.9.128 = fwd: live target_version overlay + stale post_fw.json row sweep; 0.9.127 = fwd: BMC entity-manager cache clear before flash; 0.9.126 = fix get_power_watts() chassis walk (real bug found post-deploy); 0.9.125 = post-observe combined power+sdr session, no watts clobber, redfish watts fallback; 0.9.124 = BIOS/BMC version checks at triage parity (exact-equality compare, no ordering; BIOS unknown-aware); 0.9.121 = host_qual launch debounce (LAUNCH_COOLDOWN_S); 0.9.120 = post-qualify-done engine (migration 032, observe/host_qual, qualclient)
+apply_flax_post_image_tag: "0.9.132"  # 0.9.132 = registry republishes on geometry ports change, post catch_all off, core services aligned; 0.9.131 = drop the power-lane occupant-change reset (wiped a swapped-in blade every pass while two reservations overlapped); 0.9.130 = fail-verdict evidence survives power-off (poller keeps qual on any verdict; population-check from vars.pop); 0.9.129 = completion latch (tile holds Done/fail after power-off, verified power-off, latch clears on swap/restart/off->on), post_node.vars.result, artifact modals, fio no-storage; 0.9.128 = fwd: live target_version overlay + stale post_fw.json row sweep; 0.9.127 = fwd: BMC entity-manager cache clear before flash; 0.9.126 = fix get_power_watts() chassis walk (real bug found post-deploy); 0.9.125 = post-observe combined power+sdr session, no watts clobber, redfish watts fallback; 0.9.124 = BIOS/BMC version checks at triage parity (exact-equality compare, no ordering; BIOS unknown-aware); 0.9.121 = host_qual launch debounce (LAUNCH_COOLDOWN_S); 0.9.120 = post-qualify-done engine (migration 032, observe/host_qual, qualclient)
+
+# Core flax services pinned to the SAME build as flax_post (2026-09-11). Until
+# now each ran the tag of its own last change (classify 0.9.104, observe
+# 0.9.87, reconcile 0.9.83, switch-sense 0.9.41, discover 0.9.46, console
+# 0.9.123) and the role defaults lagged too, so a routine apply could move a
+# service by accident. One tag for the whole bundle; bump them together.
+apply_flax_classify_image_tag: "0.9.132"
+apply_flax_observe_image_tag: "0.9.132"
+apply_flax_reconcile_image_tag: "0.9.132"
+apply_flax_switch_sense_image_tag: "0.9.132"
+apply_flax_discover_image_tag: "0.9.132"
+apply_flax_stack_flax_control_image_tag: "0.9.132"
 # SOL console (flax-post-sol Node relay + flax_post/web SOL modal), 2026-07-10.
 apply_flax_post_sol_image_tag: "0.9.117"
 
@@ -276,7 +288,13 @@ apply_flax_post_fw_mode: "detect"
 # eindhoven's deploy is declarative; other sites fall back to the defaults.
 flax_role_post_switches: ["rabbit-edam"]
 flax_role_post_prefixes: ["turtle"]
-flax_role_post_catch_all: true
+# NO catch_all (2026-09-11). The only post switch is rabbit-edam, plus the
+# turtle-gouda ports (wedge OOB mgmt) via the prefix claim. With catch_all a
+# rabbit-gouda port absent from geometry.json resolved to post and reconcile
+# steered it into a post VLAN (the et26 column landed on 25 while flax-classify
+# read a stale geometry). Unmatched ports now get NO role: no reservation, no
+# desired_port, nothing steered.
+flax_role_post_catch_all: false
 
 # The qual agent's iperf3 serializer = this site's BACKUP bang (prio 90, .2).
 # Rendered into post.tgz's flax-qual.env as FLAX_IPERF_SERVER.
