@@ -21,7 +21,7 @@ class _Deps:
 
     def _install_set_row(self):
         def set_row(port, **fields):
-            row = store.set_row(port, **fields)
+            row = store.set_row(port, mode=config.MODE, **fields)
             try:
                 bridge.mirror_row(state.set_state, port, row)
             except Exception:

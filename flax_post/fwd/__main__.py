@@ -31,7 +31,7 @@ class _Deps:
         so the main rack view renders the Firmware phase. The mirror is best-effort:
         a DB blip must never break a probe/flash write."""
         def set_row(port, **fields):
-            row = store.set_row(port, **fields)
+            row = store.set_row(port, mode=config.MODE, **fields)
             try:
                 bridge.mirror_row(state.set_state, port, row)
             except Exception:

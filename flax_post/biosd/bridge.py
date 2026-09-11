@@ -1,7 +1,7 @@
 """Mirror the agent's per-port row into post_state.vars.fw_bios (top-level key,
 shallow-merged by state.set_state), so the rack viewer renders the BIOS steps.
 Twin of flax_post.fwd.bridge (fw_bmc)."""
-_UI_FIELDS = ("phase", "current", "target", "fault_reason")
+_UI_FIELDS = ("phase", "current", "target", "fault_reason", "mode")
 
 
 def fw_bios_slice(row: dict) -> dict:

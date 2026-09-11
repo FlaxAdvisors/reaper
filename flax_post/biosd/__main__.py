@@ -26,7 +26,7 @@ class _Deps:
         post_state.vars.fw_bios so the main rack view renders the BIOS phase.
         The mirror is best-effort: a DB blip must never break a probe write."""
         def set_row(port, **fields):
-            row = store.set_row(port, **fields)
+            row = store.set_row(port, mode=config.MODE, **fields)
             try:
                 bridge.mirror_row(state.set_state, port, row)
             except Exception:

@@ -105,6 +105,26 @@ def _nic_steps(st):
     return checked, updated
 
 
+# The ONE Firmware gate (spec 2026-09-11 post-slot-ladder §7), used by the
+# slot ladder's fw-gates rung and by the tile's phase derivation. In detect
+# mode nothing will ever flash a needs_update blade, so the gate lets it
+# through and the tile keeps showing the update step as `cur`.
+_GATE_PASS = frozenset({"up_to_date", "done", "oem", "unsupported"})
+
+
+def fw_gate_passed(slice_, mode=None) -> bool:
+    """True when this firmware slice no longer blocks Qualify. A missing mode
+    on the row reads as 'detect' (rows written before the field existed)."""
+    if not slice_:
+        return False
+    phase = slice_.get("phase")
+    if phase in _GATE_PASS:
+        return True
+    if phase == "needs_update":
+        return (mode or slice_.get("mode") or "detect") == "detect"
+    return False
+
+
 def _firmware_steps(st):
     """Explicit done|cur|pending|fault per Firmware step from power_on + fw_bmc
     + fw_bios + fw_nic. BMC check/update precede BIOS (BIOS needs a node boot

@@ -26,6 +26,7 @@ def fw_bmc_slice(row):
         "target": target,
         "ver_class": _ver_class(current, target),
         "phase": row.get("phase"),
+        "mode": row.get("mode"),
         "percent": row.get("percent"),
         "fault_reason": row.get("fault_reason") or "",
     }

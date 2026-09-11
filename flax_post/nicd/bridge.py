@@ -7,6 +7,7 @@ flax_post.biosd.bridge (fw_bios)."""
 def fw_nic_slice(row: dict) -> dict:
     return {
         "phase": row.get("phase"),
+        "mode": row.get("mode"),
         "devices": row.get("devices") or [],
         "fault_reason": row.get("fault_reason") or "",
     }
