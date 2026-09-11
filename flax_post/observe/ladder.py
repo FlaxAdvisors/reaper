@@ -58,16 +58,23 @@ def evidence_needed(ladder):
     return _EVIDENCE.get(ladder.get("rung"))
 
 
+IDLE_INTERVAL_S = 15
+
+
 def interval_s(ladder) -> int:
-    """Worker cadence: 2s while a rung is in flight, 10s while polling the
-    battery, 15s when idle, faulted or done."""
+    """Worker cadence for a step that did something: 2s while a rung is in
+    flight, 10s while polling the battery, 15s when idle, faulted or done.
+
+    A step that neither acted nor changed the slice is idle whatever its rung
+    (a slot parked at power-on because it is off/latched/held/not allowlisted)
+    and the worker uses IDLE_INTERVAL_S directly — see worker.iterate_once."""
     if not ladder or ladder.get("fault"):
-        return 15
+        return IDLE_INTERVAL_S
     rung = ladder.get("rung")
     if rung == "qualify":
         return 10
     if rung in ("done", "bmc-pinged"):
-        return 15
+        return IDLE_INTERVAL_S
     return 2
 
 

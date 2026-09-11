@@ -361,6 +361,12 @@ def _process_blade(d, hosts, creds, ipmi_runner, ping, set_state, upsert_node, o
 
 
 _LATCH_SLICES = ("done", "qual", "pop")
+# How long after the worker's own `chassis power on` an observed off->on is
+# still the ENGINE's. The power-on action itself (powertriage) can take the
+# full 120s, and `prior` is read once at the start of each pass, so
+# power_on_pending alone is not proof of a human when the flag write and this
+# pass's probe interleave.
+ENGINE_POWER_WINDOW_S = int(os.environ.get("FLAX_POST_ENGINE_POWER_WINDOW", "120"))
 
 
 def clear_fields_for(prior_row, mac, power, now=None) -> dict:
@@ -370,8 +376,15 @@ def clear_fields_for(prior_row, mac, power, now=None) -> dict:
     post-slot-ladder §5, decision 8): the verdict latch clears (done/qual/pop,
     as before) and the ladder restarts past power-on via ladder.human_reset —
     UNLESS the slot worker issued this power-on itself, which it announces by
-    setting ladder.power_on_pending before the ipmitool call. Then this lane
-    writes nothing and the worker advances its own ladder.
+    setting ladder.power_on_pending before the ipmitool call (and, belt and
+    braces, by stamping ladder.last_power_attempt: a pass whose `prior`
+    predates the flag write still sees the attempt).
+
+    The reset is also stamped as the scalar `ladder_reset_at`, a key only this
+    lane writes. `ladder` itself is contended — set_state merges vars at the
+    top level, so a worker write of its cached slice lands on the same key and
+    can erase the reset before the worker ever reads it (worker.RealDeps.record
+    reconciles on the scalar, not on the slice).
 
     A DIFFERENT MAC on the port is deliberately NOT a reset (see gc.py; the
     116-reset incident on et25b3, 2026-09-11)."""
@@ -379,11 +392,17 @@ def clear_fields_for(prior_row, mac, power, now=None) -> dict:
         return {}
     if prior_row.get("power_on") != "off" or power != "on":
         return {}
-    if (prior_row.get("ladder") or {}).get("power_on_pending"):
+    lad = prior_row.get("ladder") or {}
+    if lad.get("power_on_pending"):
+        return {}
+    now = now if now is not None else time.time()
+    last_attempt = lad.get("last_power_attempt")
+    if last_attempt is not None and abs(now - last_attempt) <= ENGINE_POWER_WINDOW_S:
         return {}
     from . import ladder as _ladder
     out = {s: {} for s in _LATCH_SLICES}
-    out["ladder"] = _ladder.human_reset(now if now is not None else time.time())
+    out["ladder"] = _ladder.human_reset(now)
+    out["ladder_reset_at"] = now
     return out
 
 

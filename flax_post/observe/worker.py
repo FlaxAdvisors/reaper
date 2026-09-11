@@ -49,12 +49,26 @@ def snapshot_from_record(rec, *, allowed, hold) -> dict:
 
 
 def iterate_once(port, deps, is_allowed, now):
-    """One worker step for `port`. Returns the ladder written, or None for an
-    empty/unreserved slot. Never raises for a bad action: a failed power-on is
-    a ladder fault, everything else is logged and retried by the next step."""
+    """One worker step for `port`. Returns (ladder, seconds-to-sleep); the
+    ladder is None for an empty/unreserved slot. Never raises for a bad action:
+    a failed power-on is a ladder fault, everything else is logged and retried
+    by the next step.
+
+    Write discipline: post_state is only written when the slice actually
+    changed (48 workers rewriting an identical ladder every 2s is 11-24
+    UPDATEs/s against the pool the IPMI lanes share), and a step that neither
+    acted nor changed anything sleeps the idle interval instead of 2s."""
     rec = deps.record(port)
     if not rec or rec.get("empty") or not rec.get("bmc_ip"):
-        return None
+        # The blade was pulled (or never arrived). Anything we claimed for its
+        # boot window would otherwise leak forever: gc deletes the row, and no
+        # later step for this port ever emits `unclaim`.
+        if deps.holds_claim(port):
+            try:
+                deps.act("unclaim", {"port": port}, None)
+            except Exception:
+                log.exception("%s: unclaim of an emptied slot failed", port)
+        return None, ladder.IDLE_INTERVAL_S
     lad = rec.get("ladder") or None
     snap = snapshot_from_record(rec, allowed=is_allowed, hold=deps.hold(port))
     kind = ladder.evidence_needed(lad)
@@ -72,6 +86,16 @@ def iterate_once(port, deps, is_allowed, now):
         # (and the port) being held forever.
         log.exception("%s: evidence %s failed", port, kind)
     new, acts = ladder.advance(lad, snap, evidence, now)
+    baseline = lad
+    if "power-on" in acts:
+        # Persist power_on_pending BEFORE the chassis moves. The IPMI power
+        # lane reads `prior` at the start of each 6s pass and decides off->on
+        # is a HUMAN's when the flag is unset; writing it only after
+        # sol-mark (5s) + powertriage (120s) leaves a window where the lane
+        # clobbers done/qual/pop and rotates the SOL capture away from the
+        # engine's own power-on.
+        deps.write_ladder(port, new)
+        baseline = copy.deepcopy(new)
     for act in acts:
         if act == "poll-agent":
             if kind != "agent":                         # else already polled this step
@@ -95,8 +119,12 @@ def iterate_once(port, deps, is_allowed, now):
             break
         if act.startswith("probe-"):
             new.setdefault("probe_calls", {})[act[len("probe-"):]] = now
-    deps.write_ladder(port, new)
-    return new
+    changed = new != baseline
+    if changed:
+        deps.write_ladder(port, new)
+    if not acts and new == lad:
+        return new, ladder.IDLE_INTERVAL_S
+    return new, ladder.interval_s(new)
 
 
 class SlotFeed:
@@ -180,25 +208,52 @@ class RealDeps:
         stale non-faulted copy.
 
         The only OTHER writer of a slot's ladder is the IPMI lane's one-shot
-        human_reset (a human power-cycled the blade); it announces that write
-        by setting human_power_on on the ladder, which the worker pops on its
-        next advance(). So: an empty/missing slot forgets any cached ladder
-        (nothing to reconcile); a lane reset always wins over the cache (and
-        clears it, since the lane's write is the new baseline); otherwise
-        prefer the cached ladder, when one exists, over the feed's possibly
-        stale copy.
+        human_reset (a human power-cycled the blade). state.set_state merges
+        `vars` at the TOP level, so the lane's `ladder=human_reset(...)` and a
+        worker write of `ladder=<cached>` are last-writer-wins on one key and
+        the reset can be gone before anyone observes it. The lane therefore
+        also stamps the scalar `ladder_reset_at` — a key nothing else writes —
+        and that timestamp, not the contended `ladder` key, decides here:
+        newer than the cached slice's `since` means a human reset this blade
+        after our last write, so adopt ladder.human_reset(ladder_reset_at) and
+        drop the cache.
+
+        So: an empty/missing slot forgets any cached ladder (nothing to
+        reconcile); a reset newer than the cache wins (and clears it, since it
+        becomes the new baseline); a feed ladder carrying human_power_on with
+        no cache (or with no ladder_reset_at at all — rows written before the
+        scalar existed) is taken as-is; otherwise prefer the cached ladder,
+        when one exists, over the feed's possibly stale copy.
         """
         rec = self._feed.get(port)
         if not rec or rec.get("empty"):
             self._last_ladder.pop(port, None)
             return rec
-        if (rec.get("ladder") or {}).get("human_power_on"):
+        feed_lad = rec.get("ladder") or {}
+        reset_at = rec.get("ladder_reset_at")
+        cached = self._last_ladder.get(port)
+        if cached is None:
+            if feed_lad.get("human_power_on"):
+                return self._adopt_reset(rec, reset_at)
+            return rec
+        if reset_at is not None and reset_at > (cached.get("since") or 0):
+            self._last_ladder.pop(port, None)
+            return self._adopt_reset(rec, reset_at)
+        if reset_at is None and feed_lad.get("human_power_on"):
             self._last_ladder.pop(port, None)
             return rec
-        cached = self._last_ladder.get(port)
-        if cached is not None:
-            rec = dict(rec)
-            rec["ladder"] = cached
+        rec = dict(rec)
+        rec["ladder"] = cached
+        return rec
+
+    @staticmethod
+    def _adopt_reset(rec, reset_at):
+        """The record with the lane's reset as its ladder. A row with no
+        ladder_reset_at keeps whatever reset slice the feed carries."""
+        if reset_at is None:
+            return rec
+        rec = dict(rec)
+        rec["ladder"] = ladder.human_reset(reset_at)
         return rec
 
     def holds_claim(self, port) -> bool:
@@ -274,12 +329,12 @@ class RealDeps:
 
 def _run_slot(port, deps, is_allowed):
     while True:
-        lad = None
+        interval = ladder.IDLE_INTERVAL_S
         try:
-            lad = iterate_once(port, deps, is_allowed, deps.clock())
+            _, interval = iterate_once(port, deps, is_allowed, deps.clock())
         except Exception:
             log.exception("%s: worker iteration failed", port)
-        time.sleep(ladder.interval_s(lad))
+        time.sleep(interval)
 
 
 def start_workers(ports, deps, allowlist):

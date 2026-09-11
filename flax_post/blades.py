@@ -299,6 +299,9 @@ def _record(slot, c, st, settings, live_link, macs):
         "steps": steps,
         "step_notes": _step_notes(st),
         "ladder": st.get("ladder") or {},
+        # The IPMI lane's uncontended human-reset stamp; the slot worker
+        # reconciles its cached ladder against it (observe/worker.RealDeps).
+        "ladder_reset_at": st.get("ladder_reset_at"),
         "verdict": verdict,
         "launch_at": st.get("launch_at"),
         "fw_gates": fw_gates,
