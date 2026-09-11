@@ -27,8 +27,15 @@ HOLD_DIR = os.environ.get("FLAX_POST_POWER_HOLD_DIR", "/etc/flax/post-power-hold
 FWD_URL = os.environ.get("FLAX_POST_FWD_URL", "http://127.0.0.1:8447")
 BIOSD_URL = os.environ.get("FLAX_POST_BIOSD_URL", "http://127.0.0.1:8449")
 NICD_URL = os.environ.get("FLAX_POST_NICD_URL", "http://127.0.0.1:8450")
-PROBE_TIMEOUT_S = 10
 _PROBE_URL = {"probe-fwd": FWD_URL, "probe-biosd": BIOSD_URL, "probe-nicd": NICD_URL}
+# Per-daemon probe timeouts. fwd's probe is a Redfish round trip that measured
+# 21 s on a healthy onetree BMC (2026-09-11), so the old flat 10 s timed out on
+# every call; biosd/nicd are one or two ssh commands. Env: FLAX_POST_PROBE_TIMEOUT_<FWD|BIOSD|NICD>.
+PROBE_TIMEOUT_S = {
+    "probe-fwd": int(os.environ.get("FLAX_POST_PROBE_TIMEOUT_FWD", "60")),
+    "probe-biosd": int(os.environ.get("FLAX_POST_PROBE_TIMEOUT_BIOSD", "30")),
+    "probe-nicd": int(os.environ.get("FLAX_POST_PROBE_TIMEOUT_NICD", "30")),
+}
 
 
 def allowed(port, allowlist) -> bool:
@@ -176,10 +183,21 @@ def _ssh_ok(ip) -> bool:
     return rc == 0
 
 
-def _probe_daemon(url, port) -> None:
+def _probe_daemon(action, port, *, opener=None, timeout=None) -> bool:
+    """POST /probe/<port> to the daemon behind `action`. A timeout or a refused
+    connection is a one-line warning, not an exception: the daemon's own tick
+    is the backstop (spec §7), so the worker must never pay a traceback for it."""
+    url = _PROBE_URL[action]
+    t = PROBE_TIMEOUT_S[action] if timeout is None else timeout
+    open_ = opener or urllib.request.urlopen
     req = urllib.request.Request(f"{url}/probe/{port}", data=b"", method="POST")
-    with urllib.request.urlopen(req, timeout=PROBE_TIMEOUT_S) as resp:
-        log.info("probe %s/%s -> %s", url, port, resp.status)
+    try:
+        with open_(req, timeout=t) as resp:
+            log.info("probe %s/%s -> %s", url, port, resp.status)
+            return True
+    except (TimeoutError, OSError) as e:      # URLError is an OSError
+        log.warning("probe %s/%s failed after %ss: %s", url, port, t, e)
+        return False
 
 
 class RealDeps:
@@ -307,7 +325,7 @@ class RealDeps:
             log.info("%s: power-on %s -> ok=%s", port, bmc_ip, res.get("ok"))
             return res
         if action in _PROBE_URL:
-            _probe_daemon(_PROBE_URL[action], port)
+            _probe_daemon(action, port)
             return None
         log.warning("%s: unknown action %s", port, action)
         return None
