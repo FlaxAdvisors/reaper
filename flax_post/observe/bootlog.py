@@ -92,6 +92,15 @@ def _scan(path, since, match, ts_of, max_bytes):
 
 
 def tftp_seen(path, host_ip, since, *, max_bytes=_MAX_BYTES):
+    """Timestamp of the first dnsmasq-tftp `sent /<file> to <host ip>` line
+    after `since`, or None.
+
+    DELIBERATELY LOOSER than the spec's `sent .../ipxe.efi`: ANY file sent to
+    this IP over tftp is proof the blade got far enough to PXE, and the exact
+    first-stage filename differs by boot mode (ipxe.efi, undionly.kpxe, a
+    site's snponly.efi). A tighter match would fault a blade that in fact
+    booted. `host_ip` still matches as a whole token, and only in the line's
+    destination half."""
     tok = _ip_token(host_ip)
     def match(line):
         return " sent /" in line and " to " in line and tok.search(line.rsplit(" to ", 1)[-1]) is not None
