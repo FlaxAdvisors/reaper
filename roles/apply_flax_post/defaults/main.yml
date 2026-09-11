@@ -12,7 +12,7 @@ apply_flax_post_nginx_image: "nginx:1.27-alpine"
 apply_flax_post_db_password: ""
 apply_flax_post_fwd_port: 8447
 apply_flax_post_fwd_probe_s: 60
-apply_flax_post_sol_image_tag: "0.9.113"
+apply_flax_post_sol_image_tag: "0.9.118"
 apply_flax_post_sol_port: 8448
 apply_flax_post_fwd_workers: 48   # probe pass fan-out (parallel Redfish sessions); 1 = sequential
 apply_flax_post_share_base: "http://bang/export/share"
