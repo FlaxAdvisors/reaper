@@ -294,8 +294,12 @@ class RealDeps:
                 log.info("%s: claim not taken (held by another writer)", port)
             return took
         if action == "unclaim":
-            if port not in self._claimed:
-                return False                    # never ours; leave it for its owner
+            # Always call through: claims.unclaim is marker-guarded, so a
+            # foreign file is left in place regardless of what _claimed
+            # holds. _claimed can be empty here after a flax-post-observe
+            # restart even though the on-disk sentinel is still ours (see
+            # claims.claim's adoption path), so port-not-in-_claimed is no
+            # longer a precondition to drop.
             self._claimed.discard(port)
             return claims.unclaim(port)
         if action == "power-on":

@@ -25,16 +25,28 @@ MARKER = "flax-post-observe slot ladder"
 
 
 def claim(port, claim_dir=None) -> bool:
-    """Take the sentinel for `port`. True when THIS writer created it; False
-    when the file already exists (another lane's claim — left untouched) or
-    the write failed. Never overwrites."""
+    """Take the sentinel for `port`. True when THIS writer created it, or
+    when the file that already exists is OUR marker (adopted after a
+    restart: the on-disk sentinel survives a `flax-post-observe` restart
+    even though the in-process claimed-set does not). False when the file
+    exists and is foreign — left untouched, never overwritten — or the
+    write failed."""
     d = claim_dir or CLAIM_DIR
     path = os.path.join(d, port)
     try:
         os.makedirs(d, exist_ok=True)
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
     except FileExistsError:
-        log.info("claim %s already held (foreign or ours from an earlier run); not taken", port)
+        try:
+            with open(path) as f:
+                head = f.read(len(MARKER))
+        except OSError:
+            log.exception("claim read failed for %s", port)
+            return False
+        if head.startswith(MARKER):
+            log.debug("claim %s: adopted existing claim (ours from an earlier run)", port)
+            return True
+        log.info("claim %s already held (foreign); not taken", port)
         return False
     except OSError:
         log.exception("claim write failed for %s", port)
