@@ -360,26 +360,27 @@ def _process_blade(d, hosts, creds, ipmi_runner, ping, set_state, upsert_node, o
 
 
 _LATCH_SLICES = ("done", "qual", "pop")
-_OCCUPANT_SLICES = _LATCH_SLICES + ("fw_bmc", "fw_bios", "fw_nic")
 
 
 def clear_fields_for(prior_row, mac, power) -> dict:
     """Which post_state slices this power reading must reset (spec 2026-09-11 §2.3).
 
-    * occupant change: the device MAC differs from the row's bmc_mac -> every
-      per-blade slice goes back to {} (a swapped blade must not inherit the
-      previous occupant's verdict or firmware state).
-    * off->on on a latched row (done.verdict present): the operator (or a
-      firmware-enforce power-on) restarted the blade -> re-qualify. The Done
-      tail verifies its power-off before writing done, so the first transition
-      this lane can see after a verdict is off->on.
-    Anything else: nothing. {} for a slice is the same 'cleared' value
-    host_qual.restart_target writes."""
+    off->on on a latched row (done.verdict present): the operator (or a
+    firmware-enforce power-on) restarted the blade -> re-qualify. The Done
+    tail verifies its power-off before writing done, so the first transition
+    this lane can see after a verdict is off->on. {} for a slice is the same
+    'cleared' value host_qual.restart_target writes.
+
+    A DIFFERENT MAC on the port is deliberately NOT a reset. During a blade
+    swap a port carries two BMC reservations for a while (the old one until
+    post_reserve retires it), so the lane sees a different MAC on every pass
+    and would wipe the new blade's slices each time -- it did, 116 times on
+    et25b3 on 2026-09-11. Departure is the GC's job (observe/gc.py): it
+    deletes the row once the MAC is gone from the switch's own FDB, which is
+    the authoritative identity source; the new occupant then starts from an
+    empty row."""
     if not prior_row:
         return {}
-    prior_mac = prior_row.get("bmc_mac")
-    if mac and prior_mac and str(mac).lower() != str(prior_mac).lower():
-        return {s: {} for s in _OCCUPANT_SLICES}
     latched = (prior_row.get("done") or {}).get("verdict") is not None
     if latched and prior_row.get("power_on") == "off" and power == "on":
         return {s: {} for s in _LATCH_SLICES}
@@ -399,8 +400,7 @@ def _process_blade_power(d, creds, ipmi_runner, ping, set_state, switch=SWITCH, 
     power = probe_power(bmc_ip, creds, ipmi_runner, redfish_client=rc) if bmc_ip else None
     cleared = clear_fields_for(prior_row, d.get("mac"), power)
     if cleared:
-        log.info("ipmi: %s reset %s (%s)", port, ",".join(sorted(cleared)),
-                 "occupant changed" if "fw_bmc" in cleared else "powered on after a verdict")
+        log.info("ipmi: %s reset %s (powered on after a verdict)", port, ",".join(sorted(cleared)))
     try:
         set_state(port, switch=switch, bmc_mac=d.get("mac"),
                   power_on=power, bmc_pinged=bmc_pinged, **cleared)

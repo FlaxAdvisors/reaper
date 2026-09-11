@@ -224,7 +224,14 @@ def fetch_fleet():
     state = fetch_post_state()
     # host_mac isn't in post_state -- pull it from post_node, keyed on bmc_mac
     # (post_node's primary key, so this dict is 1:1, no collision risk).
-    host_mac_by_bmc = {r["bmc_mac"]: r["host_mac"] for r in fetch_post_node() if r.get("bmc_mac")}
+    nodes = fetch_post_node()
+    host_mac_by_bmc = {r["bmc_mac"]: r["host_mac"] for r in nodes if r.get("bmc_mac")}
+    # The verdict that counts is the RECORDED one (post_node.vars.result, pushed
+    # by the engine the moment a run reaches Done). The slot's live verdict is
+    # kept as a separate, off-by-default column: it clears on power-on/swap and
+    # rows from before the recording existed carry verdicts nobody trusts.
+    verdict_by_bmc = {r["bmc_mac"]: r.get("verdict") for r in nodes if r.get("bmc_mac")}
+    finished_by_bmc = {r["bmc_mac"]: r.get("finished") for r in nodes if r.get("bmc_mac")}
     bios = _cached("bios_json", lambda: _read_json("/etc/flax/post_bios_fw.json"))
     bmc = _cached("bmc_json", lambda: _read_json("/etc/flax/post_fw.json"))
     rows = []
@@ -244,7 +251,9 @@ def fetch_fleet():
             "bmc_fw": m.get("current_version") or "—",
             "bmc_phase": m.get("phase") or "no-data",
             "bmc_ip": m.get("bmc_ip") or "—",
-            "verdict": s.get("verdict") or "",
+            "verdict": verdict_by_bmc.get(s.get("bmc_mac")) or "",
+            "finished": finished_by_bmc.get(s.get("bmc_mac")) or "",
+            "slot_verdict": s.get("verdict") or "",
             "pop": s.get("pop") or "",
             "power_on": s.get("power_on") or "",
             "state_updated": s["updated_at"],
@@ -262,11 +271,12 @@ VIEWS = {
             ("order_no", "Order"), ("bmc_mac", "BMC MAC"), ("host_mac", "Host MAC"),
             ("bios_fw", "BIOS FW"), ("bios_phase", "BIOS status"),
             ("bmc_fw", "BMC FW"), ("bmc_phase", "BMC status"), ("bmc_ip", "BMC IP"),
-            ("verdict", "Verdict (live)"), ("pop", "Population"), ("power_on", "Power"),
+            ("verdict", "Verdict"), ("finished", "Finished"), ("slot_verdict", "Slot verdict (live)"),
+            ("pop", "Population"), ("power_on", "Power"),
             ("state_updated", "post_state updated_at"), ("link", "Node page"),
         ],
-        "default": ["port", "serial", "verdict", "pop", "power_on", "bios_fw", "bios_phase",
-                    "bmc_fw", "bmc_phase", "link"],
+        "default": ["port", "serial", "verdict", "finished", "pop", "power_on", "bios_fw",
+                    "bios_phase", "bmc_fw", "bmc_phase", "link"],
         "fetch": fetch_fleet,
     },
     "post_state": {
@@ -286,7 +296,7 @@ VIEWS = {
             ("attached", "Attached?"), ("bmc_mac", "BMC MAC"), ("serial", "Serial"),
             ("host_mac", "Host MAC"), ("order_no", "Order"), ("last_switch", "Last switch"),
             ("last_port", "Last port"), ("customer", "Customer"),
-            ("updated_at", "Updated at"), ("verdict", "Verdict (recorded)"),
+            ("updated_at", "Updated at"), ("verdict", "Verdict"),
             ("finished", "Finished"), ("link", "Node page"),
         ],
         "default": ["attached", "bmc_mac", "serial", "last_port", "order_no", "verdict",
@@ -310,9 +320,9 @@ PHASE_CLASS = {
 
 def _cell(col, value):
     value = "" if value is None else str(value)
-    if col in ("verdict", "pop", "power_on") and not value:
+    if col in ("verdict", "slot_verdict", "pop", "power_on") and not value:
         return '<span class="pill dim">—</span>'
-    if col in ("bios_phase", "bmc_phase", "attached", "verdict", "pop", "power_on"):
+    if col in ("bios_phase", "bmc_phase", "attached", "verdict", "slot_verdict", "pop", "power_on"):
         cls = PHASE_CLASS.get(value, "dim")
         return f'<span class="pill {cls}">{html.escape(value)}</span>'
     if col == "link" and value:
