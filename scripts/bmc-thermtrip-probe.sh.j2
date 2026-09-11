@@ -1,0 +1,54 @@
+#!/bin/bash
+# bmc-thermtrip-probe -- are the CPU thermal-trip latches set on this sled?
+#
+# RENDERED FROM THE SITE VAULT by roles/apply_bmc_scripts. The password below
+# is the BMC ROOT SHELL credential. RULE ZERO: never echo it. sshpass -e keeps
+# it out of argv and ps.
+#
+# Design: docs/superpowers/specs/2026-09-11-thermtrip-tile-design.md
+#
+# READ-ONLY. One remote command: cat /sys/kernel/debug/gpio. The two lines
+# CPU0_THERMTRIP_LATCH / CPU1_THERMTRIP_LATCH are active-low: "lo" means the
+# latch is SET (the CPU tripped and the sled will power off ~25 s after any
+# power-on), "hi" means clear. This is the same read bmc-blade-power-cycle
+# makes in its preflight; it lives here so bmcfw can ask without cycling.
+#
+#   probe <bmc-ip> -> {"cpu0":"latched"|"clear","cpu1":"latched"|"clear"}
+#
+# Errors as {"error":"<code>"}: ssh_unreachable, gpio_unreadable.
+# CONTRACT with bmcfw.thermtrip: no failure path may emit a "cpu0" key.
+set -u
+export SSHPASS={{ bmc_root_password | quote }}
+SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10"
+
+bmc() {
+    if [ -n "${FLAX_BMC_REMOTE_EXEC:-}" ]; then
+        "$FLAX_BMC_REMOTE_EXEC" "$1" "$2"
+        return $?
+    fi
+    sshpass -e ssh -n -T $SSH_OPTS "root@$1" "$2"
+}
+
+json_err() { printf '{"error":"%s"}\n' "$1"; exit 1; }
+
+# Prints "latched", "clear", or nothing for the named line in the gpio dump.
+level() {  # $1 = gpio dump, $2 = line name
+    v=$(printf '%s\n' "$1" | grep -E "\($2\b" | sed -E 's/.*\) +(in|out) +(lo|hi).*/\2/' | head -n 1)
+    case "$v" in lo) echo latched ;; hi) echo clear ;; *) echo "" ;; esac
+}
+
+cmd_probe() {
+    IP="$1"
+    dump=$(bmc "$IP" 'cat /sys/kernel/debug/gpio 2>/dev/null') || dump=""
+    [ -n "$dump" ] || json_err ssh_unreachable
+    c0=$(level "$dump" CPU0_THERMTRIP_LATCH)
+    c1=$(level "$dump" CPU1_THERMTRIP_LATCH)
+    [ -n "$c0" ] && [ -n "$c1" ] || json_err gpio_unreadable
+    printf '{"cpu0":"%s","cpu1":"%s"}\n' "$c0" "$c1"
+    exit 0
+}
+
+case "${1:-}" in
+    probe) [ $# -eq 2 ] || { echo "usage: bmc-thermtrip-probe probe <bmc-ip>" >&2; exit 2; }; cmd_probe "$2" ;;
+    *) echo "usage: bmc-thermtrip-probe probe <bmc-ip>" >&2; exit 2 ;;
+esac
