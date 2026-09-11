@@ -359,16 +359,51 @@ def _process_blade(d, hosts, creds, ipmi_runner, ping, set_state, upsert_node, o
             log.exception("ipmi: work-record write failed for %s", port)
 
 
-def _process_blade_power(d, creds, ipmi_runner, ping, set_state, switch=SWITCH, make_redfish=None):
-    """Fast lane for one BMC: ping + chassis power only, merged into live post_state."""
+_LATCH_SLICES = ("done", "qual", "pop")
+_OCCUPANT_SLICES = _LATCH_SLICES + ("fw_bmc", "fw_bios", "fw_nic")
+
+
+def clear_fields_for(prior_row, mac, power) -> dict:
+    """Which post_state slices this power reading must reset (spec 2026-09-11 §2.3).
+
+    * occupant change: the device MAC differs from the row's bmc_mac -> every
+      per-blade slice goes back to {} (a swapped blade must not inherit the
+      previous occupant's verdict or firmware state).
+    * off->on on a latched row (done.verdict present): the operator (or a
+      firmware-enforce power-on) restarted the blade -> re-qualify. The Done
+      tail verifies its power-off before writing done, so the first transition
+      this lane can see after a verdict is off->on.
+    Anything else: nothing. {} for a slice is the same 'cleared' value
+    host_qual.restart_target writes."""
+    if not prior_row:
+        return {}
+    prior_mac = prior_row.get("bmc_mac")
+    if mac and prior_mac and str(mac).lower() != str(prior_mac).lower():
+        return {s: {} for s in _OCCUPANT_SLICES}
+    latched = (prior_row.get("done") or {}).get("verdict") is not None
+    if latched and prior_row.get("power_on") == "off" and power == "on":
+        return {s: {} for s in _LATCH_SLICES}
+    return {}
+
+
+def _process_blade_power(d, creds, ipmi_runner, ping, set_state, switch=SWITCH, make_redfish=None,
+                         prior_row=None):
+    """Fast lane for one BMC: ping + chassis power only, merged into live post_state.
+    prior_row (this port's row from the last read_state) lets the lane notice an
+    off->on transition or a swapped blade and reset the slices that must not
+    survive it (clear_fields_for)."""
     port = d["port"]
     bmc_ip = d.get("lease_ip") or d.get("reservation_ip")
     bmc_pinged = bool(bmc_ip and ping(bmc_ip))
     rc = make_redfish(bmc_ip) if (make_redfish and bmc_ip) else None
     power = probe_power(bmc_ip, creds, ipmi_runner, redfish_client=rc) if bmc_ip else None
+    cleared = clear_fields_for(prior_row, d.get("mac"), power)
+    if cleared:
+        log.info("ipmi: %s reset %s (%s)", port, ",".join(sorted(cleared)),
+                 "occupant changed" if "fw_bmc" in cleared else "powered on after a verdict")
     try:
         set_state(port, switch=switch, bmc_mac=d.get("mac"),
-                  power_on=power, bmc_pinged=bmc_pinged)
+                  power_on=power, bmc_pinged=bmc_pinged, **cleared)
     except Exception:
         log.exception("ipmi: failed to write power for %s", port)
 
@@ -429,7 +464,8 @@ def run_once(devices=None, creds=None, ipmi_runner=None, ping=None,
 
 
 def run_power_once(devices=None, creds=None, ipmi_runner=None, ping=None,
-                   set_state=None, workers=None, switch=None, make_redfish=None) -> None:
+                   set_state=None, workers=None, switch=None, make_redfish=None,
+                   prior=None) -> None:
     """FAST power-only pass: ping + chassis power for every post BMC, fanned out.
 
     Decoupled from run_once so a power-state change shows on the rack tile in ~one
@@ -458,10 +494,18 @@ def run_power_once(devices=None, creds=None, ipmi_runner=None, ping=None,
             if d.get("kind") == "bmc" and d.get("switch") == switch and d.get("port")]
     if not bmcs:
         return
+    if prior is None:
+        # One read per pass: the previous power reading and verdict per port,
+        # so the lane can clear a completion latch on off->on (clear_fields_for).
+        try:
+            prior = state.read_state()
+        except Exception:
+            log.exception("ipmi: could not read prior state; latch clearing skipped this pass")
+            prior = {}
 
     def work(d):
         _process_blade_power(d, creds, ipmi_runner, ping, set_state, switch=switch,
-                             make_redfish=make_redfish)
+                             make_redfish=make_redfish, prior_row=prior.get(d["port"]))
 
     n = DEFAULT_WORKERS if workers is None else workers
     n = max(1, min(n, len(bmcs)))
