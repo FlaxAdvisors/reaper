@@ -10,6 +10,7 @@ import logging
 import os
 
 from .. import consume, geometry, queries, state
+from . import claims
 
 log = logging.getLogger("flax-post.observe.gc")
 
@@ -86,6 +87,12 @@ def gc_post_state(now=None, states=None, reserved_ports=None, switch_facts=None,
         return {"deleted": 0, "latched": 0, "cleared": 0, "skipped": "switch_unreachable"}
     plan = plan_state_gc(states, reserved_ports, switch_facts, now, grace_secs)
     for port in plan.deletes:
+        # The row is going away with whatever ladder it held, so drop the boot
+        # window's claim sentinel first — a blade pulled mid-boot would
+        # otherwise leave /run/flax/bmc-fw-active/<port> behind forever and
+        # keep reconcile off the port. Marker-guarded: a foreign claim (triage
+        # flashing the same port name on rabbit-gouda) is left alone.
+        claims.unclaim(port)
         state.delete_state(port)
     for port, iso in plan.latch_writes.items():
         state.set_state(port, gc_gone_since=iso)

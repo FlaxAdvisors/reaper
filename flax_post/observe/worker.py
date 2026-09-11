@@ -162,6 +162,10 @@ class RealDeps:
         self._feed = feed
         self._store = store or _state
         self._last_ladder = {}
+        # Ports whose /run/flax/bmc-fw-active sentinel THIS worker created.
+        # The directory is shared with triage's bmc_fw worker (claims.py), so
+        # we only ever drop a claim we actually took.
+        self._claimed = set()
 
     def record(self, port):
         """The feed's record for `port`, with its ladder slice reconciled
@@ -197,6 +201,12 @@ class RealDeps:
             rec["ladder"] = cached
         return rec
 
+    def holds_claim(self, port) -> bool:
+        """True when this worker took the claim sentinel for `port` and has
+        not dropped it (iterate_once's empty-slot path uses it so a blade
+        pulled mid-boot does not leak the claim forever)."""
+        return port in self._claimed
+
     def hold(self, port):
         return os.path.exists(os.path.join(HOLD_DIR, port))
 
@@ -222,8 +232,16 @@ class RealDeps:
             log.info("%s: sol mark -> %s", port, out)
             return out
         if action == "claim":
-            return claims.claim(port)
+            took = claims.claim(port)
+            if took:
+                self._claimed.add(port)
+            else:
+                log.info("%s: claim not taken (held by another writer)", port)
+            return took
         if action == "unclaim":
+            if port not in self._claimed:
+                return False                    # never ours; leave it for its owner
+            self._claimed.discard(port)
             return claims.unclaim(port)
         if action == "power-on":
             res = actions.run_power(bmc_ip, "on", blocked=False)
