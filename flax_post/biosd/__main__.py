@@ -75,10 +75,15 @@ def _scan_loop(deps, registry):
 
 def main():
     logging.basicConfig(level=logging.INFO)
-    log.info("flax-post-biosd starting; mode=%s allow=%s max_parallel=%d",
-             config.MODE, config.ENABLE_PORTS or "(all)", config.MAX_PARALLEL)
+    log.info("flax-post-biosd starting; mode=%s allow=%s max_parallel=%d control=%s:%d",
+             config.MODE, config.ENABLE_PORTS or "(all)", config.MAX_PARALLEL,
+             config.CONTROL_HOST, config.CONTROL_PORT)
     deps = _Deps()
     registry = Registry()
+    from ..probe_server import ProbeServer
+    from .service import probe_port
+    ProbeServer(config.CONTROL_HOST, config.CONTROL_PORT,
+                lambda port: probe_port(deps, registry, port)).start()
     _scan_loop(deps, registry)
 
 

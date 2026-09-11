@@ -13,3 +13,5 @@ FLASH_TIMEOUT = int(os.environ.get("POST_NIC_FLASH_TIMEOUT", "900"))
 # Test knob: force the verified BMC cold-reset after a flash even when no UEFI
 # bit was toggled, to exercise the mc-reset-cold / ssh-reboot path on HW.
 FORCE_BMC_RESET = os.environ.get("POST_NIC_FW_FORCE_BMC_RESET", "").lower() in ("1", "true", "yes")
+CONTROL_HOST = os.environ.get("POST_NIC_FW_CONTROL_HOST", "127.0.0.1")
+CONTROL_PORT = int(os.environ.get("POST_NIC_FW_CONTROL_PORT", "8450"))
