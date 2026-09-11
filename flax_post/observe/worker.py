@@ -122,7 +122,7 @@ def iterate_once(port, deps, is_allowed, now):
     changed = new != baseline
     if changed:
         deps.write_ladder(port, new)
-    if not acts and new == lad:
+    if not acts and new == lad and ladder.evidence_needed(new) is None:
         return new, ladder.IDLE_INTERVAL_S
     return new, ladder.interval_s(new)
 
