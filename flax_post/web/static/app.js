@@ -95,7 +95,12 @@ function App() {
     phaseKey(b) { return !b ? 'grey' : this.faulted(b) ? 'fault' : (b.phase || 'discover').toLowerCase(); },
     phaseSegs(b) {
       const cur = this.pidx(b), fault = this.faulted(b);
-      return this.phases.map((p, i) => (fault && i === cur) ? 'fault' : i < cur ? 'done' : i === cur ? 'cur' : '');
+      // The current phase is amber while it runs. Done is the last phase, so
+      // nothing ever moves past it: once every Done step is done (identify,
+      // power-off, done) the segment must read green, not amber forever.
+      const v = Object.values((b && b.steps && b.steps[b.phase]) || {});
+      const complete = !fault && v.length > 0 && v.every((x) => x === 'done' || x === 'skip');
+      return this.phases.map((p, i) => (fault && i === cur) ? 'fault' : (i < cur || (i === cur && complete)) ? 'done' : i === cur ? 'cur' : '');
     },
     stepSegs(b) {
       const s = (b.steps && b.steps[b.phase]) || {};
