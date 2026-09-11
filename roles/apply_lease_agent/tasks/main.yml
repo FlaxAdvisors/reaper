@@ -95,6 +95,13 @@
     mode: "0644"
   when: apply_lease_agent_redfish_stat.stat.exists
 
+# geometry.json is bind-mounted as a SINGLE FILE into flax-classify,
+# flax-observe and the flax-control console. copy's atomic rename gives the
+# path a new inode, so a running container keeps reading the OLD file until
+# it restarts (2026-09-11: flax-classify had been on a 24-row geometry since
+# 2026-09-02 while the host file said 36, then 33 -- every rabbit-gouda port
+# missing from its stale copy fell to post's catch_all and reconcile steered
+# the et26 column to VLAN 25). Same trap as the nicd/biosd manifest mounts.
 - name: Deploy geometry.json
   become: true
   ansible.builtin.copy:
@@ -103,6 +110,7 @@
     owner: root
     group: root
     mode: "0644"
+  notify: restart geometry readers
 
 # turtle-geometry.json is optional — only sites with a turtle switch have it.
 # Mirrors the credentials-redfish.json guard: stat on the controller, deploy
@@ -138,6 +146,7 @@
     owner: root
     group: root
     mode: "0644"
+  notify: restart no-steer readers
 
 # Site list of RJ45-LOM "bmc-only" families (e.g. capri): one physical port =
 # ONE MAC for both BMC and host NIC. flax-classify uses this to suppress the

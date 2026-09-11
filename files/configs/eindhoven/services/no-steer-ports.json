@@ -1,3 +1,6 @@
 [
-  {"switch": "rabbit-gouda", "port": "Ethernet32/1", "reason": "customer free-pool DHCP vlan 31 / downstream peer switch (v31)"}
+  {"switch": "rabbit-gouda", "port": "Ethernet32/1", "reason": "customer free-pool DHCP vlan 31 / downstream peer switch (v31)"},
+  {"switch": "rabbit-gouda", "port": "Ethernet8/4", "reason": "OU37 (Zone F top row): Left/Center hold the two bang servers, Right unused; not a DUT row, removed from geometry.json 2026-09-11"},
+  {"switch": "rabbit-gouda", "port": "Ethernet24/4", "reason": "OU37 (Zone F top row): Left/Center hold the two bang servers, Right unused; not a DUT row, removed from geometry.json 2026-09-11"},
+  {"switch": "rabbit-gouda", "port": "Ethernet26/4", "reason": "OU37 (Zone F top row): Left/Center hold the two bang servers, Right unused; not a DUT row, removed from geometry.json 2026-09-11"}
 ]

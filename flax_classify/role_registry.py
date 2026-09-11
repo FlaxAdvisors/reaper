@@ -128,8 +128,19 @@ def publish_roles(pool, defs):
         with conn.transaction():
             cur = conn.execute("SELECT role, definition, generation FROM roles")
             existing = {r[0]: (r[1], r[2]) for r in cur.fetchall()}
+            # The expanded port claims are NOT part of the stored definition
+            # (_public_def strips _ports), so a ports_from geometry change
+            # with unchanged roles.d used to leave role_universe stale for
+            # ever: on 2026-09-11 it still carried a 24-port triage universe
+            # while geometry.json said 33. Compare the published port rows too.
+            cur_ports = {(r[0], r[1], r[2]) for r in conn.execute(
+                "SELECT role, switch, port FROM role_universe WHERE kind = 'port'"
+            ).fetchall()}
+            want_ports = {(role, sw, tok) for role, d in defs.items()
+                          for sw, toks in d["_ports"].items() for tok in toks}
             if (set(existing) == set(defs)
-                    and all(existing[r][0] == _public_def(d) for r, d in defs.items())):
+                    and all(existing[r][0] == _public_def(d) for r, d in defs.items())
+                    and cur_ports == want_ports):
                 return max((g for _, g in existing.values()), default=0)
             gen = max((g for _, g in existing.values()), default=0) + 1
             conn.execute("DELETE FROM role_universe")

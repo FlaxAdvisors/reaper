@@ -2,3 +2,21 @@
 # No handlers. This role only writes /etc/flax config + the role registry;
 # the consuming flax-* containers pick changes up on their own restart cadence
 # (roles.d needs a manual flax-classify restart, noted in tasks/main.yml).
+
+# try-restart: only bounces units that are running (on the backup bang the
+# VIP-gated units are inactive and must stay so). The console container is
+# a plain docker restart (not compose up -- see docs/build-and-deploy.md §7).
+- name: restart geometry readers
+  become: true
+  ansible.builtin.shell: |
+    systemctl try-restart flax-classify flax-observe || true
+    docker restart flax-stack-flax-control-1 >/dev/null 2>&1 || true
+  changed_when: true
+
+# no-steer-ports.json is read at startup by flax-reconcile (steer exclusions)
+# and flax-observe; same single-file bind-mount trap as geometry.json.
+- name: restart no-steer readers
+  become: true
+  ansible.builtin.shell: |
+    systemctl try-restart flax-reconcile flax-observe || true
+  changed_when: true
