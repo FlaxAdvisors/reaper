@@ -13,15 +13,23 @@
 # flashed unit can still report stale sensors and SDR entries. Deleting the file
 # forces a rebuild from the actual hardware on the next start.
 #
-# THERE IS DELIBERATELY NO `systemctl restart` HERE. This runs BEFORE the flash,
-# and the flash's own activation reboot restarts EntityManager. Verified on
-# 172.17.10.101: the file was removed, the BMC rebooted, and the file came back
-# regenerated with EntityManager active and zero failed units. Restarting the
-# service as well would be a second disruption buying nothing.
+# THE RESTART IS LOAD-BEARING WHEN THIS RUNS AS A SINGLETON. EntityManager
+# writes its in-memory model back to system.json on its own (seen 2026-09-11 on
+# 172.17.7.101: mtime advancing on a BMC up for 15 h), so an `rm` alone is undone
+# within minutes unless something restarts the service -- an operator running
+# this by hand got nothing. The unit is Type=dbus, so `systemctl restart` returns
+# only once EntityManager owns its bus name again; the echoed RESTARTED token
+# therefore means "up and rebuilding from hardware", not merely "asked". The
+# pre-flash callers (bmcfw, biosfw) key on "cleared" alone -- for them the
+# restart is a few-second sensor blip on a BMC about to reboot anyway.
 #
-#   clear <bmc-ip>   ->  {"cleared":true}
+#   clear <bmc-ip>   ->  {"cleared":true,"restarted":true}
+#                    ->  {"cleared":true,"restarted":false}   rm ran, restart did
+#                                                             not; exit 1
 #                    ->  {"error":"ssh_unreachable"} | {"error":"rm_failed"}
 set -u
+
+EM_UNIT=xyz.openbmc_project.EntityManager.service
 
 export SSHPASS={{ bmc_root_password | quote }}
 SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10"
@@ -46,11 +54,19 @@ cmd_clear() {
     # to delete. The echoed token is load-bearing -- without it a successful
     # no-op and an unreachable BMC both produce empty output and could not be
     # told apart, and the caller records a reason on failure.
-    out=$(bmc "$ip" 'rm -f /var/configuration/system.json && echo CLEARED') \
-        || json_err ssh_unreachable
+    # One ssh session for both steps; each echoes its own token so the caller
+    # can tell "cleared but EntityManager did not come back" from "never got
+    # there". Read the tokens BEFORE the exit status: a failed restart makes the
+    # chain non-zero, and that must not be mistaken for an unreachable BMC.
+    out=$(bmc "$ip" "rm -f /var/configuration/system.json && echo CLEARED \
+        && systemctl restart $EM_UNIT && systemctl is-active --quiet $EM_UNIT \
+        && echo RESTARTED")
+    rc=$?
     case "$out" in
-        *CLEARED*) printf '{"cleared":true}\n' ;;
-        *)         json_err rm_failed ;;
+        *CLEARED*RESTARTED*) printf '{"cleared":true,"restarted":true}\n' ;;
+        *CLEARED*)           printf '{"cleared":true,"restarted":false}\n'; exit 1 ;;
+        *)  [ "$rc" -ne 0 ] && json_err ssh_unreachable
+            json_err rm_failed ;;
     esac
 }
 
