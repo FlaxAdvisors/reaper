@@ -11,6 +11,7 @@ import logging
 import os
 import subprocess
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from .. import queries, records, state
@@ -360,31 +361,49 @@ def _process_blade(d, hosts, creds, ipmi_runner, ping, set_state, upsert_node, o
 
 
 _LATCH_SLICES = ("done", "qual", "pop")
+# How long after the worker's own `chassis power on` an observed off->on is
+# still the ENGINE's. The power-on action itself (powertriage) can take the
+# full 120s, and `prior` is read once at the start of each pass, so
+# power_on_pending alone is not proof of a human when the flag write and this
+# pass's probe interleave.
+ENGINE_POWER_WINDOW_S = int(os.environ.get("FLAX_POST_ENGINE_POWER_WINDOW", "120"))
 
 
-def clear_fields_for(prior_row, mac, power) -> dict:
-    """Which post_state slices this power reading must reset (spec 2026-09-11 §2.3).
+def clear_fields_for(prior_row, mac, power, now=None) -> dict:
+    """Which post_state slices this power reading must reset.
 
-    off->on on a latched row (done.verdict present): the operator (or a
-    firmware-enforce power-on) restarted the blade -> re-qualify. The Done
-    tail verifies its power-off before writing done, so the first transition
-    this lane can see after a verdict is off->on. {} for a slice is the same
-    'cleared' value host_qual.restart_target writes.
+    off->on is a restart of the blade's whole story (spec 2026-09-11
+    post-slot-ladder §5, decision 8): the verdict latch clears (done/qual/pop,
+    as before) and the ladder restarts past power-on via ladder.human_reset —
+    UNLESS the slot worker issued this power-on itself, which it announces by
+    setting ladder.power_on_pending before the ipmitool call (and, belt and
+    braces, by stamping ladder.last_power_attempt: a pass whose `prior`
+    predates the flag write still sees the attempt).
 
-    A DIFFERENT MAC on the port is deliberately NOT a reset. During a blade
-    swap a port carries two BMC reservations for a while (the old one until
-    post_reserve retires it), so the lane sees a different MAC on every pass
-    and would wipe the new blade's slices each time -- it did, 116 times on
-    et25b3 on 2026-09-11. Departure is the GC's job (observe/gc.py): it
-    deletes the row once the MAC is gone from the switch's own FDB, which is
-    the authoritative identity source; the new occupant then starts from an
-    empty row."""
+    The reset is also stamped as the scalar `ladder_reset_at`, a key only this
+    lane writes. `ladder` itself is contended — set_state merges vars at the
+    top level, so a worker write of its cached slice lands on the same key and
+    can erase the reset before the worker ever reads it (worker.RealDeps.record
+    reconciles on the scalar, not on the slice).
+
+    A DIFFERENT MAC on the port is deliberately NOT a reset (see gc.py; the
+    116-reset incident on et25b3, 2026-09-11)."""
     if not prior_row:
         return {}
-    latched = (prior_row.get("done") or {}).get("verdict") is not None
-    if latched and prior_row.get("power_on") == "off" and power == "on":
-        return {s: {} for s in _LATCH_SLICES}
-    return {}
+    if prior_row.get("power_on") != "off" or power != "on":
+        return {}
+    lad = prior_row.get("ladder") or {}
+    if lad.get("power_on_pending"):
+        return {}
+    now = now if now is not None else time.time()
+    last_attempt = lad.get("last_power_attempt")
+    if last_attempt is not None and abs(now - last_attempt) <= ENGINE_POWER_WINDOW_S:
+        return {}
+    from . import ladder as _ladder
+    out = {s: {} for s in _LATCH_SLICES}
+    out["ladder"] = _ladder.human_reset(now)
+    out["ladder_reset_at"] = now
+    return out
 
 
 def _process_blade_power(d, creds, ipmi_runner, ping, set_state, switch=SWITCH, make_redfish=None,
@@ -400,7 +419,7 @@ def _process_blade_power(d, creds, ipmi_runner, ping, set_state, switch=SWITCH, 
     power = probe_power(bmc_ip, creds, ipmi_runner, redfish_client=rc) if bmc_ip else None
     cleared = clear_fields_for(prior_row, d.get("mac"), power)
     if cleared:
-        log.info("ipmi: %s reset %s (powered on after a verdict)", port, ",".join(sorted(cleared)))
+        log.info("ipmi: %s reset %s (human power-on)", port, ",".join(sorted(cleared)))
     try:
         set_state(port, switch=switch, bmc_mac=d.get("mac"),
                   power_on=power, bmc_pinged=bmc_pinged, **cleared)

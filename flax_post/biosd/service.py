@@ -59,6 +59,33 @@ class Registry:
             return port in self._active
 
 
+def _probe_host(deps, registry, dev) -> dict | None:
+    """Classify one host; returns the row written, the skipped dict when the
+    port is claimed, or None when the probe raised."""
+    port = dev.get("port")
+    try:
+        ip = dev["host_ip"]
+        if registry is not None and registry.busy(port):
+            _reprobe_inflight(deps, registry, port, ip)
+            return {"port": port, "skipped": "flashing"}
+        rc, dmi = deps.run(ip, DMI_SCRIPT)
+        if rc != 0:
+            return deps.set_row(port, phase="unreachable", current=None, target=None, fault_reason="")
+        entry = deps.matcher.match(dmi)
+        if entry is None:
+            return deps.set_row(port, phase="unsupported", current=None, target=None, fault_reason="")
+        rc, out = deps.run(ip, driver.check_script(entry))
+        current = driver.parse_bios_version(out)
+        phase = classify.classify(current, entry["target"])
+        # `entry` rides along on the row so enforce_once has the flags/urls for
+        # the flash without re-matching dmidecode output mid-enforce pass.
+        return deps.set_row(port, phase=phase, current=current, target=entry["target"],
+                            fault_reason="", entry=entry)
+    except Exception:
+        log.exception("biosd probe failed for %s", port)
+        return None
+
+
 def probe_once(deps, registry=None, workers=None):
     """One probe pass over every post host: classify current-vs-target into the store.
 
@@ -71,39 +98,25 @@ def probe_once(deps, registry=None, workers=None):
     if not hosts:
         return
 
-    def work(dev):
-        port = dev.get("port")
-        try:
-            ip = dev["host_ip"]
-            if registry is not None and registry.busy(port):
-                _reprobe_inflight(deps, registry, port, ip)
-                return
-            rc, dmi = deps.run(ip, DMI_SCRIPT)
-            if rc != 0:
-                deps.set_row(port, phase="unreachable", current=None, target=None, fault_reason="")
-                return
-            entry = deps.matcher.match(dmi)
-            if entry is None:
-                deps.set_row(port, phase="unsupported", current=None, target=None, fault_reason="")
-                return
-            rc, out = deps.run(ip, driver.check_script(entry))
-            current = driver.parse_bios_version(out)
-            phase = classify.classify(current, entry["target"])
-            # `entry` rides along on the row so enforce_once has the flags/urls for
-            # the flash without re-matching dmidecode output mid-enforce pass.
-            deps.set_row(port, phase=phase, current=current, target=entry["target"],
-                         fault_reason="", entry=entry)
-        except Exception:
-            log.exception("biosd probe failed for %s", port)
-
     n = config.MAX_PARALLEL if workers is None else workers
     n = max(1, min(n, len(hosts)))
     if n == 1:
         for dev in hosts:
-            work(dev)
+            _probe_host(deps, registry, dev)
     else:
         with ThreadPoolExecutor(max_workers=n) as ex:
-            list(ex.map(work, hosts))
+            list(ex.map(lambda d: _probe_host(deps, registry, d), hosts))
+
+
+def probe_port(deps, registry, port) -> dict | None:
+    """On-demand probe of ONE port (spec §7). None when the port is not a post host."""
+    dev = next((d for d in deps.hosts() if d.get("port") == port and d.get("host_ip")), None)
+    if dev is None:
+        return None
+    if registry is not None and registry.busy(port):
+        return {"port": port, "skipped": "flashing"}
+    row = _probe_host(deps, registry, dev)
+    return row if row is not None else {"port": port, "ok": False, "reason": "probe failed; see daemon log"}
 
 
 def _reprobe_inflight(deps, registry, port, ip):

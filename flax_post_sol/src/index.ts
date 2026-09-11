@@ -3,7 +3,8 @@ import http from 'http';
 import { Server } from 'socket.io';
 import { registerTerminalNamespace } from './io/handlers/terminal';
 import { startReconcileLoop } from './reconcile';
-import { hasLiveSession, replaceSession, setIo, startSession } from './sessions/manager';
+import { markCapture } from './sessions/capture';
+import { hasLiveSession, relaunchSession, replaceSession, setIo, startSession } from './sessions/manager';
 import { logger } from './utils/logger';
 
 export const app = express();
@@ -14,7 +15,7 @@ app.use(express.json());
 // REST routes below need their own headers + OPTIONS preflight handling.
 app.use((req: Request, res: Response, next: NextFunction) => {
   res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') {
     res.sendStatus(204);
@@ -26,6 +27,26 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 // GET /healthz — liveness probe for the deploy unit / load balancer.
 app.get('/healthz', (_req: Request, res: Response) => {
   res.json({ status: 'ok' });
+});
+
+// POST /mark/:ip {reason} — the post engine calls this just before it powers a
+// blade on (or right after it notices a human did): rotate the capture file so
+// sol.txt covers this boot, and make sure a live session is actually listening.
+app.post('/mark/:ip', (req: Request, res: Response) => {
+  const ip = req.params.ip;
+  if (!/^[0-9.]+$/.test(ip)) {
+    res.status(400).json({ ok: false, reason: 'bad ip' });
+    return;
+  }
+  const reason = String(req.body?.reason ?? 'unspecified').slice(0, 40).replace(/[^\w.-]/g, '_');
+  const header = markCapture(ip, reason);
+  let relaunched = false;
+  if (!hasLiveSession(ip)) {
+    relaunchSession(ip);
+    relaunched = true;
+  }
+  logger.info(`[${ip}] mark ${reason} (relaunched=${relaunched})`);
+  res.json({ ok: true, ip, relaunched, header });
 });
 
 const app_server = http.createServer(app);

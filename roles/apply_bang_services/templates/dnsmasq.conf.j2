@@ -52,6 +52,9 @@ hostsdir=/etc/dnsmasq.hosts
 # TFTP
 enable-tftp
 tftp-root={{ apply_bang_services_tftp_root }}
+# Log to a file as well as the journal: the post slot ladder tails this for
+# `sent .../ipxe.efi to <ip>` lines (spec 2026-09-11 post-slot-ladder §6).
+log-facility={{ apply_bang_services_dnsmasq_log_dir | default('/var/log/dnsmasq') }}/dnsmasq.log
 tftp-secure
 
 {% if dhcp -%}

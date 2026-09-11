@@ -8,3 +8,5 @@ PROBE_INTERVAL_S = int(os.environ.get("POST_BIOS_FW_PROBE_S", "120"))
 MODE = os.environ.get("POST_BIOS_FW_MODE", "detect")
 ENABLE_PORTS = [p.strip() for p in os.environ.get("POST_BIOS_FW_ENABLE_PORTS", "").split(",") if p.strip()]
 MAX_PARALLEL = int(os.environ.get("POST_BIOS_FW_MAX_PARALLEL", "24"))
+CONTROL_HOST = os.environ.get("POST_BIOS_FW_CONTROL_HOST", "127.0.0.1")
+CONTROL_PORT = int(os.environ.get("POST_BIOS_FW_CONTROL_PORT", "8449"))

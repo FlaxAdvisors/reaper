@@ -22,44 +22,98 @@ def post_switch(geo) -> str:
     instead of hardcoding a single site's switch."""
     return next(iter(geo.get("racks") or {}), SWITCH)
 
+# Slot-ladder rungs (spec 2026-09-11 post-slot-ladder §4). observe/ladder.py
+# imports these so the tile and the machine never disagree on names/order.
+RUNGS = ("bmc-pinged", "power-on", "tftp-seen", "ipxe-seen", "host-leased",
+         "live-iso-seen", "host-pinged", "host-ssh", "fw-gates", "agent-reachable",
+         "qualify", "done")
+BOOT_MARKER_RUNGS = ("tftp-seen", "ipxe-seen", "live-iso-seen")
+_RUNG_INDEX = {r: i for i, r in enumerate(RUNGS)}
+
 DISCOVER_STEPS = (
     "switchportlink", "bmc-mac-seen", "bmc-reserved", "bmc-leased", "bmc-pinged",
-    "serial", "host-mac-seen", "host-reserved", "host-leased", "host-pinged",
+    "serial", "power-on", "tftp-seen", "ipxe-seen", "host-mac-seen", "host-reserved",
+    "host-leased", "live-iso-seen", "host-pinged", "host-ssh",
 )
+# Discover steps whose truth comes from the ladder slice (the rest come from
+# consumed facts + the IPMI lanes).
+_LADDER_STEPS = ("power-on", "tftp-seen", "ipxe-seen", "live-iso-seen", "host-pinged", "host-ssh")
 PHASE_STEPS = {
     "Discover": DISCOVER_STEPS,
-    "Firmware": ("power-read", "power-on", "bmc-checked", "bmc-updated",
-                 "bios-checked", "bios-updated", "mlx-checked", "mlx-updated"),
-    "Qualify": ("pxe-in-logs", "live-iso-in-logs", "agent-reachable",
-                "sdr-pre", "sel-pre", "sel-clear", "tooling", "inventory", "fio",
-                "population-check", "iperf", "mem-pre", "cpu-mem-stress",
-                "mem-post", "sdr-post", "sel-post"),
+    "Firmware": ("bmc-checked", "bmc-updated", "bios-checked", "bios-updated",
+                 "mlx-checked", "mlx-updated"),
+    "Qualify": ("agent-reachable", "sdr-pre", "sel-pre", "sel-clear", "tooling",
+                "inventory", "fio", "population-check", "iperf", "mem-pre",
+                "cpu-mem-stress", "mem-post", "sdr-post", "sel-post", "console"),
     "Done": ("identify", "power-off", "done"),
 }
 _COL_ORDER = {"L": 0, "C": 1, "R": 2, "A": 0, "B": 1, "D": 3, "full": 0}
 
 
-def _discover_flags(c: dict, st: dict, live_link):
-    return [
-        ("switchportlink", live_link == "link"),
-        ("bmc-mac-seen", bool(c.get("bmc_mac_seen"))),
-        ("bmc-reserved", bool(c.get("bmc_reserved"))),
-        ("bmc-leased", bool(c.get("bmc_leased"))),
-        ("bmc-pinged", bool(st.get("bmc_pinged"))),
-        ("serial", bool(st.get("serial"))),
-        ("host-mac-seen", bool(c.get("host_mac_seen"))),
-        ("host-reserved", bool(c.get("host_reserved"))),
-        ("host-leased", bool(c.get("host_leased"))),
-        ("host-pinged", bool(st.get("host_pinged"))),
-    ]
+def _ladder_step_status(lad: dict, step: str) -> str:
+    """done|cur|pending|fault|skip for one ladder-derived Discover step."""
+    cur = lad.get("rung")
+    ci = _RUNG_INDEX.get(cur, -1)
+    ri = _RUNG_INDEX[step]
+    fault = lad.get("fault") or {}
+    if fault.get("rung") == step:
+        return "fault"
+    if step in BOOT_MARKER_RUNGS and (lad.get("marks") or {}).get("skipped") and ri < ci:
+        return "skip"
+    if ri < ci:
+        return "done"
+    if ri == ci:
+        return "cur"
+    return "pending"
 
 
-def _statuses(flags):
+def _ladder_fallback_status(st: dict, step: str) -> str:
+    """No ladder slice yet (row predates the worker, or observe is mid-upgrade):
+    derive what live signals can, mark the boot markers skip so Discover can
+    still complete."""
+    if step == "power-on":
+        return "done" if st.get("power_on") == "on" else "cur"
+    if step in BOOT_MARKER_RUNGS:
+        return "skip"
+    return "done" if st.get("host_pinged") else "cur"      # host-pinged, host-ssh
+
+
+def _discover_steps(c: dict, st: dict, live_link) -> dict:
+    """Every Discover step -> done|cur|pending|fault|skip. Consumed/IPMI steps
+    follow the first-undone-is-cur rule; ladder steps come from the slice."""
+    lad = st.get("ladder") or {}
+    truth = {
+        "switchportlink": live_link == "link",
+        "bmc-mac-seen": bool(c.get("bmc_mac_seen")),
+        "bmc-reserved": bool(c.get("bmc_reserved")),
+        "bmc-leased": bool(c.get("bmc_leased")),
+        "bmc-pinged": bool(st.get("bmc_pinged")),
+        "serial": bool(st.get("serial")),
+        "host-mac-seen": bool(c.get("host_mac_seen")),
+        "host-reserved": bool(c.get("host_reserved")),
+        "host-leased": bool(c.get("host_leased")),
+    }
+    fault_rung = (lad.get("fault") or {}).get("rung")
     out, seen_cur = {}, False
-    for name, done in flags:
+    for name in DISCOVER_STEPS:
+        if name in _LADDER_STEPS:
+            s = _ladder_step_status(lad, name) if lad else _ladder_fallback_status(st, name)
+            if s == "cur" and seen_cur:
+                s = "pending"
+            if s in ("cur", "fault"):
+                seen_cur = True
+            out[name] = s
+            continue
+        if name == fault_rung:
+            # A ladder rung that is ALSO a consumed-fact step (host-leased):
+            # the fact is simply absent, so the first-undone-is-cur rule would
+            # render it `cur` and the fault would never reach the tile.
+            out[name] = "fault"
+            seen_cur = True
+            continue
         if seen_cur:
             out[name] = "pending"
-        elif done:
+        elif truth[name]:
             out[name] = "done"
         else:
             out[name] = "cur"; seen_cur = True
@@ -76,6 +130,7 @@ _FW_BMC = {
     "fault": ("done", "fault"),
     "unreachable": ("cur", "pending"),   # attention; re-classifies when the BMC returns
     "oem": ("done", "done"),             # reachable Redfish OEM board, nothing to flash (terminal)
+    "unsupported": ("done", "done"),     # nothing to flash here; _GATE_PASS agrees
 }
 
 # biosd phase -> (bios-checked state, bios-updated state)
@@ -105,27 +160,66 @@ def _nic_steps(st):
     return checked, updated
 
 
+# The ONE Firmware gate (spec 2026-09-11 post-slot-ladder §7), used by the
+# slot ladder's fw-gates rung and by the tile's phase derivation. In detect
+# mode nothing will ever flash a needs_update blade, so the gate lets it
+# through and the tile keeps showing the update step as `cur`.
+_GATE_PASS = frozenset({"up_to_date", "done", "oem", "unsupported"})
+
+
+def fw_gate_passed(slice_, mode=None) -> bool:
+    """True when this firmware slice no longer blocks Qualify. A missing mode
+    on the row reads as 'detect' (rows written before the field existed)."""
+    if not slice_:
+        return False
+    phase = slice_.get("phase")
+    if phase in _GATE_PASS:
+        return True
+    if phase == "needs_update":
+        return (mode or slice_.get("mode") or "detect") == "detect"
+    return False
+
+
+# Which Firmware step a fw-gates ladder fault lands on, in gate order.
+_GATE_STEPS = (("fw_bmc", "bmc-updated"), ("fw_bios", "bios-updated"),
+               ("fw_nic", "mlx-updated"))
+
+
+def fw_gate_fault_step(st):
+    """The Firmware step a `fw-gates` ladder fault renders on: the first slice
+    that does not pass the gate (BMC, then BIOS, then NIC). `fw-gates` is not
+    itself a tile step, so without this the fault and its note are invisible.
+    None when the ladder is not faulted at fw-gates (or, degenerately, when
+    every gate passes after the fault was recorded)."""
+    if ((st.get("ladder") or {}).get("fault") or {}).get("rung") != "fw-gates":
+        return None
+    for key, step in _GATE_STEPS:
+        if not fw_gate_passed(st.get(key)):
+            return step
+    return None
+
+
 def _firmware_steps(st):
-    """Explicit done|cur|pending|fault per Firmware step from power_on + fw_bmc
-    + fw_bios + fw_nic. BMC check/update precede BIOS (BIOS needs a node boot
-    -> lags; keep it last so progress has no mid-row gap); NIC follows BIOS.
-    Key order matches PHASE_STEPS['Firmware'] because the UI renders steps in
-    dict-key order."""
-    power_on = st.get("power_on")
-    read_done = power_on in ("on", "off")   # a definite power read; "unknown"/None = not yet
+    """Explicit done|cur|pending|fault per Firmware step from fw_bmc + fw_bios +
+    fw_nic. BMC before BIOS before NIC; key order matches PHASE_STEPS['Firmware'].
+    """
     bmc = st.get("fw_bmc")
-    phase = (bmc or {}).get("phase")
-    chk, upd = _FW_BMC.get(phase, ("pending", "pending"))
+    chk, upd = _FW_BMC.get((bmc or {}).get("phase"), ("pending", "pending"))
     bios = st.get("fw_bios")
     bchk, bupd = _FW_BIOS.get((bios or {}).get("phase"), ("pending", "pending"))
     mchk, mupd = _nic_steps(st)
-    return {
-        "power-read": "done" if read_done else "cur",
-        "power-on": "done" if power_on == "on" else ("cur" if power_on == "off" else "pending"),
-        "bmc-checked": chk, "bmc-updated": upd,
-        "bios-checked": bchk, "bios-updated": bupd,
-        "mlx-checked": mchk, "mlx-updated": mupd,
-    }
+    out = {"bmc-checked": chk, "bmc-updated": upd,
+           "bios-checked": bchk, "bios-updated": bupd,
+           "mlx-checked": mchk, "mlx-updated": mupd}
+    gate_fault = fw_gate_fault_step(st)
+    if gate_fault:
+        out[gate_fault] = "fault"
+    return out
+
+
+def fw_gates_passed(st) -> bool:
+    """All three firmware slices pass fw_gate_passed (spec §7)."""
+    return all(fw_gate_passed(st.get(k)) for k in ("fw_bmc", "fw_bios", "fw_nic"))
 
 
 _QUAL_MAP = {"pass": "done", "running": "cur", "pending": "pending",
@@ -155,6 +249,10 @@ def _qualify_steps(st):
     popv = (st.get("pop") or {}).get("verdict")
     if popv in _POP_MAP:
         out["population-check"] = _POP_MAP[popv]
+    # agent-reachable is a ladder rung AND the first Qualify step; the agent
+    # never writes a qual step for it, so its fault has to come from the slice.
+    if ((st.get("ladder") or {}).get("fault") or {}).get("rung") == "agent-reachable":
+        out["agent-reachable"] = "fault"
     return out
 
 
@@ -171,6 +269,14 @@ def _step_notes(st) -> dict:
             continue
         reason = (rec.get("summary") or {}).get("reason") or "skipped"
         notes[name] = _SKIP_LABELS.get(reason, reason)
+    lad = st.get("ladder") or {}
+    fault = lad.get("fault") or {}
+    if fault.get("rung") and fault.get("reason"):
+        # fw-gates is not a tile step: its note rides on the same Firmware step
+        # the fault renders on.
+        notes[fw_gate_fault_step(st) or fault["rung"]] = fault["reason"]
+    if (lad.get("marks") or {}).get("skipped"):
+        notes["tftp-seen"] = "skipped: " + lad["marks"]["skipped"]
     return notes
 
 
@@ -191,12 +297,11 @@ def _done_steps(st):
 
 
 def _record(slot, c, st, settings, live_link, macs):
-    flags = _discover_flags(c, st, live_link)
-    discover_steps = _statuses(flags)
-    discover_done = all(d for _, d in flags)
+    discover_steps = _discover_steps(c, st, live_link)
+    discover_done = all(v in _COMPLETE for v in discover_steps.values())
     steps = {"Discover": discover_steps, "Firmware": _firmware_steps(st),
              "Qualify": _qualify_steps(st), "Done": _done_steps(st)}
-    firmware_done = phase_done(steps["Firmware"])
+    fw_gates = fw_gates_passed(st)
     qualify_done = phase_done(steps["Qualify"])
     # Completion latch (spec 2026-09-11): once the Done tail has recorded a
     # verdict, power and lease state no longer move the phase. Powering a
@@ -210,7 +315,7 @@ def _record(slot, c, st, settings, live_link, macs):
         phase = "Qualify"       # latched red: the failed step stays visible
     elif not discover_done:
         phase = "Discover"
-    elif not firmware_done:
+    elif not fw_gates:
         phase = "Firmware"
     elif not qualify_done:
         phase = "Qualify"
@@ -227,9 +332,17 @@ def _record(slot, c, st, settings, live_link, macs):
         "power_on": st.get("power_on"), "watts": st.get("watts"),
         "bmc_pinged": bool(st.get("bmc_pinged")),
         "phase": phase,
-        "step": None if verdict == "pass" else next((n for n, d in flags if not d), None),
+        "step": None if verdict == "pass" else next(
+            (n for n, s in discover_steps.items() if s not in _COMPLETE), None),
         "steps": steps,
         "step_notes": _step_notes(st),
+        "ladder": st.get("ladder") or {},
+        # The IPMI lane's uncontended human-reset stamp; the slot worker
+        # reconciles its cached ladder against it (observe/worker.RealDeps).
+        "ladder_reset_at": st.get("ladder_reset_at"),
+        "verdict": verdict,
+        "launch_at": st.get("launch_at"),
+        "fw_gates": fw_gates,
         "run_id": (st.get("qual") or {}).get("run_id"),
         "order_no": st.get("order_no") or settings.get("order_no"),
         "population": settings.get("population"),

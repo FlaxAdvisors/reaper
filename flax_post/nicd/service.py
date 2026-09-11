@@ -68,6 +68,20 @@ def probe_once(deps, registry=None, workers=None):
             list(ex.map(work, hosts))
 
 
+def probe_port(deps, registry, port) -> dict | None:
+    """On-demand probe of ONE port (spec §7). None when the port is not a post host."""
+    dev = next((d for d in deps.hosts() if d.get("port") == port and d.get("host_ip")), None)
+    if dev is None:
+        return None
+    if registry is not None and registry.busy(port):
+        return {"port": port, "skipped": "flashing"}
+    try:
+        return deps.set_row(port, **_classify_row(deps, dev))
+    except Exception:
+        log.exception("nicd probe failed for %s", port)
+        return {"port": port, "ok": False, "reason": "probe failed; see daemon log"}
+
+
 def wait_card_reset(deps, ip, pci, entry, deadline, clock) -> bool:
     """Poll a single card after mstfwreset until FW==target AND PSID==target,
     tolerating SSH drops. True on match, False at the deadline."""

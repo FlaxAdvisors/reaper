@@ -1,8 +1,10 @@
 """Entrypoint: wire real deps, run the probe loop.
 
-Run as `python -m flax_post.biosd`. Unlike flax_post.fwd there is no control
-API — BIOS has no manual-flash endpoint — so this is a plain daemon loop in
-the main thread (no uvicorn).
+Run as `python -m flax_post.biosd`. Unlike flax_post.fwd (uvicorn/FastAPI on
+8447) this daemon has no manual-flash endpoint, so its control surface is the
+tiny stdlib loopback server in flax_post.probe_server: POST /probe/<port> on
+config.CONTROL_PORT (8449), started in a background thread. The scan loop
+(probe_once/enforce_once) still runs in the main thread.
 """
 import logging
 import time
@@ -26,6 +28,9 @@ class _Deps:
         post_state.vars.fw_bios so the main rack view renders the BIOS phase.
         The mirror is best-effort: a DB blip must never break a probe write."""
         def set_row(port, **fields):
+            # setdefault, not mode=...: a caller that passes its own mode= would
+            # otherwise raise TypeError on the duplicate keyword.
+            fields.setdefault("mode", config.MODE)
             row = store.set_row(port, **fields)
             try:
                 bridge.mirror_row(state.set_state, port, row)
@@ -75,10 +80,16 @@ def _scan_loop(deps, registry):
 
 def main():
     logging.basicConfig(level=logging.INFO)
-    log.info("flax-post-biosd starting; mode=%s allow=%s max_parallel=%d",
-             config.MODE, config.ENABLE_PORTS or "(all)", config.MAX_PARALLEL)
+    log.info("flax-post-biosd starting; mode=%s allow=%s max_parallel=%d control=%s:%d",
+             config.MODE, config.ENABLE_PORTS or "(all)", config.MAX_PARALLEL,
+             config.CONTROL_HOST, config.CONTROL_PORT)
     deps = _Deps()
     registry = Registry()
+    from ..probe_server import ProbeServer
+    from .service import probe_port
+    ProbeServer(config.CONTROL_HOST, config.CONTROL_PORT,
+                lambda port: probe_port(deps, registry, port),
+                max_parallel=config.MAX_PARALLEL).start()
     _scan_loop(deps, registry)
 
 

@@ -147,13 +147,25 @@ def enforce_once(deps, registry, executor, *, mode, allowlist, run_node=enforce.
 
 
 def build_app(deps, *, registry=None) -> FastAPI:
-    # `registry` is accepted for __main__ call-site compatibility but is no longer
-    # used here — the FlashRegistry is owned by the scan loop (probe_once/enforce_once),
-    # not the app, since the manual /flash endpoint was removed.
+    """Control API. /probe/<port> is the slot ladder's on-demand hook (spec
+    2026-09-11 post-slot-ladder §7): one synchronous probe_one for that port,
+    skipped (not queued) while the registry says it is mid-flash."""
     app = FastAPI(title="flax-post-fwd")
 
     @app.get("/healthz")
     def healthz():
         return JSONResponse({"status": "ok"})
+
+    @app.post("/probe/{port}")
+    def probe(port: str):
+        dev = next((d for d in deps.post_bmcs() if d.get("port") == port), None)
+        if dev is None:
+            return JSONResponse({"ok": False, "reason": "unknown port"}, status_code=404)
+        if registry is not None and registry.is_flashing(port):
+            return JSONResponse({"ok": True, "port": port, "skipped": "flashing"})
+        client = deps.client_for(dev["reservation_ip"])
+        set_row = lambda p, _ip=dev["reservation_ip"], **f: deps.set_row(p, bmc_ip=_ip, **f)
+        phase = flasher.probe_one(port, client, deps.matcher, set_row)
+        return JSONResponse({"ok": True, "port": port, "phase": phase})
 
     return app
