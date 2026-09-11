@@ -93,6 +93,7 @@ def _discover_steps(c: dict, st: dict, live_link) -> dict:
         "host-reserved": bool(c.get("host_reserved")),
         "host-leased": bool(c.get("host_leased")),
     }
+    fault_rung = (lad.get("fault") or {}).get("rung")
     out, seen_cur = {}, False
     for name in DISCOVER_STEPS:
         if name in _LADDER_STEPS:
@@ -102,6 +103,13 @@ def _discover_steps(c: dict, st: dict, live_link) -> dict:
             if s in ("cur", "fault"):
                 seen_cur = True
             out[name] = s
+            continue
+        if name == fault_rung:
+            # A ladder rung that is ALSO a consumed-fact step (host-leased):
+            # the fact is simply absent, so the first-undone-is-cur rule would
+            # render it `cur` and the fault would never reach the tile.
+            out[name] = "fault"
+            seen_cur = True
             continue
         if seen_cur:
             out[name] = "pending"
@@ -122,6 +130,7 @@ _FW_BMC = {
     "fault": ("done", "fault"),
     "unreachable": ("cur", "pending"),   # attention; re-classifies when the BMC returns
     "oem": ("done", "done"),             # reachable Redfish OEM board, nothing to flash (terminal)
+    "unsupported": ("done", "done"),     # nothing to flash here; _GATE_PASS agrees
 }
 
 # biosd phase -> (bios-checked state, bios-updated state)
@@ -171,6 +180,25 @@ def fw_gate_passed(slice_, mode=None) -> bool:
     return False
 
 
+# Which Firmware step a fw-gates ladder fault lands on, in gate order.
+_GATE_STEPS = (("fw_bmc", "bmc-updated"), ("fw_bios", "bios-updated"),
+               ("fw_nic", "mlx-updated"))
+
+
+def fw_gate_fault_step(st):
+    """The Firmware step a `fw-gates` ladder fault renders on: the first slice
+    that does not pass the gate (BMC, then BIOS, then NIC). `fw-gates` is not
+    itself a tile step, so without this the fault and its note are invisible.
+    None when the ladder is not faulted at fw-gates (or, degenerately, when
+    every gate passes after the fault was recorded)."""
+    if ((st.get("ladder") or {}).get("fault") or {}).get("rung") != "fw-gates":
+        return None
+    for key, step in _GATE_STEPS:
+        if not fw_gate_passed(st.get(key)):
+            return step
+    return None
+
+
 def _firmware_steps(st):
     """Explicit done|cur|pending|fault per Firmware step from fw_bmc + fw_bios +
     fw_nic. BMC before BIOS before NIC; key order matches PHASE_STEPS['Firmware'].
@@ -180,9 +208,13 @@ def _firmware_steps(st):
     bios = st.get("fw_bios")
     bchk, bupd = _FW_BIOS.get((bios or {}).get("phase"), ("pending", "pending"))
     mchk, mupd = _nic_steps(st)
-    return {"bmc-checked": chk, "bmc-updated": upd,
-            "bios-checked": bchk, "bios-updated": bupd,
-            "mlx-checked": mchk, "mlx-updated": mupd}
+    out = {"bmc-checked": chk, "bmc-updated": upd,
+           "bios-checked": bchk, "bios-updated": bupd,
+           "mlx-checked": mchk, "mlx-updated": mupd}
+    gate_fault = fw_gate_fault_step(st)
+    if gate_fault:
+        out[gate_fault] = "fault"
+    return out
 
 
 def fw_gates_passed(st) -> bool:
@@ -217,6 +249,10 @@ def _qualify_steps(st):
     popv = (st.get("pop") or {}).get("verdict")
     if popv in _POP_MAP:
         out["population-check"] = _POP_MAP[popv]
+    # agent-reachable is a ladder rung AND the first Qualify step; the agent
+    # never writes a qual step for it, so its fault has to come from the slice.
+    if ((st.get("ladder") or {}).get("fault") or {}).get("rung") == "agent-reachable":
+        out["agent-reachable"] = "fault"
     return out
 
 
@@ -236,7 +272,9 @@ def _step_notes(st) -> dict:
     lad = st.get("ladder") or {}
     fault = lad.get("fault") or {}
     if fault.get("rung") and fault.get("reason"):
-        notes[fault["rung"]] = fault["reason"]
+        # fw-gates is not a tile step: its note rides on the same Firmware step
+        # the fault renders on.
+        notes[fw_gate_fault_step(st) or fault["rung"]] = fault["reason"]
     if (lad.get("marks") or {}).get("skipped"):
         notes["tftp-seen"] = "skipped: " + lad["marks"]["skipped"]
     return notes

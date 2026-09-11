@@ -127,7 +127,10 @@ def advance(ladder, snap, evidence, now):
             # boot markers for this boot are unknowable, so skip them.
             lad["marks"]["skipped"] = "power already on"
             lad["power_on_at"] = lad.get("power_on_at") or now
-            _pass(lad, "host-pinged", now)
+            # A latched blade that happens to be on is finished, not booting:
+            # walking on would ssh the host, fire the firmware probes and then
+            # fault at agent-reachable with no agent left to reach.
+            _pass(lad, "done" if snap.get("verdict") is not None else "host-pinged", now)
             return lad, acts
         if power != "off":
             return lad, acts
@@ -192,7 +195,12 @@ def advance(ladder, snap, evidence, now):
         if ev.get("agent"):
             _pass(lad, "qualify", now)
             return lad, acts + ["poll-agent"]
-        since = snap.get("launch_at") or lad["since"]
+        # launch_at is never cleared: a row that reaches this rung without a
+        # fresh launch (the non-allowlisted slot, or a re-run) carries the
+        # launch of a previous boot. Only a launch at or after this rung
+        # started moves the clock; otherwise the rung's own `since` governs.
+        launch_at = snap.get("launch_at")
+        since = launch_at if (launch_at is not None and launch_at >= lad["since"]) else lad["since"]
         if _over_budget(lad, rung, since, now):
             lad = fault(lad, rung, "agent not reachable %ds after launch" % budget_s(rung), now)
             return lad, acts
