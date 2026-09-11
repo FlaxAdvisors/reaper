@@ -162,7 +162,58 @@ def fetch_post_node():
     live_macs = {r["bmc_mac"] for r in fetch_post_state() if r.get("bmc_mac")}
     for r in rows:
         r["attached"] = "attached" if r["bmc_mac"] in live_macs else "detached"
+        r["link"] = "/node?mac=" + urllib.parse.quote(r["bmc_mac"] or "")
     return sorted(rows, key=lambda r: (_port_key(r["last_port"]), r["updated_at"]), reverse=False)
+
+
+def _sql_lit(s):
+    """MAC / run ids only: restrict to the safe character set instead of quoting,
+    since the query travels through a shell -c string into psql."""
+    return re.sub(r"[^0-9a-zA-Z:_-]", "", str(s or ""))
+
+
+def fetch_node(bmc_mac):
+    """One post_node row with its vars parsed (the durable tier), or None."""
+    rows = _psql_rows(
+        "SELECT bmc_mac,serial,host_mac,order_no,last_switch,last_port,customer,vars::text "
+        f"FROM post_node WHERE bmc_mac = '{_sql_lit(bmc_mac)}'",
+        ["bmc_mac", "serial", "host_mac", "order_no", "last_switch", "last_port", "customer", "vars"])
+    if not rows:
+        return None
+    r = rows[0]
+    try:
+        r["vars"] = json.loads(r.get("vars") or "{}")
+    except ValueError:
+        r["vars"] = {}
+    if not isinstance(r["vars"], dict):
+        r["vars"] = {}
+    return r
+
+
+def fetch_run_artifacts(bmc_mac):
+    """Every post_artifact row (metadata only) for a blade, newest run first."""
+    return _psql_rows(
+        "SELECT id,run_id,stage,name,kind,bytes FROM post_artifact "
+        f"WHERE bmc_mac = '{_sql_lit(bmc_mac)}' ORDER BY captured_at DESC, stage, name",
+        ["id", "run_id", "stage", "name", "kind", "bytes"])
+
+
+def fetch_artifact(aid):
+    """One artifact including its content. The content is multi-line, so it
+    cannot go through _psql_rows' line splitter: the metadata comes from one
+    query and the body verbatim from a second, single-cell one."""
+    if not re.fullmatch(r"\d+", str(aid or "")):
+        return None
+    rows = _psql_rows(
+        "SELECT id,bmc_mac,serial,run_id,stage,name,kind "
+        f"FROM post_artifact WHERE id = {int(aid)}",
+        ["id", "bmc_mac", "serial", "run_id", "stage", "name", "kind"])
+    if not rows:
+        return None
+    body = _run("docker exec flax-stack-postgres-1 psql -U postgres -d flax -t -A "
+                f"-c \"SELECT content FROM post_artifact WHERE id = {int(aid)}\"")
+    rows[0]["content"] = body[:-1] if body.endswith("\n") else body
+    return rows[0]
 
 
 def fetch_fleet():
@@ -225,9 +276,9 @@ VIEWS = {
             ("attached", "Attached?"), ("bmc_mac", "BMC MAC"), ("serial", "Serial"),
             ("host_mac", "Host MAC"), ("order_no", "Order"), ("last_switch", "Last switch"),
             ("last_port", "Last port"), ("customer", "Customer"),
-            ("updated_at", "Updated at"),
+            ("updated_at", "Updated at"), ("link", "Node page"),
         ],
-        "default": ["attached", "bmc_mac", "serial", "last_port", "order_no", "updated_at"],
+        "default": ["attached", "bmc_mac", "serial", "last_port", "order_no", "updated_at", "link"],
         "fetch": fetch_post_node,
     },
 }
@@ -248,6 +299,8 @@ def _cell(col, value):
     if col in ("bios_phase", "bmc_phase", "attached"):
         cls = PHASE_CLASS.get(value, "dim")
         return f'<span class="pill {cls}">{html.escape(value)}</span>'
+    if col == "link" and value:
+        return f'<a href="{html.escape(value)}">open</a>'
     return html.escape(value)
 
 
@@ -287,6 +340,96 @@ def render_table(view_key, selected_cols, sort_col=None, sort_dir="asc"):
         f'<div class="table-scroll"><table><thead><tr>{thead}</tr></thead>'
         f'<tbody>{tbody}</tbody></table></div>'
     )
+
+
+def _kv(label, value):
+    return (f'<span class="lbl">{html.escape(label)}</span>'
+            f'<span class="mono">{html.escape("" if value is None else str(value))}</span>')
+
+
+def _ts(epoch):
+    try:
+        return time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime(int(epoch or 0)))
+    except (TypeError, ValueError, OverflowError):
+        return ""
+
+
+def _esc(v):
+    return html.escape("" if v is None else str(v))
+
+
+def render_node_page(bmc_mac):
+    """The durable record of one blade: identity, the latest finished run's
+    result (firmware versions, verdict, population, done record), the run
+    history, and every artifact captured for it (linking to /artifact)."""
+    node = fetch_node(bmc_mac)
+    if not node:
+        return SUBPAGE.format(title="node", body=f"<p>no post_node row for {_esc(bmc_mac)}</p>")
+    v = node.get("vars") or {}
+    res = v.get("result") or {}
+    ident = "".join(_kv(k, node.get(k)) for k in
+                    ("bmc_mac", "serial", "host_mac", "order_no", "last_switch", "last_port"))
+    parts = [f'<h2>node {_esc(node.get("serial") or bmc_mac)}</h2><div class="kv-grid">{ident}</div>']
+    if res:
+        fw = res.get("fw") or {}
+        pop = res.get("pop") or {}
+        done = res.get("done") or {}
+        fwrows = "".join(
+            f"<tr><td>{n}</td><td>{_esc((fw.get(k) or {}).get('current'))}</td>"
+            f"<td>{_esc((fw.get(k) or {}).get('target'))}</td>"
+            f"<td>{_esc((fw.get(k) or {}).get('phase'))}</td></tr>"
+            for n, k in (("BMC", "bmc"), ("BIOS", "bios")))
+        nics = "".join(
+            f"<tr><td>NIC {_esc(d.get('pci'))}</td><td>{_esc(d.get('current'))}</td>"
+            f"<td>{_esc(d.get('target'))}</td><td>{_esc(d.get('phase'))}</td></tr>"
+            for d in ((fw.get("nic") or {}).get("devices") or []) if isinstance(d, dict))
+        failed = "".join(f"<li>{_esc(r)}</li>" for r in (pop.get("failed_rules") or [])) or "<li>none</li>"
+        parts.append(
+            '<h3>latest result</h3><div class="kv-grid">'
+            + _kv("run_id", res.get("run_id")) + _kv("verdict", res.get("verdict"))
+            + _kv("finished", _ts(res.get("finished_at")))
+            + _kv("port", f"{res.get('port') or ''} under {res.get('order_no') or ''}")
+            + _kv("population", f"{pop.get('profile') or ''} -> {pop.get('verdict') or ''}")
+            + _kv("done", ", ".join(f"{k}={val}" for k, val in done.items()))
+            + "</div>"
+            "<table><thead><tr><th>firmware</th><th>current</th><th>target</th><th>phase</th></tr></thead>"
+            f"<tbody>{fwrows}{nics}</tbody></table>"
+            f"<h3>failed population rules</h3><ul>{failed}</ul>")
+    else:
+        parts.append("<p class='dim'>no finished run recorded for this blade</p>")
+    runs = "".join(
+        f"<tr><td class='mono'>{_esc(r.get('run_id'))}</td><td>{_esc(r.get('verdict'))}</td>"
+        f"<td>{_ts(r.get('finished_at'))}</td><td>{_esc(r.get('order_no'))}</td><td>{_esc(r.get('port'))}</td></tr>"
+        for r in (v.get("runs") or []) if isinstance(r, dict))
+    arts = "".join(
+        f"<tr><td class='mono'>{_esc(a.get('run_id'))}</td><td>{_esc(a.get('stage'))}</td>"
+        f"<td><a href=\"/artifact?id={_esc(a.get('id'))}\">{_esc(a.get('name'))}</a></td>"
+        f"<td>{_esc(a.get('kind'))}</td><td>{_esc(a.get('bytes'))}</td></tr>"
+        for a in fetch_run_artifacts(bmc_mac))
+    parts.append(
+        "<h3>runs</h3><table><thead><tr><th>run</th><th>verdict</th><th>finished</th><th>order</th><th>port</th></tr></thead>"
+        f"<tbody>{runs or '<tr><td colspan=5 class=dim>none</td></tr>'}</tbody></table>"
+        "<h3>artifacts</h3><table><thead><tr><th>run</th><th>stage</th><th>name</th><th>kind</th><th>bytes</th></tr></thead>"
+        f"<tbody>{arts or '<tr><td colspan=5 class=dim>none</td></tr>'}</tbody></table>")
+    return SUBPAGE.format(title=f"node {_esc(node.get('serial') or bmc_mac)}", body="".join(parts))
+
+
+def render_artifact_page(aid):
+    a = fetch_artifact(aid)
+    if not a:
+        return SUBPAGE.format(title="artifact", body="<p>no such artifact</p>")
+    head = " &middot; ".join(_esc(a.get(k)) for k in ("serial", "bmc_mac", "run_id", "stage", "name", "kind"))
+    back = f'<p><a href="/node?mac={urllib.parse.quote(a.get("bmc_mac") or "")}">&larr; node</a></p>'
+    return SUBPAGE.format(title=f"{_esc(a.get('stage'))}/{_esc(a.get('name'))}",
+                          body=f"{back}<p class='mono'>{head}</p><pre>{_esc(a.get('content'))}</pre>")
+
+
+SUBPAGE = """<!doctype html><html><head><meta charset="utf-8"><title>{title}</title>
+<style>body{{font:14px system-ui;margin:1.5rem;color-scheme:light dark}} .mono{{font-family:ui-monospace,monospace}}
+.dim{{color:#6b7a88}} .kv-grid{{display:grid;grid-template-columns:max-content 1fr;gap:.2rem 1rem}} .lbl{{color:#6b7a88}}
+table{{border-collapse:collapse;margin:.5rem 0}} td,th{{border:1px solid #8884;padding:.2rem .5rem;text-align:left}}
+pre{{white-space:pre-wrap;word-break:break-all;border:1px solid #8884;padding:.5rem}}</style></head>
+<body><p><a href="/?view=post_node">&larr; post_node</a></p>{body}</body></html>"""
 
 
 PAGE = """<!doctype html>
@@ -456,6 +599,20 @@ class Handler(BaseHTTPRequestHandler):
         sort_dir = qs.get("dir", ["asc"])[0]
         if sort_dir not in ("asc", "desc"):
             sort_dir = "asc"
+
+        if parsed.path in ("/node", "/artifact"):
+            try:
+                body = (render_node_page(qs.get("mac", [""])[0]) if parsed.path == "/node"
+                        else render_artifact_page(qs.get("id", [""])[0]))
+            except Exception as exc:  # noqa: BLE001
+                body = f"<pre>error: {html.escape(str(exc))}</pre>"
+            encoded = body.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+            return
 
         try:
             if parsed.path == "/fragment":
