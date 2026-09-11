@@ -17,6 +17,7 @@ PROBE_INTERVAL_S = int(os.environ.get("FLAX_POST_OBSERVE_INTERVAL", "15"))
 # Power + bmc-liveness run on their own faster lane so a power change reflects on
 # the rack tile in seconds, not behind the heavy serial/SDR/SEL pass.
 POWER_INTERVAL_S = int(os.environ.get("FLAX_POST_POWER_INTERVAL", "6"))
+LADDER_PORTS = [p.strip() for p in os.environ.get("FLAX_POST_LADDER_PORTS", "").split(",") if p.strip()]
 
 
 def run_pass(ipmi_once=None) -> None:
@@ -52,9 +53,6 @@ def _power_loop():
     while True:
         run_power_pass()
         time.sleep(POWER_INTERVAL_S)
-
-
-LADDER_PORTS = [p.strip() for p in os.environ.get("FLAX_POST_LADDER_PORTS", "").split(",") if p.strip()]
 
 
 def slot_ports() -> list:

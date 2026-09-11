@@ -9,6 +9,7 @@ the claim sentinel, boot-marker scraping, host ping/ssh, on-demand firmware
 probes, and the agent poll (host_qual.poll_target, which owns qual/pop/done
 and the console artifact). Everything else stays with the IPMI lanes.
 """
+import copy
 import logging
 import os
 import subprocess
@@ -58,11 +59,18 @@ def iterate_once(port, deps, is_allowed, now):
     snap = snapshot_from_record(rec, allowed=is_allowed, hold=deps.hold(port))
     kind = ladder.evidence_needed(lad)
     evidence = {}
-    if kind == "agent":
-        qual = deps.poll_agent(rec, is_allowed)
-        evidence["agent"] = bool((qual.get("agent") or {}).get("reachable"))
-    elif kind is not None:
-        evidence[kind] = deps.evidence(kind, rec, lad)
+    try:
+        if kind == "agent":
+            qual = deps.poll_agent(rec, is_allowed)
+            evidence["agent"] = bool((qual.get("agent") or {}).get("reachable"))
+        elif kind is not None:
+            evidence[kind] = deps.evidence(kind, rec, lad)
+    except Exception:
+        # A raising probe (missing creds file, DB error inside poll_target, ...)
+        # must not abort the iteration: advance still runs with no evidence for
+        # this step, so budgets keep expiring into faults instead of the claim
+        # (and the port) being held forever.
+        log.exception("%s: evidence %s failed", port, kind)
     new, acts = ladder.advance(lad, snap, evidence, now)
     for act in acts:
         if act == "poll-agent":
@@ -153,9 +161,41 @@ class RealDeps:
         from .. import state as _state
         self._feed = feed
         self._store = store or _state
+        self._last_ladder = {}
 
     def record(self, port):
-        return self._feed.get(port)
+        """The feed's record for `port`, with its ladder slice reconciled
+        against the worker's own last write.
+
+        The SlotFeed refreshes at most every FEED_INTERVAL_S, so the record
+        it hands back can still carry the ladder from BEFORE this worker's
+        most recent write_ladder(). Reading that stale copy back would make
+        the next advance() re-run from the old state: duplicate probe/claim/
+        sol-mark actions, a duplicate power-on (the cooldown keys off the
+        stale last_power_attempt), or a fresh fault silently overwritten by a
+        stale non-faulted copy.
+
+        The only OTHER writer of a slot's ladder is the IPMI lane's one-shot
+        human_reset (a human power-cycled the blade); it announces that write
+        by setting human_power_on on the ladder, which the worker pops on its
+        next advance(). So: an empty/missing slot forgets any cached ladder
+        (nothing to reconcile); a lane reset always wins over the cache (and
+        clears it, since the lane's write is the new baseline); otherwise
+        prefer the cached ladder, when one exists, over the feed's possibly
+        stale copy.
+        """
+        rec = self._feed.get(port)
+        if not rec or rec.get("empty"):
+            self._last_ladder.pop(port, None)
+            return rec
+        if (rec.get("ladder") or {}).get("human_power_on"):
+            self._last_ladder.pop(port, None)
+            return rec
+        cached = self._last_ladder.get(port)
+        if cached is not None:
+            rec = dict(rec)
+            rec["ladder"] = cached
+        return rec
 
     def hold(self, port):
         return os.path.exists(os.path.join(HOLD_DIR, port))
@@ -208,6 +248,7 @@ class RealDeps:
 
     def write_ladder(self, port, lad):
         self._store.set_state(port, ladder=lad)
+        self._last_ladder[port] = copy.deepcopy(lad)
 
     def clock(self):
         return time.time()
