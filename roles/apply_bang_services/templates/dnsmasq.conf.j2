@@ -31,6 +31,12 @@ cname=triage.{{ bang_name }}.{{ bang_lab_domain }},{{ bang_name }}.{{ bang_lab_d
 cname=post.{{ bang_name }}.{{ bang_lab_domain }},{{ bang_name }}.{{ bang_lab_domain }}
 cname=view.{{ bang_name }}.{{ bang_lab_domain }},{{ bang_name }}.{{ bang_lab_domain }}
 {% endfor %}
+{# ...and onto the VRRP name `bang` (localised per VLAN, follows the master):
+   right for post/view, which are master-only; triage runs on one bang, so
+   triage.bang.<domain> only works while that bang holds the VIP. #}
+cname=triage.bang.{{ bang_lab_domain }},bang.{{ bang_lab_domain }}
+cname=post.bang.{{ bang_lab_domain }},bang.{{ bang_lab_domain }}
+cname=view.bang.{{ bang_lab_domain }},bang.{{ bang_lab_domain }}
 no-resolv
 {% for s in apply_bang_services_upstream_dns %}
 server={{ s }}

@@ -4,17 +4,20 @@
 #   http://triage.{{ inventory_hostname }}.{{ bang_lab_domain }}  -> triage API + UI (:5555) and its SOL/power relay (:5559)
 #   http://post.{{ inventory_hostname }}.{{ bang_lab_domain }}    -> post rack viewer (:8446) and its SOL relay (:8448)
 #   http://view.{{ inventory_hostname }}.{{ bang_lab_domain }}    -> post fleet viewer (:8799, loopback-only)
+#   ...and the same three under the VRRP name: http://<svc>.bang.{{ bang_lab_domain }}
+#   (follows the master; triage only runs on one bang, post/view are master-only)
 #
 # Plain HTTP on purpose: this is the lab-internal counterpart of the TLS
 # vhosts apply_flax_stack renders for *.{{ inventory_hostname }}.flaxadvisors.cloud
-# (same upstreams, same location blocks). The names are dnsmasq CNAMEs to
-# {{ inventory_hostname }}.{{ bang_lab_domain }} (see dnsmasq.conf.j2), so
-# they follow the bang's fixed mgmt address, not the VRRP VIP.
+# (same upstreams, same location blocks). The names are dnsmasq CNAMEs
+# (see dnsmasq.conf.j2): the per-bang ones onto the bang's fixed mgmt A
+# record, the `bang` ones onto the VRRP name, which is the preferred form.
 
 server {
     listen 80;
     listen [::]:80;
-    server_name triage.{{ inventory_hostname }}.{{ bang_lab_domain }};
+    server_name triage.{{ inventory_hostname }}.{{ bang_lab_domain }}
+                triage.bang.{{ bang_lab_domain }};
 
     location / {
         proxy_pass         http://127.0.0.1:5555;
@@ -47,7 +50,8 @@ server {
 server {
     listen 80;
     listen [::]:80;
-    server_name post.{{ inventory_hostname }}.{{ bang_lab_domain }};
+    server_name post.{{ inventory_hostname }}.{{ bang_lab_domain }}
+                post.bang.{{ bang_lab_domain }};
 
     location / {
         proxy_pass         http://127.0.0.1:8446;
@@ -72,7 +76,8 @@ server {
 server {
     listen 80;
     listen [::]:80;
-    server_name view.{{ inventory_hostname }}.{{ bang_lab_domain }};
+    server_name view.{{ inventory_hostname }}.{{ bang_lab_domain }}
+                view.bang.{{ bang_lab_domain }};
 
     location / {
         proxy_pass         http://127.0.0.1:8799;
