@@ -65,9 +65,10 @@ def _nginx_ts(line):
 
 def _syslog_ts(line, ref_epoch):
     """'Sep 11 14:31:51 ...' -> epoch, local time, year taken from ref_epoch
-    (rolled back one year if the result lands more than a day in the future)."""
+    (rolled back one year if the result lands more than two days in the future)."""
     try:
-        mon, day, clock = line.split(" ", 3)[:3]
+        parts = line.split(None, 3)
+        mon, day, clock = parts[0], parts[1], parts[2]
         h, m, s = clock.split(":")
         year = datetime.datetime.fromtimestamp(ref_epoch).year
         t = time.mktime((year, _MONTHS[mon], int(day), int(h), int(m), int(s), 0, 0, -1))
@@ -98,9 +99,8 @@ def tftp_seen(path, host_ip, since, *, max_bytes=_MAX_BYTES):
 
 
 def ipxe_seen(path, host_ip, since, *, max_bytes=_MAX_BYTES):
-    tok = _ip_token(host_ip)
     def match(line):
-        return line.startswith(host_ip + " ") and tok.match(line) and _IPXE_RE.search(line) \
+        return line.startswith(host_ip + " ") and _IPXE_RE.search(line) \
             and "iPXE" in line
     return _scan(path, since, match, _nginx_ts, max_bytes)
 
