@@ -39,6 +39,8 @@ class ProbeServer:
                     return self._send(500, {"ok": False, "reason": str(e)})
                 if row is None:
                     return self._send(404, {"ok": False, "reason": "unknown port"})
+                if row.get("ok") is False:
+                    return self._send(500, row)
                 return self._send(200, {"ok": True, **row})
 
         self._httpd = ThreadingHTTPServer((host, port), Handler)

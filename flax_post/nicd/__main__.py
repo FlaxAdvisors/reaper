@@ -1,5 +1,8 @@
 """Entrypoint: wire real deps, run the probe/enforce loop. `python -m flax_post.nicd`.
-No control API (NIC has no manual-flash endpoint) — a plain daemon loop."""
+No manual-flash endpoint, but the control surface is the stdlib loopback
+server in flax_post.probe_server: POST /probe/<port> on config.CONTROL_PORT
+(8450), started in a background thread. The scan loop stays in the main
+thread."""
 import logging
 import time
 

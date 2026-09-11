@@ -1,8 +1,10 @@
 """Entrypoint: wire real deps, run the probe loop.
 
-Run as `python -m flax_post.biosd`. Unlike flax_post.fwd there is no control
-API — BIOS has no manual-flash endpoint — so this is a plain daemon loop in
-the main thread (no uvicorn).
+Run as `python -m flax_post.biosd`. Unlike flax_post.fwd (uvicorn/FastAPI on
+8447) this daemon has no manual-flash endpoint, so its control surface is the
+tiny stdlib loopback server in flax_post.probe_server: POST /probe/<port> on
+config.CONTROL_PORT (8449), started in a background thread. The scan loop
+(probe_once/enforce_once) still runs in the main thread.
 """
 import logging
 import time

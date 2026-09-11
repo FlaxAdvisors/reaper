@@ -60,7 +60,8 @@ class Registry:
 
 
 def _probe_host(deps, registry, dev) -> dict | None:
-    """Classify one host; returns the row written (or None when claimed/failed)."""
+    """Classify one host; returns the row written, the skipped dict when the
+    port is claimed, or None when the probe raised."""
     port = dev.get("port")
     try:
         ip = dev["host_ip"]
@@ -115,7 +116,7 @@ def probe_port(deps, registry, port) -> dict | None:
     if registry is not None and registry.busy(port):
         return {"port": port, "skipped": "flashing"}
     row = _probe_host(deps, registry, dev)
-    return row if row is not None else {"port": port, "phase": "fault"}
+    return row if row is not None else {"port": port, "ok": False, "reason": "probe failed; see daemon log"}
 
 
 def _reprobe_inflight(deps, registry, port, ip):

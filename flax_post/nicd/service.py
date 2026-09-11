@@ -79,7 +79,7 @@ def probe_port(deps, registry, port) -> dict | None:
         return deps.set_row(port, **_classify_row(deps, dev))
     except Exception:
         log.exception("nicd probe failed for %s", port)
-        return {"port": port, "phase": "fault"}
+        return {"port": port, "ok": False, "reason": "probe failed; see daemon log"}
 
 
 def wait_card_reset(deps, ip, pci, entry, deadline, clock) -> bool:
