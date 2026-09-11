@@ -24,7 +24,10 @@ class _Deps:
 
     def _install_set_row(self):
         def set_row(port, **fields):
-            row = store.set_row(port, mode=config.MODE, **fields)
+            # setdefault, not mode=...: a caller that passes its own mode= would
+            # otherwise raise TypeError on the duplicate keyword.
+            fields.setdefault("mode", config.MODE)
+            row = store.set_row(port, **fields)
             try:
                 bridge.mirror_row(state.set_state, port, row)
             except Exception:
@@ -99,7 +102,8 @@ def main():
     from ..probe_server import ProbeServer
     from .service import probe_port
     ProbeServer(config.CONTROL_HOST, config.CONTROL_PORT,
-                lambda port: probe_port(deps, registry, port)).start()
+                lambda port: probe_port(deps, registry, port),
+                max_parallel=config.MAX_PARALLEL).start()
     _scan_loop(deps, registry)
 
 
