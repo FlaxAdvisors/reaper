@@ -139,8 +139,11 @@ def _natural_key(value):
 
 def fetch_post_state():
     rows = _cached("post_state", lambda: _psql_rows(
-        "SELECT port,switch,serial,bmc_mac,order_no,updated_at FROM post_state ORDER BY port",
-        ["port", "switch", "serial", "bmc_mac", "order_no", "updated_at"],
+        "SELECT port,switch,serial,bmc_mac,order_no,updated_at,"
+        "vars->'done'->>'verdict',vars->'pop'->>'verdict',vars->>'power_on' "
+        "FROM post_state ORDER BY port",
+        ["port", "switch", "serial", "bmc_mac", "order_no", "updated_at",
+         "verdict", "pop", "power_on"],
     ))
     return sorted(rows, key=lambda r: _port_key(r["port"]))
 
@@ -154,10 +157,11 @@ def fetch_post_node():
     deletes that row ~5min (POST_STATE_GC_GRACE_SECS) after the mac drops out
     of the switch's own FDB, provided it's unreserved and not mid-flash."""
     rows = _cached("post_node", lambda: _psql_rows(
-        "SELECT bmc_mac,serial,host_mac,order_no,last_switch,last_port,customer,updated_at "
+        "SELECT bmc_mac,serial,host_mac,order_no,last_switch,last_port,customer,updated_at,"
+        "vars->'result'->>'verdict',to_timestamp((vars->'result'->>'finished_at')::numeric) "
         "FROM post_node ORDER BY last_port, updated_at DESC",
         ["bmc_mac", "serial", "host_mac", "order_no", "last_switch", "last_port",
-         "customer", "updated_at"],
+         "customer", "updated_at", "verdict", "finished"],
     ))
     live_macs = {r["bmc_mac"] for r in fetch_post_state() if r.get("bmc_mac")}
     for r in rows:
@@ -240,7 +244,11 @@ def fetch_fleet():
             "bmc_fw": m.get("current_version") or "—",
             "bmc_phase": m.get("phase") or "no-data",
             "bmc_ip": m.get("bmc_ip") or "—",
+            "verdict": s.get("verdict") or "",
+            "pop": s.get("pop") or "",
+            "power_on": s.get("power_on") or "",
             "state_updated": s["updated_at"],
+            "link": "/node?mac=" + urllib.parse.quote(s.get("bmc_mac") or "") if s.get("bmc_mac") else "",
         })
     return rows
 
@@ -254,9 +262,11 @@ VIEWS = {
             ("order_no", "Order"), ("bmc_mac", "BMC MAC"), ("host_mac", "Host MAC"),
             ("bios_fw", "BIOS FW"), ("bios_phase", "BIOS status"),
             ("bmc_fw", "BMC FW"), ("bmc_phase", "BMC status"), ("bmc_ip", "BMC IP"),
-            ("state_updated", "post_state updated_at"),
+            ("verdict", "Verdict (live)"), ("pop", "Population"), ("power_on", "Power"),
+            ("state_updated", "post_state updated_at"), ("link", "Node page"),
         ],
-        "default": ["port", "serial", "bios_fw", "bios_phase", "bmc_fw", "bmc_phase"],
+        "default": ["port", "serial", "verdict", "pop", "power_on", "bios_fw", "bios_phase",
+                    "bmc_fw", "bmc_phase", "link"],
         "fetch": fetch_fleet,
     },
     "post_state": {
@@ -276,9 +286,11 @@ VIEWS = {
             ("attached", "Attached?"), ("bmc_mac", "BMC MAC"), ("serial", "Serial"),
             ("host_mac", "Host MAC"), ("order_no", "Order"), ("last_switch", "Last switch"),
             ("last_port", "Last port"), ("customer", "Customer"),
-            ("updated_at", "Updated at"), ("link", "Node page"),
+            ("updated_at", "Updated at"), ("verdict", "Verdict (recorded)"),
+            ("finished", "Finished"), ("link", "Node page"),
         ],
-        "default": ["attached", "bmc_mac", "serial", "last_port", "order_no", "updated_at", "link"],
+        "default": ["attached", "bmc_mac", "serial", "last_port", "order_no", "verdict",
+                    "finished", "link"],
         "fetch": fetch_post_node,
     },
 }
@@ -287,6 +299,8 @@ PHASE_CLASS = {
     "up_to_date": "good", "needs_update": "warn",
     "unreachable": "bad", "unsupported": "dim", "no-data": "dim",
     "attached": "good", "detached": "dim",
+    "pass": "good", "fail": "bad", "green": "good", "red": "bad", "grey": "dim",
+    "on": "good", "off": "dim",
 }
 
 
@@ -296,7 +310,9 @@ PHASE_CLASS = {
 
 def _cell(col, value):
     value = "" if value is None else str(value)
-    if col in ("bios_phase", "bmc_phase", "attached"):
+    if col in ("verdict", "pop", "power_on") and not value:
+        return '<span class="pill dim">—</span>'
+    if col in ("bios_phase", "bmc_phase", "attached", "verdict", "pop", "power_on"):
         cls = PHASE_CLASS.get(value, "dim")
         return f'<span class="pill {cls}">{html.escape(value)}</span>'
     if col == "link" and value:
