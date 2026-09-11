@@ -40,14 +40,12 @@ _TERMINAL = {"pass", "fail", "skip"}
 # §2.2): 'power_off: done' is only ever written against a read that says off.
 POWER_OFF_VERIFY_S = int(os.environ.get("FLAX_POST_POWER_OFF_VERIFY", "30"))
 POWER_OFF_POLL_S = 5
-_BOOT_STEPS = ("pxe-in-logs", "live-iso-in-logs", "agent-reachable")
 
 
-def boot_steps(reachable: bool) -> dict:
-    """Engine boot-detection: a running agent proves PXE + live-ISO boot, so all
-    three are 'pass' once reachable, else 'pending' (design: Global Constraints)."""
-    v = "pass" if reachable else "pending"
-    return {name: v for name in _BOOT_STEPS}
+def agent_step(reachable: bool) -> dict:
+    """The engine's own Qualify step: a running agent answers /health. The
+    boot markers moved to the Discover ladder (observe/ladder.py)."""
+    return {"agent-reachable": {"status": "pass" if reachable else "pending"}}
 
 
 def _default_make_client(host_ip):
@@ -173,13 +171,25 @@ def build_result(target, live, qual, pop, done, now=time.time) -> dict:
 
 
 def poll_target(target, *, make_client=_default_make_client, store=_state,
-                launch_agent=None, now=time.time) -> dict:
-    """Poll one blade; write vars.qual; capture terminal-stage artifacts once. When the
-    agent is unreachable but Firmware is done (phase == 'Qualify'), launch_agent (if
-    given) SSH-starts the agent so the next pass can poll it -- debounced to at most
-    once per LAUNCH_COOLDOWN_S so per-poll relaunches don't stomp a starting agent."""
-    client = make_client(target["host_ip"])
+                launch_agent=None, now=time.time, ping=None, console_reader=None) -> dict:
+    """Poll one blade; write vars.qual; capture terminal-stage artifacts once.
+
+    Guard order (spec 2026-09-11 post-slot-ladder §10): a row with a verdict is
+    latched and costs nothing; a powered-off row costs nothing; then `ping`
+    (when given) must answer before /health is tried, so a leased-but-dead IP
+    never burns an ARP timeout. When the agent is unreachable but Firmware is
+    done (phase == 'Qualify'), launch_agent (if given) SSH-starts it, debounced
+    to once per LAUNCH_COOLDOWN_S."""
+    live = store.read_state().get(target["port"], {}) if hasattr(store, "read_state") else {}
+    if (live.get("done") or {}).get("verdict") is not None:
+        return live.get("qual") or {}
+    if live.get("power_on") == "off":
+        return live.get("qual") or {}
+    pingable = True if ping is None else bool(ping(target["host_ip"]))
+    client = make_client(target["host_ip"]) if pingable else None
     try:
+        if not pingable:
+            raise QualUnreachable("no ping")
         health = client.health()
     except QualUnreachable:
         # A node with a verdict is latched (spec 2026-09-11 §2): a passed one was
@@ -187,15 +197,12 @@ def poll_target(target, *, make_client=_default_make_client, store=_state,
         # operator. Either way its qualify evidence (which step failed, the run
         # id) stays on the tile; and a failed blade is not relaunched until the
         # power lane clears the latch on the next off->on.
-        live = store.read_state().get(target["port"], {}) if hasattr(store, "read_state") else {}
-        if (live.get("done") or {}).get("verdict") is not None:
-            return live.get("qual") or {}
         # Firmware complete, agent not up yet -> trigger the postautomate launch,
         # debounced: skip if we launched within LAUNCH_COOLDOWN_S (the launch is not
         # idempotent and stomps a still-starting agent; Firmware resets must settle).
         # Record the attempt time BEFORE launching so a failed launch (host mid-reboot)
         # still backs off a full cooldown. Never let a launch failure kill the poll.
-        if launch_agent is not None and target.get("phase") == "Qualify":
+        if pingable and launch_agent is not None and target.get("phase") == "Qualify":
             last = (live.get("launch_at") or 0) if isinstance(live, dict) else 0
             t = now()
             if t - last >= LAUNCH_COOLDOWN_S:
@@ -207,21 +214,16 @@ def poll_target(target, *, make_client=_default_make_client, store=_state,
             else:
                 log.debug("qual launch debounced for %s (%.0fs into %ss cooldown)",
                           target.get("port"), t - last, LAUNCH_COOLDOWN_S)
-        qual = {"agent": {"reachable": False},
-                "steps": {k: {"status": v} for k, v in boot_steps(False).items()}}
+        qual = {"agent": {"reachable": False}, "steps": agent_step(False)}
         store.set_state(target["port"], qual=qual)
         return qual
     run_id = health.get("run_id")
     status = client.status()
     stages = client.stages()
-    steps = boot_steps(True)
+    steps = agent_step(True)
     for s in stages:
         steps[s["name"]] = {"status": s["status"], "started": s.get("started"),
                             "ended": s.get("ended")}
-    # boot_steps returns strings; normalize to the {"status": ...} shape used by stages
-    for b in _BOOT_STEPS:
-        if isinstance(steps[b], str):
-            steps[b] = {"status": steps[b]}
     # capture-on-completion: for each terminal stage, store artifacts not yet stored
     for s in stages:
         if s["status"] in _TERMINAL:
@@ -251,7 +253,6 @@ def poll_target(target, *, make_client=_default_make_client, store=_state,
         # post_node record both happen the FIRST time this run reaches a verdict.
         # Before this guard the tail re-ran on every poll while the agent was
         # still answering after a pass.
-        live = store.read_state().get(target["port"], {}) if hasattr(store, "read_state") else {}
         already = ((live.get("done") or {}).get("verdict") is not None
                    and (live.get("qual") or {}).get("run_id") == run_id)
         if already:
@@ -259,6 +260,20 @@ def poll_target(target, *, make_client=_default_make_client, store=_state,
         else:
             done = run_done(target, verdict)
             store.set_state(target["port"], done=done)
+            if console_reader is not None:
+                text = None
+                try:
+                    text = console_reader(target.get("bmc_ip"))
+                except Exception:
+                    log.exception("console capture read failed for %s", target.get("port"))
+                if text:
+                    store.write_artifact(target["bmc_mac"], run_id, "console", "sol.txt", "raw",
+                                         text, serial=target.get("serial"),
+                                         order_no=target.get("order_no"))
+                    steps["console"] = {"status": "pass"}
+                else:
+                    steps["console"] = {"status": "fail", "summary": {"reason": "no sol capture"}}
+                qual["steps"] = steps
             if hasattr(store, "record_result"):
                 try:
                     store.record_result(target["bmc_mac"],
