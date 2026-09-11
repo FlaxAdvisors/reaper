@@ -12,6 +12,10 @@ service routing protocols model ribd
 hostname rabbit-gouda
 ip name-server vrf default 192.168.88.10
 !
+snmp-server contact ops@example.com
+snmp-server location eindhoven
+snmp-server community {{ vault_cfg_snmp_ro_community }} ro
+!
 spanning-tree mode mstp
 spanning-tree mst 1 priority 4096
 !
@@ -117,13 +121,13 @@ interface Ethernet5/4
 interface Ethernet6/1
    description Zone C - LEFT
    speed forced 25gfull
-   switchport access vlan 21
+   switchport access vlan 17
    spanning-tree portfast
 !
 interface Ethernet6/2
    description Zone C - LEFT
    speed forced 25gfull
-   switchport access vlan 21
+   switchport access vlan 17
    spanning-tree portfast
 !
 interface Ethernet6/3
@@ -181,10 +185,6 @@ interface Ethernet8/3
    spanning-tree portfast
 !
 interface Ethernet8/4
-   description Zone F - LEFT
-   speed forced 25gfull
-   switchport access vlan 17
-   spanning-tree portfast
 !
 interface Ethernet9/1
    description Zone A - CENTER
@@ -301,10 +301,6 @@ interface Ethernet24/3
    spanning-tree portfast
 !
 interface Ethernet24/4
-   description Zone F - CENTER
-   speed forced 25gfull
-   switchport access vlan 17
-   spanning-tree portfast
 !
 interface Ethernet25/1
    description Zone D - RIGHT
@@ -333,7 +329,7 @@ interface Ethernet25/4
 interface Ethernet26/1
    description Zone F - RIGHT
    speed forced 25gfull
-   switchport access vlan 17
+   switchport access vlan 25
    spanning-tree portfast
 !
 interface Ethernet26/2
@@ -349,10 +345,7 @@ interface Ethernet26/3
    spanning-tree portfast
 !
 interface Ethernet26/4
-   description Zone F - RIGHT
-   speed forced 25gfull
-   switchport access vlan 17
-   spanning-tree portfast
+   switchport access vlan 25
 !
 interface Ethernet27/1
    description Zone A - RIGHT
