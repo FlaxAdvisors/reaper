@@ -118,7 +118,7 @@
           <span class="pct">{{phasePct(sel,p)}}</span></div>
         <div class="steps">
           <div class="step" v-for="st in stepEntries(sel,p)" :class="st.state" @click="openStep(p,st.name)">
-            <span class="si">{{stepIcon(st.state)}}</span>{{st.name}}</div>
+            <span class="si">{{stepIcon(st.state)}}</span>{{st.name}}<span class="note" v-if="stepNote(sel,st.name)"> · {{stepNote(sel,st.name)}}</span></div>
         </div>
       </div>
     </div>
@@ -280,9 +280,13 @@
   (post-SEL capture — CATERR / ECC / thermal events list here)</pre>
         </div>
         <div v-else-if="modal?.kind==='sdr'">
-          <p class="m-sub">{{hasSdr(sel)?'sensor readings captured':'thresholds — capture pending (needs BMC creds)'}}</p>
-          <pre class="console">~ ipmitool sdr
-  (post-SDR capture — CPU/HSC/PSU readings + lcr/ucr/lnc/unc/cri here)</pre>
+          <p class="m-sub">sensor readings and thresholds captured before and after stress</p>
+          <p class="pending-note" v-if="artLoading">loading…</p>
+          <p class="pending-note" v-else-if="!artifacts || !artifacts.length">no SDR capture for this run yet</p>
+          <div v-else v-for="a in artifacts">
+            <div class="section-l">{{a.stage}}/{{a.name}} <span class="dim">({{a.kind}}, {{a.bytes}} B)</span></div>
+            <pre class="console">{{a.content}}</pre>
+          </div>
         </div>
         <div v-else-if="modal?.kind==='step'">
           <p class="m-sub">log · step <b>{{modal?.step}}</b></p>
@@ -293,6 +297,15 @@
           <pre class="console" v-else-if="modal?.step==='bios-updated'">{{sel?.fw?.bios?.fault_reason ? ('target: '+(sel.fw.bios.target||'?')+' — '+sel.fw.bios.fault_reason) : (sel?.fw?.bios?.target ? 'target: '+sel.fw.bios.target : 'target unknown')}}</pre>
           <pre class="console" v-else-if="modal?.step==='mlx-checked'">{{ (sel?.fw?.nic?.devices && sel.fw.nic.devices.length) ? sel.fw.nic.devices.map(d => d.pci+' '+d.psid+': '+(d.current||'?')).join(' · ') : 'no Mellanox cards' }}</pre>
           <pre class="console" v-else-if="modal?.step==='mlx-updated'">{{ (sel?.fw?.nic?.devices && sel.fw.nic.devices.length) ? sel.fw.nic.devices.map(d => d.pci+' → '+(d.target||'?')+' '+(d.target_psid||'')+' ['+d.phase+']').join(' · ') : 'no Mellanox cards' }}</pre>
+          <div v-else-if="modal?.phase==='Qualify'">
+            <p class="pending-note" v-if="stepNote(sel, modal?.step)">{{modal?.step}} · {{stepNote(sel, modal?.step)}}</p>
+            <p class="pending-note" v-if="artLoading">loading…</p>
+            <p class="pending-note" v-else-if="!artifacts || !artifacts.length">no artifact for this step</p>
+            <div v-else v-for="a in artifacts">
+              <div class="section-l">{{a.stage}}/{{a.name}} <span class="dim">({{a.kind}}, {{a.bytes}} B)</span></div>
+              <pre class="console">{{a.content}}</pre>
+            </div>
+          </div>
           <pre class="console" v-else>[step log not yet captured for {{modal?.step}}]</pre>
         </div>
         <div v-else-if="modal?.kind==='sol'" class="sol-wrap">

@@ -34,3 +34,17 @@ export async function fetchInventory(port, profile) {
   if (!r.ok) return { present: false, error: r.status };
   return r.json();
 }
+// Captured qualify evidence for the blade's CURRENT run (post_artifact via the
+// viewer): the list for one stage, then one artifact's text body.
+export async function fetchArtifacts(port, stage) {
+  const r = await fetch('/api/v1/artifact?port=' + encodeURIComponent(port)
+    + '&stage=' + encodeURIComponent(stage), { cache: 'no-store' });
+  if (!r.ok) return [];
+  return (await r.json()).artifacts || [];
+}
+export async function fetchArtifact(port, stage, name) {
+  const r = await fetch('/api/v1/artifact?port=' + encodeURIComponent(port)
+    + '&stage=' + encodeURIComponent(stage) + '&name=' + encodeURIComponent(name), { cache: 'no-store' });
+  if (!r.ok) return null;
+  return (await r.json()).content;
+}

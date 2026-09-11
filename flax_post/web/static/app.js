@@ -1,7 +1,8 @@
 // flax_post/web/static/app.js — petite-vue app for the post rack console.
 // Renders the prototype layout (docs/post-ui-prototype.html) from the real
 // /api/v1/blades feed. Discover = violet; grey = empty/unknown.
-import { fetchBlades, fetchProfiles, saveSettings, postPower, postIdentify, fetchInventory } from '/web-static/api.js';
+import { fetchBlades, fetchProfiles, saveSettings, postPower, postIdentify, fetchInventory,
+         fetchArtifacts, fetchArtifact } from '/web-static/api.js';
 
 // firmware phases (post_state fw_bmc/fw_bios/fw_nic 'phase') during which a
 // power-off must be blocked -- mirrors flax_post/actions.py FW_ACTIVE.
@@ -63,6 +64,7 @@ function App() {
     // for, so loadInv() can no-op when neither the port nor the profile
     // changed (macinv is expensive -- never refetch from the 15s poll).
     inv: null, invPort: null, invProfile: '', invLoading: false, actionMsg: null,
+    artifacts: null, artLoading: false,
 
     // ---- data ----
     async mounted() { this.profiles = await fetchProfiles(); await this.refresh(); setInterval(() => this.refresh(), REFRESH_MS); },
@@ -97,7 +99,8 @@ function App() {
     },
     stepSegs(b) {
       const s = (b.steps && b.steps[b.phase]) || {};
-      return Object.values(s).map((st) => st === 'done' ? 'done' : st === 'cur' ? 'cur' : st === 'fault' ? 'fault' : '');
+      // a skipped step fills its segment like a done one: it completes the phase
+      return Object.values(s).map((st) => (st === 'done' || st === 'skip') ? 'done' : st === 'cur' ? 'cur' : st === 'fault' ? 'fault' : '');
     },
     stepEntries(b, phaseName) { const s = (b && b.steps && b.steps[phaseName]) || {}; return Object.keys(s).map((k) => ({ name: k, state: s[k] })); },
     phaseDot(b, phaseName) {
@@ -106,10 +109,13 @@ function App() {
     },
     phasePct(b, phaseName) {
       const s = (b && b.steps && b.steps[phaseName]) || {}; const v = Object.values(s);
-      if (!v.length) return ''; const done = v.filter((x) => x === 'done').length;
+      if (!v.length) return ''; const done = v.filter((x) => x === 'done' || x === 'skip').length;
       return done === v.length ? '✓' : `${done}/${v.length}`;
     },
-    stepIcon(st) { return { done: '✓', cur: '◉', fault: '✕', pending: '·' }[st] || '·'; },
+    stepIcon(st) { return { done: '✓', cur: '◉', fault: '✕', pending: '·', skip: '–' }[st] || '·'; },
+    // the agent's skip reason for a Qualify step ('no storage' for fio on a
+    // diskless blade), from the blade record's step_notes
+    stepNote(b, name) { return (b && b.step_notes && b.step_notes[name]) || ''; },
 
     // ---- tile presentation (null-safe) ----
     colName(b) { return b ? (COLNAME[b.col] || b.col) : ''; },
@@ -216,6 +222,28 @@ function App() {
       if (kind === 'inv') this.loadInv();
       if (kind === 'pwr') { this.pwrChoice = null; this.pwrConfirm = false; }
       if (kind === 'sol') { this.solLog = []; this._openSol(this.sel.bmc_ip); }
+      if (kind === 'sdr') this.loadArtifacts(['sdr-pre', 'sdr-post']);
+    },
+    // Qualify steps and the SDR modal read the captured evidence for the
+    // blade's current run: list the artifacts for the stage(s), then fetch
+    // each body. Digests first (they are the short, human-readable ones).
+    async loadArtifacts(stages) {
+      this.artifacts = null; this.artLoading = true;
+      const port = this.sel && this.sel.port;
+      if (!port) { this.artLoading = false; return; }
+      try {
+        const out = [];
+        for (const stage of stages) {
+          const list = await fetchArtifacts(port, stage);
+          list.sort((a, b) => (a.kind === 'digest' ? 0 : 1) - (b.kind === 'digest' ? 0 : 1));
+          for (const a of list) {
+            const content = await fetchArtifact(port, stage, a.name);
+            out.push({ ...a, content: content == null ? '' : content });
+          }
+        }
+        this.artifacts = out;
+      } catch (e) { console.error(e); this.artifacts = []; }
+      finally { this.artLoading = false; }
     },
     // (Re)connect the SOL console to `ip`, reusing the modal's terminal ref.
     // Used by both openModal('sol') and solRelaunch()'s reconnect path.
@@ -289,7 +317,11 @@ function App() {
         this.actionMsg = 'identify request failed';
       }
     },
-    openStep(phaseName, stepName) { this.modal = { kind: 'step', phase: phaseName, step: stepName }; },
+    openStep(phaseName, stepName) {
+      this.modal = { kind: 'step', phase: phaseName, step: stepName };
+      this.artifacts = null;
+      if (phaseName === 'Qualify') this.loadArtifacts([stepName]);
+    },
     modalTitle() {
       const m = this.modal; if (!m) return ''; const id = this.sel ? (this.sel.serial || this.sel.port) : '';
       const names = { pwr: 'Power', sol: 'SOL console', inv: 'Inventory', pop: 'Population', idnt: 'Identify', sdr: 'SDR sensors', sel: 'SEL events', step: `${m.phase} · ${m.step}` };

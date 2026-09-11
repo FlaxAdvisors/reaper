@@ -201,3 +201,7 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .sol-log{height:100px;overflow-y:auto;margin-top:.5rem;background:#0d1117;border:1px solid #222;
   font:11px monospace;padding:.3rem;color:var(--muted)}
 .sol-log-line{white-space:pre-wrap}
+.step.skip{opacity:.7}
+.step .note{color:var(--dim)}
+.m-b .dim{color:var(--dim);font-weight:400}
+.step.skip .si{color:var(--green)}
