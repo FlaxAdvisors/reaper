@@ -129,11 +129,20 @@ def _firmware_steps(st):
 
 
 _QUAL_MAP = {"pass": "done", "running": "cur", "pending": "pending",
-             "fail": "fault", "skip": "done"}
+             "fail": "fault", "skip": "skip"}
+_COMPLETE = ("done", "skip")
+
+# Skip reasons the agent emits -> the short label the tile shows next to the step.
+_SKIP_LABELS = {"no physical storage media": "no storage"}
+
+
+def phase_done(steps: dict) -> bool:
+    """A phase is complete when every step is done or skipped."""
+    return all(v in _COMPLETE for v in steps.values())
 
 
 def _qualify_steps(st):
-    """Per-step done|cur|pending|fault for Qualify, from post_state.vars.qual.steps.
+    """Per-step done|cur|pending|fault|skip for Qualify, from post_state.vars.qual.steps.
     Missing step -> pending (producer hasn't reached it)."""
     qsteps = (st.get("qual") or {}).get("steps") or {}
     out = {}
@@ -143,14 +152,31 @@ def _qualify_steps(st):
     return out
 
 
+def _step_notes(st) -> dict:
+    """{step: short text} for skipped Qualify steps, from the agent's summary.reason."""
+    qsteps = (st.get("qual") or {}).get("steps") or {}
+    notes = {}
+    for name, rec in qsteps.items():
+        rec = rec or {}
+        if rec.get("status") != "skip":
+            continue
+        reason = (rec.get("summary") or {}).get("reason") or "skipped"
+        notes[name] = _SKIP_LABELS.get(reason, reason)
+    return notes
+
+
 def _done_steps(st):
     """identify -> power-off -> done, from post_state.vars.done. No verdict -> all
-    pending; a fail verdict leaves them pending (node stays powered)."""
+    pending; a fail verdict leaves them pending (node stays powered). A tail step
+    the engine could not verify (power_off/identify == 'fault') renders as fault."""
     done = st.get("done") or {}
     if done.get("verdict") != "pass":
         return {s: "pending" for s in PHASE_STEPS["Done"]}
-    idf = "done" if done.get("identify") == "done" else "cur"
-    pwr = "done" if done.get("power_off") == "done" else "cur"
+
+    def _m(v):
+        return "done" if v == "done" else ("fault" if v == "fault" else "cur")
+
+    idf, pwr = _m(done.get("identify")), _m(done.get("power_off"))
     fin = "done" if idf == "done" and pwr == "done" else "pending"
     return {"identify": idf, "power-off": pwr, "done": fin}
 
@@ -161,9 +187,19 @@ def _record(slot, c, st, settings, live_link, macs):
     discover_done = all(d for _, d in flags)
     steps = {"Discover": discover_steps, "Firmware": _firmware_steps(st),
              "Qualify": _qualify_steps(st), "Done": _done_steps(st)}
-    firmware_done = all(v == "done" for v in steps["Firmware"].values())
-    qualify_done = all(v == "done" for v in steps["Qualify"].values())
-    if not discover_done:
+    firmware_done = phase_done(steps["Firmware"])
+    qualify_done = phase_done(steps["Qualify"])
+    # Completion latch (spec 2026-09-11): once the Done tail has recorded a
+    # verdict, power and lease state no longer move the phase. Powering a
+    # finished blade off used to flip Firmware's power-on and Discover's
+    # host-pinged back to cur and drop a green tile to violet. The live
+    # checklists underneath keep telling the truth; only the phase is held.
+    verdict = (st.get("done") or {}).get("verdict")
+    if verdict == "pass":
+        phase = "Done"
+    elif verdict == "fail":
+        phase = "Qualify"       # latched red: the failed step stays visible
+    elif not discover_done:
         phase = "Discover"
     elif not firmware_done:
         phase = "Firmware"
@@ -182,8 +218,9 @@ def _record(slot, c, st, settings, live_link, macs):
         "power_on": st.get("power_on"), "watts": st.get("watts"),
         "bmc_pinged": bool(st.get("bmc_pinged")),
         "phase": phase,
-        "step": next((n for n, d in flags if not d), None),
+        "step": None if verdict == "pass" else next((n for n, d in flags if not d), None),
         "steps": steps,
+        "step_notes": _step_notes(st),
         "run_id": (st.get("qual") or {}).get("run_id"),
         "order_no": st.get("order_no") or settings.get("order_no"),
         "population": settings.get("population"),
