@@ -150,3 +150,21 @@ def purge_run(bmc_mac, run_id) -> None:
             "DELETE FROM post_artifact WHERE bmc_mac = %s AND run_id = %s",
             (bmc_mac, run_id),
         )
+
+
+def get_node(bmc_mac) -> dict:
+    """The durable post_node row's vars for a blade, or {} if there is no row."""
+    with get_pool().connection() as conn:
+        rows = conn.execute("SELECT vars FROM post_node WHERE bmc_mac = %s", (bmc_mac,)).fetchall()
+    return rows[0][0] if rows and isinstance(rows[0][0], dict) else {}
+
+
+def record_result(bmc_mac, result: dict, *, serial=None, order_no=None, last_port=None) -> None:
+    """Write a finished qualification run into the durable tier (spec 2026-09-11 §3):
+    vars.result is the latest run, vars.runs the compact history. Read-modify-write
+    on runs because the upsert's JSONB merge is shallow."""
+    prior = get_node(bmc_mac)
+    runs = [r for r in (prior.get("runs") or []) if isinstance(r, dict)]
+    runs.append({k: result.get(k) for k in ("run_id", "verdict", "finished_at", "order_no", "port")})
+    upsert_node(bmc_mac, serial=serial, order_no=order_no, last_port=last_port,
+                result=result, runs=runs)

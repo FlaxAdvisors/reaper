@@ -32,7 +32,14 @@ LAUNCH_COOLDOWN_S = int(os.environ.get("FLAX_POST_QUAL_LAUNCH_COOLDOWN", "120"))
 QUAL_MAP = {"pass": "done", "running": "cur", "pending": "pending",
             "fail": "fault", "skip": "done"}
 
-_TERMINAL = {"pass", "fail"}
+# skip is terminal too: its summary.reason (e.g. fio's "no physical storage
+# media") is what the tile renders as the step note. Skips emit no artifacts.
+_TERMINAL = {"pass", "fail", "skip"}
+
+# The Done tail reads chassis power back after the off command (spec 2026-09-11
+# §2.2): 'power_off: done' is only ever written against a read that says off.
+POWER_OFF_VERIFY_S = int(os.environ.get("FLAX_POST_POWER_OFF_VERIFY", "30"))
+POWER_OFF_POLL_S = 5
 _BOOT_STEPS = ("pxe-in-logs", "live-iso-in-logs", "agent-reachable")
 
 
@@ -115,14 +122,54 @@ def qualify_verdict(status, pop) -> "str | None":
     return None
 
 
-def run_done(target, verdict, *, identify=actions.run_identify, power=actions.run_power) -> dict:
-    """On pass: identify LED force-on ('pull me') then power off. On fail: nothing
-    (leave the node powered for inspection, design §9/§10)."""
+def _power_reading(res) -> str:
+    """'on' | 'off' | 'unreadable' from a run_power(status) result."""
+    res = res or {}
+    out = (res.get("output") or "").lower()
+    if not res.get("ok"):
+        return "unreadable"
+    return "on" if "is on" in out else ("off" if "is off" in out else "unreadable")
+
+
+def run_done(target, verdict, *, identify=actions.run_identify, power=actions.run_power,
+             sleep=time.sleep) -> dict:
+    """On pass: identify LED force-on ('pull me'), power off, then READ POWER BACK for
+    up to POWER_OFF_VERIFY_S. power_off is 'done' only when a read says off; otherwise
+    'fault' with power_off_reason still_on|unreadable. On fail: nothing (leave the
+    node powered for inspection, design §9/§10)."""
     if verdict != "pass":
         return {"verdict": verdict}
-    identify(target["bmc_ip"], "force")
+    idf = identify(target["bmc_ip"], "force")
     power(target["bmc_ip"], "off", blocked=False)
-    return {"identify": "done", "power_off": "done", "verdict": "pass"}
+    reading = "unreadable"
+    for _ in range(max(1, POWER_OFF_VERIFY_S // POWER_OFF_POLL_S)):
+        reading = _power_reading(power(target["bmc_ip"], "status", blocked=False))
+        if reading == "off":
+            break
+        sleep(POWER_OFF_POLL_S)
+    done = {"identify": "done" if (idf or {}).get("ok") else "fault",
+            "power_off": "done" if reading == "off" else "fault",
+            "verdict": "pass"}
+    if reading != "off":
+        done["power_off_reason"] = "still_on" if reading == "on" else "unreadable"
+    return done
+
+
+def build_result(target, live, qual, pop, done, now=time.time) -> dict:
+    """The durable record of one finished run (spec 2026-09-11 §3). Artifact lists
+    are dropped from the steps: post_artifact is the store for those."""
+    steps = {}
+    for name, rec in ((qual or {}).get("steps") or {}).items():
+        rec = rec or {}
+        steps[name] = {"status": rec.get("status"), "summary": rec.get("summary") or {}}
+    live = live or {}
+    return {"run_id": (qual or {}).get("run_id"), "verdict": (done or {}).get("verdict"),
+            "finished_at": int(now()), "order_no": target.get("order_no"),
+            "port": target.get("port"), "serial": target.get("serial"),
+            "fw": {"bmc": live.get("fw_bmc") or {}, "bios": live.get("fw_bios") or {},
+                   "nic": live.get("fw_nic") or {}},
+            "qual": {"overall": (qual or {}).get("overall") or {}, "steps": steps},
+            "pop": pop or {}, "done": done or {}}
 
 
 def poll_target(target, *, make_client=_default_make_client, store=_state,
@@ -197,8 +244,27 @@ def poll_target(target, *, make_client=_default_make_client, store=_state,
             "overall": status, "steps": steps}
     verdict = qualify_verdict(status, pop)
     if verdict is not None:
-        done = run_done(target, verdict)
-        store.set_state(target["port"], done=done)
+        # Once per run: the Done tail (identify + power off) and the durable
+        # post_node record both happen the FIRST time this run reaches a verdict.
+        # Before this guard the tail re-ran on every poll while the agent was
+        # still answering after a pass.
+        live = store.read_state().get(target["port"], {}) if hasattr(store, "read_state") else {}
+        already = ((live.get("done") or {}).get("verdict") is not None
+                   and (live.get("qual") or {}).get("run_id") == run_id)
+        if already:
+            done = live.get("done")
+        else:
+            done = run_done(target, verdict)
+            store.set_state(target["port"], done=done)
+            if hasattr(store, "record_result"):
+                try:
+                    store.record_result(target["bmc_mac"],
+                                        build_result(target, live, qual, pop, done),
+                                        serial=target.get("serial"),
+                                        order_no=target.get("order_no"),
+                                        last_port=target["port"])
+                except Exception:
+                    log.exception("record_result failed for %s", target.get("port"))
         qual["done"] = done
     store.set_state(target["port"], qual=qual)
     return qual
