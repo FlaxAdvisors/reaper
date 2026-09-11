@@ -311,6 +311,22 @@
     mode: "0644"
   notify: reload nginx
 
+# On-site name-based entry points for the operator UIs on :80 —
+# http://triage.<bang>.<lab-domain>, http://post.<bang>.<lab-domain>,
+# http://view.<bang>.<lab-domain>. The names are dnsmasq CNAMEs to the
+# bang's fixed mgmt A record (dnsmasq.conf.j2), so an on-site laptop needs
+# no port numbers and no TLS exception (the TLS vhosts on :443 are the
+# *.flaxadvisors.cloud ones apply_flax_stack renders).
+- name: Deploy nginx lab-UI vhosts (triage/post/view on :80)
+  become: true
+  ansible.builtin.template:
+    src: nginx-lab-ui.conf.j2
+    dest: /etc/nginx/vhosts.d/lab-ui.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload nginx
+
 - name: Enable + start nginx
   become: true
   ansible.builtin.systemd:

@@ -22,6 +22,15 @@ domain={{ bang_lab_domain }}
 local=/{{ bang_lab_domain }}/
 expand-hosts
 localise-queries
+
+{# Operator UI names for on-site laptops: CNAMEs onto each bang's fixed mgmt
+   A record from lab-hosts.j2 (so they follow the bang, not the VRRP VIP).
+   Served by the nginx lab-UI vhosts on :80 (nginx-lab-ui.conf.j2). #}
+{% for bang_name in bang_host_suffix %}
+cname=triage.{{ bang_name }}.{{ bang_lab_domain }},{{ bang_name }}.{{ bang_lab_domain }}
+cname=post.{{ bang_name }}.{{ bang_lab_domain }},{{ bang_name }}.{{ bang_lab_domain }}
+cname=view.{{ bang_name }}.{{ bang_lab_domain }},{{ bang_name }}.{{ bang_lab_domain }}
+{% endfor %}
 no-resolv
 {% for s in apply_bang_services_upstream_dns %}
 server={{ s }}

@@ -1,0 +1,86 @@
+# Managed by apply_bang_services. On-site (lab mgmt VLAN) name-based HTTP
+# entry points for the operator UIs, next to the PXE default_server on :80.
+#
+#   http://triage.{{ inventory_hostname }}.{{ bang_lab_domain }}  -> triage API + UI (:5555) and its SOL/power relay (:5559)
+#   http://post.{{ inventory_hostname }}.{{ bang_lab_domain }}    -> post rack viewer (:8446) and its SOL relay (:8448)
+#   http://view.{{ inventory_hostname }}.{{ bang_lab_domain }}    -> post fleet viewer (:8799, loopback-only)
+#
+# Plain HTTP on purpose: this is the lab-internal counterpart of the TLS
+# vhosts apply_flax_stack renders for *.{{ inventory_hostname }}.flaxadvisors.cloud
+# (same upstreams, same location blocks). The names are dnsmasq CNAMEs to
+# {{ inventory_hostname }}.{{ bang_lab_domain }} (see dnsmasq.conf.j2), so
+# they follow the bang's fixed mgmt address, not the VRRP VIP.
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name triage.{{ inventory_hostname }}.{{ bang_lab_domain }};
+
+    location / {
+        proxy_pass         http://127.0.0.1:5555;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto http;
+        proxy_read_timeout 30s;
+    }
+    location /socket.io/ {
+        proxy_pass         http://127.0.0.1:5559;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade $http_upgrade;
+        proxy_set_header   Connection "upgrade";
+        proxy_set_header   Host $host;
+        proxy_read_timeout 3600s;
+    }
+    location /power/ {
+        proxy_pass         http://127.0.0.1:5559;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto http;
+        proxy_read_timeout 30s;
+    }
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name post.{{ inventory_hostname }}.{{ bang_lab_domain }};
+
+    location / {
+        proxy_pass         http://127.0.0.1:8446;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto http;
+        proxy_read_timeout 30s;
+    }
+    # flax-post-sol — Socket.IO SOL console relay (websocket upgrade).
+    location /socket.io/ {
+        proxy_pass         http://127.0.0.1:8448;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade $http_upgrade;
+        proxy_set_header   Connection "upgrade";
+        proxy_set_header   Host $host;
+        proxy_read_timeout 3600s;
+    }
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name view.{{ inventory_hostname }}.{{ bang_lab_domain }};
+
+    location / {
+        proxy_pass         http://127.0.0.1:8799;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto http;
+        proxy_read_timeout 30s;
+    }
+}

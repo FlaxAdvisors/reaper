@@ -2,6 +2,12 @@
 apply_flax_post_image_tag: "0.9.106"
 apply_flax_post_web_port: 8446
 apply_flax_post_https_port: 8444
+# Firewalld zones the viewer ports are opened in. The mgmt VLAN (on-site
+# laptops, 192.168.88.0/24) enters the bang on eth0 = zone `internal`;
+# `external` is the uplink. Both, like apply_triage_firewall_zones.
+apply_flax_post_firewall_zones:
+  - external
+  - internal
 apply_flax_post_nginx_image: "nginx:1.27-alpine"
 apply_flax_post_db_password: ""
 apply_flax_post_fwd_port: 8447

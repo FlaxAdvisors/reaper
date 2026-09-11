@@ -1,33 +1,41 @@
 ---
 # Viewer HTTP (web_port) + the nginx TLS front (https_port).
-- name: Check if flax-post ports are already open in zone external (permanent)
+#
+# Opened in EVERY zone listed in apply_flax_post_firewall_zones, not just
+# `external`. On the bangs the lab mgmt VLAN (192.168.88.0/24, where on-site
+# laptops sit) enters on eth0, which firewalld puts in `internal`; `external`
+# holds the uplink. Until 2026-09-11 this task opened `external` only, so
+# https://bang-gouda:8444/ was "connection refused" from the mgmt VLAN while
+# triage's :5555 (apply_triage_firewall, both zones) worked. Same zone list
+# and rationale as apply_triage_firewall_zones / apply_lease_agent_firewall_zones.
+- name: Check if flax-post ports are already open (permanent)
   become: true
   ansible.builtin.command:
-    cmd: "firewall-cmd --permanent --zone=external --query-port={{ item }}/tcp"
+    cmd: "firewall-cmd --permanent --zone={{ item.0 }} --query-port={{ item.1 }}/tcp"
   register: apply_flax_post_port_query
   changed_when: false
   failed_when: false
-  loop:
-    - "{{ apply_flax_post_web_port }}"
-    - "{{ apply_flax_post_https_port }}"
+  loop: "{{ apply_flax_post_firewall_zones | product([apply_flax_post_web_port, apply_flax_post_https_port]) | list }}"
+  loop_control:
+    label: "{{ item.0 }}:{{ item.1 }}"
 
-- name: Open flax-post ports in zone external (permanent)
+- name: Open flax-post ports (permanent)
   become: true
   ansible.builtin.command:
-    cmd: "firewall-cmd --permanent --zone=external --add-port={{ item.item }}/tcp"
+    cmd: "firewall-cmd --permanent --zone={{ item.item.0 }} --add-port={{ item.item.1 }}/tcp"
   when: item.rc != 0
   changed_when: true
   notify: Reload firewalld
   loop: "{{ apply_flax_post_port_query.results }}"
   loop_control:
-    label: "{{ item.item }}"
+    label: "{{ item.item.0 }}:{{ item.item.1 }}"
 
-- name: Open flax-post ports in zone external (runtime)
+- name: Open flax-post ports (runtime)
   become: true
   ansible.builtin.command:
-    cmd: "firewall-cmd --zone=external --add-port={{ item.item }}/tcp"
+    cmd: "firewall-cmd --zone={{ item.item.0 }} --add-port={{ item.item.1 }}/tcp"
   when: item.rc != 0
   changed_when: true
   loop: "{{ apply_flax_post_port_query.results }}"
   loop_control:
-    label: "{{ item.item }}"
+    label: "{{ item.item.0 }}:{{ item.item.1 }}"
