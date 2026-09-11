@@ -1,0 +1,234 @@
+# flax_post/observe/worker.py
+"""One worker thread per post slot (spec 2026-09-11 post-slot-ladder §3).
+
+The worker reads its slot's blade record from a shared SlotFeed (one
+_blade_slots() call per FEED_INTERVAL_S for all 48 workers, not 48 calls),
+gathers the single piece of evidence the ladder asks for, advances the pure
+machine, performs the returned actions, persists the slice. It owns power-on,
+the claim sentinel, boot-marker scraping, host ping/ssh, on-demand firmware
+probes, and the agent poll (host_qual.poll_target, which owns qual/pop/done
+and the console artifact). Everything else stays with the IPMI lanes.
+"""
+import logging
+import os
+import subprocess
+import threading
+import time
+import urllib.request
+
+from .. import actions
+from . import bootlog, claims, host_qual, ladder, solclient
+
+log = logging.getLogger("flax-post.worker")
+
+FEED_INTERVAL_S = int(os.environ.get("FLAX_POST_FEED_INTERVAL", "2"))
+HOLD_DIR = os.environ.get("FLAX_POST_POWER_HOLD_DIR", "/etc/flax/post-power-hold")
+FWD_URL = os.environ.get("FLAX_POST_FWD_URL", "http://127.0.0.1:8447")
+BIOSD_URL = os.environ.get("FLAX_POST_BIOSD_URL", "http://127.0.0.1:8449")
+NICD_URL = os.environ.get("FLAX_POST_NICD_URL", "http://127.0.0.1:8450")
+PROBE_TIMEOUT_S = 10
+_PROBE_URL = {"probe-fwd": FWD_URL, "probe-biosd": BIOSD_URL, "probe-nicd": NICD_URL}
+
+
+def allowed(port, allowlist) -> bool:
+    """FLAX_POST_LADDER_PORTS gate: empty list = every slot."""
+    return not allowlist or port in allowlist
+
+
+def snapshot_from_record(rec, *, allowed, hold) -> dict:
+    return {"bmc_pinged": bool(rec.get("bmc_pinged")),
+            "power_on": rec.get("power_on"),
+            "host_leased": bool(rec.get("host_leased")),
+            "verdict": rec.get("verdict"),
+            "hold": bool(hold),
+            "fw_flashing": actions.flash_active(rec),
+            "fw_gates": bool(rec.get("fw_gates")),
+            "allowed": bool(allowed),
+            "launch_at": rec.get("launch_at")}
+
+
+def iterate_once(port, deps, is_allowed, now):
+    """One worker step for `port`. Returns the ladder written, or None for an
+    empty/unreserved slot. Never raises for a bad action: a failed power-on is
+    a ladder fault, everything else is logged and retried by the next step."""
+    rec = deps.record(port)
+    if not rec or rec.get("empty") or not rec.get("bmc_ip"):
+        return None
+    lad = rec.get("ladder") or None
+    snap = snapshot_from_record(rec, allowed=is_allowed, hold=deps.hold(port))
+    kind = ladder.evidence_needed(lad)
+    evidence = {}
+    if kind == "agent":
+        qual = deps.poll_agent(rec, is_allowed)
+        evidence["agent"] = bool((qual.get("agent") or {}).get("reachable"))
+    elif kind is not None:
+        evidence[kind] = deps.evidence(kind, rec, lad)
+    new, acts = ladder.advance(lad, snap, evidence, now)
+    for act in acts:
+        if act == "poll-agent":
+            if kind != "agent":                         # else already polled this step
+                try:
+                    deps.poll_agent(rec, is_allowed)    # launch only when allowlisted
+                except Exception:
+                    log.exception("%s: agent poll failed", port)
+            continue
+        try:
+            res = deps.act(act, rec, new)
+        except Exception:
+            log.exception("%s: action %s failed", port, act)
+            continue
+        if act == "power-on" and not (res or {}).get("ok"):
+            reason = "rejected: " + ((res or {}).get("output") or "no output").strip()[:200]
+            new = ladder.fault(new, "power-on", reason, now)
+            try:
+                deps.act("unclaim", rec, new)
+            except Exception:
+                log.exception("%s: unclaim after rejected power-on failed", port)
+            break
+        if act.startswith("probe-"):
+            new.setdefault("probe_calls", {})[act[len("probe-"):]] = now
+    deps.write_ladder(port, new)
+    return new
+
+
+class SlotFeed:
+    """Shared, periodically refreshed {port: record} from app._blade_slots()."""
+
+    def __init__(self, fetch, interval_s=FEED_INTERVAL_S):
+        self._fetch = fetch
+        self._interval = interval_s
+        self._lock = threading.Lock()
+        self._by_port = {}
+
+    def refresh(self):
+        try:
+            slots = self._fetch()
+        except Exception:
+            log.exception("slot feed refresh failed")
+            return
+        with self._lock:
+            self._by_port = {s["port"]: s for s in slots if s.get("port")}
+
+    def get(self, port):
+        with self._lock:
+            return self._by_port.get(port)
+
+    def start(self):
+        def loop():
+            while True:
+                self.refresh()
+                time.sleep(self._interval)
+        threading.Thread(target=loop, name="slot-feed", daemon=True).start()
+        return self
+
+
+def _ping(ip) -> bool:
+    if not ip:
+        return False
+    try:
+        return subprocess.run(["ping", "-c", "2", "-i", "1", "-W", "1", "-q", ip],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                              timeout=6).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _ssh_ok(ip) -> bool:
+    from ..biosd import creds as _creds, driver as _driver
+    user, pw = _creds.load_host_creds()
+    rc, _ = _driver.run_over_ssh(user, pw, ip, "true", timeout=30)
+    return rc == 0
+
+
+def _probe_daemon(url, port) -> None:
+    req = urllib.request.Request(f"{url}/probe/{port}", data=b"", method="POST")
+    with urllib.request.urlopen(req, timeout=PROBE_TIMEOUT_S) as resp:
+        log.info("probe %s/%s -> %s", url, port, resp.status)
+
+
+class RealDeps:
+    """Production wiring. Every method maps 1:1 to a spec §3/§5/§6 action."""
+
+    def __init__(self, feed, *, store=None):
+        from .. import state as _state
+        self._feed = feed
+        self._store = store or _state
+
+    def record(self, port):
+        return self._feed.get(port)
+
+    def hold(self, port):
+        return os.path.exists(os.path.join(HOLD_DIR, port))
+
+    def evidence(self, kind, rec, lad):
+        since = (lad or {}).get("power_on_at") or 0
+        host_ip = rec.get("host_ip")
+        if kind == "tftp":
+            return bootlog.tftp_seen(bootlog.DNSMASQ_LOG, host_ip, since) if host_ip else None
+        if kind == "ipxe":
+            return bootlog.ipxe_seen(bootlog.NGINX_ACCESS_LOG, host_ip, since) if host_ip else None
+        if kind == "iso":
+            return bootlog.iso_seen(bootlog.NGINX_ACCESS_LOG, host_ip, since) if host_ip else None
+        if kind == "ping":
+            return _ping(host_ip)
+        if kind == "ssh":
+            return bool(host_ip) and _ssh_ok(host_ip)
+        return None
+
+    def act(self, action, rec, lad):
+        port, bmc_ip = rec["port"], rec.get("bmc_ip")
+        if action.startswith("sol-mark:"):
+            out = solclient.mark(bmc_ip, action.split(":", 1)[1])
+            log.info("%s: sol mark -> %s", port, out)
+            return out
+        if action == "claim":
+            return claims.claim(port)
+        if action == "unclaim":
+            return claims.unclaim(port)
+        if action == "power-on":
+            res = actions.run_power(bmc_ip, "on", blocked=False)
+            log.info("%s: power-on %s -> ok=%s", port, bmc_ip, res.get("ok"))
+            return res
+        if action in _PROBE_URL:
+            _probe_daemon(_PROBE_URL[action], port)
+            return None
+        log.warning("%s: unknown action %s", port, action)
+        return None
+
+    def poll_agent(self, rec, launch):
+        target = {"port": rec["port"], "host_ip": rec.get("host_ip"), "bmc_ip": rec.get("bmc_ip"),
+                  "bmc_mac": rec.get("bmc_mac"), "serial": rec.get("serial"),
+                  "order_no": rec.get("order_no"), "phase": "Qualify" if rec.get("fw_gates") else rec.get("phase")}
+        if not target["host_ip"]:
+            return {"agent": {"reachable": False}}
+        return host_qual.poll_target(
+            target, store=self._store,
+            launch_agent=host_qual._default_launch_agent if launch else None,
+            ping=_ping, console_reader=solclient.read_capture)
+
+    def write_ladder(self, port, lad):
+        self._store.set_state(port, ladder=lad)
+
+    def clock(self):
+        return time.time()
+
+
+def _run_slot(port, deps, is_allowed):
+    while True:
+        lad = None
+        try:
+            lad = iterate_once(port, deps, is_allowed, deps.clock())
+        except Exception:
+            log.exception("%s: worker iteration failed", port)
+        time.sleep(ladder.interval_s(lad))
+
+
+def start_workers(ports, deps, allowlist):
+    threads = []
+    for port in ports:
+        t = threading.Thread(target=_run_slot, args=(port, deps, allowed(port, allowlist)),
+                             name=f"slot-{port}", daemon=True)
+        t.start()
+        threads.append(t)
+    log.info("slot workers started: %d (allowlist=%s)", len(threads), allowlist or "(all)")
+    return threads

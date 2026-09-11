@@ -10,7 +10,7 @@ import threading
 import time
 
 from .. import records
-from . import gc, ipmi, host_qual
+from . import gc, ipmi
 
 log = logging.getLogger("flax-post.observe")
 PROBE_INTERVAL_S = int(os.environ.get("FLAX_POST_OBSERVE_INTERVAL", "15"))
@@ -48,49 +48,32 @@ def run_gc_pass(gc_once=None) -> None:
         log.exception("post_state gc pass failed")
 
 
-def qual_targets(slots) -> list:
-    """Booted post blades (host_ip present) whose on-node agent may be up."""
-    out = []
-    for s in slots:
-        if s.get("empty") or not s.get("host_ip"):
-            continue
-        out.append({"port": s["port"], "host_ip": s["host_ip"], "bmc_ip": s.get("bmc_ip"),
-                    "bmc_mac": s.get("bmc_mac"), "serial": s.get("serial"),
-                    "order_no": s.get("order_no"),
-                    # phase == "Qualify" means Discover+Firmware are done but Qualify
-                    # isn't -> host_qual launches the agent (no reboot). See poll_target.
-                    "phase": s.get("phase")})
-    return out
-
-
-def _live_targets() -> list:
-    """Build qual targets from the current blade view (imported lazily to avoid a
-    viewer<->producer import cycle)."""
-    from ..app import _blade_slots
-    return qual_targets(_blade_slots())
-
-
-def run_host_qual_pass(targets_fn=_live_targets, once=host_qual.run_once) -> None:
-    try:
-        once(targets_fn())
-    except Exception:
-        log.exception("host_qual pass failed")
-
-
 def _power_loop():
     while True:
         run_power_pass()
         time.sleep(POWER_INTERVAL_S)
 
 
+LADDER_PORTS = [p.strip() for p in os.environ.get("FLAX_POST_LADDER_PORTS", "").split(",") if p.strip()]
+
+
+def slot_ports() -> list:
+    """Every geometry slot port, the set the slot workers cover."""
+    from .. import geometry
+    return [s["port"] for s in geometry.load_geometry()["slots"] if s.get("port")]
+
+
 def main():
     logging.basicConfig(level=logging.INFO)
     log.info("flax-post producers starting; full=%ss power=%ss", PROBE_INTERVAL_S, POWER_INTERVAL_S)
     threading.Thread(target=_power_loop, name="power-lane", daemon=True).start()
+    from ..app import _blade_slots
+    from . import worker
+    feed = worker.SlotFeed(_blade_slots).start()
+    worker.start_workers(slot_ports(), worker.RealDeps(feed), LADDER_PORTS)
     while True:
         run_pass()
         run_gc_pass()
-        run_host_qual_pass()
         time.sleep(PROBE_INTERVAL_S)
 
 
