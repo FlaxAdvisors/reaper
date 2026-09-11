@@ -195,6 +195,11 @@ def advance(ladder, snap, evidence, now):
         if ev.get("agent"):
             _pass(lad, "qualify", now)
             return lad, acts + ["poll-agent"]
+        # A slot outside the allowlist is observed only: nobody launches its
+        # agent, so the 180 s budget has nothing to measure (et28b3 faulted
+        # this way on the first deploy, 2026-09-11). Keep polling, never fault.
+        if not snap.get("allowed"):
+            return lad, acts + ["poll-agent"]
         # launch_at is never cleared: a row that reaches this rung without a
         # fresh launch (the non-allowlisted slot, or a re-run) carries the
         # launch of a previous boot. Only a launch at or after this rung

@@ -61,7 +61,11 @@ def _default_make_client(host_ip):
 _LAUNCH_SH = (
     "systemctl is-active --quiet flax-qual-agent && exit 0\n"
     "set -e\n"
-    "cd /opt/flax/hook\n"
+    # The slot ladder launches within seconds of sshd answering, which can be
+    # BEFORE the ISO's banghook service has created /opt/flax/hook (et8b4,
+    # 2026-09-11: `cd: /opt/flax/hook: No such file or directory`). The launch
+    # fetches its own payload, so it needs nothing from the hook but the dir.
+    "mkdir -p /opt/flax/hook && cd /opt/flax/hook\n"
     "curl -sf http://bang/post.tgz -o post.tgz && tar xzf post.tgz\n"
     "./post.sh postautomate\n"
 )
