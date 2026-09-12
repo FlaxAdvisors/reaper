@@ -224,3 +224,9 @@ button.mini{font-size:.66rem;padding:.05rem .4rem;margin-left:.5rem;vertical-ali
 .sdr-att{display:grid;grid-template-columns:auto auto auto 1fr;gap:.15rem .8rem;font-family:ui-monospace,monospace;font-size:.76rem;margin:.3rem 0 .6rem}
 .sdr-att .st{font-weight:700} .sdr-att .st.cr{color:var(--red)} .sdr-att .st.nc{color:var(--amber)}
 .sdr-att .hd{color:var(--dim);font-weight:600}
+
+.lad-tbl{border-collapse:collapse;font-size:.76rem;margin:.5rem 0 .7rem;width:100%}
+.lad-tbl th{text-align:left;color:var(--dim);font-weight:600;font-size:.66rem;text-transform:uppercase;letter-spacing:.4px;padding:.15rem .5rem .25rem 0;border-bottom:1px solid var(--border)}
+.lad-tbl td{padding:.2rem .5rem .2rem 0;border-bottom:1px solid #1b212b;vertical-align:top}
+.lad-tbl tr.fault td{color:var(--red)} .lad-tbl tr.now td{font-weight:600}
+.lad-tbl td.dim{color:var(--dim);font-weight:400}

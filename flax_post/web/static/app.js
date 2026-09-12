@@ -151,21 +151,25 @@ function App() {
     _ladderSteps: ['power-on', 'tftp-seen', 'ipxe-seen', 'live-iso-seen', 'host-leased', 'host-pinged', 'host-ssh', 'bmc-ready', 'agent-reachable', 'bmc-updated', 'bios-updated', 'mlx-updated'],
     // the slot ladder as the step modal shows it: rung + clock + budget, each
     // boot mark with its offset from power-on, the skipped note, the fault
-    ladderText(b, name) {
-      const v = b && b.ladder_view; if (!v || !v.rung || !this._ladderSteps.includes(name)) return '';
-      const now = Date.now() / 1000, t = (x) => new Date(x * 1000).toLocaleTimeString();
-      const age = (x) => Math.max(0, Math.round(now - x)) + 's ago';
-      // Chronological, top to bottom: power-on, then each boot mark, then the
-      // rung the ladder is on NOW (the most recent thing) last.
-      const lines = [];
-      if (v.power_on_at) lines.push('power-on: ' + t(v.power_on_at));
-      for (const k of ['tftp', 'ipxe', 'iso', 'ping', 'ssh', 'bmcready']) {
-        if (v.marks && v.marks[k]) lines.push(k + ': ' + t(v.marks[k]) + (v.power_on_at ? '  (+' + Math.round(v.marks[k] - v.power_on_at) + 's after power-on)' : ''));
-      }
-      if (v.skipped) lines.push('boot markers skipped: ' + v.skipped);
-      if (v.fault) lines.push('\u2715 ' + v.fault.rung + ': ' + v.fault.reason + (v.fault.at ? '  at ' + t(v.fault.at) : ''));
-      lines.push('ladder rung now: ' + v.rung + (v.since ? '  (since ' + t(v.since) + ', ' + age(v.since) + (v.budget_s ? ', budget ' + v.budget_s + 's' : '') + ')' : ''));
-      return lines.join('\n');
+    // The ladder timeline as table rows (ruling 2026-09-12: it is everywhere,
+    // so it must read at a glance): time of event | since power-on | event |
+    // extra. Chronological; the rung the ladder is on NOW is the last row.
+    ladderRows(b, name) {
+      const v = b && b.ladder_view; if (!v || !v.rung || !this._ladderSteps.includes(name)) return [];
+      const now = Date.now() / 1000;
+      const t = (x) => x ? new Date(x * 1000).toLocaleTimeString() : '';
+      const dur = (s) => { s = Math.max(0, Math.round(s)); return s >= 60 ? Math.floor(s / 60) + 'm ' + String(s % 60).padStart(2, '0') + 's' : s + 's'; };
+      const since = (x) => (x && v.power_on_at) ? '+' + dur(x - v.power_on_at) : '';
+      const rows = [];
+      if (v.power_on_at) rows.push({ t: t(v.power_on_at), since: '+0s', event: 'power-on', extra: (b.ladder && b.ladder.human_power_on) ? 'by operator' : 'by the engine' });
+      const names = { tftp: 'TFTP request seen', ipxe: 'iPXE script fetched', iso: 'live ISO fetched', ping: 'host answered ping', ssh: 'host answered ssh', bmcready: 'BMC answered a data read' };
+      const marks = Object.entries(v.marks || {}).filter(([k, x]) => names[k] && x).sort((a, c) => a[1] - c[1]);
+      for (const [k, x] of marks) rows.push({ t: t(x), since: since(x), event: names[k], extra: '' });
+      if (v.skipped) rows.push({ t: '', since: '', event: 'boot markers not observed', extra: v.skipped });
+      if (v.fault) rows.push({ t: t(v.fault.at), since: since(v.fault.at), event: '\u2715 ' + v.fault.rung, extra: v.fault.reason, cls: 'fault' });
+      rows.push({ t: t(v.since), since: since(v.since), event: 'rung now: ' + v.rung,
+                  extra: (v.rung === 'done' ? 'done since ' : 'for ') + dur(now - (v.since || now)) + (v.budget_s ? ', budget ' + v.budget_s + 's' : ''), cls: 'now' });
+      return rows;
     },
 
     // ---- tile presentation (null-safe) ----

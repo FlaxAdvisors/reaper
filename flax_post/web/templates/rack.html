@@ -306,7 +306,7 @@
         </div>
         <div v-else-if="modal?.kind==='step'">
           <p class="m-sub">{{modal?.phase}} · step <b>{{modal?.step}}</b>
-            <span class="pop-badge" :class="'st-'+(stepInfo?.status||'pending')">{{stepWord(stepInfo?.status || (sel?.steps?.[modal?.phase]?.[modal?.step]) || 'pending')}}</span></p>
+            <span class="pop-badge" :class="'st-'+(stepInfo?.status||'pending')">{{stepInfo?.status_word || stepWord(stepInfo?.status || (sel?.steps?.[modal?.phase]?.[modal?.step]) || 'pending')}}</span></p>
           <p class="pending-note" v-if="stepLoading && !stepInfo">loading…</p>
           <div v-if="stepInfo">
             <p class="pending-note" v-for="n in (stepInfo?.notes || [])" :class="{fault: stepInfo?.status==='fault' && n===(stepInfo?.notes || [])[0]}">{{n}}</p>
@@ -314,7 +314,10 @@
               <template v-for="r in (stepInfo?.rows || [])"><span class="lbl">{{r[0]}}</span><span class="mono">{{r[1]}}</span></template>
             </div>
           </div>
-          <pre class="console" v-if="ladderText(sel, modal?.step)">{{ladderText(sel, modal?.step)}}</pre>
+          <table class="lad-tbl" v-if="ladderRows(sel, modal?.step).length">
+            <thead><tr><th>time</th><th>since on</th><th>event</th><th></th></tr></thead>
+            <tbody><tr v-for="r in ladderRows(sel, modal?.step)" :class="r.cls||''"><td class="mono">{{r.t}}</td><td class="mono">{{r.since}}</td><td>{{r.event}}</td><td class="dim">{{r.extra}}</td></tr></tbody>
+          </table>
           <div v-if="modal?.phase==='Qualify'">
             <p class="pending-note" v-if="artLoading">loading artifacts…</p>
             <p class="pending-note" v-else-if="!artifacts || !artifacts.length">no artifact for this step</p>

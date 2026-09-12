@@ -283,6 +283,13 @@ def detail(rec: dict, row: dict, phase: str, step: str) -> dict:
                         "the next power-on runs the whole pipeline including it")
     elif sn:
         notes.insert(0, sn)
-    return {"phase": phase, "step": step, "status": status,
-            "headline": "%s: %s" % (step, _STATUS_WORD.get(status, status)),
+    word = _STATUS_WORD.get(status, status)
+    if phase == "Firmware" and step.endswith("-updated") and status == "cur":
+        key = {"bmc": "bmc", "bios": "bios", "mlx": "nic"}[step.split("-")[0]]
+        fw = ((rec.get("fw") or {}).get(key) or {})
+        if fw.get("phase") == "needs_update" and (fw.get("mode") or "detect") != "enforce":
+            # nothing is flashing: the update is NEEDED, not in progress
+            word = "needed"
+    return {"phase": phase, "step": step, "status": status, "status_word": word,
+            "headline": "%s: %s" % (step, word),
             "rows": rows, "notes": notes}
