@@ -37,6 +37,9 @@ LADDER_BUDGET_S = {
     "power-on": 60, "tftp-seen": 600, "ipxe-seen": 120, "host-leased": 120,
     "live-iso-seen": 300, "host-pinged": 600, "host-ssh": 120, "fw-gates": 600,
     "agent-reachable": 180,
+    # Not a rung: how long the power-on rung tolerates an UNREADABLE power
+    # (BMC off the network after the chassis power-on) before faulting.
+    "power-unreadable": 600,
 }
 
 

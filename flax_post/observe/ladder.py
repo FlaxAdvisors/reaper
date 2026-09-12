@@ -19,6 +19,7 @@ _MARK_KEY = {"tftp-seen": "tftp", "ipxe-seen": "ipxe", "live-iso-seen": "iso"}
 _EVIDENCE = {"tftp-seen": "tftp", "ipxe-seen": "ipxe", "live-iso-seen": "iso",
              "host-pinged": "ping", "host-ssh": "ssh", "agent-reachable": "agent"}
 _NEXT = {r: RUNGS[i + 1] for i, r in enumerate(RUNGS[:-1])}
+RUNG_INDEX = {r: i for i, r in enumerate(RUNGS)}
 
 
 def budget_s(rung):
@@ -112,8 +113,16 @@ def advance(ladder, snap, evidence, now):
             if power == "on":
                 lad["power_on_pending"] = False
                 _pass(lad, "tftp-seen", now)
-            elif _over_budget(lad, "power-on", lad["power_on_at"], now):
+            elif power == "off" and _over_budget(lad, "power-on", lad["power_on_at"], now):
                 lad = fault(lad, "power-on", "not on after %ds" % budget_s("power-on"), now)
+                acts.append("unclaim")
+            elif power is None and _over_budget(lad, "power-unreadable", lad["power_on_at"], now):
+                # AMI/onetree BMCs drop off the network for >60 s right after
+                # a chassis power-on (et5b4, et6b3 2026-09-12: the chassis WAS
+                # on). Only a definite `off` spends the 60 s budget; an
+                # unreadable BMC gets the longer cap.
+                lad = fault(lad, "power-on", "power unreadable %ds after power-on"
+                            % budget_s("power-unreadable"), now)
                 acts.append("unclaim")
             return lad, acts
         if power == "on":
@@ -179,6 +188,13 @@ def advance(ladder, snap, evidence, now):
 
     if rung == "fw-gates":
         if snap.get("fw_gates"):
+            # The gate passing IS the firmware stage completing: freeze the
+            # record's Firmware step map here (the worker puts it in the
+            # snapshot) so a later daemon write — fwd's `unreachable` during
+            # the post-power-on BMC blackout (et28b4, et6b4 2026-09-12) —
+            # cannot regress what the verdict snapshot later latches.
+            if snap.get("fw_steps"):
+                lad["fw_steps"] = dict(snap["fw_steps"])
             _pass(lad, "agent-reachable", now)
             acts.append("poll-agent")
         elif _over_budget(lad, rung, lad["since"], now):

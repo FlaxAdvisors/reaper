@@ -67,7 +67,13 @@ _LAUNCH_SH = (
     # 2026-09-11: `cd: /opt/flax/hook: No such file or directory`). The launch
     # fetches its own payload, so it needs nothing from the hook but the dir.
     "mkdir -p /opt/flax/hook && cd /opt/flax/hook\n"
-    "curl -sf http://bang/post.tgz -o post.tgz && tar xzf post.tgz\n"
+    # 12 s after sshd answered the fetch failed once on et27b4 (2026-09-12)
+    # and, inside an && list, `set -e` let the script fall through to a
+    # missing ./post.sh (rc=127, no agent, rung expired). Retry for ~15 s
+    # (run_over_ssh's timeout is 30 s) and fail loudly before post.sh.
+    "ok=0; for i in 1 2 3 4 5; do curl -sf http://bang/post.tgz -o post.tgz && ok=1 && break; sleep 3; done\n"
+    "[ \"$ok\" = 1 ] || { echo 'post.tgz fetch failed after 5 tries'; exit 2; }\n"
+    "tar xzf post.tgz\n"
     "./post.sh postautomate\n"
 )
 

@@ -52,7 +52,9 @@ def snapshot_from_record(rec, *, allowed, hold) -> dict:
             "fw_flashing": actions.flash_active(rec),
             "fw_gates": bool(rec.get("fw_gates")),
             "allowed": bool(allowed),
-            "launch_at": rec.get("launch_at")}
+            "launch_at": rec.get("launch_at"),
+            # the tile's Firmware step map; the machine freezes it when fw-gates passes
+            "fw_steps": (rec.get("steps") or {}).get("Firmware")}
 
 
 def iterate_once(port, deps, is_allowed, now):
@@ -331,12 +333,22 @@ class RealDeps:
         return None
 
     def poll_agent(self, rec, launch):
+        lad = rec.get("ladder") or {}
+        # Past fw-gates the gate was PROVEN; the launcher's own gate
+        # (target phase == Qualify) must not close again on a live fw_gates
+        # that a daemon transient pulled back (et27b4 2026-09-12: fwd wrote
+        # `unreachable` mid-boot, the one failed launch was never retried).
+        past_gates = ladder.RUNG_INDEX.get(lad.get("rung"), -1) >= ladder.RUNG_INDEX["agent-reachable"]
+        steps = dict(rec.get("steps") or {})
+        if lad.get("fw_steps"):
+            steps["Firmware"] = lad["fw_steps"]     # frozen when fw-gates passed
         target = {"port": rec["port"], "host_ip": rec.get("host_ip"), "bmc_ip": rec.get("bmc_ip"),
                   "bmc_mac": rec.get("bmc_mac"), "serial": rec.get("serial"),
-                  "order_no": rec.get("order_no"), "phase": "Qualify" if rec.get("fw_gates") else rec.get("phase"),
+                  "order_no": rec.get("order_no"),
+                  "phase": "Qualify" if (rec.get("fw_gates") or past_gates) else rec.get("phase"),
                   # the record's step maps: the verdict freezes Discover/Firmware
                   # from these (blades.latch_snapshot) before the Done tail powers off
-                  "steps": rec.get("steps")}
+                  "steps": steps or None}
         if not target["host_ip"]:
             return {"agent": {"reachable": False}}
         return host_qual.poll_target(
