@@ -37,6 +37,9 @@ apply_flax_post_state_gc_grace_secs: 300
 apply_flax_post_biosd_control_port: 8449
 apply_flax_post_nicd_control_port: 8450
 apply_flax_post_ladder_ports: ""            # comma list; empty = every slot
+# Ladder budgets (seconds). host-ssh must cover the "already on" path where ping
+# answers from iPXE while the ISO is still downloading: measured 150 s on et24b2.
+apply_flax_post_ladder_host_ssh_s: 360
 apply_flax_post_power_hold_dir: /etc/flax/post-power-hold
 apply_flax_post_sol_capture_dir: /var/lib/flax/post-sol
 apply_flax_post_claim_dir: /run/flax/bmc-fw-active

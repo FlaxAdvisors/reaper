@@ -329,7 +329,7 @@ interface Ethernet25/4
 interface Ethernet26/1
    description Zone F - RIGHT
    speed forced 25gfull
-   switchport access vlan 25
+   switchport access vlan 17
    spanning-tree portfast
 !
 interface Ethernet26/2
@@ -345,7 +345,6 @@ interface Ethernet26/3
    spanning-tree portfast
 !
 interface Ethernet26/4
-   switchport access vlan 25
 !
 interface Ethernet27/1
    description Zone A - RIGHT

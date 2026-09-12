@@ -198,7 +198,7 @@ apply_flax_discover_image_tag: "0.9.132"  # LIVE tag; 0.9.133/0.9.134 carry only
 apply_flax_stack_flax_control_image_tag: "0.9.132"  # LIVE tag; 0.9.133/0.9.134 carry only post changes and were not rolled to core (a flax_stack roll bounces postgres)
 # SOL console (flax-post-sol Node relay + flax_post/web SOL modal), 2026-07-10.
 apply_flax_post_sol_image_tag: "0.9.118"
-apply_flax_post_ladder_ports: "et28b4,et8b4"  # slot-ladder rollout: et28b4 (latched, observe-only) + et8b4 (end-to-end power-on test); widen to "" once verified
+apply_flax_post_ladder_ports: ""  # every slot: the engine power-on was proven on et8b4 2026-09-11 and every guard held on the other 46 for 3 h
 
 # NIC firmware: pinned to 'detect' 2026-09-06. The role default is 'enforce'
 # (the only one of the three agents that ships armed) -- see
