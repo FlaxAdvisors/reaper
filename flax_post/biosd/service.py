@@ -86,6 +86,17 @@ def _probe_host(deps, registry, dev) -> dict | None:
         return None
 
 
+def scan_hosts(deps) -> list:
+    """The hosts a SCAN pass may ssh: every post host minus the powered-off
+    ones (ruling 2026-09-12). An off host cannot answer, and writing
+    `unreachable` over its last real classification is exactly the regression
+    the tile's Firmware latch exists to hide; the on-demand probe_port path is
+    deliberately not gated (the ladder asks only once the host is up). Deps
+    without the hook (older fakes) scan everything."""
+    off = set(deps.powered_off_ports()) if hasattr(deps, "powered_off_ports") else set()
+    return [d for d in deps.hosts() if d.get("port") not in off]
+
+
 def probe_once(deps, registry=None, workers=None):
     """One probe pass over every post host: classify current-vs-target into the store.
 
@@ -94,7 +105,7 @@ def probe_once(deps, registry=None, workers=None):
     the sequential path. Each host's work is isolated in its own try/except so
     one bad/raising host can't abort the rest of the pass.
     """
-    hosts = [dev for dev in deps.hosts() if dev.get("host_ip")]
+    hosts = [dev for dev in scan_hosts(deps) if dev.get("host_ip")]
     if not hosts:
         return
 

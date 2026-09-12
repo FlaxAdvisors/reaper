@@ -54,6 +54,15 @@ class _Deps:
                 return d.get("lease_ip") or d.get("reservation_ip")
         return None
 
+    def powered_off_ports(self) -> set:
+        """Twin of biosd._Deps.powered_off_ports: ports the power lane last
+        read `off`, skipped by the scan pass (service.scan_hosts)."""
+        try:
+            return {p for p, row in state.read_state().items() if row.get("power_on") == "off"}
+        except Exception:
+            log.exception("post_state read failed; scanning every host this pass")
+            return set()
+
     def run(self, ip, script):
         u, p = self.host_creds
         return driver.run_over_ssh(u, p, ip, script)

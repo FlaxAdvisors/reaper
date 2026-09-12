@@ -93,15 +93,18 @@ function App() {
     pidx(b) { return b ? Math.max(0, this.phases.indexOf(b.phase)) : 0; },
     faulted(b) { const s = b && b.steps && b.steps[b.phase]; return !!s && Object.values(s).includes('fault'); },
     phaseKey(b) { return !b ? 'grey' : this.faulted(b) ? 'fault' : (b.phase || 'discover').toLowerCase(); },
-    phaseSegs(b) {
-      const cur = this.pidx(b), fault = this.faulted(b);
-      // The current phase is amber while it runs. Done is the last phase, so
-      // nothing ever moves past it: once every Done step is done (identify,
-      // power-off, done) the segment must read green, not amber forever.
-      const v = Object.values((b && b.steps && b.steps[b.phase]) || {});
-      const complete = !fault && v.length > 0 && v.every((x) => x === 'done' || x === 'skip');
-      return this.phases.map((p, i) => (fault && i === cur) ? 'fault' : (i < cur || (i === cur && complete)) ? 'done' : i === cur ? 'cur' : '');
+    // One phase's colour comes ONLY from that phase's own steps (ruling
+    // 2026-09-12): red on any fault, green only when every step is done or
+    // skipped, amber while it is the phase in flight, grey otherwise. A phase
+    // to the left of the current one is NOT green by position — a latched
+    // pass with holes in Discover reads grey there, never green.
+    phaseState(b, phaseName) {
+      const v = Object.values((b && b.steps && b.steps[phaseName]) || {});
+      if (v.includes('fault')) return 'fault';
+      if (v.length > 0 && v.every((x) => x === 'done' || x === 'skip')) return 'done';
+      return (b && this.phases.indexOf(phaseName) === this.pidx(b)) ? 'cur' : '';
     },
+    phaseSegs(b) { return this.phases.map((p) => this.phaseState(b, p)); },
     stepSegs(b) {
       const s = (b.steps && b.steps[b.phase]) || {};
       // a skipped step fills its segment like a done one: it completes the phase
@@ -109,8 +112,8 @@ function App() {
     },
     stepEntries(b, phaseName) { const s = (b && b.steps && b.steps[phaseName]) || {}; return Object.keys(s).map((k) => ({ name: k, state: s[k] })); },
     phaseDot(b, phaseName) {
-      const i = this.phases.indexOf(phaseName), cur = this.pidx(b);
-      return i < cur ? 'done' : i === cur ? this.phaseKey(b) : 'grey';
+      const st = this.phaseState(b, phaseName);
+      return st === 'done' ? 'done' : st === 'fault' ? 'fault' : st === 'cur' ? this.phaseKey(b) : 'grey';
     },
     phasePct(b, phaseName) {
       const s = (b && b.steps && b.steps[phaseName]) || {}; const v = Object.values(s);

@@ -333,7 +333,10 @@ class RealDeps:
     def poll_agent(self, rec, launch):
         target = {"port": rec["port"], "host_ip": rec.get("host_ip"), "bmc_ip": rec.get("bmc_ip"),
                   "bmc_mac": rec.get("bmc_mac"), "serial": rec.get("serial"),
-                  "order_no": rec.get("order_no"), "phase": "Qualify" if rec.get("fw_gates") else rec.get("phase")}
+                  "order_no": rec.get("order_no"), "phase": "Qualify" if rec.get("fw_gates") else rec.get("phase"),
+                  # the record's step maps: the verdict freezes Discover/Firmware
+                  # from these (blades.latch_snapshot) before the Done tail powers off
+                  "steps": rec.get("steps")}
         if not target["host_ip"]:
             return {"agent": {"reachable": False}}
         return host_qual.poll_target(

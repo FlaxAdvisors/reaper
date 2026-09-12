@@ -14,6 +14,7 @@ import os
 import time
 
 from .. import actions
+from .. import blades
 from .. import population
 from .. import state as _state
 from ..qualclient import QualClient, QualUnreachable
@@ -263,6 +264,13 @@ def poll_target(target, *, make_client=_default_make_client, store=_state,
             done = live.get("done")
         else:
             done = run_done(target, verdict)
+            # Freeze the run's Discover + Firmware results with the verdict
+            # (ruling 2026-09-12): the worker passes the blade record's step
+            # maps in target["steps"]; after the power-off below the live
+            # sources regress and the tile would paint holes over a clean run.
+            snap = blades.latch_snapshot(target.get("steps"))
+            if snap:
+                done["steps"] = snap
             store.set_state(target["port"], done=done)
             if console_reader is not None:
                 text = None

@@ -52,6 +52,15 @@ class _Deps:
             out.append({**d, "host_ip": ip})
         return out
 
+    def powered_off_ports(self) -> set:
+        """Ports whose IPMI power lane last read `off` (service.scan_hosts
+        skips them). One post_state read per scan pass; a DB blip scans all."""
+        try:
+            return {p for p, row in state.read_state().items() if row.get("power_on") == "off"}
+        except Exception:
+            log.exception("post_state read failed; scanning every host this pass")
+            return set()
+
     def run(self, ip, script):
         user, pw = self.creds
         return driver.run_over_ssh(user, pw, ip, script)

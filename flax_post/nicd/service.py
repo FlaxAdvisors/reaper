@@ -44,8 +44,16 @@ def _classify_row(deps, dev):
     return dict(phase=roll, devices=classified, fault_reason="")
 
 
+def scan_hosts(deps) -> list:
+    """Twin of biosd.service.scan_hosts: the scan pass skips powered-off hosts
+    (ruling 2026-09-12) so their last real row is not overwritten with
+    `unreachable`; probe_port (on-demand) is not gated."""
+    off = set(deps.powered_off_ports()) if hasattr(deps, "powered_off_ports") else set()
+    return [d for d in deps.hosts() if d.get("port") not in off]
+
+
 def probe_once(deps, registry=None, workers=None):
-    hosts = [d for d in deps.hosts() if d.get("host_ip")]
+    hosts = [d for d in scan_hosts(deps) if d.get("host_ip")]
     if not hosts:
         return
 

@@ -322,6 +322,44 @@ def _ladder_view(st) -> dict:
             "skipped": marks.get("skipped"), "fault": lad.get("fault")}
 
 
+# Phases whose step maps are frozen into done.steps when a verdict lands
+# (ruling 2026-09-12). Their live sources regress the moment the Done tail
+# powers the blade off: host-leased/host-mac-seen follow the lease and the
+# switch FDB, and biosd/nicd cannot ssh an off host. Qualify (vars.qual) and
+# Done (vars.done) already only move on a new run.
+LATCHED_PHASES = ("Discover", "Firmware")
+
+
+def latch_snapshot(steps) -> "dict | None":
+    """The Discover + Firmware step maps of a blade record, or None when the
+    record has neither (a poll_target caller without a record, or a snapshot
+    that would carry nothing)."""
+    if not isinstance(steps, dict):
+        return None
+    snap = {p: dict(steps[p]) for p in LATCHED_PHASES if isinstance(steps.get(p), dict)}
+    return snap or None
+
+
+def _latched_steps(st, steps: dict) -> dict:
+    """`steps` with Discover/Firmware replaced by the verdict-time snapshot
+    (done.steps) when the row is latched and carries one. Keys come out in
+    PHASE_STEPS order; a step the snapshot lacks reads pending. A latched row
+    with no snapshot (written before the ruling) keeps its live maps: those
+    holes are real and must show."""
+    done = st.get("done") or {}
+    if done.get("verdict") is None:
+        return steps
+    snap = done.get("steps")
+    if not isinstance(snap, dict):
+        return steps
+    out = dict(steps)
+    for p in LATCHED_PHASES:
+        frozen = snap.get(p)
+        if isinstance(frozen, dict):
+            out[p] = {name: frozen.get(name, "pending") for name in PHASE_STEPS[p]}
+    return out
+
+
 def _done_steps(st):
     """identify -> power-off -> done, from post_state.vars.done. No verdict -> all
     pending; a fail verdict leaves them pending (node stays powered). A tail step
@@ -348,9 +386,12 @@ def _record(slot, c, st, settings, live_link, macs):
     # Completion latch (spec 2026-09-11): once the Done tail has recorded a
     # verdict, power and lease state no longer move the phase. Powering a
     # finished blade off used to flip Firmware's power-on and Discover's
-    # host-pinged back to cur and drop a green tile to violet. The live
-    # checklists underneath keep telling the truth; only the phase is held.
+    # host-pinged back to cur and drop a green tile to violet. Since the
+    # 2026-09-12 ruling the Discover/Firmware checklists are held too, from
+    # the snapshot the verdict took (done.steps): the bar paints a phase green
+    # only from the run's own results, never from a phase index.
     verdict = (st.get("done") or {}).get("verdict")
+    steps = _latched_steps(st, steps)
     if verdict == "pass":
         phase = "Done"
     elif verdict == "fail":
