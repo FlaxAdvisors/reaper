@@ -410,7 +410,15 @@ def clear_fields_for(prior_row, mac, power, now=None) -> dict:
     116-reset incident on et25b3, 2026-09-11)."""
     if not prior_row:
         return {}
-    if prior_row.get("power_on") != "off" or power != "on":
+    # The prior DEFINITE reading: an AMI-style BMC goes dark right after a
+    # chassis power-on, so the lane reads off, then None for a minute, then
+    # on. The strict off->on test missed that (et24b3 2026-09-12, its old fail
+    # re-latched); `power_last` (written by the lane on every definite read)
+    # bridges the unreadable gap.
+    prior = prior_row.get("power_on")
+    if prior not in ("on", "off"):
+        prior = prior_row.get("power_last")
+    if prior != "off" or power != "on":
         return {}
     lad = prior_row.get("ladder") or {}
     if lad.get("power_on_pending"):
@@ -440,6 +448,8 @@ def _process_blade_power(d, creds, ipmi_runner, ping, set_state, switch=SWITCH, 
     cleared = clear_fields_for(prior_row, d.get("mac"), power)
     if cleared:
         log.info("ipmi: %s reset %s (human power-on)", port, ",".join(sorted(cleared)))
+    if power in ("on", "off"):
+        cleared["power_last"] = power          # the last definite reading survives a blackout
     try:
         set_state(port, switch=switch, bmc_mac=d.get("mac"),
                   power_on=power, bmc_pinged=bmc_pinged, **cleared)
