@@ -309,9 +309,9 @@
             <span class="pop-badge" :class="'st-'+(stepInfo?.status||'pending')">{{stepWord(stepInfo?.status || (sel?.steps?.[modal?.phase]?.[modal?.step]) || 'pending')}}</span></p>
           <p class="pending-note" v-if="stepLoading && !stepInfo">loading…</p>
           <div v-if="stepInfo">
-            <p class="pending-note" v-for="n in stepInfo.notes" :class="{fault: stepInfo.status==='fault' && n===stepInfo.notes[0]}">{{n}}</p>
-            <div class="kv-grid step-kv" v-if="stepInfo.rows.length">
-              <template v-for="r in stepInfo.rows"><span class="lbl">{{r[0]}}</span><span class="mono">{{r[1]}}</span></template>
+            <p class="pending-note" v-for="n in (stepInfo?.notes || [])" :class="{fault: stepInfo?.status==='fault' && n===(stepInfo?.notes || [])[0]}">{{n}}</p>
+            <div class="kv-grid step-kv" v-if="(stepInfo?.rows || []).length">
+              <template v-for="r in (stepInfo?.rows || [])"><span class="lbl">{{r[0]}}</span><span class="mono">{{r[1]}}</span></template>
             </div>
           </div>
           <pre class="console" v-if="ladderText(sel, modal?.step)">{{ladderText(sel, modal?.step)}}</pre>
