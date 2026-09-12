@@ -373,6 +373,14 @@ def _latched_steps(st, steps: dict) -> dict:
         frozen = snap.get(p)
         if isinstance(frozen, dict):
             out[p] = {name: frozen.get(name, "pending") for name in PHASE_STEPS[p]}
+    # Snapshots written before `unknown` existed froze unobserved boot markers
+    # as `skip`; a boot marker is never legitimately skipped (only an agent
+    # test can be N/A), so render those as the evidence gap they are.
+    disc = out.get("Discover")
+    if isinstance(disc, dict):
+        for name in BOOT_MARKER_RUNGS:
+            if disc.get(name) == "skip":
+                disc[name] = "unknown"
     return out
 
 
