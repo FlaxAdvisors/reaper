@@ -116,6 +116,18 @@ def _discover(rec, row, step, status):
         if status == "unknown":
             notes.append("the blade was already on when the worker first looked (observe restart, fault cleared by hand, "
                          "or an operator power-on): this boot's markers were never collected. Power-cycle to collect them.")
+    elif step == "bmc-ready":
+        fru = lad.get("bmc_fru") or {}
+        mark = marks.get("bmcready")
+        rows = [["BMC IP", rec.get("bmc_ip") or "none"], ["BMC ping", _yn(rec.get("bmc_pinged"))],
+                ["data read at", _t(mark) or "not yet"],
+                ["after power-on", ("+" + _dur(p_on, mark)) if (mark and p_on) else ""],
+                ["board", ("%s %s" % (fru.get("board_mfg", ""), fru.get("product", ""))).strip() or "not read"],
+                ["FRU serial", fru.get("serial") or "not read"],
+                ["budget", "%s s" % blades.ladder_budget_s(step)]]
+        notes.append("the BMC goes dark for 60-100 s after the chassis power-on and comes back in stages (ping before IPMI); "
+                     "nothing that reads it (firmware probe, the agent's FRU/SEL/SDR stages, the population rules) starts before "
+                     "it answers `ipmitool fru` with a board manufacturer and a serial")
     elif step in ("host-pinged", "host-ssh"):
         key = "ping" if step == "host-pinged" else "ssh"
         mark = marks.get(key)

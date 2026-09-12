@@ -17,7 +17,8 @@ from ..blades import BOOT_MARKER_RUNGS, RUNGS, ladder_budget_s
 POWER_COOLDOWN_S = int(os.environ.get("FLAX_POST_LADDER_POWER_COOLDOWN_S", "900"))
 _MARK_KEY = {"tftp-seen": "tftp", "ipxe-seen": "ipxe", "live-iso-seen": "iso"}
 _EVIDENCE = {"tftp-seen": "tftp", "ipxe-seen": "ipxe", "live-iso-seen": "iso",
-             "host-pinged": "ping", "host-ssh": "ssh", "agent-reachable": "agent"}
+             "host-pinged": "ping", "host-ssh": "ssh", "bmc-ready": "bmcdata",
+             "agent-reachable": "agent"}
 _NEXT = {r: RUNGS[i + 1] for i, r in enumerate(RUNGS[:-1])}
 RUNG_INDEX = {r: i for i, r in enumerate(RUNGS)}
 
@@ -179,11 +180,26 @@ def advance(ladder, snap, evidence, now):
     if rung == "host-ssh":
         if ev.get("ssh"):
             lad["marks"]["ssh"] = now
-            _pass(lad, "fw-gates", now)
+            _pass(lad, "bmc-ready", now)
             acts += ["unclaim", "probe-biosd", "probe-nicd"]
         elif _over_budget(lad, rung, lad["since"], now):
             lad = fault(lad, rung, "no ssh after %ds" % budget_s(rung), now)
             acts.append("unclaim")
+        return lad, acts
+
+    if rung == "bmc-ready":
+        # Ruling 2026-09-12: no agent and no BMC-side probe until the BMC has
+        # proven it answers a real data read (ping alone lies for ~a minute
+        # after the chassis power-on). The evidence is the FRU identity the
+        # population rules depend on; it is kept on the slice for the modal.
+        data = ev.get("bmcdata")
+        if data:
+            lad["marks"]["bmcready"] = now
+            lad["bmc_fru"] = dict(data) if isinstance(data, dict) else {}
+            _pass(lad, "fw-gates", now)
+            acts.append("probe-fwd")            # refresh the BMC firmware row now that it answers
+        elif _over_budget(lad, rung, lad["since"], now):
+            lad = fault(lad, rung, "BMC not answering data reads %ds after ssh" % budget_s(rung), now)
         return lad, acts
 
     if rung == "fw-gates":

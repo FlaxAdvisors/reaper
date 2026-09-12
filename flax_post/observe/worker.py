@@ -185,6 +185,15 @@ def _ssh_ok(ip) -> bool:
     return rc == 0
 
 
+def _bmc_data(bmc_ip) -> "dict | None":
+    """bmc-ready evidence: ping + a FRU read with the post BMC credentials
+    (ipmi.bmc_data_check). None when the BMC is not back yet."""
+    from . import ipmi as _ipmi
+    from ..fwd import creds as _creds
+    creds = _creds.load_redfish_creds(_ipmi.BMC_CREDS_PATH)
+    return _ipmi.bmc_data_check(bmc_ip, creds, _ipmi._default_ipmi_runner, _ping)
+
+
 def _probe_daemon(action, port, *, opener=None, timeout=None) -> bool:
     """POST /probe/<port> to the daemon behind `action`. A timeout or a refused
     connection is a one-line warning, not an exception: the daemon's own tick
@@ -298,6 +307,8 @@ class RealDeps:
             return _ping(host_ip)
         if kind == "ssh":
             return bool(host_ip) and _ssh_ok(host_ip)
+        if kind == "bmcdata":
+            return _bmc_data(rec.get("bmc_ip"))
         return None
 
     def act(self, action, rec, lad):

@@ -27,15 +27,21 @@ def post_switch(geo) -> str:
 # Slot-ladder rungs (spec 2026-09-11 post-slot-ladder §4). observe/ladder.py
 # imports these so the tile and the machine never disagree on names/order.
 RUNGS = ("bmc-pinged", "power-on", "tftp-seen", "ipxe-seen", "host-leased",
-         "live-iso-seen", "host-pinged", "host-ssh", "fw-gates", "agent-reachable",
-         "qualify", "done")
+         "live-iso-seen", "host-pinged", "host-ssh", "bmc-ready", "fw-gates",
+         "agent-reachable", "qualify", "done")
 BOOT_MARKER_RUNGS = ("tftp-seen", "ipxe-seen", "live-iso-seen")
 # Rung budgets (seconds); None = never times out. Lives here (not in
 # observe/ladder.py) so the tile can show "budget N s" without importing the
 # machine, which imports this module. Env: FLAX_POST_LADDER_<RUNG>_S.
 LADDER_BUDGET_S = {
     "power-on": 60, "tftp-seen": 600, "ipxe-seen": 120, "host-leased": 120,
-    "live-iso-seen": 300, "host-pinged": 600, "host-ssh": 120, "fw-gates": 600,
+    "live-iso-seen": 300, "host-pinged": 600, "host-ssh": 120,
+    # bmc-ready (ruling 2026-09-12): after the chassis power-on the AMI-style
+    # BMCs go dark for 60-100 s and come back in stages (ping before IPMI
+    # data). Nothing that reads the BMC — fwd's Redfish probe, the agent's
+    # FRU/SEL/SDR stages, the population rules built on the FRU — may start
+    # until the BMC answers ping AND a real data read.
+    "bmc-ready": 600, "fw-gates": 600,
     "agent-reachable": 180,
     # Not a rung: how long the power-on rung tolerates an UNREADABLE power
     # (BMC off the network after the chassis power-on) before faulting.
@@ -54,11 +60,12 @@ _RUNG_INDEX = {r: i for i, r in enumerate(RUNGS)}
 DISCOVER_STEPS = (
     "switchportlink", "bmc-mac-seen", "bmc-reserved", "bmc-leased", "bmc-pinged",
     "serial", "power-on", "tftp-seen", "ipxe-seen", "host-mac-seen", "host-reserved",
-    "host-leased", "live-iso-seen", "host-pinged", "host-ssh",
+    "host-leased", "live-iso-seen", "host-pinged", "host-ssh", "bmc-ready",
 )
 # Discover steps whose truth comes from the ladder slice (the rest come from
 # consumed facts + the IPMI lanes).
-_LADDER_STEPS = ("power-on", "tftp-seen", "ipxe-seen", "live-iso-seen", "host-pinged", "host-ssh")
+_LADDER_STEPS = ("power-on", "tftp-seen", "ipxe-seen", "live-iso-seen", "host-pinged", "host-ssh",
+                 "bmc-ready")
 PHASE_STEPS = {
     "Discover": DISCOVER_STEPS,
     "Firmware": ("bmc-checked", "bmc-updated", "bios-checked", "bios-updated",
@@ -97,7 +104,7 @@ def _ladder_fallback_status(st: dict, step: str) -> str:
     does not hold the phase (but is not green either)."""
     if step == "power-on":
         return "done" if st.get("power_on") == "on" else "cur"
-    if step in BOOT_MARKER_RUNGS:
+    if step in BOOT_MARKER_RUNGS or step == "bmc-ready":
         return "unknown"
     return "done" if st.get("host_pinged") else "cur"      # host-pinged, host-ssh
 
@@ -296,9 +303,19 @@ _POP_MAP = {"green": "done", "red": "fault", "grey": "pending"}
 def _step_notes(st) -> dict:
     """{step: short text} for skipped Qualify steps, from the agent's summary.reason.
     Rendered INLINE next to the step; timing faults are deliberately not here
-    (they go to the step modal via _fault_notes) so the pipeline table stays terse."""
+    (they go to the step modal via _fault_notes) so the pipeline table stays terse.
+    Also: a latched Discover/Firmware step absent from the verdict snapshot
+    ("not in this run", see _latched_steps)."""
     qsteps = (st.get("qual") or {}).get("steps") or {}
     notes = {}
+    snap = (st.get("done") or {}).get("steps") if (st.get("done") or {}).get("verdict") else None
+    if isinstance(snap, dict):
+        for p in LATCHED_PHASES:
+            frozen = snap.get(p)
+            if isinstance(frozen, dict):
+                for name in PHASE_STEPS[p]:
+                    if name not in frozen:
+                        notes[name] = "not in this run"
     for name, rec in qsteps.items():
         rec = rec or {}
         if rec.get("status") != "skip":
@@ -372,7 +389,10 @@ def _latched_steps(st, steps: dict) -> dict:
     for p in LATCHED_PHASES:
         frozen = snap.get(p)
         if isinstance(frozen, dict):
-            out[p] = {name: frozen.get(name, "pending") for name in PHASE_STEPS[p]}
+            # A step the snapshot never had was not part of that run (added
+            # since, e.g. bmc-ready 2026-09-12): a legitimate skip, noted on
+            # the tile, never a hole that would un-clean a finished run.
+            out[p] = {name: frozen.get(name, "skip") for name in PHASE_STEPS[p]}
     # Snapshots written before `unknown` existed froze unobserved boot markers
     # as `skip`; a boot marker is never legitimately skipped (only an agent
     # test can be N/A), so render those as the evidence gap they are.

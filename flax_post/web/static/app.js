@@ -145,7 +145,7 @@ function App() {
     stepNote(b, name) { return (b && b.step_notes && b.step_notes[name]) || ''; },
     // the ladder's timing fault (or skipped-markers note) for a step: modal only
     faultNote(b, name) { return (b && b.fault_notes && b.fault_notes[name]) || ''; },
-    _ladderSteps: ['power-on', 'tftp-seen', 'ipxe-seen', 'live-iso-seen', 'host-leased', 'host-pinged', 'host-ssh', 'agent-reachable', 'bmc-updated', 'bios-updated', 'mlx-updated'],
+    _ladderSteps: ['power-on', 'tftp-seen', 'ipxe-seen', 'live-iso-seen', 'host-leased', 'host-pinged', 'host-ssh', 'bmc-ready', 'agent-reachable', 'bmc-updated', 'bios-updated', 'mlx-updated'],
     // the slot ladder as the step modal shows it: rung + clock + budget, each
     // boot mark with its offset from power-on, the skipped note, the fault
     ladderText(b, name) {
@@ -154,7 +154,7 @@ function App() {
       const age = (x) => Math.max(0, Math.round(now - x)) + 's ago';
       const lines = ['ladder rung: ' + v.rung + (v.since ? '  (since ' + t(v.since) + ', ' + age(v.since) + (v.budget_s ? ', budget ' + v.budget_s + 's' : '') + ')' : '')];
       if (v.power_on_at) lines.push('power-on: ' + t(v.power_on_at));
-      for (const k of ['tftp', 'ipxe', 'iso', 'ping', 'ssh']) {
+      for (const k of ['tftp', 'ipxe', 'iso', 'ping', 'ssh', 'bmcready']) {
         if (v.marks && v.marks[k]) lines.push(k + ': ' + t(v.marks[k]) + (v.power_on_at ? '  (+' + Math.round(v.marks[k] - v.power_on_at) + 's after power-on)' : ''));
       }
       if (v.skipped) lines.push('boot markers skipped: ' + v.skipped);

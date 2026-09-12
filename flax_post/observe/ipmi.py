@@ -229,6 +229,26 @@ def _parse_fru(text):
     return out
 
 
+def bmc_data_check(ip, creds, ipmi_runner, ping) -> "dict | None":
+    """The slot ladder's bmc-ready evidence (ruling 2026-09-12): the BMC answers
+    ping AND `ipmitool fru` returns the board identity the population rules
+    are built on. {board_mfg, product, serial} on success, None otherwise —
+    a BMC that pings but has not brought IPMI back yet is None."""
+    if not ip or not ping(ip):
+        return None
+    for c in creds or []:
+        try:
+            fru = _parse_fru(ipmi_runner(ip, c["bmcuser"], c["bmcpass"], ["fru"]))
+        except Exception:
+            continue
+        board = fru.get("Board Mfg")
+        serial = fru.get("Product Serial") or fru.get("Chassis Serial")
+        if board and serial:
+            return {"board_mfg": board, "product": fru.get("Product Name") or fru.get("Board Product") or "",
+                    "serial": serial}
+    return None
+
+
 def probe_blade(ip, creds, ipmi_runner, redfish_client=None):
     """All IPMI fields for one BMC, best-effort; first working credential wins.
 
