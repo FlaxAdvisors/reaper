@@ -120,6 +120,28 @@ def _read_profile_for(target, store) -> "str | None":
     return store.read_settings().get("population") if hasattr(store, "read_settings") else None
 
 
+def _capture_console(store, target, run_id, steps, console_reader) -> None:
+    """Store the SOL capture as this run's console artifact and set the
+    engine's `console` step. A store failure must not skip the durable result
+    or the final qual write (et10b2 2026-09-12: the raise left a pass verdict
+    over a stale 'running' qual)."""
+    text = None
+    try:
+        text = console_reader(target.get("bmc_ip"))
+    except Exception:
+        log.exception("console capture read failed for %s", target.get("port"))
+    if not text:
+        steps["console"] = {"status": "fail", "summary": {"reason": "no sol capture"}}
+        return
+    try:
+        store.write_artifact(target["bmc_mac"], run_id, "console", "sol.txt", "raw",
+                             text, serial=target.get("serial"), order_no=target.get("order_no"))
+        steps["console"] = {"status": "pass"}
+    except Exception as e:
+        log.exception("console capture store failed for %s", target.get("port"))
+        steps["console"] = {"status": "fail", "summary": {"reason": "capture store failed: %s" % str(e)[:120]}}
+
+
 def _battery_done(qual) -> bool:
     """The agent reported its battery terminal (status 'done')."""
     return ((qual or {}).get("overall") or {}).get("status") == "done"
@@ -301,9 +323,18 @@ def poll_target(target, *, make_client=_default_make_client, store=_state,
                    and (live.get("qual") or {}).get("run_id") == run_id)
         if already:
             done = live.get("done")
+            # the console step is the engine's, not an agent stage: a rebuilt
+            # step map must not lose the one already recorded
+            if "console" in (live_q.get("steps") or {}) and "console" not in steps:
+                steps["console"] = live_q["steps"]["console"]
+                qual["steps"] = steps
             if done_v == "fail" and _battery_done({"overall": status}) and not _battery_done(live_q):
-                # the battery just finished after the fail verdict: refresh the
-                # durable result in place (same run: no new history entry)
+                # the battery just finished after the fail verdict: capture the
+                # console to its end and refresh the durable result in place
+                # (same run: no new history entry)
+                if console_reader is not None:
+                    _capture_console(store, target, run_id, steps, console_reader)
+                    qual["steps"] = steps
                 if hasattr(store, "update_result"):
                     try:
                         store.update_result(target["bmc_mac"], build_result(target, live, qual, pop, done))
@@ -320,26 +351,7 @@ def poll_target(target, *, make_client=_default_make_client, store=_state,
                 done["steps"] = snap
             store.set_state(target["port"], done=done)
             if console_reader is not None:
-                text = None
-                try:
-                    text = console_reader(target.get("bmc_ip"))
-                except Exception:
-                    log.exception("console capture read failed for %s", target.get("port"))
-                if not text:
-                    steps["console"] = {"status": "fail", "summary": {"reason": "no sol capture"}}
-                else:
-                    # A store failure here must not skip the durable result
-                    # or the final qual write below (et10b2 2026-09-12: the
-                    # raise left a pass verdict over a stale 'running' qual).
-                    try:
-                        store.write_artifact(target["bmc_mac"], run_id, "console", "sol.txt", "raw",
-                                             text, serial=target.get("serial"),
-                                             order_no=target.get("order_no"))
-                        steps["console"] = {"status": "pass"}
-                    except Exception as e:
-                        log.exception("console capture store failed for %s", target.get("port"))
-                        steps["console"] = {"status": "fail",
-                                            "summary": {"reason": "capture store failed: %s" % str(e)[:120]}}
+                _capture_console(store, target, run_id, steps, console_reader)
                 qual["steps"] = steps
             if hasattr(store, "record_result"):
                 try:
