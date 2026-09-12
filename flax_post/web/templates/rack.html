@@ -10,7 +10,7 @@
   <script>window.BOOT = { site: {{ site|tojson }}, rackname: {{ rackname|tojson }},
     phases: {{ phases|tojson }}, order_no: {{ (settings.order_no or '')|tojson }},
     population: {{ (settings.population or '')|tojson }},
-    customer: {{ (settings.customer or '')|tojson }} };</script>
+    customer: {{ (settings.customer or '')|tojson }}, settings_at: {{ (settings.updated_at or '')|tojson }} };</script>
   <script src="/web-static/vendor/xterm.js"></script>
   <script src="/web-static/vendor/socket.io.min.js"></script>
   <script src="/web-static/sol.js?v={{ version }}"></script>
@@ -50,6 +50,7 @@
       <label>Customer
         <input name="post-customer" autocomplete="off" v-model="customer" @change="saveCustomer"
                placeholder="customer"></label>
+      <span class="ctx-at" :title="'order / population / customer are shared: set in any browser, every open post UI shows them within 15 s'">{{settingsAtText()}}</span>
     </div>
     <span class="title">{{site}} Post Servers</span>
   </div>

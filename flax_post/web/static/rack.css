@@ -218,3 +218,4 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .step-kv{margin-top:.5rem}
 .step-kv .mono{word-break:break-word}
 button.mini{font-size:.66rem;padding:.05rem .4rem;margin-left:.5rem;vertical-align:middle}
+.ctx-at{font-size:.62rem;color:var(--dim);white-space:nowrap}

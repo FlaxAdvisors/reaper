@@ -56,6 +56,7 @@ function App() {
     order_no: boot.order_no || '',
     population: boot.population || '',
     customer: boot.customer || '',
+    settingsAt: boot.settings_at || null,
     activeSwitch: '', sel: null, modal: null, filter: null, q: '',
     pwrChoice: null, pwrConfirm: false, idntMode: 'on', popProfile: '', solHeld: false,
     solHolder: null, solClientId: null, solLog: [], solIdle: null,
@@ -78,7 +79,23 @@ function App() {
         const d = await fetchBlades();
         this.slots = d.slots || []; this.racks = d.racks || {};
         if (this.sel) this.sel = this.slots.find((s) => s.port === this.sel.port) || null;
+        if (d.settings) this.applySettings(d.settings);
       } catch (e) { console.error(e); }
+    },
+    // The server's operator context wins over this browser's copy, except for
+    // the one field the operator is typing in right now (a poll must not eat
+    // a half-typed order number). Set in browser A, visible in browser B
+    // within one poll.
+    applySettings(s) {
+      const active = (document.activeElement && document.activeElement.name) || '';
+      if (active !== 'post-order') this.order_no = s.order_no || '';
+      if (active !== 'post-population') this.population = s.population || '';
+      if (active !== 'post-customer') this.customer = s.customer || '';
+      this.settingsAt = s.updated_at || null;
+    },
+    settingsAtText() {
+      if (!this.settingsAt) return '';
+      const d = new Date(this.settingsAt); return isNaN(d) ? '' : 'set ' + d.toLocaleString();
     },
 
     get rackList() { return Object.entries(this.racks).map(([sw, r]) => ({ switch: sw, label: r.label })); },

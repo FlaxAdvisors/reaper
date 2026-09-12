@@ -76,12 +76,15 @@ def read_settings() -> dict:
     """The singleton operator context {order_no, population, customer}."""
     with get_pool().connection() as conn:
         row = conn.execute(
-            "SELECT order_no, population, customer FROM post_settings WHERE id = 1"
+            "SELECT order_no, population, customer, updated_at FROM post_settings WHERE id = 1"
         ).fetchall()
     if not row:
-        return {"order_no": None, "population": None, "customer": None}
-    order_no, population, customer = row[0]
-    return {"order_no": order_no, "population": population, "customer": customer}
+        return {"order_no": None, "population": None, "customer": None, "updated_at": None}
+    order_no, population, customer, updated_at = (tuple(row[0]) + (None,))[:4]
+    if updated_at is not None and not isinstance(updated_at, str):
+        updated_at = updated_at.isoformat()
+    return {"order_no": order_no, "population": population, "customer": customer,
+            "updated_at": updated_at}
 
 
 def write_settings(*, order_no=..., population=..., customer=...) -> None:

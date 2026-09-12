@@ -90,8 +90,11 @@ def index(request: Request):
 @app.get("/api/v1/blades")
 def api_blades() -> JSONResponse:
     geo = geometry.load_geometry()
+    # The operator context rides on every poll: order, population and customer
+    # are set in ONE browser and must show in EVERY open browser within a poll
+    # (ruling 2026-09-12), not only on the next page load.
     return JSONResponse({"switch": blades.post_switch(geo), "racks": geo["racks"],
-                         "slots": _blade_slots()})
+                         "slots": _blade_slots(), "settings": state.read_settings()})
 
 
 @app.get("/api/v1/profiles")
@@ -170,7 +173,7 @@ async def api_settings(request: Request) -> JSONResponse:
     body = await request.json()
     kw = {k: body[k] for k in ("order_no", "population", "customer") if k in body}
     state.write_settings(**kw)
-    return JSONResponse({"ok": True})
+    return JSONResponse({"ok": True, "settings": state.read_settings()})
 
 
 @app.post("/api/v1/power")
