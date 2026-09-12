@@ -5,6 +5,9 @@
     daemon_reload: true
 
 - name: Restart flax-discover
+  # VIP-gated unit: ExecStartPre refuses to start on the standby, so a restart
+  # there can only fail the play. Deploy the files, restart on the VIP holder.
+  when: apply_flax_stack_is_primary | default(true) | bool
   become: true
   ansible.builtin.systemd:
     name: flax-discover.service

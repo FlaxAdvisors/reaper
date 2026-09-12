@@ -181,3 +181,39 @@ describe("lock:status broadcast on power-cycle", () => {
     }
   });
 });
+
+
+describe("drop-message auto relaunch", () => {
+  const fakeIo = { of: () => ({ to: () => ({ emit: vi.fn() }), emit: vi.fn() }) } as any;
+  beforeEach(() => { sessions.clear(); setIo(fakeIo); vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  const feed = (s: any, text: string) => (s.ptyProcess.onData as any).mock.calls[0][0](text);
+
+  it("relaunches the pty when ipmitool reports the SOL session closed, once per cooldown", () => {
+    const s = startSession("10.0.0.7");
+    const old = s.ptyProcess!;
+    feed(s, "boot log...\r\nSOL session closed by BMC\r\n");
+    expect(s.ptyProcess).toBe(old);                 // delayed, not immediate
+    vi.advanceTimersByTime(2500);
+    expect(s.ptyProcess).not.toBe(old);             // relaunched: new pty
+    expect(old.kill).toHaveBeenCalled();
+    const second = s.ptyProcess!;
+    feed(s, "Error: Unable to establish IPMI v2 / RMCP+ session\r\n");
+    vi.advanceTimersByTime(2500);
+    expect(s.ptyProcess).toBe(second);              // inside the 30 s cooldown: no second relaunch
+    vi.advanceTimersByTime(31000);
+    feed(s, "SOL session closed by BMC");
+    vi.advanceTimersByTime(2500);
+    expect(s.ptyProcess).not.toBe(second);          // cooldown over: relaunches again
+  });
+
+  it("records lastDataAt and ignores ordinary console output", () => {
+    const s = startSession("10.0.0.8");
+    const old = s.ptyProcess!;
+    feed(s, "[A3][A7] Welcome to GRUB\r\nrr100-et8b2 login: ");
+    vi.advanceTimersByTime(5000);
+    expect(s.ptyProcess).toBe(old);
+    expect(typeof s.lastDataAt).toBe("number");
+  });
+});

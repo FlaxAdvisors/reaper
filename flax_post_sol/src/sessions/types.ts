@@ -22,4 +22,10 @@ export interface Session {
      *             (power-on). There is no TTL/timer-based eviction.
      */
     state: "live" | "ended";
+    /** epoch ms of the last pty chunk (idle indicator; drop detection). */
+    lastDataAt?: number;
+    /** epoch ms of the last automatic relaunch (cooldown for drop detection). */
+    lastAutoRelaunch?: number;
+    /** rolling tail of the stream the drop-message matcher looks at. */
+    tailText?: string;
 }

@@ -58,7 +58,7 @@ function App() {
     customer: boot.customer || '',
     activeSwitch: '', sel: null, modal: null, filter: null, q: '',
     pwrChoice: null, pwrConfirm: false, idntMode: 'on', popProfile: '', solHeld: false,
-    solHolder: null, solClientId: null, solLog: [],
+    solHolder: null, solClientId: null, solLog: [], solIdle: null,
     // inventory (INV/POP): fetched on-demand for the SELECTED blade, not
     // precomputed per tile. invPort/invProfile track what `inv` was fetched
     // for, so loadInv() can no-op when neither the port nor the profile
@@ -121,6 +121,24 @@ function App() {
     // the agent's skip reason for a Qualify step ('no storage' for fio on a
     // diskless blade), from the blade record's step_notes
     stepNote(b, name) { return (b && b.step_notes && b.step_notes[name]) || ''; },
+    // the ladder's timing fault (or skipped-markers note) for a step: modal only
+    faultNote(b, name) { return (b && b.fault_notes && b.fault_notes[name]) || ''; },
+    _ladderSteps: ['power-on', 'tftp-seen', 'ipxe-seen', 'live-iso-seen', 'host-leased', 'host-pinged', 'host-ssh', 'agent-reachable', 'bmc-updated', 'bios-updated', 'mlx-updated'],
+    // the slot ladder as the step modal shows it: rung + clock + budget, each
+    // boot mark with its offset from power-on, the skipped note, the fault
+    ladderText(b, name) {
+      const v = b && b.ladder_view; if (!v || !v.rung || !this._ladderSteps.includes(name)) return '';
+      const now = Date.now() / 1000, t = (x) => new Date(x * 1000).toLocaleTimeString();
+      const age = (x) => Math.max(0, Math.round(now - x)) + 's ago';
+      const lines = ['ladder rung: ' + v.rung + (v.since ? '  (since ' + t(v.since) + ', ' + age(v.since) + (v.budget_s ? ', budget ' + v.budget_s + 's' : '') + ')' : '')];
+      if (v.power_on_at) lines.push('power-on: ' + t(v.power_on_at));
+      for (const k of ['tftp', 'ipxe', 'iso', 'ping', 'ssh']) {
+        if (v.marks && v.marks[k]) lines.push(k + ': ' + t(v.marks[k]) + (v.power_on_at ? '  (+' + Math.round(v.marks[k] - v.power_on_at) + 's after power-on)' : ''));
+      }
+      if (v.skipped) lines.push('boot markers skipped: ' + v.skipped);
+      if (v.fault) lines.push('\u2715 ' + v.fault.rung + ': ' + v.fault.reason + (v.fault.at ? '  at ' + t(v.fault.at) : ''));
+      return lines.join('\n');
+    },
 
     // ---- tile presentation (null-safe) ----
     colName(b) { return b ? (COLNAME[b.col] || b.col) : ''; },
@@ -220,6 +238,7 @@ function App() {
       // is open, so PWR/INV/etc. can be clicked straight over an open SOL
       // console without going through closeModal()'s modal=null path.
       if (window.SolConsole) window.SolConsole.close();
+      this._stopSolIdle();
       this.modal = { kind };
       this.actionMsg = null;
       if (kind === 'idnt') this.idntMode = 'on';
@@ -264,10 +283,15 @@ function App() {
           onEvent: (m) => { this.solLog.unshift(m); if (this.solLog.length > 200) this.solLog.pop(); },
           onClient: (sid) => { this.solClientId = sid; },
         });
+        // "last console byte N s ago": a stale BMC-side SOL looks exactly like
+        // an idle console; this makes the difference visible
+        this._solIdleTimer = setInterval(() => { this.solIdle = window.SolConsole ? window.SolConsole.idleSeconds() : null; }, 1000);
       });
     },
+    _stopSolIdle() { if (this._solIdleTimer) { clearInterval(this._solIdleTimer); this._solIdleTimer = null; } this.solIdle = null; },
     closeModal() {
       if (window.SolConsole) window.SolConsole.close();
+      this._stopSolIdle();
       this.modal = null;
       this.solLog = []; this.solHolder = null; this.solClientId = null;
     },

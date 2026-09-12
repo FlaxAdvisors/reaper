@@ -21,6 +21,32 @@ const HISTORY_BUFFER_SIZE_CHARS = Number(process.env.POST_SOL_HISTORY_BYTES ?? 5
 
 const sessions = new Map<string, Session>();
 
+// ipmitool prints these into the pty when the BMC-side SOL payload dies; the
+// pty itself stays alive, so the reconcile loop's pty-exit recovery never
+// fires and the console just goes quiet (2026-09-11: every operator-powered
+// blade needed the Relaunch button). Match on a rolling tail of the stream and
+// relaunch after a short delay, at most once per cooldown per ip.
+export const SOL_DROP_RE = /SOL session closed by BMC|Unable to establish IPMI v2 \/ RMCP\+ session|No response (de)?activating SOL payload|SOL payload already active|Error sending SOL data|Session already ended|Error: Unable to (read|send)/i;
+const AUTO_RELAUNCH_COOLDOWN_MS = Number(process.env.POST_SOL_AUTO_RELAUNCH_COOLDOWN_MS ?? 30000);
+const AUTO_RELAUNCH_DELAY_MS = 2000;
+
+/** Record a pty chunk; when it carries an ipmitool drop message, schedule a
+ *  relaunch. Returns true when a relaunch was scheduled. */
+export function noteSolDrop(session: Session, data: string, now: number = Date.now()): boolean {
+    session.lastDataAt = now;
+    session.tailText = ((session.tailText ?? "") + data).slice(-512);
+    if (!SOL_DROP_RE.test(session.tailText)) return false;
+    session.tailText = "";
+    if (now - (session.lastAutoRelaunch ?? 0) < AUTO_RELAUNCH_COOLDOWN_MS) return false;
+    session.lastAutoRelaunch = now;
+    logger.warn(`[${session.ip}] SOL drop message in stream; relaunching in ${AUTO_RELAUNCH_DELAY_MS}ms`);
+    setTimeout(() => {
+        try { relaunchSession(session.ip); }
+        catch (error) { logger.error(`[${session.ip}] auto relaunch failed: ${error instanceof Error ? error.message : String(error)}`); }
+    }, AUTO_RELAUNCH_DELAY_MS);
+    return true;
+}
+
 // Sockets that connected to /sol/<ip> before a live session existed for that
 // ip. Moved into session.clients the next time startSession(ip) runs.
 const pendingClients = new Map<string, Set<string>>();
@@ -56,6 +82,7 @@ export function attachPtyEvents(io: Server, session: Session) {
     ptyProcess.onData((data: string) => {
         try {
             appendCapture(session.ip, data);
+            noteSolDrop(session, data);
             session.historyBuffer.push(data);
 
             // Calculate current size

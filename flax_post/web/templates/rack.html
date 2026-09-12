@@ -290,6 +290,8 @@
         </div>
         <div v-else-if="modal?.kind==='step'">
           <p class="m-sub">log · step <b>{{modal?.step}}</b></p>
+          <p class="pending-note fault" v-if="faultNote(sel, modal?.step)">✕ {{faultNote(sel, modal?.step)}}</p>
+          <pre class="console" v-if="ladderText(sel, modal?.step)">{{ladderText(sel, modal?.step)}}</pre>
           <pre class="console" v-if="modal?.step==='switchportlink'">{{(sel?.macs_seen && sel.macs_seen.length) ? 'MACs seen on wire: '+sel.macs_seen.join(' ') : 'no MACs seen on wire'}}</pre>
           <pre class="console" v-else-if="modal?.step==='bmc-checked'">{{sel?.fw?.bmc?.phase==='oem' ? ('OEM board · Redfish '+(sel.fw.bmc.current||'?')) : (sel?.fw?.bmc?.current ? ('current: '+sel.fw.bmc.current) : 'no BMC version read yet')}}</pre>
           <pre class="console" v-else-if="modal?.step==='bmc-updated'">{{sel?.fw?.bmc?.phase==='oem' ? 'OEM board — firmware not flax-managed (no update)' : (sel?.fw?.bmc?.fault_reason ? ('target: '+(sel.fw.bmc.target||'?')+' — '+sel.fw.bmc.fault_reason) : (sel?.fw?.bmc?.target ? 'target: '+sel.fw.bmc.target : 'target unknown'))}}</pre>
@@ -312,6 +314,7 @@
           <div class="sol-controls">
             <button class="sol-lock" :class="'lk-'+solLockState()" @click="solLock()">{{solLockLabel()}}</button>
             <button class="sol-relaunch" @click="solRelaunch()">Relaunch</button>
+            <span class="sol-idle" v-if="solIdle !== null" :class="{stale: solIdle > 120}">last console byte {{solIdle}}s ago</span>
             <span class="sol-client">Client: {{solClientId || '—'}}</span>
           </div>
           <div ref="solTerm" class="sol-terminal"></div>

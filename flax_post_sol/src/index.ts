@@ -40,12 +40,12 @@ app.post('/mark/:ip', (req: Request, res: Response) => {
   }
   const reason = String(req.body?.reason ?? 'unspecified').slice(0, 40).replace(/[^\w.-]/g, '_');
   const header = markCapture(ip, reason);
-  let relaunched = false;
-  if (!hasLiveSession(ip)) {
-    relaunchSession(ip);
-    relaunched = true;
-  }
-  logger.info(`[${ip}] mark ${reason} (relaunched=${relaunched})`);
+  // Always relaunch on a mark: a boot must start on a fresh BMC-side SOL. A
+  // stale payload survives a live pty and just shows nothing (2026-09-11), and
+  // the engine marks BEFORE it powers on, so nothing of POST is missed.
+  relaunchSession(ip);
+  const relaunched = true;
+  logger.info(`[${ip}] mark ${reason} (relaunched)`);
   res.json({ ok: true, ip, relaunched, header });
 });
 

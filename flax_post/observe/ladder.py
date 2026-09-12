@@ -11,13 +11,9 @@ lane writes human_reset) or by the hold-file gesture (touch, then remove).
 import copy
 import os
 
-from ..blades import BOOT_MARKER_RUNGS, RUNGS
+from ..blades import BOOT_MARKER_RUNGS, RUNGS, ladder_budget_s
 
-_DEFAULT_BUDGET_S = {
-    "power-on": 60, "tftp-seen": 600, "ipxe-seen": 120, "host-leased": 120,
-    "live-iso-seen": 300, "host-pinged": 600, "host-ssh": 120, "fw-gates": 600,
-    "agent-reachable": 180,
-}
+# Budgets live in blades.LADDER_BUDGET_S (the tile shows them); see budget_s.
 POWER_COOLDOWN_S = int(os.environ.get("FLAX_POST_LADDER_POWER_COOLDOWN_S", "900"))
 _MARK_KEY = {"tftp-seen": "tftp", "ipxe-seen": "ipxe", "live-iso-seen": "iso"}
 _EVIDENCE = {"tftp-seen": "tftp", "ipxe-seen": "ipxe", "live-iso-seen": "iso",
@@ -26,11 +22,9 @@ _NEXT = {r: RUNGS[i + 1] for i, r in enumerate(RUNGS[:-1])}
 
 
 def budget_s(rung):
-    """Seconds allowed on `rung`, None for rungs that never time out."""
-    env = os.environ.get("FLAX_POST_LADDER_%s_S" % rung.replace("-", "_").upper())
-    if env:
-        return int(env)
-    return _DEFAULT_BUDGET_S.get(rung)
+    """Seconds allowed on `rung`, None for rungs that never time out
+    (blades.ladder_budget_s, env override FLAX_POST_LADDER_<RUNG>_S)."""
+    return ladder_budget_s(rung)
 
 
 def new_ladder(now) -> dict:
@@ -199,6 +193,11 @@ def advance(ladder, snap, evidence, now):
         # agent, so the 180 s budget has nothing to measure (et28b3 faulted
         # this way on the first deploy, 2026-09-11). Keep polling, never fault.
         if not snap.get("allowed"):
+            # Keep the rung's clock at "now": when the allowlist later opens,
+            # the 180 s budget must start from that moment, not from when the
+            # rung was first entered (six blades faulted in the same step their
+            # agent was launched, 2026-09-12).
+            lad["since"] = now
             return lad, acts + ["poll-agent"]
         # launch_at is never cleared: a row that reaches this rung without a
         # fresh launch (the non-allowlisted slot, or a re-run) carries the

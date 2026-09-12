@@ -60,6 +60,19 @@ def _oem_version(client, matcher):
     return redfish_version or "unknown"
 
 
+def _stock_firmware(client) -> bool:
+    """A managed platform whose onetree firmware inventory is unreadable but whose
+    UNAUTHENTICATED Redfish root answers as an AMI service is running the vendor's
+    stock BMC firmware (et25b3, 2026-09-11: Wiwynn TP, IPMI fw 0.00, root
+    'AMI Redfish Server', bmc_active 401). Not OEM-permanent -- triage flashes it
+    to onetree -- so it is a needs_update the post gate lets through in detect."""
+    get_root = getattr(client, "get_redfish_root", None)
+    if get_root is None:
+        return False
+    is_bmc, _version, product = get_root()
+    return bool(is_bmc and product and "ami" in product.lower())
+
+
 def probe_one(port, client, matcher, set_row) -> str:
     """Read product+version, classify against the manifest, write the row. No flash."""
     product, _ = client.get_product_name()
@@ -76,6 +89,10 @@ def probe_one(port, client, matcher, set_row) -> str:
         oem_ver = _oem_version(client, matcher)
         if oem_ver is not None:
             return _oem(set_row, port, oem_ver)
+        if _stock_firmware(client):
+            set_row(port, phase="needs_update", current_version="vendor-stock",
+                    target_version=target, fault_reason="", percent=0)
+            return "needs_update"
         # BMC dark (activating/rebooting/hung/off) — NOT a flash fault. Preserve any
         # prior current_version so a node that reached the target stays shown at it.
         return _unreachable(set_row, port, "BMC unreachable: %s" % detail,

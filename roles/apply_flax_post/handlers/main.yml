@@ -1,5 +1,8 @@
 ---
 - name: Restart flax-post
+  # VIP-gated unit: ExecStartPre refuses to start on the standby, so a restart
+  # there can only fail the play. Deploy the files, restart on the VIP holder.
+  when: apply_flax_stack_is_primary | default(true) | bool
   become: true
   ansible.builtin.systemd:
     name: flax-post.service
@@ -7,6 +10,9 @@
     daemon_reload: true
 
 - name: Restart flax-post-fwd
+  # VIP-gated unit: ExecStartPre refuses to start on the standby, so a restart
+  # there can only fail the play. Deploy the files, restart on the VIP holder.
+  when: apply_flax_stack_is_primary | default(true) | bool
   become: true
   ansible.builtin.systemd:
     name: flax-post-fwd.service
@@ -14,6 +20,9 @@
     daemon_reload: true
 
 - name: Restart flax-post-biosd
+  # VIP-gated unit: ExecStartPre refuses to start on the standby, so a restart
+  # there can only fail the play. Deploy the files, restart on the VIP holder.
+  when: apply_flax_stack_is_primary | default(true) | bool
   become: true
   ansible.builtin.systemd:
     name: flax-post-biosd.service
@@ -21,6 +30,9 @@
     daemon_reload: true
 
 - name: Restart flax-post-nicd
+  # VIP-gated unit: ExecStartPre refuses to start on the standby, so a restart
+  # there can only fail the play. Deploy the files, restart on the VIP holder.
+  when: apply_flax_stack_is_primary | default(true) | bool
   become: true
   ansible.builtin.systemd:
     name: flax-post-nicd.service
@@ -28,6 +40,9 @@
     daemon_reload: true
 
 - name: Restart flax-post-sol
+  # VIP-gated unit: ExecStartPre refuses to start on the standby, so a restart
+  # there can only fail the play. Deploy the files, restart on the VIP holder.
+  when: apply_flax_stack_is_primary | default(true) | bool
   become: true
   ansible.builtin.systemd:
     name: flax-post-sol.service
@@ -35,6 +50,9 @@
     daemon_reload: true
 
 - name: Restart flax-post-observe
+  # VIP-gated unit: ExecStartPre refuses to start on the standby, so a restart
+  # there can only fail the play. Deploy the files, restart on the VIP holder.
+  when: apply_flax_stack_is_primary | default(true) | bool
   become: true
   ansible.builtin.systemd:
     name: flax-post-observe.service
@@ -42,6 +60,9 @@
     daemon_reload: true
 
 - name: Restart flax-post-nginx
+  # VIP-gated unit: ExecStartPre refuses to start on the standby, so a restart
+  # there can only fail the play. Deploy the files, restart on the VIP holder.
+  when: apply_flax_stack_is_primary | default(true) | bool
   become: true
   ansible.builtin.systemd:
     name: flax-post-nginx.service

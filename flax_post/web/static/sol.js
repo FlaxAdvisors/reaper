@@ -8,7 +8,7 @@
 // connect-on-open / disconnect-on-close socket already gets a working
 // lock the moment its blade powers on.
 window.SolConsole = (function () {
-  let term = null, socket = null, held = false, termEl = null, connIp = null;
+  let term = null, socket = null, held = false, termEl = null, connIp = null, lastData = null;
 
   function setHeld(v, termElRef) { held = v; if (termElRef) termElRef.classList.toggle('disabled', !v); }
 
@@ -17,6 +17,8 @@ window.SolConsole = (function () {
     // the BMC ip the live socket is connected to (null when closed) — lets the
     // Relaunch button detect a re-address / new device at the slot and reconnect.
     currentIp: () => connIp,
+    // seconds since the last console byte arrived on this socket (null before any)
+    idleSeconds: () => (lastData === null ? null : Math.round((Date.now() - lastData) / 1000)),
 
     // cb: { onLock(status, held), onEvent(msg), onClient(socketId) }
     open(el, statusEl, bmcIp, cb) {
@@ -37,7 +39,11 @@ window.SolConsole = (function () {
       term.write('Connecting…\r\n');
 
       const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
-      socket = io(`${proto}${location.host}/sol/${bmcIp}`, { transports: ['websocket'], reconnectionAttempts: 5 });
+      socket = io(`${proto}${location.host}/sol/${bmcIp}`, { transports: ['websocket'],
+        // never give up: a server restart longer than 5 quick attempts used to
+        // leave the modal permanently dead until reopened (2026-09-11)
+        reconnection: true, reconnectionAttempts: Infinity, reconnectionDelay: 1000, reconnectionDelayMax: 10000 });
+      if (socket.io && socket.io.on) socket.io.on('reconnect', (n) => pushEvent('reconnected after ' + n + ' attempt(s); history replayed'));
 
       socket.on('connect', () => { pushEvent('connected'); cb.onClient && cb.onClient(socket.id); });
       socket.on('disconnect', (r) => {
@@ -51,8 +57,9 @@ window.SolConsole = (function () {
       });
       socket.on('connect_error', (e) => pushEvent('connect_error: ' + e.message));
 
-      socket.on('terminal:history', (d) => { term && term.write(d); pushEvent('terminal:history received'); });
-      socket.on('terminal:data', (d) => term && term.write(d));
+      // a history replay is the whole retained buffer: start from a clean screen
+      socket.on('terminal:history', (d) => { if (term) { term.reset(); term.write(d); } lastData = Date.now(); pushEvent('terminal:history received'); });
+      socket.on('terminal:data', (d) => { lastData = Date.now(); term && term.write(d); });
 
       socket.on('sol:status', (s) => pushEvent('sol:status ' + (s.state === 'off' ? 'powered off — no active capture'
         : s.state === 'ended' ? 'session ended (powered off) — showing last capture' : s.state)));
@@ -76,7 +83,7 @@ window.SolConsole = (function () {
     close() {
       if (socket) { socket.disconnect(); socket = null; }
       if (term) { term.dispose(); term = null; }
-      held = false; termEl = null; connIp = null;
+      held = false; termEl = null; connIp = null; lastData = null;
     },
   };
 })();

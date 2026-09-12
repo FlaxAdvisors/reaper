@@ -205,3 +205,7 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .step .note{color:var(--dim)}
 .m-b .dim{color:var(--dim);font-weight:400}
 .step.skip .si{color:var(--green)}
+
+.pending-note.fault{color:var(--red)}
+.sol-idle{margin-left:.6em;color:var(--dim);font-size:.85em}
+.sol-idle.stale{color:var(--amber)}

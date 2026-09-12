@@ -7,6 +7,8 @@ Firmware from vars.fw_bmc/fw_bios/fw_nic + power_on, Qualify from vars.qual
 (the host_qual poller) + vars.pop, Done from vars.done. Phase advances
 Discover -> Firmware -> Qualify -> Done as each phase's steps all reach 'done'.
 """
+import os
+
 from . import geometry
 from .consume import _link_value
 from .nicd.classify import aggregate as _nic_aggregate
@@ -28,6 +30,22 @@ RUNGS = ("bmc-pinged", "power-on", "tftp-seen", "ipxe-seen", "host-leased",
          "live-iso-seen", "host-pinged", "host-ssh", "fw-gates", "agent-reachable",
          "qualify", "done")
 BOOT_MARKER_RUNGS = ("tftp-seen", "ipxe-seen", "live-iso-seen")
+# Rung budgets (seconds); None = never times out. Lives here (not in
+# observe/ladder.py) so the tile can show "budget N s" without importing the
+# machine, which imports this module. Env: FLAX_POST_LADDER_<RUNG>_S.
+LADDER_BUDGET_S = {
+    "power-on": 60, "tftp-seen": 600, "ipxe-seen": 120, "host-leased": 120,
+    "live-iso-seen": 300, "host-pinged": 600, "host-ssh": 120, "fw-gates": 600,
+    "agent-reachable": 180,
+}
+
+
+def ladder_budget_s(rung):
+    """Seconds allowed on `rung`, None for rungs that never time out."""
+    env = os.environ.get("FLAX_POST_LADDER_%s_S" % rung.replace("-", "_").upper())
+    if env:
+        return int(env)
+    return LADDER_BUDGET_S.get(rung)
 _RUNG_INDEX = {r: i for i, r in enumerate(RUNGS)}
 
 DISCOVER_STEPS = (
@@ -260,7 +278,9 @@ _POP_MAP = {"green": "done", "red": "fault", "grey": "pending"}
 
 
 def _step_notes(st) -> dict:
-    """{step: short text} for skipped Qualify steps, from the agent's summary.reason."""
+    """{step: short text} for skipped Qualify steps, from the agent's summary.reason.
+    Rendered INLINE next to the step; timing faults are deliberately not here
+    (they go to the step modal via _fault_notes) so the pipeline table stays terse."""
     qsteps = (st.get("qual") or {}).get("steps") or {}
     notes = {}
     for name, rec in qsteps.items():
@@ -269,6 +289,13 @@ def _step_notes(st) -> dict:
             continue
         reason = (rec.get("summary") or {}).get("reason") or "skipped"
         notes[name] = _SKIP_LABELS.get(reason, reason)
+    return notes
+
+
+def _fault_notes(st) -> dict:
+    """{step: reason} for the ladder's fault and its skipped-markers note. The
+    tile's step modal shows these; the inline row shows only the red icon."""
+    notes = {}
     lad = st.get("ladder") or {}
     fault = lad.get("fault") or {}
     if fault.get("rung") and fault.get("reason"):
@@ -278,6 +305,21 @@ def _step_notes(st) -> dict:
     if (lad.get("marks") or {}).get("skipped"):
         notes["tftp-seen"] = "skipped: " + lad["marks"]["skipped"]
     return notes
+
+
+def _ladder_view(st) -> dict:
+    """The ladder slice as the step modal renders it: rung, its clock and budget,
+    each boot mark, the skipped note and the fault. {} when no ladder yet."""
+    lad = st.get("ladder") or {}
+    if not lad:
+        return {}
+    rung = lad.get("rung")
+    marks = lad.get("marks") or {}
+    return {"rung": rung, "since": lad.get("since"),
+            "budget_s": ladder_budget_s(rung) if rung else None,
+            "power_on_at": lad.get("power_on_at"),
+            "marks": {k: v for k, v in marks.items() if k != "skipped"},
+            "skipped": marks.get("skipped"), "fault": lad.get("fault")}
 
 
 def _done_steps(st):
@@ -336,6 +378,8 @@ def _record(slot, c, st, settings, live_link, macs):
             (n for n, s in discover_steps.items() if s not in _COMPLETE), None),
         "steps": steps,
         "step_notes": _step_notes(st),
+        "fault_notes": _fault_notes(st),
+        "ladder_view": _ladder_view(st),
         "ladder": st.get("ladder") or {},
         # The IPMI lane's uncontended human-reset stamp; the slot worker
         # reconciles its cached ladder against it (observe/worker.RealDeps).
