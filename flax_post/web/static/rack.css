@@ -230,3 +230,6 @@ button.mini{font-size:.66rem;padding:.05rem .4rem;margin-left:.5rem;vertical-ali
 .lad-tbl td{padding:.2rem .5rem .2rem 0;border-bottom:1px solid #1b212b;vertical-align:top}
 .lad-tbl tr.fault td{color:var(--red)} .lad-tbl tr.now td{font-weight:600}
 .lad-tbl td.dim{color:var(--dim);font-weight:400}
+
+.inv-tbl tr.blocked td{color:var(--red);font-weight:600;background:rgba(248,81,73,.08)}
+.inv-tbl tr.blocked td:first-child{border-left:3px solid var(--red)}

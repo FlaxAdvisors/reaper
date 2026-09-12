@@ -233,6 +233,14 @@ function App() {
     // is only ever one selected blade, so no blade arg) -- grey until inv is
     // loaded / if the blade has no inventory capture yet.
     popBtnCls() { const st = this.inv && this.inv.present && this.inv.pop && this.inv.pop.state; return st === 'green' ? 'on' : st === 'red' ? 'bad' : 'unk'; },
+    // INV button: red when a blocked part is installed (blocklist), like a failed POP
+    invBtnCls() { return (this.inv && this.inv.blocked && this.inv.blocked.length) ? 'bad' : ''; },
+    // a memory row matching a blocked DIMM (by slot when the run's dimmsum
+    // judged it, else by serial+part) renders in error red
+    dimmBlocked(m) {
+      const bl = (this.inv && this.inv.blocked) || [];
+      return bl.some((b) => (b.slot && m.slot && b.slot === m.slot) || (b.serial && b.part && b.serial === m.serial && b.part === m.part));
+    },
 
     // ---- inventory (INV/POP) fetch lifecycle ----
     flashActive(b) {

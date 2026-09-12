@@ -186,8 +186,10 @@ def _qualify(rec, row, step, status):
         pop = row.get("pop") or {}
         rows = [["profile", pop.get("profile") or "none in effect"], ["verdict", pop.get("verdict") or "not evaluated"]]
         for r in pop.get("failed_rules") or []:
-            rows.append(["missing", r])
+            rows.append(["BLOCKED" if r.startswith("blocked DIMM") else "missing", r])
         notes.append("rules are matched against this run's inventory digest (macinv count form); the POP button shows the full rule list")
+        if pop.get("blocked_dimms"):
+            notes.insert(0, "a blocked part is installed: %d DIMM(s) match a known-bad SPD identity; the node must not ship" % len(pop["blocked_dimms"]))
         if pop.get("verdict") == "red":
             notes.append("a red population fails the run: the blade goes back to triage, the profile is not relaxed")
         return rows, notes

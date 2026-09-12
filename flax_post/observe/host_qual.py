@@ -15,6 +15,7 @@ import time
 
 from .. import actions
 from .. import blades
+from .. import blocklist
 from .. import population
 from .. import state as _state
 from ..qualclient import QualClient, QualUnreachable
@@ -99,15 +100,23 @@ def _default_launch_agent(target) -> tuple:
     return rc, out
 
 
-def population_check(dump, profile) -> dict:
-    """green = all profile rules matched, red = any missing, grey = no dump/profile."""
+def population_check(dump, profile, dimmsum=None) -> dict:
+    """green = all profile rules matched, red = any missing, grey = no dump/profile.
+    A blocked DIMM (blocklist, ruling 2026-09-12) is red whatever the profile
+    says: the hits ride along as `blocked_dimms` and as failed rules."""
+    blocked = blocklist.check_dimmsum(dimmsum) if dimmsum else []
     if not dump or not profile:
-        return {"profile": profile, "verdict": "grey", "failed_rules": []}
-    rules = population.load_profile(profile)
-    res = population.evaluate(rules, dump)
-    failed = [r["rule"] for r in res["results"] if not r["ok"]]
-    return {"profile": profile, "verdict": "green" if res["ok"] else "red",
-            "failed_rules": failed}
+        out = {"profile": profile, "verdict": "grey", "failed_rules": []}
+    else:
+        rules = population.load_profile(profile)
+        res = population.evaluate(rules, dump)
+        failed = [r["rule"] for r in res["results"] if not r["ok"]]
+        out = {"profile": profile, "verdict": "green" if res["ok"] else "red", "failed_rules": failed}
+    if blocked:
+        out["verdict"] = "red"
+        out["failed_rules"] = list(out["failed_rules"]) + [blocklist.describe(h) for h in blocked]
+        out["blocked_dimms"] = blocked
+    return out
 
 
 def _read_profile_for(target, store) -> "str | None":
@@ -308,7 +317,9 @@ def poll_target(target, *, make_client=_default_make_client, store=_state,
     dump = store.get_artifact(target["bmc_mac"], run_id, "inventory", "macinv") \
         if hasattr(store, "get_artifact") else None
     profile = _read_profile_for(target, store)
-    pop = population_check(dump, profile)
+    dimmsum = store.get_artifact(target["bmc_mac"], run_id, "inventory", "dimmsum") \
+        if hasattr(store, "get_artifact") else None
+    pop = population_check(dump, profile, dimmsum)
     steps["population-check"] = {"status": {"green": "pass", "red": "fail", "grey": "pending"}[pop["verdict"]]}
     store.set_state(target["port"], pop=pop)
     qual = {"run_id": run_id, "agent": {"reachable": True, "ver": health.get("agent_ver")},

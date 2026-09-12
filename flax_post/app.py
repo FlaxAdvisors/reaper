@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
-from . import actions, blades, consume, db, geometry, inventory, population, queries, state, stepinfo
+from . import actions, blades, blocklist, consume, db, geometry, inventory, population, queries, state, stepinfo
 from .observe import host_qual
 from .qualclient import QualClient, QualUnreachable
 from .version import __version__
@@ -121,6 +121,14 @@ def api_inventory(port: str, profile: "str | None" = None) -> JSONResponse:
     prof = profile or state.read_settings().get("population")
     sections = inventory.parse(cap["verbose"]) if cap.get("present") else {}
     out = {"present": True, "port": port, "dir": cap.get("dir"), "sections": sections}
+    # Blocked DIMMs (blocklist): judged on this run's dimmsum artifact when the
+    # blade has a run, else on the export dump's memory rows. Both memory
+    # tables paint the matching rows red and the INV button goes red.
+    run_dimms = _run_artifact(record, "dimmsum")
+    if run_dimms:
+        out["blocked"] = blocklist.check_dimmsum(run_dimms)
+    else:
+        out["blocked"] = blocklist.check(sections.get("memory") or [])
     if run_text:
         out["pop"] = dict(inventory.verdict(run_text, prof), source="run", run_id=record.get("run_id"))
         if cap.get("present"):
@@ -134,13 +142,17 @@ def api_inventory(port: str, profile: "str | None" = None) -> JSONResponse:
 
 def _run_macinv(record) -> "str | None":
     """This run's count-form macinv artifact, or None (no run, no artifact)."""
+    return _run_artifact(record, "macinv")
+
+
+def _run_artifact(record, name) -> "str | None":
     run_id, bmc_mac = record.get("run_id"), record.get("bmc_mac")
     if not run_id or not bmc_mac:
         return None
     try:
-        return state.get_artifact(bmc_mac, run_id, "inventory", "macinv") or None
+        return state.get_artifact(bmc_mac, run_id, "inventory", name) or None
     except Exception:
-        log.exception("macinv artifact read failed for %s", record.get("port"))
+        log.exception("%s artifact read failed for %s", name, record.get("port"))
         return None
 
 

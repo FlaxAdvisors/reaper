@@ -99,7 +99,7 @@
     <div class="actions">
       <button :class="wattCls(sel)" @click="openModal('pwr')">PWR</button>
       <button v-if="sel.bmc_ip" @click="openModal('sol')">SOL</button>
-      <button @click="openModal('inv')">INV</button>
+      <button :class="invBtnCls()" @click="openModal('inv')">INV</button>
       <button :class="popBtnCls()" @click="openModal('pop')">POP</button>
       <button @click="openModal('idnt')">IDNT</button>
     </div>
@@ -182,8 +182,9 @@
             </div>
             <div v-if="inv.sections.memory && inv.sections.memory.length">
               <div class="section-l">Memory</div>
+              <p class="pending-note fault" v-if="inv.blocked && inv.blocked.length">✕ blocked part installed: {{inv.blocked.length}} DIMM(s) — {{inv.blocked[0].mfg}} {{inv.blocked[0].part}} SN {{inv.blocked[0].serial}} ({{inv.blocked[0].reason}})</p>
               <table class="inv-tbl"><thead><tr><th>Slot</th><th>Serial</th><th>Size</th><th>Part</th><th>Mfg</th><th>Speed</th></tr></thead>
-                <tbody><tr v-for="m in inv.sections.memory" :class="groupColor(inv.sections.memory,'part',m.part)">
+                <tbody><tr v-for="m in inv.sections.memory" :class="[groupColor(inv.sections.memory,'part',m.part), dimmBlocked(m) ? 'blocked' : '']">
                   <td class="mono">{{m.slot}}</td><td class="mono">{{m.serial}}</td><td>{{m.size}}</td><td>{{m.part}}</td><td>{{m.mfg}}</td><td>{{m.speed}}</td></tr></tbody></table>
             </div>
             <div v-if="inv.sections.nic && inv.sections.nic.length">
@@ -248,8 +249,9 @@
             </div>
             <div v-if="inv.sections.memory && inv.sections.memory.length">
               <div class="section-l">Memory ({{inv.sections.memory.length}})</div>
+              <p class="pending-note fault" v-if="inv.blocked && inv.blocked.length">✕ blocked part installed: {{inv.blocked.length}} DIMM(s) — {{inv.blocked[0].mfg}} {{inv.blocked[0].part}} SN {{inv.blocked[0].serial}} ({{inv.blocked[0].reason}})</p>
               <table class="inv-tbl"><thead><tr><th>Slot</th><th>Size</th><th>Part</th><th>Mfg</th></tr></thead>
-                <tbody><tr v-for="m in inv.sections.memory" :class="groupColor(inv.sections.memory,'part',m.part)">
+                <tbody><tr v-for="m in inv.sections.memory" :class="[groupColor(inv.sections.memory,'part',m.part), dimmBlocked(m) ? 'blocked' : '']">
                   <td class="mono">{{m.slot}}</td><td>{{m.size}}</td><td>{{m.part}}</td><td>{{m.mfg}}</td></tr></tbody></table>
             </div>
             <div v-if="inv.sections.nic && inv.sections.nic.length">
