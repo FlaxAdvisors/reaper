@@ -284,13 +284,21 @@ def poll_target(target, *, make_client=_default_make_client, store=_state,
                     text = console_reader(target.get("bmc_ip"))
                 except Exception:
                     log.exception("console capture read failed for %s", target.get("port"))
-                if text:
-                    store.write_artifact(target["bmc_mac"], run_id, "console", "sol.txt", "raw",
-                                         text, serial=target.get("serial"),
-                                         order_no=target.get("order_no"))
-                    steps["console"] = {"status": "pass"}
-                else:
+                if not text:
                     steps["console"] = {"status": "fail", "summary": {"reason": "no sol capture"}}
+                else:
+                    # A store failure here must not skip the durable result
+                    # or the final qual write below (et10b2 2026-09-12: the
+                    # raise left a pass verdict over a stale 'running' qual).
+                    try:
+                        store.write_artifact(target["bmc_mac"], run_id, "console", "sol.txt", "raw",
+                                             text, serial=target.get("serial"),
+                                             order_no=target.get("order_no"))
+                        steps["console"] = {"status": "pass"}
+                    except Exception as e:
+                        log.exception("console capture store failed for %s", target.get("port"))
+                        steps["console"] = {"status": "fail",
+                                            "summary": {"reason": "capture store failed: %s" % str(e)[:120]}}
                 qual["steps"] = steps
             if hasattr(store, "record_result"):
                 try:

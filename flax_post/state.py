@@ -104,7 +104,14 @@ def write_settings(*, order_no=..., population=..., customer=...) -> None:
 
 def write_artifact(bmc_mac, run_id, stage, name, kind, content, *,
                    serial=None, order_no=None, nbytes=None) -> None:
-    """Upsert one durable evidence artifact, keyed by (bmc_mac, run_id, stage, name)."""
+    """Upsert one durable evidence artifact, keyed by (bmc_mac, run_id, stage, name).
+
+    NUL bytes are stripped: a SOL capture carries them (serial noise, BREAK)
+    and PostgreSQL text rejects them; the raise escaped poll_target after the
+    verdict was written (et10b2 2026-09-12)."""
+    if isinstance(content, str) and "\x00" in content:
+        content = content.replace("\x00", "")
+        nbytes = None
     if nbytes is None and content is not None:
         nbytes = len(content)
     with get_pool().connection() as conn:
