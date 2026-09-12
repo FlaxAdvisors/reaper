@@ -478,7 +478,10 @@ def _record(slot, c, st, settings, live_link, macs):
         phase = "Qualify"       # latched red: the failed step stays visible
     elif not discover_done:
         phase = "Discover"
-    elif not fw_gates:
+    elif not fw_gates and _RUNG_INDEX.get((st.get("ladder") or {}).get("rung"), -1) < _RUNG_INDEX["agent-reachable"]:
+        # A live gate that a daemon transient pulled back AFTER the ladder
+        # proved it must not drop a blade mid-battery to Firmware (et6b1
+        # 2026-09-12): past fw-gates the phase follows the ladder.
         phase = "Firmware"
     elif not qualify_done:
         phase = "Qualify"

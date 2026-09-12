@@ -238,14 +238,27 @@ def bmc_data_check(ip, creds, ipmi_runner, ping) -> "dict | None":
         return None
     for c in creds or []:
         try:
-            fru = _parse_fru(ipmi_runner(ip, c["bmcuser"], c["bmcpass"], ["fru"]))
+            text = ipmi_runner(ip, c["bmcuser"], c["bmcpass"], ["fru"])
         except Exception:
             continue
-        board = fru.get("Board Mfg")
+        # The BASEBOARD is the first FRU device in the dump; _parse_fru is
+        # last-wins across devices (NIC, M.2 adapter) and would name the wrong
+        # board. The serial can come from any block (Product, else Chassis).
+        board = _first_fru_field(text, "Board Mfg")
+        product = _first_fru_field(text, "Board Product") or _first_fru_field(text, "Product Name")
+        fru = _parse_fru(text)
         serial = fru.get("Product Serial") or fru.get("Chassis Serial")
         if board and serial:
-            return {"board_mfg": board, "product": fru.get("Product Name") or fru.get("Board Product") or "",
-                    "serial": serial}
+            return {"board_mfg": board, "product": product or "", "serial": serial}
+    return None
+
+
+def _first_fru_field(text, key):
+    for line in text.splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            if k.strip() == key and v.strip():
+                return v.strip()
     return None
 
 
