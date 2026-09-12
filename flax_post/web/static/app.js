@@ -2,7 +2,7 @@
 // Renders the prototype layout (docs/post-ui-prototype.html) from the real
 // /api/v1/blades feed. Discover = violet; grey = empty/unknown.
 import { fetchBlades, fetchProfiles, saveSettings, postPower, postIdentify, fetchInventory,
-         fetchArtifacts, fetchArtifact } from '/web-static/api.js';
+         fetchArtifacts, fetchArtifact, fetchStep } from '/web-static/api.js';
 
 // firmware phases (post_state fw_bmc/fw_bios/fw_nic 'phase') during which a
 // power-off must be blocked -- mirrors flax_post/actions.py FW_ACTIVE.
@@ -65,6 +65,8 @@ function App() {
     // changed (macinv is expensive -- never refetch from the 15s poll).
     inv: null, invPort: null, invProfile: '', invLoading: false, actionMsg: null,
     artifacts: null, artLoading: false,
+    // the step modal's evidence block (/api/v1/step): status, headline, rows, notes
+    stepInfo: null, stepLoading: false,
 
     // ---- data ----
     async mounted() { this.profiles = await fetchProfiles(); await this.refresh(); setInterval(() => this.refresh(), REFRESH_MS); },
@@ -120,7 +122,7 @@ function App() {
       if (!v.length) return ''; const done = v.filter((x) => x === 'done' || x === 'skip').length;
       return done === v.length ? '✓' : `${done}/${v.length}`;
     },
-    stepIcon(st) { return { done: '✓', cur: '◉', fault: '✕', pending: '·', skip: '–' }[st] || '·'; },
+    stepIcon(st) { return { done: '✓', cur: '◉', fault: '✕', pending: '·', skip: '–', unknown: '?' }[st] || '·'; },
     // the agent's skip reason for a Qualify step ('no storage' for fio on a
     // diskless blade), from the blade record's step_notes
     stepNote(b, name) { return (b && b.step_notes && b.step_notes[name]) || ''; },
@@ -351,9 +353,20 @@ function App() {
     },
     openStep(phaseName, stepName) {
       this.modal = { kind: 'step', phase: phaseName, step: stepName };
-      this.artifacts = null;
+      this.artifacts = null; this.stepInfo = null;
+      this.loadStep(phaseName, stepName);
       if (phaseName === 'Qualify') this.loadArtifacts([stepName]);
     },
+    async loadStep(phaseName, stepName) {
+      const port = this.sel && this.sel.port; if (!port) return;
+      this.stepLoading = true;
+      try { this.stepInfo = await fetchStep(port, phaseName, stepName); }
+      catch (e) { console.error(e); this.stepInfo = null; }
+      finally { this.stepLoading = false; }
+    },
+    // raw artifacts over this size start collapsed (lspci -vv is 240 KB)
+    artBig(a) { return (a.kind !== 'digest') && ((a.content || '').length > 4000); },
+    stepWord(st) { return { done: 'passed', cur: 'in progress', pending: 'not reached', fault: 'failed', skip: 'skipped', unknown: 'no evidence' }[st] || st; },
     modalTitle() {
       const m = this.modal; if (!m) return ''; const id = this.sel ? (this.sel.serial || this.sel.port) : '';
       const names = { pwr: 'Power', sol: 'SOL console', inv: 'Inventory', pop: 'Population', idnt: 'Identify', sdr: 'SDR sensors', sel: 'SEL events', step: `${m.phase} · ${m.step}` };

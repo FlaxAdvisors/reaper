@@ -80,7 +80,10 @@ def _ladder_step_status(lad: dict, step: str) -> str:
     if fault.get("rung") == step:
         return "fault"
     if step in BOOT_MARKER_RUNGS and (lad.get("marks") or {}).get("skipped") and ri < ci:
-        return "skip"
+        # Evidence never collected (power already on when the worker looked):
+        # `unknown`, not `skip`. It does not hold the phase, but it is not a
+        # completed step either, so the bar never reads green on it.
+        return "unknown"
     if ri < ci:
         return "done"
     if ri == ci:
@@ -90,12 +93,12 @@ def _ladder_step_status(lad: dict, step: str) -> str:
 
 def _ladder_fallback_status(st: dict, step: str) -> str:
     """No ladder slice yet (row predates the worker, or observe is mid-upgrade):
-    derive what live signals can, mark the boot markers skip so Discover can
-    still complete."""
+    derive what live signals can, mark the boot markers unknown so Discover
+    does not hold the phase (but is not green either)."""
     if step == "power-on":
         return "done" if st.get("power_on") == "on" else "cur"
     if step in BOOT_MARKER_RUNGS:
-        return "skip"
+        return "unknown"
     return "done" if st.get("host_pinged") else "cur"      # host-pinged, host-ssh
 
 
@@ -245,15 +248,25 @@ def fw_gates_passed(st) -> bool:
 
 _QUAL_MAP = {"pass": "done", "running": "cur", "pending": "pending",
              "fail": "fault", "skip": "skip"}
+# Step states that COMPLETE a phase for the bar (green): done, or a test that
+# ran and found itself N/A (fio on a diskless blade).
 _COMPLETE = ("done", "skip")
+# Step states that do not HOLD the phase: the above plus `unknown` (evidence
+# the ladder never collected — the phase still advances, the bar stays grey).
+_ADVANCES = _COMPLETE + ("unknown",)
 
 # Skip reasons the agent emits -> the short label the tile shows next to the step.
 _SKIP_LABELS = {"no physical storage media": "no storage"}
 
 
 def phase_done(steps: dict) -> bool:
-    """A phase is complete when every step is done or skipped."""
+    """A phase is complete (green) when every step is done or skipped."""
     return all(v in _COMPLETE for v in steps.values())
+
+
+def phase_advances(steps: dict) -> bool:
+    """Nothing in this phase holds the pipeline: done, skipped or unknown."""
+    return all(v in _ADVANCES for v in steps.values())
 
 
 def _qualify_steps(st):
@@ -381,7 +394,7 @@ def _done_steps(st):
 
 def _record(slot, c, st, settings, live_link, macs):
     discover_steps = _discover_steps(c, st, live_link)
-    discover_done = all(v in _COMPLETE for v in discover_steps.values())
+    discover_done = phase_advances(discover_steps)
     steps = {"Discover": discover_steps, "Firmware": _firmware_steps(st),
              "Qualify": _qualify_steps(st), "Done": _done_steps(st)}
     fw_gates = fw_gates_passed(st)
@@ -419,7 +432,7 @@ def _record(slot, c, st, settings, live_link, macs):
         "bmc_pinged": bool(st.get("bmc_pinged")),
         "phase": phase,
         "step": None if verdict == "pass" else next(
-            (n for n, s in discover_steps.items() if s not in _COMPLETE), None),
+            (n for n, s in discover_steps.items() if s not in _ADVANCES), None),
         "steps": steps,
         "step_notes": _step_notes(st),
         "fault_notes": _fault_notes(st),

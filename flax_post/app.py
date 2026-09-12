@@ -1,5 +1,7 @@
 """flax-post — Eindhoven Post Servers viewer (read-only, source='post' devices)."""
+import logging
 import os
+import re
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -8,10 +10,12 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
-from . import actions, blades, consume, db, geometry, inventory, population, queries, state
+from . import actions, blades, consume, db, geometry, inventory, population, queries, state, stepinfo
 from .observe import host_qual
 from .qualclient import QualClient, QualUnreachable
 from .version import __version__
+
+log = logging.getLogger("flax-post.app")
 
 BASE_DIR = Path(__file__).parent
 
@@ -19,6 +23,17 @@ app = FastAPI(title="flax-post", version=__version__)
 WEB_DIR = BASE_DIR / "web"
 app.mount("/web-static", StaticFiles(directory=str(WEB_DIR / "static")), name="web-static")
 rack_templates = Jinja2Templates(directory=str(WEB_DIR / "templates"))
+
+
+@app.middleware("http")
+async def _static_no_cache(request: Request, call_next):
+    """Our own static assets revalidate on every load (ETag/304 is cheap): a
+    browser holding a cached app.js across a release rendered the OLD phase
+    bar for hours (2026-09-12). Vendor files are versioned by path."""
+    resp = await call_next(request)
+    if request.url.path.startswith("/web-static/") and "/vendor/" not in request.url.path:
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
 
 
 def _rackname() -> str:
@@ -86,17 +101,68 @@ def api_profiles() -> JSONResponse:
 
 @app.get("/api/v1/inventory/{port}")
 def api_inventory(port: str, profile: "str | None" = None) -> JSONResponse:
+    """INV tables from the /export recon dump; the POP verdict from THIS RUN's
+    inventory artifact (the same capture the pipeline's population-check
+    judged), falling back to the export dump when the blade has no run.
+    Ruling 2026-09-12 (et24b3): the export dump is from an earlier recon boot
+    and can disagree with the run (11 vs 12 DIMMs); when both exist the
+    export evaluation rides along as `pop_export`, stamped with its capture
+    time, so a disagreement is visible instead of hidden."""
     record = next((s for s in _blade_slots() if s.get("port") == port), None)
     if record is None:
         return JSONResponse({"ok": False, "reason": "unknown port"}, status_code=404)
     cap = inventory.capture(record.get("host_mac"))
-    if not cap.get("present"):
+    run_text = _run_macinv(record)
+    if not cap.get("present") and not run_text:
         return JSONResponse({"present": False, "port": port})
     prof = profile or state.read_settings().get("population")
-    sections = inventory.parse(cap["verbose"])
-    pop = inventory.verdict(cap["count"], prof)
-    return JSONResponse({"present": True, "port": port, "dir": cap["dir"],
-                         "sections": sections, "pop": pop})
+    sections = inventory.parse(cap["verbose"]) if cap.get("present") else {}
+    out = {"present": True, "port": port, "dir": cap.get("dir"), "sections": sections}
+    if run_text:
+        out["pop"] = dict(inventory.verdict(run_text, prof), source="run", run_id=record.get("run_id"))
+        if cap.get("present"):
+            out["pop_export"] = dict(inventory.verdict(cap["count"], prof), source="export",
+                                     captured=_dump_stamp(cap.get("dir")))
+    else:
+        out["pop"] = dict(inventory.verdict(cap["count"], prof), source="export",
+                          captured=_dump_stamp(cap.get("dir")))
+    return JSONResponse(out)
+
+
+def _run_macinv(record) -> "str | None":
+    """This run's count-form macinv artifact, or None (no run, no artifact)."""
+    run_id, bmc_mac = record.get("run_id"), record.get("bmc_mac")
+    if not run_id or not bmc_mac:
+        return None
+    try:
+        return state.get_artifact(bmc_mac, run_id, "inventory", "macinv") or None
+    except Exception:
+        log.exception("macinv artifact read failed for %s", record.get("port"))
+        return None
+
+
+_DUMP_DIR_RE = re.compile(r"(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})$")
+
+
+def _dump_stamp(path) -> "str | None":
+    """'YYYY-MM-DD HH:MM:SS' from a recon dump dir named <YYYYMMDD_HHMMSS>
+    (the `latest` symlink is resolved first); None when unparseable."""
+    if not path:
+        return None
+    real = os.path.realpath(path) if os.path.islink(path) else path
+    m = _DUMP_DIR_RE.search(os.path.basename(real.rstrip("/")))
+    return "%s-%s-%s %s:%s:%s" % m.groups() if m else None
+
+
+@app.get("/api/v1/step")
+def api_step(port: str, phase: str, step: str) -> JSONResponse:
+    """The step modal's evidence block (stepinfo.detail) for one blade step:
+    status, headline, label/value rows, notes. Computed on click, not per poll."""
+    record = next((s for s in _blade_slots() if s.get("port") == port), None)
+    if record is None:
+        return JSONResponse({"ok": False, "reason": "unknown port"}, status_code=404)
+    row = state.read_state().get(port) or {}
+    return JSONResponse(stepinfo.detail(record, row, phase, step))
 
 
 @app.post("/api/v1/settings")

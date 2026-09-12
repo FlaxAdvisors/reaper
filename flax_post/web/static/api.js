@@ -48,3 +48,10 @@ export async function fetchArtifact(port, stage, name) {
   if (!r.ok) return null;
   return (await r.json()).content;
 }
+
+export async function fetchStep(port, phase, step) {
+  const r = await fetch('/api/v1/step?port=' + encodeURIComponent(port) + '&phase=' + encodeURIComponent(phase)
+    + '&step=' + encodeURIComponent(step), { cache: 'no-store' });
+  if (!r.ok) return null;
+  return r.json();
+}
