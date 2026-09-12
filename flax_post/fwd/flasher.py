@@ -70,7 +70,12 @@ def _stock_firmware(client) -> bool:
     if get_root is None:
         return False
     is_bmc, _version, product = get_root()
-    return bool(is_bmc and product and "ami" in product.lower())
+    # Match the AMI service root's real Product string, not any "ami" substring:
+    # a stock AMI MegaRAC root sets Product="AMI Redfish Server" (et25b3), while a
+    # onetree/OpenBMC board leaves Product empty and only lists Ami under Oem, so
+    # get_redfish_root synthesizes "Ami Redfish" for it (et7b4, 2026-09-12) — that
+    # must NOT read as stock, or a dark onetree board gets mislabeled.
+    return bool(is_bmc and product and product.strip().lower() == "ami redfish server")
 
 
 def probe_one(port, client, matcher, set_row) -> str:
