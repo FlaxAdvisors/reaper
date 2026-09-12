@@ -169,6 +169,12 @@ def get_node(bmc_mac) -> dict:
     return rows[0][0] if rows and isinstance(rows[0][0], dict) else {}
 
 
+def update_result(bmc_mac, result: dict) -> None:
+    """Refresh vars.result in place for the SAME run (the battery finished
+    after a fail verdict): no history entry is appended."""
+    upsert_node(bmc_mac, result=result)
+
+
 def record_result(bmc_mac, result: dict, *, serial=None, order_no=None, last_port=None) -> None:
     """Write a finished qualification run into the durable tier (spec 2026-09-11 §3):
     vars.result is the latest run, vars.runs the compact history. Read-modify-write

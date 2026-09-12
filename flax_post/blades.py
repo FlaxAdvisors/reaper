@@ -514,6 +514,9 @@ def _record(slot, c, st, settings, live_link, macs):
         "launch_at": st.get("launch_at"),
         "fw_gates": fw_gates,
         "run_id": (st.get("qual") or {}).get("run_id"),
+        # the agent reported its battery terminal (the ladder keeps collecting
+        # after a fail verdict until this is true or the agent is gone)
+        "battery_done": (((st.get("qual") or {}).get("overall") or {}).get("status") == "done"),
         "order_no": st.get("order_no") or settings.get("order_no"),
         "population": settings.get("population"),
         "pop_override": st.get("pop_override"),

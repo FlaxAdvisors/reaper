@@ -120,6 +120,11 @@ def _read_profile_for(target, store) -> "str | None":
     return store.read_settings().get("population") if hasattr(store, "read_settings") else None
 
 
+def _battery_done(qual) -> bool:
+    """The agent reported its battery terminal (status 'done')."""
+    return ((qual or {}).get("overall") or {}).get("status") == "done"
+
+
 def qualify_verdict(status, pop) -> "str | None":
     """pass = node battery passed AND population green; fail = either failed; else None."""
     node = (status or {}).get("verdict")
@@ -206,10 +211,20 @@ def poll_target(target, *, make_client=_default_make_client, store=_state,
     done (phase == 'Qualify'), launch_agent (if given) SSH-starts it, debounced
     to once per LAUNCH_COOLDOWN_S."""
     live = store.read_state().get(target["port"], {}) if hasattr(store, "read_state") else {}
-    if (live.get("done") or {}).get("verdict") is not None:
-        return live.get("qual") or {}
+    done_v = (live.get("done") or {}).get("verdict")
+    live_q = live.get("qual") or {}
+    if done_v is not None:
+        # A pass is complete (the tail powered the blade off). A FAIL is
+        # recorded the moment the population check goes red, while the
+        # battery is still running: keep collecting every later stage's
+        # result and artifacts until the agent reports the battery terminal
+        # (ruling 2026-09-12: progress through the stages, collect every
+        # error or pass along the way) — but never relaunch a latched blade.
+        if done_v == "pass" or _battery_done(live_q):
+            return live_q
+        launch_agent = None
     if live.get("power_on") == "off":
-        return live.get("qual") or {}
+        return live_q
     pingable = True if ping is None else bool(ping(target["host_ip"]))
     client = make_client(target["host_ip"]) if pingable else None
     try:
@@ -239,6 +254,10 @@ def poll_target(target, *, make_client=_default_make_client, store=_state,
             else:
                 log.debug("qual launch debounced for %s (%.0fs into %ss cooldown)",
                           target.get("port"), t - last, LAUNCH_COOLDOWN_S)
+        if done_v is not None:
+            # post-verdict collection: a miss (node or BMC rebooting) must not
+            # wipe what was collected; the ladder decides when to give up
+            return live_q
         qual = {"agent": {"reachable": False}, "steps": agent_step(False)}
         store.set_state(target["port"], qual=qual)
         return qual
@@ -282,6 +301,14 @@ def poll_target(target, *, make_client=_default_make_client, store=_state,
                    and (live.get("qual") or {}).get("run_id") == run_id)
         if already:
             done = live.get("done")
+            if done_v == "fail" and _battery_done({"overall": status}) and not _battery_done(live_q):
+                # the battery just finished after the fail verdict: refresh the
+                # durable result in place (same run: no new history entry)
+                if hasattr(store, "update_result"):
+                    try:
+                        store.update_result(target["bmc_mac"], build_result(target, live, qual, pop, done))
+                    except Exception:
+                        log.exception("update_result failed for %s", target.get("port"))
         else:
             done = run_done(target, verdict)
             # Freeze the run's Discover + Firmware results with the verdict

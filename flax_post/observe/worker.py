@@ -53,6 +53,7 @@ def snapshot_from_record(rec, *, allowed, hold) -> dict:
             "fw_gates": bool(rec.get("fw_gates")),
             "allowed": bool(allowed),
             "launch_at": rec.get("launch_at"),
+            "battery_done": bool(rec.get("battery_done")),
             # the tile's Firmware step map; the machine freezes it when fw-gates passes
             "fw_steps": (rec.get("steps") or {}).get("Firmware")}
 

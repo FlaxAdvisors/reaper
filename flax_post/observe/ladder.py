@@ -18,7 +18,11 @@ POWER_COOLDOWN_S = int(os.environ.get("FLAX_POST_LADDER_POWER_COOLDOWN_S", "900"
 _MARK_KEY = {"tftp-seen": "tftp", "ipxe-seen": "ipxe", "live-iso-seen": "iso"}
 _EVIDENCE = {"tftp-seen": "tftp", "ipxe-seen": "ipxe", "live-iso-seen": "iso",
              "host-pinged": "ping", "host-ssh": "ssh", "bmc-ready": "bmcdata",
-             "agent-reachable": "agent"}
+             "agent-reachable": "agent", "qualify": "agent"}
+# After a FAIL verdict the battery keeps running on the node and the worker
+# keeps collecting; the agent being unreachable this long (node or BMC
+# rebooted) ends the collection.
+POST_VERDICT_AGENT_GRACE_S = int(os.environ.get("FLAX_POST_LADDER_POST_VERDICT_GRACE_S", "90"))
 _NEXT = {r: RUNGS[i + 1] for i, r in enumerate(RUNGS[:-1])}
 RUNG_INDEX = {r: i for i, r in enumerate(RUNGS)}
 
@@ -243,9 +247,24 @@ def advance(ladder, snap, evidence, now):
         return lad, acts + ["poll-agent"]
 
     if rung == "qualify":
-        if snap.get("verdict") is not None:
+        # The worker polls the agent as this rung's evidence every step.
+        verdict = snap.get("verdict")
+        if verdict is None:
+            return lad, acts
+        if verdict == "pass" or snap.get("battery_done"):
             _pass(lad, "done", now)
             return lad, acts
-        return lad, acts + ["poll-agent"]
+        # fail with the battery still running (ruling 2026-09-12): keep
+        # collecting until it is terminal, or the agent is gone for good
+        if ev.get("agent"):
+            lad.pop("agent_lost_at", None)
+            return lad, acts
+        lost = lad.get("agent_lost_at")
+        if lost is None:
+            lad["agent_lost_at"] = now
+        elif now - lost > POST_VERDICT_AGENT_GRACE_S:
+            lad["collection"] = "cut after the verdict: agent unreachable for %ds (node or BMC reboot)" % POST_VERDICT_AGENT_GRACE_S
+            _pass(lad, "done", now)
+        return lad, acts
 
     return lad, acts          # done

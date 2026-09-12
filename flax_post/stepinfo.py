@@ -246,8 +246,19 @@ def _done(rec, row, step, status):
         notes.append("the engine powers the blade off and reads the chassis back for up to 30 s; only a read `off` passes")
     elif step == "done":
         holes = rec.get("holes") or {}
+        ov = (row.get("qual") or {}).get("overall") or {}
         rows = [["verdict", d.get("verdict") or "none"], ["run", (row.get("qual") or {}).get("run_id") or "none"],
                 ["run clean", _yn(rec.get("clean"))]]
+        if ov:
+            rows.append(["battery", "%s, %s/%s stages, node verdict %s" % (
+                ov.get("status") or "?", ov.get("done_n", "?"), ov.get("total_n", "?"), ov.get("verdict") or "none")])
+        cut = (rec.get("ladder") or {}).get("collection")
+        if cut:
+            notes.append(cut)
+        if d.get("verdict") == "fail" and ov.get("status") == "running":
+            notes.append("the population check failed; the battery is still running on the node and every later stage's result and artifacts are being collected")
+        elif d.get("verdict") == "fail" and ov.get("status") == "done":
+            notes.append("the population check failed; the battery ran to the end and every stage's result is recorded above")
         for p, names in holes.items():
             rows.append(["open in " + p, ", ".join(names)])
         notes.append("the clean mark: completes only when identify and power-off succeeded AND every earlier step passed or was legitimately skipped; "
