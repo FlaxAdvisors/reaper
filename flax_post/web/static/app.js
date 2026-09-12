@@ -70,7 +70,10 @@ function App() {
     stepInfo: null, stepLoading: false,
 
     // ---- data ----
-    async mounted() { this.profiles = await fetchProfiles(); await this.refresh(); setInterval(() => this.refresh(), REFRESH_MS); },
+    async mounted() {
+      document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && this.modal) this.closeModal(); });
+      this.profiles = await fetchProfiles(); await this.refresh(); setInterval(() => this.refresh(), REFRESH_MS);
+    },
     // 15s poll of /api/v1/blades. Deliberately does NOT touch `inv` — macinv
     // is expensive, so the cached inventory for `sel.port` just stays put;
     // loadInv() is the only path that (re)fetches it.
@@ -152,13 +155,16 @@ function App() {
       const v = b && b.ladder_view; if (!v || !v.rung || !this._ladderSteps.includes(name)) return '';
       const now = Date.now() / 1000, t = (x) => new Date(x * 1000).toLocaleTimeString();
       const age = (x) => Math.max(0, Math.round(now - x)) + 's ago';
-      const lines = ['ladder rung: ' + v.rung + (v.since ? '  (since ' + t(v.since) + ', ' + age(v.since) + (v.budget_s ? ', budget ' + v.budget_s + 's' : '') + ')' : '')];
+      // Chronological, top to bottom: power-on, then each boot mark, then the
+      // rung the ladder is on NOW (the most recent thing) last.
+      const lines = [];
       if (v.power_on_at) lines.push('power-on: ' + t(v.power_on_at));
       for (const k of ['tftp', 'ipxe', 'iso', 'ping', 'ssh', 'bmcready']) {
         if (v.marks && v.marks[k]) lines.push(k + ': ' + t(v.marks[k]) + (v.power_on_at ? '  (+' + Math.round(v.marks[k] - v.power_on_at) + 's after power-on)' : ''));
       }
       if (v.skipped) lines.push('boot markers skipped: ' + v.skipped);
       if (v.fault) lines.push('\u2715 ' + v.fault.rung + ': ' + v.fault.reason + (v.fault.at ? '  at ' + t(v.fault.at) : ''));
+      lines.push('ladder rung now: ' + v.rung + (v.since ? '  (since ' + t(v.since) + ', ' + age(v.since) + (v.budget_s ? ', budget ' + v.budget_s + 's' : '') + ')' : ''));
       return lines.join('\n');
     },
 
@@ -312,11 +318,30 @@ function App() {
     },
     _stopSolIdle() { if (this._solIdleTimer) { clearInterval(this._solIdleTimer); this._solIdleTimer = null; } this.solIdle = null; },
     closeModal() {
-      if (window.SolConsole) window.SolConsole.close();
-      this._stopSolIdle();
-      this.modal = null;
+      // Closing must never depend on anything else succeeding: the modal
+      // goes away first, the SOL teardown is best-effort (an operator could
+      // only reload the page when a step modal would not close, 2026-09-12).
+      this.modal = null; this.artifacts = null; this.stepInfo = null;
+      try { if (window.SolConsole) window.SolConsole.close(); } catch (e) { console.error(e); }
+      try { this._stopSolIdle(); } catch (e) { console.error(e); }
       this.solLog = []; this.solHolder = null; this.solClientId = null;
     },
+    // SDR dump -> rows whose status column is neither ok nor ns (the
+    // lower/upper (non-)critical threshold crossings an operator must see),
+    // parsed from `name | id | status | reading` lines.
+    sdrAttention(content) {
+      const out = [];
+      for (const line of (content || '').split('\n')) {
+        const f = line.split('|').map((x) => x.trim());
+        if (f.length < 4) continue;
+        const st = f[2].toLowerCase();
+        if (!st || st === 'ok' || st === 'ns') continue;
+        out.push({ name: f[0], st, cls: /cr/.test(st) ? 'cr' : 'nc', reading: f.slice(3).join(' | ') });
+      }
+      return out;
+    },
+    isSdr(a) { return a && (a.stage === 'sdr-pre' || a.stage === 'sdr-post'); },
+    toggleArt(a) { a.open = !a.open; },
     solLockState() { return !this.solHolder ? 'request' : this.solHeld ? 'release' : 'requestRelease'; },
     solLockLabel() {
       return { request: 'Request Lock', release: 'Release Lock', requestRelease: 'Request Lock Release' }[this.solLockState()];

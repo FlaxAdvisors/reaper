@@ -315,7 +315,7 @@ def _step_notes(st) -> dict:
             if isinstance(frozen, dict):
                 for name in PHASE_STEPS[p]:
                     if name not in frozen:
-                        notes[name] = "not in this run"
+                        notes[name] = "added since this run"
     for name, rec in qsteps.items():
         rec = rec or {}
         if rec.get("status") != "skip":
@@ -390,7 +390,7 @@ def _latched_steps(st, steps: dict) -> dict:
         frozen = snap.get(p)
         if isinstance(frozen, dict):
             # A step the snapshot never had was not part of that run (added
-            # since, e.g. bmc-ready 2026-09-12): a legitimate skip, noted on
+            # since, e.g. bmc-ready 2026-09-12): a legitimate skip, noted on the tile as "added since this run" —
             # the tile, never a hole that would un-clean a finished run.
             out[p] = {name: frozen.get(name, "skip") for name in PHASE_STEPS[p]}
     # Snapshots written before `unknown` existed froze unobserved boot markers

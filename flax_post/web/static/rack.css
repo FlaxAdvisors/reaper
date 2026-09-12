@@ -87,7 +87,7 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .bar.steps .seg{height:6px;border-radius:1px}
 
 /* ---- detail drawer (docked, non-modal) ---- */
-.drawer{position:fixed;top:50px;right:0;height:calc(100% - 50px);width:430px;max-width:92vw;z-index:15;
+.drawer{position:fixed;top:50px;right:0;height:calc(100% - 50px);width:560px;max-width:92vw;z-index:15;
   background:var(--panel);border-left:1px solid var(--line);box-shadow:-12px 0 40px rgba(0,0,0,.45);
   padding:1rem 1.1rem;overflow:auto}
 .d-head{display:flex;align-items:center;gap:.5rem;border-bottom:1px solid var(--border);padding-bottom:.6rem}
@@ -135,7 +135,7 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 
 /* ---- modal (PWR/SOL/INV/POP/IDNT/SDR/SEL/step) ---- */
 .m-scrim{position:fixed;inset:0;background:rgba(2,5,10,.6);z-index:40;display:flex;align-items:center;justify-content:center}
-.m-box{background:var(--panel);border:1px solid var(--line);border-radius:10px;width:520px;max-width:92vw;max-height:84vh;box-shadow:0 20px 60px rgba(0,0,0,.5);overflow:auto}
+.m-box{background:var(--panel);border:1px solid var(--line);border-radius:10px;width:680px;max-width:92vw;max-height:84vh;box-shadow:0 20px 60px rgba(0,0,0,.5);overflow:auto}
 .m-h{display:flex;align-items:center;gap:.5rem;padding:.7rem .9rem;border-bottom:1px solid var(--border);font-weight:600}
 .m-h .m-title{margin-right:auto}
 .m-h select{background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--text);padding:.2rem .4rem;font-size:.78rem}
@@ -219,3 +219,8 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .step-kv .mono{word-break:break-word}
 button.mini{font-size:.66rem;padding:.05rem .4rem;margin-left:.5rem;vertical-align:middle}
 .ctx-at{font-size:.62rem;color:var(--dim);white-space:nowrap}
+
+.m-h{position:sticky;top:0;background:var(--panel);z-index:1}
+.sdr-att{display:grid;grid-template-columns:auto auto auto 1fr;gap:.15rem .8rem;font-family:ui-monospace,monospace;font-size:.76rem;margin:.3rem 0 .6rem}
+.sdr-att .st{font-weight:700} .sdr-att .st.cr{color:var(--red)} .sdr-att .st.nc{color:var(--amber)}
+.sdr-att .hd{color:var(--dim);font-weight:600}

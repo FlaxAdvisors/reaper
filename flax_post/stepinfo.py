@@ -267,7 +267,10 @@ def detail(rec: dict, row: dict, phase: str, step: str) -> dict:
     elif note:
         notes.append(note)
     sn = (rec.get("step_notes") or {}).get(step)
-    if sn:
+    if sn == "added since this run":
+        notes.insert(0, "this step was added to the pipeline after this run was recorded, so it has no result here; "
+                        "the next power-on runs the whole pipeline including it")
+    elif sn:
         notes.insert(0, sn)
     return {"phase": phase, "step": step, "status": status,
             "headline": "%s: %s" % (step, _STATUS_WORD.get(status, status)),

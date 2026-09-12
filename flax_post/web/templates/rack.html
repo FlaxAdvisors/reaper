@@ -291,9 +291,17 @@
           <p class="m-sub">sensor readings and thresholds captured before and after stress</p>
           <p class="pending-note" v-if="artLoading">loading…</p>
           <p class="pending-note" v-else-if="!artifacts || !artifacts.length">no SDR capture for this run yet</p>
-          <div v-else v-for="a in artifacts">
-            <div class="section-l">{{a.stage}}/{{a.name}} <span class="dim">({{a.kind}}, {{a.bytes}} B)</span></div>
-            <pre class="console">{{a.content}}</pre>
+          <div v-else>
+            <div v-for="a in artifacts">
+              <div class="section-l">{{a.stage}}/{{a.name}} <span class="dim">({{a.kind}}, {{a.bytes}} B)</span>
+                <button class="mini" @click="toggleArt(a)">{{a.open ? 'hide full dump' : 'full dump'}}</button></div>
+              <p class="pending-note" v-if="!sdrAttention(a.content).length">every sensor ok / ns</p>
+              <div class="sdr-att" v-else>
+                <span class="hd">sensor</span><span class="hd">status</span><span class="hd">reading</span><span></span>
+                <template v-for="r in sdrAttention(a.content)"><span>{{r.name}}</span><span class="st" :class="r.cls">{{r.st}}</span><span>{{r.reading}}</span><span></span></template>
+              </div>
+              <pre class="console" v-if="a.open">{{a.content}}</pre>
+            </div>
           </div>
         </div>
         <div v-else-if="modal?.kind==='step'">
@@ -310,10 +318,19 @@
           <div v-if="modal?.phase==='Qualify'">
             <p class="pending-note" v-if="artLoading">loading artifacts…</p>
             <p class="pending-note" v-else-if="!artifacts || !artifacts.length">no artifact for this step</p>
-            <div v-else v-for="a in artifacts">
-              <div class="section-l">{{a.stage}}/{{a.name}} <span class="dim">({{a.kind}}, {{a.bytes}} B)</span>
-                <button class="mini" v-if="artBig(a)" @click="a.open=!a.open">{{a.open ? 'hide' : 'show '+Math.round(a.content.length/1024)+' KB'}}</button></div>
-              <pre class="console" v-if="!artBig(a) || a.open">{{a.content}}</pre>
+            <div v-else>
+              <div v-for="a in artifacts">
+                <div class="section-l">{{a.stage}}/{{a.name}} <span class="dim">({{a.kind}}, {{a.bytes}} B)</span>
+                  <button class="mini" v-if="artBig(a) || isSdr(a)" @click="toggleArt(a)">{{a.open ? 'hide' : (isSdr(a) ? 'full dump' : 'show '+Math.round((a.content||'').length/1024)+' KB')}}</button></div>
+                <div v-if="isSdr(a)">
+                  <p class="pending-note" v-if="!sdrAttention(a.content).length">every sensor ok / ns</p>
+                  <div class="sdr-att" v-else>
+                    <span class="hd">sensor</span><span class="hd">status</span><span class="hd">reading</span><span></span>
+                    <template v-for="r in sdrAttention(a.content)"><span>{{r.name}}</span><span class="st" :class="r.cls">{{r.st}}</span><span>{{r.reading}}</span><span></span></template>
+                  </div>
+                </div>
+                <pre class="console" v-if="a.open || (!artBig(a) && !isSdr(a))">{{a.content}}</pre>
+              </div>
             </div>
           </div>
         </div>
