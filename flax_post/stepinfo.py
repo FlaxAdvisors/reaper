@@ -233,7 +233,13 @@ def _done(rec, row, step, status):
             rows.append(["reason", d["power_off_reason"]])
         notes.append("the engine powers the blade off and reads the chassis back for up to 30 s; only a read `off` passes")
     elif step == "done":
-        rows = [["verdict", d.get("verdict") or "none"], ["run", (row.get("qual") or {}).get("run_id") or "none"]]
+        holes = rec.get("holes") or {}
+        rows = [["verdict", d.get("verdict") or "none"], ["run", (row.get("qual") or {}).get("run_id") or "none"],
+                ["run clean", _yn(rec.get("clean"))]]
+        for p, names in holes.items():
+            rows.append(["open in " + p, ", ".join(names)])
+        notes.append("the clean mark: completes only when identify and power-off succeeded AND every earlier step passed or was legitimately skipped; "
+                     "a pass with open steps is finished but NOT ready to ship (re-run, or triage)")
         notes.append("a pass records the run into post_node (fleet viewer node page); a fail leaves the blade powered for inspection")
     return rows, notes
 

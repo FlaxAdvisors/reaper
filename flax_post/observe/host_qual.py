@@ -172,13 +172,27 @@ def build_result(target, live, qual, pop, done, now=time.time) -> dict:
         rec = rec or {}
         steps[name] = {"status": rec.get("status"), "summary": rec.get("summary") or {}}
     live = live or {}
+    # The run's clean mark (ruling 2026-09-12): every Discover/Firmware step as
+    # frozen with the verdict and every Qualify step done or legitimately
+    # skipped. None when the verdict carried no snapshot (nothing to judge).
+    snap = (done or {}).get("steps") or {}
+    holes, clean = {}, None
+    if isinstance(snap.get("Discover"), dict) and isinstance(snap.get("Firmware"), dict):
+        holes = blades.run_holes({"Discover": snap["Discover"], "Firmware": snap["Firmware"],
+                                  "Qualify": blades._qualify_steps({"qual": qual or {}, "pop": pop or {}})})
+        clean = (done or {}).get("verdict") == "pass" and not holes
+    lad = live.get("ladder") or {}
     return {"run_id": (qual or {}).get("run_id"), "verdict": (done or {}).get("verdict"),
+            "clean": clean, "holes": holes,
             "finished_at": int(now()), "order_no": target.get("order_no"),
             "port": target.get("port"), "serial": target.get("serial"),
             "fw": {"bmc": live.get("fw_bmc") or {}, "bios": live.get("fw_bios") or {},
                    "nic": live.get("fw_nic") or {}},
             "qual": {"overall": (qual or {}).get("overall") or {}, "steps": steps},
-            "pop": pop or {}, "done": done or {}}
+            "pop": pop or {}, "done": done or {},
+            # the boot timeline: engine power-on and each boot mark (epoch)
+            "ladder": {"power_on_at": lad.get("power_on_at"), "marks": lad.get("marks") or {},
+                       "human_power_on": bool(lad.get("human_power_on"))}}
 
 
 def poll_target(target, *, make_client=_default_make_client, store=_state,

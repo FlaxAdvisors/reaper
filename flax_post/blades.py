@@ -384,10 +384,35 @@ def _latched_steps(st, steps: dict) -> dict:
     return out
 
 
-def _done_steps(st):
+RUN_PHASES = ("Discover", "Firmware", "Qualify")
+
+
+def run_holes(steps: dict) -> dict:
+    """{phase: [step, ...]} for every Discover/Firmware/Qualify step that did
+    not complete (not done, not a legitimate skip): the reasons a finished run
+    is not clean. Empty when the run is clean."""
+    out = {}
+    for p in RUN_PHASES:
+        bad = [n for n, s in (steps.get(p) or {}).items() if s not in _COMPLETE]
+        if bad:
+            out[p] = bad
+    return out
+
+
+def holes_text(holes: dict) -> str:
+    return "; ".join("%s: %s" % (p, ", ".join(v)) for p, v in holes.items())
+
+
+def _done_steps(st, holes=None):
     """identify -> power-off -> done, from post_state.vars.done. No verdict -> all
     pending; a fail verdict leaves them pending (node stays powered). A tail step
-    the engine could not verify (power_off/identify == 'fault') renders as fault."""
+    the engine could not verify (power_off/identify == 'fault') renders as fault.
+
+    `done` (the last step) is the run's CLEAN mark (ruling 2026-09-12): it
+    completes only when identify and power-off succeeded AND no earlier phase
+    carries a hole. A pass with holes (unknown boot markers, firmware still
+    needing an update) renders `done` as fault so the last segment never turns
+    green and the tile reads `fault · not clean`."""
     done = st.get("done") or {}
     if done.get("verdict") != "pass":
         return {s: "pending" for s in PHASE_STEPS["Done"]}
@@ -396,7 +421,10 @@ def _done_steps(st):
         return "done" if v == "done" else ("fault" if v == "fault" else "cur")
 
     idf, pwr = _m(done.get("identify")), _m(done.get("power_off"))
-    fin = "done" if idf == "done" and pwr == "done" else "pending"
+    if holes:
+        fin = "fault"
+    else:
+        fin = "done" if idf == "done" and pwr == "done" else "pending"
     return {"identify": idf, "power-off": pwr, "done": fin}
 
 
@@ -404,7 +432,7 @@ def _record(slot, c, st, settings, live_link, macs):
     discover_steps = _discover_steps(c, st, live_link)
     discover_done = phase_advances(discover_steps)
     steps = {"Discover": discover_steps, "Firmware": _firmware_steps(st),
-             "Qualify": _qualify_steps(st), "Done": _done_steps(st)}
+             "Qualify": _qualify_steps(st)}
     fw_gates = fw_gates_passed(st)
     qualify_done = phase_done(steps["Qualify"])
     # Completion latch (spec 2026-09-11): once the Done tail has recorded a
@@ -416,6 +444,14 @@ def _record(slot, c, st, settings, live_link, macs):
     # only from the run's own results, never from a phase index.
     verdict = (st.get("done") or {}).get("verdict")
     steps = _latched_steps(st, steps)
+    # The run's holes are judged on the LATCHED maps: what the run recorded,
+    # not what the live signals say after power-off.
+    holes = run_holes(steps) if verdict is not None else {}
+    steps["Done"] = _done_steps(st, holes if verdict == "pass" else None)
+    clean = verdict == "pass" and not holes
+    fault_notes = _fault_notes(st)
+    if verdict == "pass" and holes:
+        fault_notes["done"] = "run not clean: " + holes_text(holes)
     if verdict == "pass":
         phase = "Done"
     elif verdict == "fail":
@@ -439,11 +475,13 @@ def _record(slot, c, st, settings, live_link, macs):
         "power_on": st.get("power_on"), "watts": st.get("watts"),
         "bmc_pinged": bool(st.get("bmc_pinged")),
         "phase": phase,
-        "step": None if verdict == "pass" else next(
+        "step": ("not clean" if holes else None) if verdict == "pass" else next(
             (n for n, s in discover_steps.items() if s not in _ADVANCES), None),
         "steps": steps,
+        "clean": clean,
+        "holes": holes,
         "step_notes": _step_notes(st),
-        "fault_notes": _fault_notes(st),
+        "fault_notes": fault_notes,
         "ladder_view": _ladder_view(st),
         "ladder": st.get("ladder") or {},
         # The IPMI lane's uncontended human-reset stamp; the slot worker
