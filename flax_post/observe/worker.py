@@ -310,11 +310,18 @@ class RealDeps:
     @staticmethod
     def _adopt_reset(rec, reset_at):
         """The record with the lane's reset as its ladder. A row with no
-        ladder_reset_at keeps whatever reset slice the feed carries."""
+        ladder_reset_at keeps whatever reset slice the feed carries. The kind
+        says which lane reset it: `occupant` (ipmi.occupant_change, a new blade
+        in the slot) starts a fresh ladder born when the old blade last
+        answered; `human` or no kind (rows before 2026-09-14) is a human
+        off-to-on."""
         if reset_at is None:
             return rec
         rec = dict(rec)
-        rec["ladder"] = ladder.human_reset(reset_at)
+        if rec.get("ladder_reset_kind") == "occupant":
+            rec["ladder"] = ladder.occupant_reset(rec.get("ladder_reset_born_at"), reset_at)
+        else:
+            rec["ladder"] = ladder.human_reset(reset_at)
         return rec
 
     def holds_claim(self, port) -> bool:
