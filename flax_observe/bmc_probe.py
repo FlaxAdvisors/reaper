@@ -28,6 +28,7 @@ import socket
 import ssl
 import subprocess
 import tempfile
+import time
 
 from .ipmi import _default_ipmi_runner
 
@@ -39,6 +40,12 @@ log = logging.getLogger("flax-observe.bmc_probe")
 
 SSH_KNOWN_HOSTS = "/opt/flax/var/ssh/known_hosts"
 SSH_TIMEOUT_SECS = 8
+# dropbear on a loaded Tioga Pass BMC fails an ssh that follows the bare TCP
+# connect to :22 by under ~1 s (et26b3, 2026-09-14: rc=255 3/3 back to back,
+# ok 4/4 with a 1-2 s gap); the default port probe waits out this window.
+SSH_AFTER_PORT_PROBE_SECS = 2.0
+_monotonic = time.monotonic
+_sleep = time.sleep
 
 # `fru print 0` reads only the baseboard FRU (Builtin FRU Device, ID 0), ~1 s.
 # A bare `ipmitool fru` also walks the NIC and M.2-carrier FRUs: 5-9+ s on Tioga
@@ -238,16 +245,20 @@ def probe_bmc_kind(ip, credentials, bmc_creds,
         ipmi_runner = _default_ipmi_runner
     if redfish_probe is None:
         redfish_probe = _default_redfish_probe
-    if port_probe is None:
+    default_port_probe = port_probe is None
+    if default_port_probe:
         port_probe = lambda h: {
             "ssh":  _tcp_port_open(h, 22, timeout=1.0),
             "ipmi": _ipmi_responsive(h, timeout=2.0),
             "redfish": _tcp_port_open(h, 443, timeout=1.0),
         }
 
+    probed_at = _monotonic()
     ports = port_probe(ip)
 
     if ports.get("ssh"):
+        if default_port_probe:
+            _sleep(max(0.0, SSH_AFTER_PORT_PROBE_SECS - (_monotonic() - probed_at)))
         try:
             rel = ssh_runner(ip, credentials["obmcuser"],
                              credentials["obmcpass"], "cat /etc/os-release")
