@@ -393,6 +393,84 @@ def _process_blade(d, hosts, creds, ipmi_runner, ping, set_state, upsert_node, o
             log.exception("ipmi: work-record write failed for %s", port)
 
 
+# Occupant identity (spec 2026-09-14-post-occupant-reset §3/§4). A post_state
+# row belongs to a SLOT, but done/qual/pop/ladder/power_last describe the BLADE
+# that produced them; a swapped-in blade inherited them (et24b2, et24b3, et8b3,
+# et10b4 on 2026-09-14). Only a real FRU read through a BMC counts as a
+# sighting: the reservation MAC alone is not an occupant (et25b3, 116 resets,
+# 2026-09-11).
+OCCUPANT_RESET_MIN_S = int(os.environ.get("FLAX_POST_OCCUPANT_RESET_MIN_S", "600"))
+
+
+def _ident(serial, bmc_mac):
+    return (str(serial).strip(), str(bmc_mac or "").strip().lower())
+
+
+def occupant_change(prior_row, reads, now, run_owner=None) -> dict:
+    """Fields to merge into the slot row for this pass's FRU reads; {} = nothing.
+
+    reads: [(bmc_mac, serial)] from every BMC reservation on the port that
+    answered this pass. A reservation that did not answer is absent, so it can
+    neither trigger nor confirm a change.
+    run_owner: run_id -> (bmc_mac, serial) | None (state.run_owner), consulted
+    only for a row that has no `occupant` yet, to judge a latch written before
+    this existed."""
+    row = prior_row or {}
+    seen = []
+    for mac, serial in reads or []:
+        if serial and mac and _ident(serial, mac) not in seen:
+            seen.append(_ident(serial, mac))
+    if not seen:
+        return {}
+    occ = row.get("occupant") or None
+    if not occ:
+        run_id = (row.get("qual") or {}).get("run_id")
+        owner = run_owner(run_id) if (run_id and run_owner) else None
+        if owner and owner[0] and owner[1]:
+            since = (row.get("ladder") or {}).get("since")
+            occ = {"serial": owner[1], "bmc_mac": owner[0], "since": since, "last_read": since}
+        elif len(seen) == 1:
+            serial, mac = seen[0]
+            return {"occupant": {"serial": serial, "bmc_mac": mac, "since": now, "last_read": now},
+                    "occupant_candidate": None}
+        else:
+            return {}
+    stored = _ident(occ.get("serial"), occ.get("bmc_mac"))
+    if stored in seen:
+        return {"occupant": {"serial": stored[0], "bmc_mac": stored[1],
+                             "since": occ.get("since"), "last_read": now},
+                "occupant_candidate": None}
+    if len(seen) > 1:
+        log.warning("ipmi: occupant ambiguous, %d new identities answered in one pass: %s",
+                    len(seen), seen)
+        return {}
+    serial, mac = seen[0]
+    cand = row.get("occupant_candidate") or None
+    if not cand or _ident(cand.get("serial"), cand.get("bmc_mac")) != (serial, mac):
+        return {"occupant_candidate": {"serial": serial, "bmc_mac": mac, "first_read": now, "reads": 1}}
+    since = occ.get("since")
+    if since is not None and now - since < OCCUPANT_RESET_MIN_S:
+        log.info("ipmi: occupant reset to %s/%s deferred (occupant adopted %ds ago)",
+                 serial, mac, now - since)
+        return {"occupant_candidate": dict(cand, reads=int(cand.get("reads") or 1) + 1)}
+    return _occupant_reset_fields(row, occ, serial, mac, now)
+
+
+def _occupant_reset_fields(row, old, serial, mac, now) -> dict:
+    """Clear the previous blade's story and start a fresh ladder (spec §4)."""
+    from . import ladder as _ladder
+    born_at = old.get("last_read")
+    if born_at is None:
+        born_at = (row.get("ladder") or {}).get("since")
+    if born_at is None or born_at > now:
+        born_at = now
+    return {"done": {}, "qual": {}, "pop": {}, "power_last": None, "power_on": None,
+            "occupant": {"serial": serial, "bmc_mac": mac, "since": now, "last_read": now},
+            "occupant_candidate": None,
+            "ladder": _ladder.occupant_reset(born_at, now),
+            "ladder_reset_at": now, "ladder_reset_kind": "occupant", "ladder_reset_born_at": born_at}
+
+
 _LATCH_SLICES = ("done", "qual", "pop")
 # How long after the worker's own `chassis power on` an observed off->on is
 # still the ENGINE's. The power-on action itself (powertriage) can take the
