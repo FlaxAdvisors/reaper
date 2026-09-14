@@ -530,11 +530,17 @@ def clear_fields_for(prior_row, mac, power, now=None) -> dict:
     if not prior_row:
         return {}
     # The row's off reading belongs to the stamped occupant; a different BMC
-    # answering `on` is a new blade, which occupant_change owns (spec
-    # 2026-09-14-post-occupant-reset §5). A MAC mismatch only ever SUPPRESSES
-    # a reset here, never triggers one (et25b3).
-    occ_mac = (prior_row.get("occupant") or {}).get("bmc_mac")
-    if occ_mac and mac and str(occ_mac).strip().lower() != str(mac).strip().lower():
+    # answering `on` while that occupant still answered recently is a new blade,
+    # which occupant_change owns (spec 2026-09-14-post-occupant-reset §5). A stale
+    # occupant (not read for OCCUPANT_RESET_MIN_S: e.g. the successor is a
+    # Redfish-only board that never gives an identity read) keeps the human
+    # power-on reset, so an operator power cycle is never disabled. A MAC mismatch
+    # only ever SUPPRESSES a reset here, never triggers one (et25b3).
+    now = now if now is not None else time.time()
+    occ = prior_row.get("occupant") or {}
+    occ_mac, occ_read = occ.get("bmc_mac"), occ.get("last_read")
+    if (occ_mac and mac and str(occ_mac).strip().lower() != str(mac).strip().lower()
+            and occ_read is not None and now - occ_read <= OCCUPANT_RESET_MIN_S):
         return {}
     # The prior DEFINITE reading: an AMI-style BMC goes dark right after a
     # chassis power-on, so the lane reads off, then None for a minute, then
@@ -549,7 +555,6 @@ def clear_fields_for(prior_row, mac, power, now=None) -> dict:
     lad = prior_row.get("ladder") or {}
     if lad.get("power_on_pending"):
         return {}
-    now = now if now is not None else time.time()
     last_attempt = lad.get("last_power_attempt")
     if last_attempt is not None and abs(now - last_attempt) <= ENGINE_POWER_WINDOW_S:
         return {}
