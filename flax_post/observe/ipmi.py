@@ -400,6 +400,9 @@ def _process_blade(d, hosts, creds, ipmi_runner, ping, set_state, upsert_node, o
 # sighting: the reservation MAC alone is not an occupant (et25b3, 116 resets,
 # 2026-09-11).
 OCCUPANT_RESET_MIN_S = int(os.environ.get("FLAX_POST_OCCUPANT_RESET_MIN_S", "600"))
+# A candidate must be read again within this gap to count as consecutive, and a
+# reset waits until the stored blade has not answered for this gap (spec §3.2).
+OCCUPANT_CONFIRM_GAP_S = int(os.environ.get("FLAX_POST_OCCUPANT_CONFIRM_GAP_S", "120"))
 
 
 def _ident(serial, bmc_mac):
@@ -446,13 +449,22 @@ def occupant_change(prior_row, reads, now, run_owner=None) -> dict:
         return {}
     serial, mac = seen[0]
     cand = row.get("occupant_candidate") or None
+    fresh = {"serial": serial, "bmc_mac": mac, "first_read": now, "last_read": now, "reads": 1}
     if not cand or _ident(cand.get("serial"), cand.get("bmc_mac")) != (serial, mac):
-        return {"occupant_candidate": {"serial": serial, "bmc_mac": mac, "first_read": now, "reads": 1}}
+        return {"occupant_candidate": fresh}
+    last = cand.get("last_read", cand.get("first_read"))
+    if last is None or now - last > OCCUPANT_CONFIRM_GAP_S:
+        # not read again in time (its BMC went dark, or passes read nothing): start over
+        return {"occupant_candidate": fresh}
+    bumped = {"occupant_candidate": dict(cand, reads=int(cand.get("reads") or 1) + 1, last_read=now)}
+    stored_read = occ.get("last_read")
+    if stored_read is not None and now - stored_read <= OCCUPANT_CONFIRM_GAP_S:
+        return bumped          # the stored blade answered too recently to call it gone
     since = occ.get("since")
     if since is not None and now - since < OCCUPANT_RESET_MIN_S:
         log.info("ipmi: occupant reset to %s/%s deferred (occupant adopted %ds ago)",
                  serial, mac, now - since)
-        return {"occupant_candidate": dict(cand, reads=int(cand.get("reads") or 1) + 1)}
+        return bumped
     return _occupant_reset_fields(row, occ, serial, mac, now)
 
 
