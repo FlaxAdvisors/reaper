@@ -526,8 +526,15 @@ def clear_fields_for(prior_row, mac, power, now=None) -> dict:
     reconciles on the scalar, not on the slice).
 
     A DIFFERENT MAC on the port is deliberately NOT a reset (see gc.py; the
-    116-reset incident on et25b3, 2026-09-11)."""
+    116-reset incident on et25b3, 2026-09-11). An off reading stamped by a different occupant is not a transition at all (§5 of the 2026-09-14 occupant spec)."""
     if not prior_row:
+        return {}
+    # The row's off reading belongs to the stamped occupant; a different BMC
+    # answering `on` is a new blade, which occupant_change owns (spec
+    # 2026-09-14-post-occupant-reset §5). A MAC mismatch only ever SUPPRESSES
+    # a reset here, never triggers one (et25b3).
+    occ_mac = (prior_row.get("occupant") or {}).get("bmc_mac")
+    if occ_mac and mac and str(occ_mac).strip().lower() != str(mac).strip().lower():
         return {}
     # The prior DEFINITE reading: an AMI-style BMC goes dark right after a
     # chassis power-on, so the lane reads off, then None for a minute, then
@@ -550,6 +557,7 @@ def clear_fields_for(prior_row, mac, power, now=None) -> dict:
     out = {s: {} for s in _LATCH_SLICES}
     out["ladder"] = _ladder.human_reset(now)
     out["ladder_reset_at"] = now
+    out["ladder_reset_kind"] = "human"
     return out
 
 
