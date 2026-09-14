@@ -260,6 +260,10 @@ def probe_bmc_kind(ip, credentials, bmc_creds,
                     pn = _parse_fru_product_name(fru)
                 except Exception:
                     pass
+                if pn is None and ports.get("ipmi"):
+                    # Some Tioga Pass BMCs answer "Device not present" to the
+                    # on-BMC FRU read while LAN IPMI serves the same FRU 0.
+                    pn = _lan_fru_product_name(ip, bmc_creds, ipmi_runner)
                 return {"kind": "openbmc", "product_name": pn,
                         "creds_used": (credentials["obmcuser"],
                                        credentials["obmcpass"])}
@@ -297,6 +301,17 @@ def probe_bmc_kind(ip, credentials, bmc_creds,
                     "redfish_version": info.get("redfish_version")}
 
     return {"kind": "unknown", "product_name": None, "creds_used": None}
+
+
+def _lan_fru_product_name(ip, bmc_creds, ipmi_runner):
+    """Baseboard FRU product name over LAN IPMI, first cred pair that answers."""
+    for c in bmc_creds:
+        try:
+            fru = ipmi_runner(ip, c["bmcuser"], c["bmcpass"], ["fru", "print", "0"])
+        except Exception:
+            continue
+        return _parse_fru_product_name(fru)
+    return None
 
 
 def _default_redfish_probe(ip, redfish_creds, timeout=_REDFISH_TIMEOUT):
