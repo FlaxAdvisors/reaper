@@ -362,6 +362,10 @@ def _fault_notes(st) -> dict:
         # fw-gates is not a tile step: its note rides on the same Firmware step
         # the fault renders on.
         notes[fw_gate_fault_step(st) or fault["rung"]] = fault["reason"]
+    attempts = lad.get("bmc_ready_attempts") or []
+    if lad.get("rung") == "bmc-ready" and attempts and not fault:
+        notes["bmc-ready"] = "retry %d/%d: BMC not answering data reads (budget %ds)" % (
+            len(attempts), len(bmc_ready_retry_budgets()), bmc_ready_budget_s(len(attempts)))
     marks = lad.get("marks") or {}
     if marks.get("skipped"):
         if marks.get("kernel") is not None:
@@ -379,11 +383,14 @@ def _ladder_view(st) -> dict:
         return {}
     rung = lad.get("rung")
     marks = lad.get("marks") or {}
+    budget = (bmc_ready_budget_s(len(lad.get("bmc_ready_attempts") or [])) if rung == "bmc-ready"
+              else ladder_budget_s(rung) if rung else None)
     return {"rung": rung, "since": lad.get("since"),
-            "budget_s": ladder_budget_s(rung) if rung else None,
+            "budget_s": budget,
             "power_on_at": lad.get("power_on_at"),
             "marks": {k: v for k, v in marks.items() if k != "skipped"},
-            "skipped": marks.get("skipped"), "fault": lad.get("fault")}
+            "skipped": marks.get("skipped"), "fault": lad.get("fault"),
+            "attempts": lad.get("bmc_ready_attempts") or []}
 
 
 # Phases whose step maps are frozen into done.steps when a verdict lands
@@ -541,6 +548,10 @@ def _record(slot, c, st, settings, live_link, macs):
         # The IPMI lane's uncontended human-reset stamp; the slot worker
         # reconciles its cached ladder against it (observe/worker.RealDeps).
         "ladder_reset_at": st.get("ladder_reset_at"),
+        # Which reset the stamp is (ipmi.clear_fields_for = human,
+        # ipmi.occupant_change = occupant) and the occupant ladder's birth.
+        "ladder_reset_kind": st.get("ladder_reset_kind"),
+        "ladder_reset_born_at": st.get("ladder_reset_born_at"),
         "verdict": verdict,
         "launch_at": st.get("launch_at"),
         "fw_gates": fw_gates,
