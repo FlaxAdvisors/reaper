@@ -128,7 +128,9 @@ def _discover(rec, row, step, status):
                 ["after power-on", ("+" + _dur(p_on, mark)) if (mark and p_on) else ""],
                 ["board", ("%s %s" % (fru.get("board_mfg", ""), fru.get("product", ""))).strip() or "not read"],
                 ["FRU serial", fru.get("serial") or "not read"],
-                ["budget", "%s s" % blades.ladder_budget_s(step)]]
+                ["budget", "%s s" % blades.bmc_ready_budget_s(len(lad.get("bmc_ready_attempts") or []))],
+                ["retries", "%d of %d" % (len(lad.get("bmc_ready_attempts") or []),
+                                          len(blades.bmc_ready_retry_budgets()))]]
         notes.append("the BMC goes dark for 60-100 s after the chassis power-on and comes back in stages (ping before IPMI); "
                      "nothing that reads it (firmware probe, the agent's FRU/SEL/SDR stages, the population rules) starts before "
                      "it answers `ipmitool fru` with a board manufacturer and a serial")

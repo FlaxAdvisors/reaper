@@ -162,15 +162,27 @@ def _serial_from_fru(text):
 
 
 def _product_serial_from_fru(text):
-    """The FIRST non-empty "Product Serial" of an `ipmitool fru` dump (FRU 0, the
-    baseboard, prints first): the slot occupant's identity. No Chassis Serial
-    fallback (a lot number shared across blades) and never a Redfish serial
-    (SMBIOS placeholder, blank when off) — spec 2026-09-14-post-occupant-reset §3."""
-    for line in (text or "").splitlines():
-        if "Product Serial" in line and ":" in line:
-            v = line.split(":", 1)[1].strip()
-            if v:
-                return v
+    """The slot occupant's identity: the "Product Serial" of the Builtin FRU
+    Device (ID 0) block only. A dump whose ID 0 block is missing or carries no
+    Product Serial ("Device not present") yields None — never another device's
+    serial (the HPE 640SFP28 NIC FRU has its own Product Serial). Text with no
+    "FRU Device Description" headers at all (`fru print 0`, fixtures) is the
+    baseboard. No Chassis Serial fallback (a lot number shared across blades) and
+    never a Redfish serial — spec 2026-09-14-post-occupant-reset §3."""
+    lines = (text or "").splitlines()
+    if any(line.startswith("FRU Device Description") for line in lines):
+        block, inside = [], False
+        for line in lines:
+            if line.startswith("FRU Device Description"):
+                inside = "(ID 0)" in line
+            elif inside:
+                block.append(line)
+        lines = block
+    for line in lines:
+        if ":" in line:
+            k, v = line.split(":", 1)
+            if k.strip() == "Product Serial" and v.strip():
+                return v.strip()
     return None
 
 
@@ -447,7 +459,12 @@ def occupant_change(prior_row, reads, now, run_owner=None) -> dict:
         owner = run_owner(run_id) if (run_id and run_owner) else None
         if owner and owner[0] and owner[1]:
             since = (row.get("ladder") or {}).get("since")
-            occ = {"serial": owner[1], "bmc_mac": owner[0], "since": since, "last_read": since}
+            # Trusted for its serial only (final review I2): artifacts record the
+            # row's bmc_mac column, which can name the other reservation on a
+            # two-reservation port. The same serial read now is the same blade.
+            same = next((i for i in seen if i[0] == str(owner[1]).strip()), None)
+            occ = {"serial": owner[1], "bmc_mac": same[1] if same else owner[0],
+                   "since": since, "last_read": since}
         elif len(seen) == 1:
             serial, mac = seen[0]
             return {"occupant": {"serial": serial, "bmc_mac": mac, "since": now, "last_read": now},
@@ -526,22 +543,13 @@ def clear_fields_for(prior_row, mac, power, now=None) -> dict:
     reconciles on the scalar, not on the slice).
 
     A DIFFERENT MAC on the port is deliberately NOT a reset (see gc.py; the
-    116-reset incident on et25b3, 2026-09-11). An off reading stamped by a different occupant is not a transition at all (§5 of the 2026-09-14 occupant spec)."""
+    116-reset incident on et25b3, 2026-09-11). An off reading left by a previous
+    occupant still counts: occupant_change's reset, stamped later, overrides the
+    human one and nulls power_on/power_last (spec §5 as amended by the
+    2026-09-14 final review)."""
     if not prior_row:
         return {}
-    # The row's off reading belongs to the stamped occupant; a different BMC
-    # answering `on` while that occupant still answered recently is a new blade,
-    # which occupant_change owns (spec 2026-09-14-post-occupant-reset §5). A stale
-    # occupant (not read for OCCUPANT_RESET_MIN_S: e.g. the successor is a
-    # Redfish-only board that never gives an identity read) keeps the human
-    # power-on reset, so an operator power cycle is never disabled. A MAC mismatch
-    # only ever SUPPRESSES a reset here, never triggers one (et25b3).
     now = now if now is not None else time.time()
-    occ = prior_row.get("occupant") or {}
-    occ_mac, occ_read = occ.get("bmc_mac"), occ.get("last_read")
-    if (occ_mac and mac and str(occ_mac).strip().lower() != str(mac).strip().lower()
-            and occ_read is not None and now - occ_read <= OCCUPANT_RESET_MIN_S):
-        return {}
     # The prior DEFINITE reading: an AMI-style BMC goes dark right after a
     # chassis power-on, so the lane reads off, then None for a minute, then
     # on. The strict off->on test missed that (et24b3 2026-09-12, its old fail

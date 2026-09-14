@@ -67,7 +67,12 @@ BMC_READY_RETRY_BUDGETS_S = (600, 720, 840)
 def bmc_ready_retry_budgets():
     env = os.environ.get("FLAX_POST_LADDER_BMC_READY_RETRIES_S")
     if env:
-        return tuple(int(x) for x in env.split(",") if x.strip())
+        try:
+            parsed = tuple(int(x) for x in env.split(",") if x.strip())
+        except ValueError:
+            parsed = ()
+        if parsed:
+            return parsed
     return BMC_READY_RETRY_BUDGETS_S
 
 
