@@ -161,6 +161,19 @@ def _serial_from_fru(text):
     return None
 
 
+def _product_serial_from_fru(text):
+    """The FIRST non-empty "Product Serial" of an `ipmitool fru` dump (FRU 0, the
+    baseboard, prints first): the slot occupant's identity. No Chassis Serial
+    fallback (a lot number shared across blades) and never a Redfish serial
+    (SMBIOS placeholder, blank when off) — spec 2026-09-14-post-occupant-reset §3."""
+    for line in (text or "").splitlines():
+        if "Product Serial" in line and ":" in line:
+            v = line.split(":", 1)[1].strip()
+            if v:
+                return v
+    return None
+
+
 def _parse_power(text):
     o = text.lower()
     return "on" if "is on" in o else ("off" if "is off" in o else "unknown")
@@ -270,12 +283,13 @@ def probe_blade(ip, creds, ipmi_runner, redfish_client=None):
     not read (serial, power). IPMI stays the primary path; Redfish is a pure
     fallback, so a working IPMI board never touches it (no regression)."""
     result = {"serial": None, "power_on": None, "watts": None, "sdr": {},
-              "sel": [], "fru": {}}
+              "sel": [], "fru": {}, "product_serial": None}
     for c in creds:
         u, p = c["bmcuser"], c["bmcpass"]
         try:
             fru_txt = ipmi_runner(ip, u, p, ["fru"])
             result["serial"] = _serial_from_fru(fru_txt)
+            result["product_serial"] = _product_serial_from_fru(fru_txt)
             result["fru"] = _parse_fru(fru_txt)
         except Exception:
             continue
@@ -359,7 +373,8 @@ def _process_blade(d, hosts, creds, ipmi_runner, ping, set_state, upsert_node, o
     host_pinged = bool(host_ip and ping(host_ip))
     rc = make_redfish(bmc_ip) if (make_redfish and bmc_ip) else None
     fields = probe_blade(bmc_ip, creds, ipmi_runner, redfish_client=rc) if bmc_ip else {
-        "serial": None, "power_on": None, "watts": None, "sdr": {}, "sel": [], "fru": {}}
+        "serial": None, "power_on": None, "watts": None, "sdr": {}, "sel": [], "fru": {},
+        "product_serial": None}
     # watts/sdr both come from the one power+sdr session: a timeout on that call
     # (the slow leg — SDR_TIMEOUT_SECS) leaves them at their None/{} defaults. Omit
     # them from this pass's write rather than merging None/{} over a previously-good
@@ -391,6 +406,7 @@ def _process_blade(d, hosts, creds, ipmi_runner, ping, set_state, upsert_node, o
                 sdr=fields["sdr"], sel=fields["sel"], keys=keys or {})
         except Exception:
             log.exception("ipmi: work-record write failed for %s", port)
+    return port, d.get("mac"), fields.get("product_serial")
 
 
 # Occupant identity (spec 2026-09-14-post-occupant-reset §3/§4). A post_state
@@ -562,7 +578,8 @@ def _process_blade_power(d, creds, ipmi_runner, ping, set_state, switch=SWITCH, 
 
 def run_once(devices=None, creds=None, ipmi_runner=None, ping=None,
              set_state=None, upsert_node=None, settings=None, workers=None,
-             record_observation=None, switch=None, make_redfish=None) -> None:
+             record_observation=None, switch=None, make_redfish=None,
+             prior=None, run_owner=None) -> None:
     """One pass over the post BMCs, FANNED OUT across a worker pool.
 
     Each BMC is an independent IPMI session, so probing 48 blades sequentially
@@ -577,6 +594,17 @@ def run_once(devices=None, creds=None, ipmi_runner=None, ping=None,
         ipmi_runner = _default_ipmi_runner
     if ping is None:
         ping = _default_ping
+    # The occupant check (spec 2026-09-14-post-occupant-reset §3) needs the
+    # rows as they were before this pass. Production reads them here; callers
+    # that inject their own writers pass `prior` or get no occupant check.
+    if prior is None and set_state is None:
+        try:
+            prior = state.read_state()
+        except Exception:
+            log.exception("ipmi: could not read prior state; occupant check skipped this pass")
+            prior = None
+    if run_owner is None:
+        run_owner = state.run_owner
     if set_state is None:
         set_state = state.set_state
     if upsert_node is None:
@@ -601,18 +629,51 @@ def run_once(devices=None, creds=None, ipmi_runner=None, ping=None,
         return
 
     def work(d):
-        _process_blade(d, hosts, creds, ipmi_runner, ping, set_state, upsert_node, order_no,
-                       keys=keys, record_observation=record_observation, switch=switch,
-                       make_redfish=make_redfish)
+        return _process_blade(d, hosts, creds, ipmi_runner, ping, set_state, upsert_node, order_no,
+                              keys=keys, record_observation=record_observation, switch=switch,
+                              make_redfish=make_redfish)
 
     n = DEFAULT_WORKERS if workers is None else workers
     n = max(1, min(n, len(bmcs)))
     if n == 1:
-        for d in bmcs:
-            work(d)
+        results = [work(d) for d in bmcs]
     else:
         with ThreadPoolExecutor(max_workers=n) as ex:
-            list(ex.map(work, bmcs))
+            results = list(ex.map(work, bmcs))
+    if prior is not None:
+        apply_occupants(results, prior, set_state, run_owner, time.time(), switch=switch)
+
+
+def apply_occupants(results, prior, set_state, run_owner, now, switch=SWITCH) -> None:
+    """One occupant decision per port from every reservation's read this pass.
+    Per-reservation decisions would race: the threads share `prior`, so one
+    could confirm a candidate while another read the stored blade (spec §3)."""
+    by_port = {}
+    for res in results:
+        if not res:
+            continue
+        port, mac, serial = res
+        reads = by_port.setdefault(port, [])
+        if mac and serial:
+            reads.append((mac, serial))
+    for port, reads in by_port.items():
+        row = prior.get(port)
+        try:
+            fields = occupant_change(row, reads, now, run_owner=run_owner)
+        except Exception:
+            log.exception("ipmi: occupant check failed for %s", port)
+            continue
+        if not fields:
+            continue
+        if fields.get("ladder_reset_kind") == "occupant":
+            old = (row or {}).get("occupant") or {}
+            log.info("ipmi: %s occupant reset %s/%s -> %s/%s (born_at %s)", port,
+                     old.get("serial"), old.get("bmc_mac"), fields["occupant"]["serial"],
+                     fields["occupant"]["bmc_mac"], fields["ladder_reset_born_at"])
+        try:
+            set_state(port, switch=switch, **fields)
+        except Exception:
+            log.exception("ipmi: failed to write occupant for %s", port)
 
 
 def run_power_once(devices=None, creds=None, ipmi_runner=None, ping=None,

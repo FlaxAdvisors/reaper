@@ -153,6 +153,22 @@ def get_artifact(bmc_mac, run_id, stage, name) -> "str | None":
     return rows[0][0] if rows else None
 
 
+def run_owner(run_id) -> "tuple | None":
+    """(bmc_mac, serial) of the blade whose artifacts carry `run_id`, or None.
+    The slot row's latch names a run but not its blade; the occupant check
+    (observe/ipmi.occupant_change) uses this once for rows stamped before
+    `occupant` existed."""
+    if not run_id:
+        return None
+    with get_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT bmc_mac, serial FROM post_artifact "
+            "WHERE run_id = %s AND serial IS NOT NULL LIMIT 1",
+            (run_id,),
+        ).fetchone()
+    return (row[0], row[1]) if row else None
+
+
 def purge_run(bmc_mac, run_id) -> None:
     """Delete all evidence rows for one abandoned qualification run (re-run purge)."""
     with get_pool().connection() as conn:
