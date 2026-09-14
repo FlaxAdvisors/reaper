@@ -11,7 +11,7 @@ lane writes human_reset) or by the hold-file gesture (touch, then remove).
 import copy
 import os
 
-from ..blades import BOOT_MARKER_RUNGS, RUNGS, ladder_budget_s
+from ..blades import BOOT_MARKER_RUNGS, RUNGS, bmc_ready_budget_s, bmc_ready_retry_budgets, ladder_budget_s
 
 # Budgets live in blades.LADDER_BUDGET_S (the tile shows them); see budget_s.
 POWER_COOLDOWN_S = int(os.environ.get("FLAX_POST_LADDER_POWER_COOLDOWN_S", "900"))
@@ -42,6 +42,16 @@ def human_reset(now) -> dict:
     """A human powered the blade on: restart as if first seen, past power-on."""
     lad = new_ladder(now)
     lad.update(rung="tftp-seen", power_on_at=now, human_power_on=True)
+    return lad
+
+
+def occupant_reset(born_at, now) -> dict:
+    """A different blade answers in the slot (ipmi.occupant_change): start as if
+    first seen, born when the previous blade last answered there, so the boot
+    proof can credit a PXE boot that ran before the new BMC answered (et10b4
+    2026-09-14). A missing or future birth is `now`."""
+    lad = new_ladder(now)
+    lad["born_at"] = born_at if (born_at is not None and born_at <= now) else now
     return lad
 
 
@@ -243,8 +253,21 @@ def advance(ladder, snap, evidence, now):
             lad["bmc_fru"] = dict(data) if isinstance(data, dict) else {}
             _pass(lad, "fw-gates", now)
             acts.append("probe-fwd")            # refresh the BMC firmware row now that it answers
-        elif _over_budget(lad, rung, lad["since"], now):
-            lad = fault(lad, rung, "BMC not answering data reads %ds after ssh" % budget_s(rung), now)
+            return lad, acts
+        # Ruling 2026-09-14: an expired wait restarts with the next retry budget
+        # (et25b2 faulted at 600 s and answered minutes later); only the last
+        # expiry faults.
+        attempts = list(lad.get("bmc_ready_attempts") or [])
+        if now - lad["since"] > bmc_ready_budget_s(len(attempts)):
+            waited = now - lad["since"]
+            if len(attempts) < len(bmc_ready_retry_budgets()):
+                attempts.append({"at": now, "waited_s": round(waited, 1)})
+                lad["bmc_ready_attempts"] = attempts
+                lad["since"] = now
+            else:
+                total = sum(a.get("waited_s") or 0 for a in attempts) + waited
+                lad = fault(lad, rung, "BMC not answering data reads after %d attempts (%ds)"
+                            % (len(attempts) + 1, total), now)
         return lad, acts
 
     if rung == "fw-gates":

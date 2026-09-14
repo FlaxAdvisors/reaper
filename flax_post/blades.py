@@ -56,6 +56,29 @@ def ladder_budget_s(rung):
     if env:
         return int(env)
     return LADDER_BUDGET_S.get(rung)
+
+
+# bmc-ready retries (ruling 2026-09-14, spec post-occupant-reset §6): when the
+# first budget expires the rung restarts its wait with each of these budgets in
+# turn, then faults. Env: FLAX_POST_LADDER_BMC_READY_RETRIES_S="600,720,840".
+BMC_READY_RETRY_BUDGETS_S = (600, 720, 840)
+
+
+def bmc_ready_retry_budgets():
+    env = os.environ.get("FLAX_POST_LADDER_BMC_READY_RETRIES_S")
+    if env:
+        return tuple(int(x) for x in env.split(",") if x.strip())
+    return BMC_READY_RETRY_BUDGETS_S
+
+
+def bmc_ready_budget_s(attempts):
+    """The bmc-ready budget in effect after `attempts` restarts (0 = the first wait)."""
+    if not attempts:
+        return ladder_budget_s("bmc-ready")
+    retries = bmc_ready_retry_budgets()
+    return retries[min(attempts, len(retries)) - 1]
+
+
 _RUNG_INDEX = {r: i for i, r in enumerate(RUNGS)}
 
 DISCOVER_STEPS = (
