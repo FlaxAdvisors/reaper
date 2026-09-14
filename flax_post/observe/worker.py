@@ -186,6 +186,37 @@ def _ssh_ok(ip) -> bool:
     return rc == 0
 
 
+def _ssh_boot(ip, born_at) -> dict:
+    """host-ssh evidence for a blade that was already on at first sight: ssh
+    works, the running kernel's boot time on the BANG clock (now - uptime; the
+    host clock is never trusted), and every boot-log time since the ladder was
+    born. The ladder decides whether that proves the boot."""
+    if not ip:
+        return {"ok": False}
+    from ..biosd import creds as _creds, driver as _driver
+    user, pw = _creds.load_host_creds()
+    t0 = time.time()
+    rc, out = _driver.run_over_ssh(user, pw, ip, "cat /proc/uptime", timeout=30)
+    t1 = time.time()
+    if rc != 0:
+        return {"ok": False}
+    ev = {"ok": True, "kernel_boot": _kernel_boot(out, (t0 + t1) / 2)}
+    ev.update(bootlog.boot_times(bootlog.DNSMASQ_LOG, bootlog.NGINX_ACCESS_LOG, ip, born_at))
+    return ev
+
+
+def _kernel_boot(out, at):
+    """`at` minus the uptime in a `/proc/uptime` line ("3600.50 7100.25"), or None."""
+    for line in (out or "").splitlines():
+        parts = line.split()
+        if len(parts) == 2:
+            try:
+                return at - float(parts[0])
+            except ValueError:
+                pass
+    return None
+
+
 def _bmc_data(bmc_ip) -> "dict | None":
     """bmc-ready evidence: ping + a FRU read with the post BMC credentials
     (ipmi.bmc_data_check). None when the BMC is not back yet."""
@@ -308,6 +339,8 @@ class RealDeps:
             return _ping(host_ip)
         if kind == "ssh":
             return bool(host_ip) and _ssh_ok(host_ip)
+        if kind == "ssh-boot":
+            return _ssh_boot(host_ip, (lad or {}).get("born_at"))
         if kind == "bmcdata":
             return _bmc_data(rec.get("bmc_ip"))
         return None

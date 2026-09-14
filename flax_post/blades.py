@@ -30,6 +30,7 @@ RUNGS = ("bmc-pinged", "power-on", "tftp-seen", "ipxe-seen", "host-leased",
          "live-iso-seen", "host-pinged", "host-ssh", "bmc-ready", "fw-gates",
          "agent-reachable", "qualify", "done")
 BOOT_MARKER_RUNGS = ("tftp-seen", "ipxe-seen", "live-iso-seen")
+_BOOT_MARK_KEY = {"tftp-seen": "tftp", "ipxe-seen": "ipxe", "live-iso-seen": "iso"}
 # Rung budgets (seconds); None = never times out. Lives here (not in
 # observe/ladder.py) so the tile can show "budget N s" without importing the
 # machine, which imports this module. Env: FLAX_POST_LADDER_<RUNG>_S.
@@ -86,10 +87,13 @@ def _ladder_step_status(lad: dict, step: str) -> str:
     fault = lad.get("fault") or {}
     if fault.get("rung") == step:
         return "fault"
-    if step in BOOT_MARKER_RUNGS and (lad.get("marks") or {}).get("skipped") and ri < ci:
-        # Evidence never collected (power already on when the worker looked):
-        # `unknown`, not `skip`. It does not hold the phase, but it is not a
-        # completed step either, so the bar never reads green on it.
+    marks = lad.get("marks") or {}
+    if step in BOOT_MARKER_RUNGS and marks.get("skipped") and ri < ci:
+        # Power already on when the worker looked: `done` only when the boot was
+        # proven at ssh (the ladder then wrote this marker), else `unknown`, not
+        # `skip`. Unknown does not hold the phase, but the bar never reads green on it.
+        if marks.get(_BOOT_MARK_KEY[step]) is not None:
+            return "done"
         return "unknown"
     if ri < ci:
         return "done"
@@ -335,8 +339,12 @@ def _fault_notes(st) -> dict:
         # fw-gates is not a tile step: its note rides on the same Firmware step
         # the fault renders on.
         notes[fw_gate_fault_step(st) or fault["rung"]] = fault["reason"]
-    if (lad.get("marks") or {}).get("skipped"):
-        notes["tftp-seen"] = "skipped: " + lad["marks"]["skipped"]
+    marks = lad.get("marks") or {}
+    if marks.get("skipped"):
+        if marks.get("kernel") is not None:
+            notes["tftp-seen"] = "power already on; boot proven at ssh: kernel boot between the iPXE and ISO fetches"
+        else:
+            notes["tftp-seen"] = "skipped: " + marks["skipped"]
     return notes
 
 

@@ -91,6 +91,36 @@ def _scan(path, since, match, ts_of, max_bytes):
     return None
 
 
+def _collect(path, since, match, ts_of, max_bytes):
+    out = set()
+    for line in _tail_lines(path, max_bytes=max_bytes):
+        ts = ts_of(line)
+        if ts is None:
+            continue
+        if ts < since:
+            break
+        if match(line):
+            out.add(ts)
+    return sorted(out)
+
+
+def _dnsmasq_ts(line):
+    return _syslog_ts(line, time.time())
+
+
+def _tftp_match(host_ip):
+    tok = _ip_token(host_ip)
+    return lambda line: " sent /" in line and " to " in line and tok.search(line.rsplit(" to ", 1)[-1]) is not None
+
+
+def _ipxe_match(host_ip):
+    return lambda line: line.startswith(host_ip + " ") and _IPXE_RE.search(line) is not None and "iPXE" in line
+
+
+def _iso_match(host_ip):
+    return lambda line: line.startswith(host_ip + " ") and _ISO_NEEDLE in line
+
+
 def tftp_seen(path, host_ip, since, *, max_bytes=_MAX_BYTES):
     """Timestamp of the first dnsmasq-tftp `sent /<file> to <host ip>` line
     after `since`, or None.
@@ -101,20 +131,20 @@ def tftp_seen(path, host_ip, since, *, max_bytes=_MAX_BYTES):
     site's snponly.efi). A tighter match would fault a blade that in fact
     booted. `host_ip` still matches as a whole token, and only in the line's
     destination half."""
-    tok = _ip_token(host_ip)
-    def match(line):
-        return " sent /" in line and " to " in line and tok.search(line.rsplit(" to ", 1)[-1]) is not None
-    return _scan(path, since, match, lambda ln: _syslog_ts(ln, time.time()), max_bytes)
+    return _scan(path, since, _tftp_match(host_ip), _dnsmasq_ts, max_bytes)
 
 
 def ipxe_seen(path, host_ip, since, *, max_bytes=_MAX_BYTES):
-    def match(line):
-        return line.startswith(host_ip + " ") and _IPXE_RE.search(line) \
-            and "iPXE" in line
-    return _scan(path, since, match, _nginx_ts, max_bytes)
+    return _scan(path, since, _ipxe_match(host_ip), _nginx_ts, max_bytes)
 
 
 def iso_seen(path, host_ip, since, *, max_bytes=_MAX_BYTES):
-    def match(line):
-        return line.startswith(host_ip + " ") and _ISO_NEEDLE in line
-    return _scan(path, since, match, _nginx_ts, max_bytes)
+    return _scan(path, since, _iso_match(host_ip), _nginx_ts, max_bytes)
+
+
+def boot_times(dnsmasq_path, nginx_path, host_ip, since, *, max_bytes=_MAX_BYTES) -> dict:
+    """Every tftp / iPXE / ISO timestamp for `host_ip` at or after `since`,
+    ascending and one per second, from the same bounded tail reads."""
+    return {"tftp": _collect(dnsmasq_path, since, _tftp_match(host_ip), _dnsmasq_ts, max_bytes),
+            "ipxe": _collect(nginx_path, since, _ipxe_match(host_ip), _nginx_ts, max_bytes),
+            "iso": _collect(nginx_path, since, _iso_match(host_ip), _nginx_ts, max_bytes)}

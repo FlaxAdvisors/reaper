@@ -111,11 +111,15 @@ def _discover(rec, row, step, status):
                "iso": "nginx access log (live ISO fetched)"}[key]
         mark = marks.get(key)
         rows = [["seen at", _t(mark) or "not seen"],
-                ["after power-on", ("+" + _dur(p_on, mark)) if (mark and p_on) else ""],
+                ["after power-on", ("+" + _dur(p_on, mark)) if (mark and p_on and mark >= p_on) else ""],
                 ["evidence", src], ["budget", "%s s" % blades.ladder_budget_s(step)]]
         if status == "unknown":
             notes.append("the blade was already on when the worker first looked (observe restart, fault cleared by hand, "
                          "or an operator power-on): this boot's markers were never collected. Power-cycle to collect them.")
+        elif mark and marks.get("kernel"):
+            notes.append("the blade was already on when the worker first looked; this boot was proven at ssh: the host "
+                         "kernel booted at %s, between the iPXE and ISO fetches seen after the ladder started"
+                         % _t(marks["kernel"]))
     elif step == "bmc-ready":
         fru = lad.get("bmc_fru") or {}
         mark = marks.get("bmcready")

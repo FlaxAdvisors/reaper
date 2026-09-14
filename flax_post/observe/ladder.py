@@ -34,7 +34,7 @@ def budget_s(rung):
 
 
 def new_ladder(now) -> dict:
-    return {"rung": "bmc-pinged", "since": now, "power_on_at": None,
+    return {"rung": "bmc-pinged", "since": now, "born_at": now, "power_on_at": None,
             "power_on_pending": False, "marks": {}, "fault": None, "probe_calls": {}}
 
 
@@ -55,7 +55,42 @@ def fault(ladder, rung, reason, now) -> dict:
 def evidence_needed(ladder):
     if not ladder or ladder.get("fault"):
         return None
+    if ladder.get("rung") == "host-ssh" and _needs_boot_proof(ladder):
+        return "ssh-boot"
     return _EVIDENCE.get(ladder.get("rung"))
+
+
+# Boot markers of one PXE boot sit 67-74 s apart (tftp -> iPXE -> ISO, every
+# boot on bang-gouda 2026-09-14); anything wider is a different or broken boot.
+BOOT_PROOF_BOUND_S = 120
+
+
+def _needs_boot_proof(lad) -> bool:
+    """Already on at first sight, with a birth time to bound the log search.
+    Ladders written before born_at existed keep plain ssh (markers unknown)."""
+    return bool((lad.get("marks") or {}).get("skipped")) and lad.get("born_at") is not None
+
+
+def _prove_boot(born_at, times, kernel_boot) -> "dict | None":
+    """{tftp, ipxe, iso, kernel} when the running kernel came from a PXE boot
+    logged after born_at, else None. Newest iPXE since birth; its tftp within
+    BOOT_PROOF_BOUND_S before; its ISO within BOOT_PROOF_BOUND_S after; and the
+    kernel booted between that iPXE and ISO fetch (an older boot's pair cannot
+    bracket a kernel that booted later)."""
+    if kernel_boot is None:
+        return None
+    ipxes = [t for t in times.get("ipxe") or [] if t >= born_at]
+    if not ipxes:
+        return None
+    ipxe = max(ipxes)
+    tftps = [t for t in times.get("tftp") or [] if born_at <= t <= ipxe and ipxe - t <= BOOT_PROOF_BOUND_S]
+    isos = [t for t in times.get("iso") or [] if ipxe <= t <= ipxe + BOOT_PROOF_BOUND_S]
+    if not tftps or not isos:
+        return None
+    iso = min(isos)
+    if not ipxe <= kernel_boot <= iso:
+        return None
+    return {"tftp": max(tftps), "ipxe": ipxe, "iso": iso, "kernel": kernel_boot}
 
 
 IDLE_INTERVAL_S = 15
@@ -182,7 +217,13 @@ def advance(ladder, snap, evidence, now):
         return lad, acts
 
     if rung == "host-ssh":
-        if ev.get("ssh"):
+        boot = ev.get("ssh-boot")
+        boot = boot if isinstance(boot, dict) else None
+        if ev.get("ssh") or (boot and boot.get("ok")):
+            if boot and lad.get("born_at") is not None:
+                proof = _prove_boot(lad["born_at"], boot, boot.get("kernel_boot"))
+                if proof:
+                    lad["marks"].update(proof)
             lad["marks"]["ssh"] = now
             _pass(lad, "bmc-ready", now)
             acts += ["unclaim", "probe-biosd", "probe-nicd"]
