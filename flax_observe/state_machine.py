@@ -167,6 +167,18 @@ def _secs_since(iso_ts):
     return (datetime.datetime.utcnow() - then).total_seconds()
 
 
+# A confirmed kind is cached per chassis, but a missing FRU product_name (a
+# timed-out read) is retried, no more often than this, so it cannot latch forever.
+# Redfish is excluded: its product_name is often absent by design.
+PRODUCT_NAME_RETRY_SECS = 300
+
+
+def _product_name_retry_due(cache):
+    return (cache.get("kind") in ("openbmc", "traditional")
+            and not cache.get("product_name")
+            and _secs_since(cache.get("probed_at")) >= PRODUCT_NAME_RETRY_SECS)
+
+
 # ---------------------------------------------------------------------------
 # State var helpers
 # ---------------------------------------------------------------------------
@@ -694,11 +706,13 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
         # recovered BMC re-confirms).
         if (_prior_cache
                 and _prior_cache.get("for_mac") == mac
-                and _prior_cache.get("kind") in CONFIRMED_BMC_KINDS):
+                and _prior_cache.get("kind") in CONFIRMED_BMC_KINDS
+                and not _product_name_retry_due(_prior_cache)):
             probe = {"kind": _prior_cache.get("kind"),
                      "product_name": _prior_cache.get("product_name"),
                      "creds_used": _prior_cache.get("creds_used"),
-                     "redfish_version": _prior_cache.get("redfish_version")}
+                     "redfish_version": _prior_cache.get("redfish_version"),
+                     "probed_at": _prior_cache.get("probed_at")}
             bmc_probe_by_mac[mac] = probe
             return probe["kind"]
         target, _is_ll = reach_for_mac(
@@ -708,8 +722,9 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
             probe = {"kind": "unknown", "product_name": None,
                      "creds_used": None}
         else:
-            probe = _probe_bmc_kind(target, credentials, bmc_creds,
-                                    redfish_creds=redfish_creds)
+            probe = dict(_probe_bmc_kind(target, credentials, bmc_creds,
+                                         redfish_creds=redfish_creds))
+        probe["probed_at"] = _ts_now()
         bmc_probe_by_mac[mac] = probe
         return probe.get("kind")
 
@@ -764,6 +779,7 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
             "creds_used": _probe.get("creds_used"),
             "product_name": _probe.get("product_name"),
             "redfish_version": _probe.get("redfish_version"),
+            "probed_at": _probe.get("probed_at"),
             "for_mac": verdict.bmc_mac,
         }
 
@@ -892,6 +908,7 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
             cache is None
             or mac_changed
             or cache.get("kind") == "unknown"
+            or _product_name_retry_due(cache)
         )
         # Cache coherence with the role-confirmation gather above: if THIS
         # bmc_mac was already probed in this very cycle (its probe result is in
@@ -910,6 +927,7 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
                      "creds_used": probe["creds_used"],
                      "product_name": probe.get("product_name"),
                      "redfish_version": probe.get("redfish_version"),
+                     "probed_at": _ts_now(),
                      "for_mac": bmc_mac}
             port_state["bmc_kind_cached"] = cache
             port_state["bmc_power"] = "0 W"

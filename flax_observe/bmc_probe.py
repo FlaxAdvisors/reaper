@@ -40,6 +40,15 @@ log = logging.getLogger("flax-observe.bmc_probe")
 SSH_KNOWN_HOSTS = "/opt/flax/var/ssh/known_hosts"
 SSH_TIMEOUT_SECS = 8
 
+# `fru print 0` reads only the baseboard FRU (Builtin FRU Device, ID 0), ~1 s.
+# A bare `ipmitool fru` also walks the NIC and M.2-carrier FRUs: 5-9+ s on Tioga
+# Pass, past SSH_TIMEOUT_SECS, so the read timed out and product_name came back None.
+_FRU_CHAIN = ("ipmitool fru print 0 2>/dev/null"
+              " || cat /run/fru 2>/dev/null"
+              " || /usr/local/fbpackages/fruid/fruid-util iom 2>/dev/null"
+              " || weutil 2>/dev/null"
+              " || true")
+
 # Redfish identification transport. BMCs ship self-signed certs + legacy
 # ciphers, so verification is off and SECLEVEL is lowered -- identical to
 # flax_post.fwd.redfish / flax_reconcile.bmc_reset. Bounded timeout: the
@@ -247,11 +256,7 @@ def probe_bmc_kind(ip, credentials, bmc_creds,
                 try:
                     fru = ssh_runner(
                         ip, credentials["obmcuser"], credentials["obmcpass"],
-                        "ipmitool fru 2>/dev/null"
-                        " || cat /run/fru 2>/dev/null"
-                        " || /usr/local/fbpackages/fruid/fruid-util iom 2>/dev/null"
-                        " || weutil 2>/dev/null"
-                        " || true")
+                        _FRU_CHAIN)
                     pn = _parse_fru_product_name(fru)
                 except Exception:
                     pass
@@ -432,18 +437,12 @@ def chassis_serial_traditional(ip, creds_pair):
 def chassis_serial_openbmc(ip, creds_pair):
     """ssh + FRU chain -> Product/Chassis Serial.
 
-    Tries the same chain as probe_bmc_kind: ipmitool fru → /run/fru →
+    Tries the same chain as probe_bmc_kind: ipmitool fru print 0 → /run/fru →
     fruid-util iom → weutil (Wedge100s/Wedge400).
     """
     try:
         out = _default_ssh_runner(
-            ip, creds_pair[0], creds_pair[1],
-            "ipmitool fru 2>/dev/null"
-            " || cat /run/fru 2>/dev/null"
-            " || /usr/local/fbpackages/fruid/fruid-util iom 2>/dev/null"
-            " || weutil 2>/dev/null"
-            " || true",
-        )
+            ip, creds_pair[0], creds_pair[1], _FRU_CHAIN)
     except Exception:
         return None
     return _serial_from_fru(out)
