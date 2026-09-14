@@ -191,7 +191,7 @@ apply_flax_post_image_tag: "0.9.153"  # 0.9.153 = DIMM blocklist (built-in: Sams
 # 0.9.123) and the role defaults lagged too, so a routine apply could move a
 # service by accident. One tag for the whole bundle; bump them together.
 apply_flax_classify_image_tag: "0.9.132"  # LIVE tag; 0.9.133/0.9.134 carry only post changes and were not rolled to core (a flax_stack roll bounces postgres)
-apply_flax_observe_image_tag: "0.9.132"  # LIVE tag; 0.9.133/0.9.134 carry only post changes and were not rolled to core (a flax_stack roll bounces postgres)
+apply_flax_observe_image_tag: "0.9.154"  # 0.9.154 = FRU read via `ipmitool fru print 0` (the full walk timed out, product_name stuck unknown) + retry a missing product_name every 300 s; observe only, other core services stay on 0.9.132
 apply_flax_reconcile_image_tag: "0.9.132"  # LIVE tag; 0.9.133/0.9.134 carry only post changes and were not rolled to core (a flax_stack roll bounces postgres)
 apply_flax_switch_sense_image_tag: "0.9.132"  # LIVE tag; 0.9.133/0.9.134 carry only post changes and were not rolled to core (a flax_stack roll bounces postgres)
 apply_flax_discover_image_tag: "0.9.132"  # LIVE tag; 0.9.133/0.9.134 carry only post changes and were not rolled to core (a flax_stack roll bounces postgres)
