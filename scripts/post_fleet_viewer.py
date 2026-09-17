@@ -91,10 +91,10 @@ def _read_json(path):
     return data if isinstance(data, dict) else {}
 
 
-def _cached(key, fn):
+def _cached(key, fn, ttl=None):
     with _cache_lock:
         entry = _cache.get(key)
-        if entry and time.time() - entry[0] < CACHE_TTL:
+        if entry and time.time() - entry[0] < (CACHE_TTL if ttl is None else ttl):
             return entry[1]
     try:
         value = fn()
@@ -220,6 +220,45 @@ def fetch_artifact(aid):
     return rows[0]
 
 
+ART_SEARCH_TTL = 30.0   # a content scan is ~1.5s over ~115MB; don't redo it every 5s poll
+ART_HITS_PER_NODE = 3   # newest matching artifacts linked per blade; the rest are counted
+
+
+def fetch_artifact_hits(term):
+    """{bmc_mac: {"count": n, "hits": [{id, stage, name}, ...]}} for every blade
+    with an artifact whose content contains `term` (case-insensitive substring).
+
+    The term is operator free text headed through `sh -c` (and ssh) into SQL, so
+    it never appears raw: LIKE metacharacters are escaped here, then the whole
+    pattern travels hex-encoded and is decoded inside postgres."""
+    pattern = "%" + term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    hexpat = pattern.encode("utf-8").hex()
+    key = "art:" + hexpat
+
+    def query():
+        rows = _psql_rows(
+            "SELECT bmc_mac,id,stage,name,n FROM ("
+            "SELECT bmc_mac,id,stage,name,count(*) OVER w AS n,"
+            "row_number() OVER (w ORDER BY captured_at DESC, id DESC) AS rn "
+            "FROM post_artifact "
+            f"WHERE content ILIKE convert_from(decode('{hexpat}','hex'),'UTF8') "
+            "WINDOW w AS (PARTITION BY bmc_mac)) t "
+            f"WHERE rn <= {ART_HITS_PER_NODE} ORDER BY bmc_mac, rn",
+            ["bmc_mac", "id", "stage", "name", "n"])
+        hits = {}
+        for r in rows:
+            h = hits.setdefault(r["bmc_mac"], {"count": int(r["n"] or 0), "hits": []})
+            h["hits"].append({"id": r["id"], "stage": r["stage"], "name": r["name"]})
+        return hits
+
+    with _cache_lock:  # one entry per distinct term typed; drop the expired ones
+        now = time.time()
+        for k in [k for k, (at, _) in _cache.items()
+                  if k.startswith("art:") and k != key and now - at > ART_SEARCH_TTL]:
+            del _cache[k]
+    return _cached(key, query, ttl=ART_SEARCH_TTL)
+
+
 def fetch_fleet():
     state = fetch_post_state()
     # host_mac isn't in post_state -- pull it from post_node, keyed on bmc_mac
@@ -319,6 +358,8 @@ PHASE_CLASS = {
 # --------------------------------------------------------------------------
 
 def _cell(col, value):
+    if col == "art_hits":
+        return render_art_hits(value)
     value = "" if value is None else str(value)
     if col in ("verdict", "slot_verdict", "pop", "power_on") and not value:
         return '<span class="pill dim">—</span>'
@@ -330,14 +371,51 @@ def _cell(col, value):
     return html.escape(value)
 
 
-def render_table(view_key, selected_cols, sort_col=None, sort_dir="asc"):
+def _row_matches(row, needle):
+    """Case-insensitive substring over every field the view fetched for the
+    row, shown or not -- not just the ticked columns."""
+    return any(needle in str(v).casefold() for k, v in row.items()
+               if k not in ("link", "art_hits") and v)
+
+
+def render_art_hits(entry):
+    if not entry:
+        return ""
+    links = " ".join(
+        f'<a href="/artifact?id={_esc(h["id"])}">{_esc(h["stage"])}/{_esc(h["name"])}</a>'
+        for h in entry["hits"])
+    more = entry["count"] - len(entry["hits"])
+    return links + (f' <span class="more">+{more} more</span>' if more > 0 else "")
+
+
+def render_table(view_key, selected_cols, sort_col=None, sort_dir="asc", q="", art=False):
     view = VIEWS[view_key]
     cols = [c for c in selected_cols if c in dict(view["columns"])] or view["default"]
     labels = dict(view["columns"])
     rows = view["fetch"]()
+    total = len(rows)
+
+    q = (q or "").strip()
+    art_hits = None
+    search_note = ""
+    if q:
+        needle = q.casefold()
+        if art:
+            art_hits = fetch_artifact_hits(q)
+            rows = [r for r in rows if _row_matches(r, needle) or r.get("bmc_mac") in art_hits]
+            rows = [dict(r, art_hits=art_hits.get(r.get("bmc_mac"))) for r in rows]
+            cols = cols + ["art_hits"]
+            labels = dict(labels, art_hits="Matched artifacts")
+        else:
+            rows = [r for r in rows if _row_matches(r, needle)]
+        search_note = (f"{len(rows)} of {total} rows match <b>{html.escape(q)}</b>"
+                       + (f" (fields, or artifacts on {len(art_hits)} blades)" if art else " (fields)")
+                       + " &middot; ")
 
     if sort_col in cols:
-        rows = sorted(rows, key=lambda r: _natural_key(r.get(sort_col)), reverse=(sort_dir == "desc"))
+        rows = sorted(rows, key=lambda r: _natural_key(r.get(sort_col) if sort_col != "art_hits"
+                                                      else (r.get("art_hits") or {}).get("count")),
+                      reverse=(sort_dir == "desc"))
 
     def th(col):
         label = html.escape(labels[col])
@@ -361,7 +439,7 @@ def render_table(view_key, selected_cols, sort_col=None, sort_dir="asc"):
 
     return (
         f'{err}'
-        f'<div class="meta">{len(rows)} rows &middot; {html.escape(view["query"])} '
+        f'<div class="meta">{search_note or f"{len(rows)} rows &middot; "}{html.escape(view["query"])} '
         f'&middot; refreshed {time.strftime("%H:%M:%S")}</div>'
         f'<div class="table-scroll"><table><thead><tr>{thead}</tr></thead>'
         f'<tbody>{tbody}</tbody></table></div>'
@@ -496,6 +574,11 @@ PAGE = """<!doctype html>
   .cols label{{font-size:12.5px;display:flex;gap:4px;align-items:center;cursor:pointer;white-space:nowrap}}
   select{{font-size:12.5px;padding:3px 6px;border-radius:6px;border:1px solid var(--border);
           background:var(--surface);color:var(--text)}}
+  .search input[type=search]{{font-size:13px;padding:5px 8px;border-radius:6px;width:240px;max-width:100%;
+          border:1px solid var(--border);background:var(--surface);color:var(--text)}}
+  .search label{{font-size:12.5px;display:flex;gap:4px;align-items:center;cursor:pointer;white-space:nowrap}}
+  td a{{color:var(--accent)}}
+  td .more{{color:var(--dim)}}
   .meta{{font-size:11.5px;color:var(--dim);margin:0 0 8px;font-family:ui-monospace,monospace}}
   .err{{background:var(--warn-bg);color:var(--warn);border-radius:8px;padding:8px 12px;
         font-size:12.5px;margin-bottom:10px}}
@@ -522,7 +605,13 @@ PAGE = """<!doctype html>
   <h1>Post fleet viewer</h1>
   <div class="sub">Live from {source}: flax db + /etc/flax/post_*.json, rabbit-edam / eindhoven.</div>
 
-  <form id="ctrl" class="controls">
+  <form id="ctrl" class="controls" onsubmit="refresh(); return false;">
+    <div class="ctrl-group search">
+      <div class="lbl">Search</div>
+      <input id="q" type="search" placeholder="serial, mac, port, anything..." value="{q_attr}" autocomplete="off">
+      <label title="Also match the text of each blade's post_artifact captures (a slower scan, cached 30s)">
+        <input id="art" type="checkbox" {art_checked}>also search node artifacts</label>
+    </div>
     <div class="ctrl-group">
       <div class="lbl">View</div>
       <div class="views">{view_links}</div>
@@ -549,12 +638,19 @@ PAGE = """<!doctype html>
   const view = {view_json};
   let sortCol = {sort_col_json};
   let sortDir = {sort_dir_json};
-  document.querySelectorAll('#ctrl input[type=checkbox]').forEach(cb => {{
+  document.querySelectorAll('#ctrl .cols input[type=checkbox]').forEach(cb => {{
     cb.addEventListener('change', refresh);
   }});
+  document.getElementById('art').addEventListener('change', refresh);
+  let debounce = null;
+  document.getElementById('q').addEventListener('input', () => {{
+    clearTimeout(debounce);
+    debounce = setTimeout(refresh, 350);
+  }});
   let timer = null;
+  let seq = 0;  // a slow artifact scan must not overwrite a newer answer
   function currentCols() {{
-    return [...document.querySelectorAll('#ctrl input[type=checkbox]:checked')].map(c => c.value);
+    return [...document.querySelectorAll('#ctrl .cols input[type=checkbox]:checked')].map(c => c.value);
   }}
   function sortBy(th) {{
     sortCol = th.dataset.col;
@@ -565,13 +661,23 @@ PAGE = """<!doctype html>
     const cols = currentCols().join(',');
     const params = new URLSearchParams({{view, cols}});
     if (sortCol) {{ params.set('sort', sortCol); params.set('dir', sortDir); }}
+    const q = document.getElementById('q').value.trim();
+    if (q) params.set('q', q);
+    if (document.getElementById('art').checked) params.set('art', '1');
+    const mine = ++seq;
     fetch(`/fragment?${{params}}`)
       .then(r => r.text())
-      .then(t => {{ document.getElementById('table-wrap').innerHTML = t; }})
+      .then(t => {{ if (mine === seq) document.getElementById('table-wrap').innerHTML = t; }})
       .catch(() => {{}});
     const url = new URL(location);
     url.search = params;
     history.replaceState(null, '', url);
+    document.querySelectorAll('.views a').forEach(a => {{
+      const u = new URL(a.href);
+      q ? u.searchParams.set('q', q) : u.searchParams.delete('q');
+      params.has('art') ? u.searchParams.set('art', '1') : u.searchParams.delete('art');
+      a.href = u;
+    }});
   }}
   function setInterval_(ms) {{
     if (timer) clearInterval(timer);
@@ -583,9 +689,11 @@ PAGE = """<!doctype html>
 </body></html>"""
 
 
-def render_page(view_key, selected_cols, sort_col=None, sort_dir="asc"):
+def render_page(view_key, selected_cols, sort_col=None, sort_dir="asc", q="", art=False):
+    carry = (("&q=" + urllib.parse.quote(q)) if q else "") + ("&art=1" if art else "")
     view_links = "".join(
-        f'<a href="/?view={k}" class="{"active" if k == view_key else ""}">{html.escape(v["label"])}</a>'
+        f'<a href="/?view={k}{html.escape(carry)}" class="{"active" if k == view_key else ""}">'
+        f'{html.escape(v["label"])}</a>'
         for k, v in VIEWS.items()
     )
     view = VIEWS[view_key]
@@ -596,7 +704,7 @@ def render_page(view_key, selected_cols, sort_col=None, sort_dir="asc"):
         for key, label in view["columns"]
     )
     cols = sorted(selset, key=lambda c: [k for k, _ in view["columns"]].index(c))
-    table_html = render_table(view_key, cols, sort_col, sort_dir)
+    table_html = render_table(view_key, cols, sort_col, sort_dir, q, art)
     source = "this host (local)" if LOCAL_MODE else BANG_HOST
     return PAGE.format(
         view_links=view_links,
@@ -606,6 +714,8 @@ def render_page(view_key, selected_cols, sort_col=None, sort_dir="asc"):
         sort_col_json=json.dumps(sort_col),
         sort_dir_json=json.dumps(sort_dir),
         source=html.escape(source),
+        q_attr=html.escape(q or "", quote=True),
+        art_checked="checked" if art else "",
     )
 
 
@@ -625,6 +735,8 @@ class Handler(BaseHTTPRequestHandler):
         sort_dir = qs.get("dir", ["asc"])[0]
         if sort_dir not in ("asc", "desc"):
             sort_dir = "asc"
+        q = qs.get("q", [""])[0].strip()[:200]
+        art = qs.get("art", [""])[0] == "1"
 
         if parsed.path in ("/node", "/artifact"):
             try:
@@ -643,10 +755,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if parsed.path == "/fragment":
                 body = render_table(view_key, selected_cols or VIEWS[view_key]["default"],
-                                     sort_col, sort_dir)
+                                     sort_col, sort_dir, q, art)
                 content_type = "text/html; charset=utf-8"
             else:
-                body = render_page(view_key, selected_cols, sort_col, sort_dir)
+                body = render_page(view_key, selected_cols, sort_col, sort_dir, q, art)
                 content_type = "text/html; charset=utf-8"
         except Exception as exc:  # noqa: BLE001
             body = f"<pre>error: {html.escape(str(exc))}</pre>"
