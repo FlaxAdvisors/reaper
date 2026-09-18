@@ -20,6 +20,9 @@ import re
 import subprocess
 
 from . import population
+from .observe import family_map_live as _fm_live
+from .observe.family_map import match_family
+from .observe.fru import DEFAULT_SERIAL_FIELD, SERIAL_FIELD_BY_FAMILY
 
 NODES_ROOT = os.environ.get("FLAX_POST_NODES_ROOT", "/export/nodes")
 
@@ -69,10 +72,35 @@ def capture(host_mac: "str | None", *, runner=None) -> dict:
 _BMC_MAC_RE = re.compile(r"^BMC MAC\d+:\s*(?P<mac>\S+)")
 _BMC_VERSION_RE = re.compile(r"^BMC Version:\s*(?P<version>.*)$")
 _BIOS_RE = re.compile(r"^BIOS Version:\s*(?P<version>[^,]+)")
-_BOARD_RE = re.compile(
-    r"^Board Mfg:\s*(?P<mfg>[^,]+),\s*Product:\s*(?P<product>[^,]+),.*?"
-    r"Product Serial:\s*(?P<serial>\S+)"
-)
+# The blade's own FRU (ID 0). Since the FRU-ID-0-only macinv (reaper spec
+# 2026-09-14-fru-id0-only §6.4) it is the only "Board Mfg:" line; the NIC and
+# M.2 FRU devices print as "Addon FRU:" and are never read here. Product
+# Serial and Chassis Serial are optional trailing fields.
+_BOARD_RE = re.compile(r"^Board Mfg:\s*(?P<mfg>[^,]+),\s*Product:\s*(?P<product>[^,]+)(?P<rest>.*)$")
+_BOARD_FIELD_RE = {
+    "product_serial": re.compile(r",\s*Product Serial:\s*(?P<v>[^,]*)"),
+    "chassis_serial": re.compile(r",\s*Chassis Serial:\s*(?P<v>[^,]*)"),
+}
+
+
+def _board_fru(m, family_map):
+    """INV FRU section from the ID 0 line. serial = the family's ship serial
+    (leopard: Chassis Serial, else Product Serial), family matched on the
+    line's Product (Board Product). No fallback between the two fields."""
+    rest = m.group("rest")
+    found = {}
+    for key, rx in _BOARD_FIELD_RE.items():
+        hit = rx.search(rest)
+        found[key] = hit.group("v").strip() if hit else ""
+    product = m.group("product").strip()
+    family = match_family(family_map or {}, product)
+    field = SERIAL_FIELD_BY_FAMILY.get(family, DEFAULT_SERIAL_FIELD)
+    return {"mfg": m.group("mfg").strip(), "board_product": product,
+            "product_serial": found["product_serial"], "chassis_serial": found["chassis_serial"],
+            "family": family, "serial_field": field,
+            "serial": found["chassis_serial"] if field == "Chassis Serial" else found["product_serial"]}
+
+
 _CPU_RE = re.compile(
     r"^Processor Version:\s*(?P<model>[^,]+?)\s*(?:,\s*Serial:\s*(?P<serial>.*))?$"
 )
@@ -109,7 +137,7 @@ _LLDP_RE = re.compile(
 )
 
 
-def parse(verbose_text: str) -> dict:
+def parse(verbose_text: str, family_map=None) -> dict:
     """macinv -v detail-form text -> structured sections. Every list section
     defaults to []; every single-value section defaults to {} (or the str-typed
     ones simply aren't set); never raises on a missing/malformed section."""
@@ -135,10 +163,8 @@ def parse(verbose_text: str) -> dict:
             bios["version"] = m.group("version").strip()
             continue
         m = _BOARD_RE.match(line)
-        if m and not fru:  # first Board Mfg line carrying Product Serial = mainboard
-            fru = {"mfg": m.group("mfg").strip(),
-                   "board_product": m.group("product").strip(),
-                   "product_serial": m.group("serial").strip()}
+        if m and not fru:  # the FRU ID 0 line (the first one, from a pre-sync macinv)
+            fru = _board_fru(m, _fm_live.current() if family_map is None else family_map)
             continue
         m = _CPU_RE.match(line)
         if m:

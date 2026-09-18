@@ -215,7 +215,7 @@
               <div class="kv-grid">
                 <span class="lbl">Mfg</span><span class="mono">{{inv.sections.fru.mfg||'—'}}</span>
                 <span class="lbl">Board</span><span class="mono">{{inv.sections.fru.board_product||'—'}}</span>
-                <span class="lbl">Serial</span><span class="mono">{{inv.sections.fru.product_serial||'—'}}</span>
+                <span class="lbl">Serial</span><span class="mono" :title="'FRU 0 ' + (inv.sections.fru.serial_field||'Product Serial')">{{inv.sections.fru.serial||'—'}}</span>
               </div>
             </div>
             <div v-if="inv.sections.lldp && inv.sections.lldp.length">

@@ -18,6 +18,7 @@ ExecStart=/usr/bin/docker run --rm --init --name flax-post \
     -e PATH=/opt/flax/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     -v /etc/hostname:/etc/rackname:ro \
     -v /etc/flax/site.env:/etc/flax/site.env:ro \
+    -v /etc/flax/family-map:/etc/flax/family-map:ro \
     -v /etc/flax/bmc-firmware-versions.json:/etc/flax/bmc-firmware-versions.json:ro \
     -v /etc/flax/post_fw.json:/etc/flax/post_fw.json:ro \
     -v /etc/flax/post-geometry.json:/etc/flax/post-geometry.json:ro \

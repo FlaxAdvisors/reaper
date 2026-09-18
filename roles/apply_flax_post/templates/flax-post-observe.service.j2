@@ -15,6 +15,7 @@ ExecStart=/usr/bin/docker run --rm --init --name flax-post-observe \
     --env-file /etc/flax/flax-post/flax-post.env \
     -e PATH=/opt/flax/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     -v /etc/flax/site.env:/etc/flax/site.env:ro \
+    -v /etc/flax/family-map:/etc/flax/family-map:ro \
     -v /etc/flax/credentials-bmc.json:/etc/flax/credentials-bmc.json:ro \
     -v /etc/flax/credentials-redfish.json:/etc/flax/credentials-redfish.json:ro \
     -v /etc/flax/credentials-host.json:/etc/flax/credentials-host.json:ro \
