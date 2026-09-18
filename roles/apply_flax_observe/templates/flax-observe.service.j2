@@ -13,6 +13,9 @@ ExecStartPre=/bin/bash -c '. /etc/flax/site.env && ip -o -4 addr | grep -qE " $$
 # --init: tini as PID 1 reaps orphaned children. flax-observe forks ssh/ipmitool
 # for BMC reach probes; without a reaper those orphans accumulate as zombies
 # under the python PID 1 (see feedback_ios_ssh_controlmaster_session_is_a_trap).
+# bmc_vendor.json below is mounted :rw -- flax-observe is its sole writer
+# (Task 4b) and writes in place (truncate+write, never a rename over the
+# bind mount).
 ExecStart=/usr/bin/docker run --rm --init --name flax-observe \
     --network host \
     --env-file /etc/flax/flax-observe/flax-observe.env \
@@ -25,6 +28,7 @@ ExecStart=/usr/bin/docker run --rm --init --name flax-observe \
     -v /etc/flax/credentials-redfish.json:/etc/flax/credentials-redfish.json:ro \
     -v /etc/flax/credentials-host.json:/etc/flax/credentials-host.json:ro \
     -v /etc/flax/macmath:/etc/flax/macmath:ro \
+    -v /etc/flax/bmc_vendor.json:/etc/flax/bmc_vendor.json:rw \
     -v /etc/flax/site.env:/etc/flax/site.env:ro \
     -v /var/lib/misc/dnsmasq.leases:/var/lib/misc/dnsmasq.leases:ro \
     -v /etc/dnsmasq.dhcp-hosts:/etc/dnsmasq.dhcp-hosts:ro \

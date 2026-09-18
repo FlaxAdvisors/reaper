@@ -19,6 +19,16 @@
   no_log: true
   notify: Restart flax-observe
 
+- name: Ensure an empty bmc_vendor.json exists for the bind mount
+  become: true
+  ansible.builtin.copy:
+    content: "{}\n"
+    dest: /etc/flax/bmc_vendor.json
+    force: false
+    owner: root
+    group: root
+    mode: "0644"
+
 - name: Deploy flax-observe.service unit
   become: true
   ansible.builtin.template:

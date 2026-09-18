@@ -383,3 +383,15 @@ class PortWorker(threading.Thread):
             last_polled=self.port_state["last_polled"],
             resolved=resolved,
         )
+        # Task 4b: mirror bmc_vendor into /etc/flax/bmc_vendor.json for
+        # ghost's host-side bins. Optional wiring -- env.vendor_export is
+        # only set by __main__.main (never by make_env, so tests that build
+        # envs directly are unaffected).
+        vendor_export = getattr(self.env, "vendor_export", None)
+        if vendor_export is not None:
+            vendor_export.update(
+                self.switch, self.port,
+                vendor=resolved["bmc_vendor"],
+                bmc_ip=self.port_state.get("bmc_ip"),
+                bmc_mac=self.port_state.get("bmc_mac"),
+            )

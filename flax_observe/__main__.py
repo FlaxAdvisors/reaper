@@ -29,6 +29,7 @@ from .persistence import read_prior_observe_state
 from .persistence import write_ack
 from .port_worker import PortWorker, make_env, _internal_to_arista
 from .switch_facts import SwitchFactsCache, SwitchFactsListener
+from .vendor_export import VendorExport
 
 
 log = logging.getLogger("flax-observe")
@@ -261,6 +262,11 @@ def main(argv: list[str] | None = None) -> int:
                    vlan_parents=vlan_parents,
                    macmath_by_vid=macmath_by_vid,
                    redfish_credentials=redfish_credentials)
+    # Task 4b: sole shared handle onto /etc/flax/bmc_vendor.json, so ghost's
+    # host-side bins can read bmc_vendor without an HTTP dependency on the
+    # control API. make_env() itself must never touch /etc/flax (tests build
+    # envs via make_env), so this is wired here instead.
+    env.vendor_export = VendorExport()
 
     # Replace the filesystem intentional_flap_active sentinel check with a
     # Postgres-backed one.  A per-cycle-refreshed set is stored in a dict
