@@ -18,8 +18,10 @@ I/O contract:
       .probe_bmc_kind(ip, credentials, bmc_creds) -> {"kind", ...}
       .bmc_power_status_openbmc(ip, creds_pair)   -> 'on'/'off'/'unknown'
       .bmc_power_and_sdr_traditional(ip, creds_pair) -> (power, watts)
-      .chassis_serial_traditional(ip, creds_pair) -> str|None
-      .chassis_serial_openbmc(ip, creds_pair)     -> str|None
+      .chassis_serial_traditional(ip, creds_pair) -> (serial|None, state)
+      .chassis_serial_openbmc(ip, creds_pair)     -> (serial|None, state)
+          state: ok | no_serial | absent | error (FRU ID 0 only). A plain
+          str|None (older fakes) reads as ok / error -- see _serial_read.
       .ping_host(ip)                              -> 'ok'/'fail'/'unknown'
       .lookup_lease_ip(path, mac, dhcp_dir)       -> str|None
       .nginx_pxe_seen(log_path, ip)               -> 'found'/'notfound'/'unknown'
@@ -263,6 +265,7 @@ def _forget_identity(port_state, emit_event):
     port_state["link_session_since"] = _ts_now()
     port_state.pop("bmc_kind_cached", None)
     port_state["chassis_sn"] = None
+    port_state.pop("chassis_sn_verified", None)
     port_state["product_name"] = None
     _set_var(port_state, "chassissn", "unknown", emit_event)
     _set_var(port_state, "inventory", "notfound", emit_event)
@@ -610,6 +613,17 @@ def _serial_via_ssh(vendor, kind):
     if vendor in _bmc_vendor.VENDORS:
         return _bmc_vendor.caps_for(vendor).ssh == _bmc_vendor.FULL
     return kind == "openbmc"
+
+
+def _serial_read(result):
+    """(serial, state) from a chassis_serial_* reader. The readers return
+    (serial, state) since FRU-ID-0-only (spec 2026-09-14 §6.2); a plain str
+    reads as ok and None as a failed read ("error")."""
+    if isinstance(result, tuple):
+        return result
+    if result:
+        return (result, "ok")
+    return (None, "error")
 
 
 def port_worker_one_iter(port_state, switch_facts, emit_event, env):
@@ -1043,6 +1057,7 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
                 # serial so we re-acquire it for the new chassis instead of
                 # carrying the old one over.
                 port_state["chassis_sn"] = None
+                port_state.pop("chassis_sn_verified", None)
                 port_state["bmcpower_unknown_streak"] = 0
                 port_state["bmcpower_stale_since"] = None
 
@@ -1066,6 +1081,7 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
 
         prev_streak = port_state.get("bmcpower_unknown_streak", 0)
         sn = None
+        sn_state = None
         pwr = "unknown"
         watts = None
         # Transport is chosen by vendor capability (see _power_transport);
@@ -1111,30 +1127,38 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
                         == _bmc_vendor.FULL):
                     pwr = _bmc_power_status_openbmc(probe_host, creds_used)
                 # Mitigation 2: Product Serial is invariant for a given
-                # chassis. Once latched, skip the refetch every cycle --
+                # chassis. Once latched AND re-verified this process (D8,
+                # spec 2026-09-14-fru-id0-only §6.2: a latch hydrated at start
+                # may predate the FRU-ID-0-only reader), skip the refetch --
                 # saves one RMCP+ session per poll. Hardware swap clears
                 # chassis_sn above (mac_changed branch), forcing refetch.
                 # (A vendor with ssh reads its serial over ssh below instead.)
                 if serial_via_ssh:
                     pass
-                elif port_state.get("chassis_sn") and not mac_changed:
+                elif (port_state.get("chassis_sn") and not mac_changed
+                      and port_state.get("chassis_sn_verified")):
                     sn = None  # latch keeps the existing value below
                 else:
-                    sn = _chassis_serial_traditional(bmc_ip, creds_used)
+                    sn, sn_state = _serial_read(
+                        _chassis_serial_traditional(bmc_ip, creds_used))
+                    if sn_state in ("ok", "no_serial"):
+                        port_state["chassis_sn_verified"] = True
         # Serial over ssh runs AFTER the IPMI block, and also on a SOL-active
         # skip: ssh does not touch the BMC's RMCP+ session table.
         if transport is not None and serial_via_ssh:
-            sn = _chassis_serial_openbmc(probe_host, creds_used)
-            # Some openbmc BMCs (e.g. Tioga Pass) do not expose chassis
-            # or product serial via the SSH FRU path that
-            # chassis_serial_openbmc uses, but DO expose them via
-            # traditional IPMI on UDP:623. Walk bmc_creds for a working
-            # pair before giving up.
-            if sn is None:
+            sn, sn_state = _serial_read(
+                _chassis_serial_openbmc(probe_host, creds_used))
+            # The ssh FRU 0 read decides the fallback: ok or no_serial means
+            # the board answered FRU 0 and a missing field is final. Only
+            # absent (some Tioga Pass BMCs answer "Device not present" on the
+            # BMC while LAN IPMI serves FRU 0) or a failed read walks
+            # bmc_creds through the LAN `fru print 0` read.
+            if sn_state in ("absent", "error"):
                 for c in bmc_creds:
-                    sn = _chassis_serial_traditional(
-                        bmc_ip, (c["bmcuser"], c["bmcpass"]))
-                    if sn is not None:
+                    lan_sn, lan_state = _serial_read(_chassis_serial_traditional(
+                        bmc_ip, (c["bmcuser"], c["bmcpass"])))
+                    if lan_state in ("ok", "no_serial"):
+                        sn, sn_state = lan_sn, lan_state
                         break
 
         # Latch decision: while the BMC is identified (chassis_sn latched)
@@ -1232,15 +1256,29 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
                     })
                 port_state["bmcpower_unknown_streak"] = 0
 
+        prior_sn = port_state.get("chassis_sn")
         if sn:
+            if prior_sn and prior_sn != sn:
+                emit_event({"kind": "chassis_sn_relatched", "switch": switch,
+                            "port": port, "bmc_mac": bmc_mac,
+                            "old": prior_sn, "new": sn})
             port_state["chassis_sn"] = sn
             _set_var(port_state, "chassissn", "found", emit_event)
-        elif port_state.get("chassis_sn"):
+        elif sn_state == "no_serial":
+            # FRU 0 answered without the family's serial field: final, not a
+            # transient failure -- the latch goes (spec §6.2).
+            if prior_sn:
+                emit_event({"kind": "chassis_sn_cleared", "switch": switch,
+                            "port": port, "bmc_mac": bmc_mac,
+                            "old": prior_sn, "state": "no_serial"})
+            port_state["chassis_sn"] = None
+            _set_var(port_state, "chassissn", "notfound", emit_event)
+        elif prior_sn:
             # Latch: Product Serial is an immutable property of the
             # physical chassis. Once we have read it successfully, transient
-            # IPMI/SSH failures should not clobber it back to notfound.
-            # The latch is cleared on link drop (chassis swap signal)
-            # and on bmc_mac change (different chassis on same port).
+            # IPMI/SSH failures (and FRU 0 absent) should not clobber it back
+            # to notfound. The latch is cleared on link drop (chassis swap
+            # signal), on bmc_mac change and on a FRU 0 read with no serial.
             _set_var(port_state, "chassissn", "found", emit_event)
         else:
             port_state["chassis_sn"] = None
