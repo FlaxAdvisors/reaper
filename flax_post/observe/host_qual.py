@@ -100,10 +100,20 @@ def _default_launch_agent(target) -> tuple:
     return rc, out
 
 
-def population_check(dump, profile, dimmsum=None) -> dict:
+# A blade whose FRU 0 answered without its ship serial (fru.read_baseboard
+# state no_serial) must not ship: the same red path as a blocked DIMM
+# (spec 2026-09-14-fru-id0-only D6, §6.1).
+NO_SHIP_RULE = "no ship serial: FRU 0 %s empty — do not ship"
+
+
+def population_check(dump, profile, dimmsum=None, baseboard=None) -> dict:
     """green = all profile rules matched, red = any missing, grey = no dump/profile.
     A blocked DIMM (blocklist, ruling 2026-09-12) is red whatever the profile
-    says: the hits ride along as `blocked_dimms` and as failed rules."""
+    says: the hits ride along as `blocked_dimms` and as failed rules.
+    baseboard = the ladder's bmc-ready evidence (fru.read_baseboard). A
+    no_serial baseboard is red once the run's inventory dump exists, profile or
+    not (`no_ship_serial`). A baseboard without a `state` (a row that predates
+    FRU-ID-0-only) adds nothing."""
     blocked = blocklist.check_dimmsum(dimmsum) if dimmsum else []
     if not dump or not profile:
         out = {"profile": profile, "verdict": "grey", "failed_rules": []}
@@ -116,6 +126,11 @@ def population_check(dump, profile, dimmsum=None) -> dict:
         out["verdict"] = "red"
         out["failed_rules"] = list(out["failed_rules"]) + [blocklist.describe(h) for h in blocked]
         out["blocked_dimms"] = blocked
+    if dump and isinstance(baseboard, dict) and baseboard.get("state") == "no_serial":
+        out["verdict"] = "red"
+        out["failed_rules"] = list(out["failed_rules"]) + [
+            NO_SHIP_RULE % (baseboard.get("serial_field") or "Product Serial")]
+        out["no_ship_serial"] = True
     return out
 
 
@@ -319,7 +334,8 @@ def poll_target(target, *, make_client=_default_make_client, store=_state,
     profile = _read_profile_for(target, store)
     dimmsum = store.get_artifact(target["bmc_mac"], run_id, "inventory", "dimmsum") \
         if hasattr(store, "get_artifact") else None
-    pop = population_check(dump, profile, dimmsum)
+    pop = population_check(dump, profile, dimmsum,
+                           baseboard=(live.get("ladder") or {}).get("bmc_fru"))
     steps["population-check"] = {"status": {"green": "pass", "red": "fail", "grey": "pending"}[pop["verdict"]]}
     store.set_state(target["port"], pop=pop)
     qual = {"run_id": run_id, "agent": {"reachable": True, "ver": health.get("agent_ver")},
