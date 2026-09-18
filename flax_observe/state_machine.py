@@ -598,12 +598,14 @@ def _serial_via_ssh(vendor, kind):
     """True when the chassis serial comes from the ssh FRU chain.
 
     The serial source is deliberately NOT moved with the power transport: the
-    ssh chain reads `fru print 0` (baseboard only) while the LAN
-    chassis_serial_traditional reads `ipmitool fru` (ALL FRU devices) and can
-    pick up a non-baseboard Product Serial, which would silently change tile
-    serials and inventory matching. So any vendor with ssh (phosphor,
-    facebook) keeps the ssh chain; an UNKNOWN vendor falls back on the frozen
-    kind (openbmc -> ssh), same as _power_transport.
+    ssh chain reads `fru print 0` (baseboard only), and since 2026-09-18 the
+    LAN chassis_serial_traditional also reads FRU ID 0 only (bmc_probe._lan_fru0),
+    so both sources are baseboard-only today. The two remain separate call
+    sites (this function still gates which one this cycle uses) because they
+    differ in transport and retry/latch behaviour, not in which FRU device
+    they read. Any vendor with ssh (phosphor, facebook) keeps the ssh chain;
+    an UNKNOWN vendor falls back on the frozen kind (openbmc -> ssh), same as
+    _power_transport.
     """
     if vendor in _bmc_vendor.VENDORS:
         return _bmc_vendor.caps_for(vendor).ssh == _bmc_vendor.FULL

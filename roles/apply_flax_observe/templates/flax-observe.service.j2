@@ -29,6 +29,7 @@ ExecStart=/usr/bin/docker run --rm --init --name flax-observe \
     -v /etc/flax/credentials-host.json:/etc/flax/credentials-host.json:ro \
     -v /etc/flax/macmath:/etc/flax/macmath:ro \
     -v /etc/flax/bmc_vendor.json:/etc/flax/bmc_vendor.json:rw \
+    -v /etc/flax/family-map:/etc/flax/family-map:ro \
     -v /etc/flax/site.env:/etc/flax/site.env:ro \
     -v /var/lib/misc/dnsmasq.leases:/var/lib/misc/dnsmasq.leases:ro \
     -v /etc/dnsmasq.dhcp-hosts:/etc/dnsmasq.dhcp-hosts:ro \

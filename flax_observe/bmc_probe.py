@@ -14,10 +14,14 @@ Helpers also lifted here (called by the above):
   - _tcp_port_open
   - _ipmi_responsive
   - _default_ssh_runner
-  - _parse_fru_product_name
-  - _serial_from_fru
+  - _lan_fru0 / _baseboard  — FRU ID 0 over LAN (+ one retry) / fru.read_baseboard
   - _parse_power_from_ipmi_output
   - _parse_watts_from_ipmi_output
+
+FRU ID 0 only (spec 2026-09-14-fru-id0-only §6.2): serial and product name
+come from the Builtin FRU Device (ID 0) block, parsed by fru.read_baseboard;
+another FRU device (NIC, M.2 carrier) is never read. LAN reads are
+`ipmitool fru print 0`.
 """
 import base64
 import http.client
@@ -31,6 +35,8 @@ import tempfile
 import time
 
 from . import bmc_vendor as _bmc_vendor
+from . import family_map_live as _fm_live
+from .fru import read_baseboard
 from .ipmi import _default_ipmi_runner
 
 log = logging.getLogger("flax-observe.bmc_probe")
@@ -72,6 +78,11 @@ _FRU_CHAIN = ("ipmitool fru print 0 2>/dev/null"
 _OS_RELEASE_CMD = ("cat /etc/os-release; "
                    "test -x /usr/local/bin/fruid-util "
                    "&& echo FLAX_FBUTILS=yes || echo FLAX_FBUTILS=no")
+
+# A BMC that has not brought FRU 0 back answers "Device not present": the LAN
+# read is repeated once before it counts as absent (spec §6.2).
+FRU0_RETRY_SECS = 1.0
+_FRU0_ARGS = ("fru", "print", "0")
 
 # Redfish identification transport. BMCs ship self-signed certs + legacy
 # ciphers, so verification is off and SECLEVEL is lowered -- identical to
@@ -156,23 +167,22 @@ def _default_ssh_runner(host, user, password, cmd, timeout=SSH_TIMEOUT_SECS):
 # FRU text parsers
 # ---------------------------------------------------------------------------
 
-def _parse_fru_product_name(fru_text):
-    """Pull the product name from FRU text — handles two formats:
+def _baseboard(fru_text, family_map=None):
+    """fru.read_baseboard against the deployed family map (or the one given)."""
+    return read_baseboard(fru_text or "", _fm_live.current() if family_map is None else family_map)
 
-    ipmitool fru:  'Product Name         : Leopard'
-    weutil:        'Product Name: WEDGE100S12V'
 
-    Both are handled by splitting on the first ':' and checking that the
-    stripped left-hand side is exactly 'Product Name' (so 'Product Part
-    Number', 'Product Serial Number', etc. are never matched).
-    """
-    for line in fru_text.splitlines():
-        if ":" not in line:
-            continue
-        k, v = line.split(":", 1)
-        if k.strip() == "Product Name":
-            return v.strip()
-    return None
+def _lan_fru0(ip, user, password, ipmi_runner):
+    """LAN `ipmitool fru print 0` text, read once more while FRU 0 is absent.
+    Raises when the BMC does not answer the first read."""
+    text = ipmi_runner(ip, user, password, list(_FRU0_ARGS))
+    if read_baseboard(text, {})["state"] == "absent":
+        _sleep(FRU0_RETRY_SECS)
+        try:
+            text = ipmi_runner(ip, user, password, list(_FRU0_ARGS))
+        except Exception:
+            pass
+    return text
 
 
 def _parse_fb_utils_marker(text):
@@ -192,25 +202,6 @@ def _parse_fb_utils_marker(text):
             return True
         if line == "FLAX_FBUTILS=no":
             return False
-    return None
-
-
-def _serial_from_fru(fru_text):
-    """Pull 'Product Serial' (preferred) or 'Chassis Serial' (fallback)
-    from `ipmitool fru` output.
-
-    Skips empty values: ipmitool fru on a chassis with multiple FRU
-    devices (e.g. Tioga Pass + Ava-M.2-SSD-Adap carrier) emits one
-    'Product Serial' line per FRU. The carrier card's value is empty
-    on most boards, and depending on enumeration order it can shadow
-    the real builtin-FRU value. Walking past empty matches gets us to
-    the first FRU that actually has a serial set."""
-    for needle in ("Product Serial", "Chassis Serial"):
-        for line in fru_text.splitlines():
-            if needle in line:
-                v = line.split(":", 1)[1].strip()
-                if v:
-                    return v
     return None
 
 
@@ -271,7 +262,7 @@ def probe_bmc_kind(ip, credentials, bmc_creds,
       1. Probe TCP:22 + UDP:623 + TCP:443 to fast-fail non-BMC IPs.
       2. If ssh:22 open AND `cat /etc/os-release` contains 'openbmc':
          openbmc path with credentials['obmcuser'/'obmcpass'].
-      3. Elif udp:623 responsive: walk bmc_creds via ipmitool fru -> traditional.
+      3. Elif udp:623 responsive: walk bmc_creds via ipmitool fru print 0 -> traditional.
       4. Elif tcp:443 serves a Redfish service root: 'redfish'. A Redfish-first
          BMC (SSH closed or an AMI board whose /etc/os-release isn't openbmc,
          and whose IPMI/creds don't answer) is invisible to steps 2-3 -- e.g.
@@ -311,7 +302,7 @@ def probe_bmc_kind(ip, credentials, bmc_creds,
                     fru = ssh_runner(
                         ip, credentials["obmcuser"], credentials["obmcpass"],
                         _FRU_CHAIN)
-                    pn = _parse_fru_product_name(fru)
+                    pn = _baseboard(fru)["product_name"]
                 except Exception:
                     pass
                 if pn is None and ports.get("ipmi"):
@@ -337,8 +328,8 @@ def probe_bmc_kind(ip, credentials, bmc_creds,
     if ports.get("ipmi"):
         for c in bmc_creds:
             try:
-                fru = ipmi_runner(ip, c["bmcuser"], c["bmcpass"], ["fru"])
-                pn = _parse_fru_product_name(fru)
+                fru = _lan_fru0(ip, c["bmcuser"], c["bmcpass"], ipmi_runner)
+                pn = _baseboard(fru)["product_name"]
                 return {"kind": "traditional",
                         "vendor": _bmc_vendor.AMI_LEGACY,
                         "product_name": pn,
@@ -378,7 +369,7 @@ def _lan_fru_product_name(ip, bmc_creds, ipmi_runner):
             fru = ipmi_runner(ip, c["bmcuser"], c["bmcpass"], ["fru", "print", "0"])
         except Exception:
             continue
-        return _parse_fru_product_name(fru)
+        return _baseboard(fru)["product_name"]
     return None
 
 
@@ -508,27 +499,31 @@ def bmc_power_status_openbmc(ip, creds_pair):
 # Chassis serial probes
 # ---------------------------------------------------------------------------
 
-def chassis_serial_traditional(ip, creds_pair):
-    """ipmitool fru -> Product Serial (or Chassis Serial fallback)."""
+def chassis_serial_traditional(ip, creds_pair, family_map=None):
+    """LAN `ipmitool fru print 0` -> (serial, state).
+
+    The ship serial from FRU ID 0 only (fru.read_baseboard: the family picks
+    Product or Chassis Serial). state: ok | no_serial | absent, or "error"
+    when the BMC does not answer. Never another FRU device's serial."""
     try:
-        out = _default_ipmi_runner(ip, creds_pair[0], creds_pair[1], ["fru"])
+        out = _lan_fru0(ip, creds_pair[0], creds_pair[1], _default_ipmi_runner)
     except Exception:
-        return None
-    return _serial_from_fru(out)
+        return (None, "error")
+    bb = _baseboard(out, family_map)
+    return (bb["serial"], bb["state"])
 
 
-def chassis_serial_openbmc(ip, creds_pair):
-    """ssh + FRU chain -> Product/Chassis Serial.
-
-    Tries the same chain as probe_bmc_kind: ipmitool fru print 0 → /run/fru →
-    fruid-util iom → weutil (Wedge100s/Wedge400).
-    """
+def chassis_serial_openbmc(ip, creds_pair, family_map=None):
+    """ssh + FRU chain -> (serial, state), same contract as
+    chassis_serial_traditional. Chain: ipmitool fru print 0 -> /run/fru ->
+    fruid-util iom -> weutil (Wedge100s/Wedge400)."""
     try:
         out = _default_ssh_runner(
             ip, creds_pair[0], creds_pair[1], _FRU_CHAIN)
     except Exception:
-        return None
-    return _serial_from_fru(out)
+        return (None, "error")
+    bb = _baseboard(out, family_map)
+    return (bb["serial"], bb["state"])
 
 
 # ---------------------------------------------------------------------------
