@@ -81,5 +81,9 @@ systemctl enable mezz-flash.service
 
 echo
 echo "Installed. It runs on the NEXT boot."
-echo "  dry run now : sudo systemctl start mezz-flash && journalctl -u mezz-flash -f"
+# `start` is a no-op once the unit has run: it is Type=oneshot with
+# RemainAfterExit=yes, so after the boot run it stays "active" and systemd
+# treats a start as already-satisfied. `restart` is the one that re-runs it.
+echo "  re-run now  : sudo systemctl restart mezz-flash   (NOT start -- oneshot stays active)"
 echo "  logs        : /var/log/flax/mezz-flash/"
+echo "  config      : /etc/flax/mezz-flash.conf (PROTECT_PCI, SHUTDOWN_ON_DONE)"
