@@ -38,6 +38,23 @@ observe restart, so the constructor loads whatever this file already has on
 disk into memory -- otherwise every restart would blank the file until each
 port got re-probed.
 
+Row lifetime and duplicate bmc_ip note: a row for a port that leaves the
+dynamic access-port set at RUNTIME (the supervisor's reconcile_workers, when
+a port is no longer desired) is actively dropped -- see
+flax_observe.__main__.reconcile_workers, the one call site that can tell
+"removed" apart from "process shutdown" (a plain restart leaves every row
+in place on purpose, per the constructor note above). But a row loaded from
+disk at CONSTRUCTION time for a port that is no longer enrolled in this run
+(e.g. geometry shrank between two observe restarts) is not swept -- it just
+sits there, unrefreshed, until either that exact switch:port key is observed
+again or something else calls `remove()` for it. If a BMC's bmc_ip is later
+reassigned to a different port before the old row is cleaned up, a naive
+`select(.bmc_ip=="...")` can therefore match MORE THAN ONE row. A consumer
+should prefer the newest `updated_at`, e.g.:
+
+    jq -r '[.[] | select(.bmc_ip=="172.17.6.101")] | sort_by(.updated_at) | last | .vendor' \
+        /etc/flax/bmc_vendor.json
+
 Freshness note: flax-observe runs only on the bang currently holding the MGMT
 VIP (flax-observe.service's ExecStartPre VIP-gate). The standby bang's copy of
 this file is whatever the last master happened to write there before losing

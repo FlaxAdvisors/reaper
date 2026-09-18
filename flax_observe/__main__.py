@@ -90,6 +90,20 @@ def reconcile_workers(desired, running, static_keys, make, statuses):
             w.join(timeout=5)
             statuses.pop(key, None)
             log.info("enroll: removed worker %s/%s", key[0], key[1])
+            # Task 4b: this branch -- a port actually leaving the desired
+            # set -- is the one hook that tells "removed" apart from
+            # "process shutdown" (main()'s shutdown loop stops every running
+            # worker directly, never through reconcile_workers), so this is
+            # where the port's /etc/flax/bmc_vendor.json row is dropped.
+            # Race: if join(timeout=5) times out, a worker thread still
+            # mid-cycle can call vendor_export.update() again right after
+            # this remove() and re-add the row. That is tolerated -- the
+            # row will simply look stale until the thread actually exits or
+            # this port is reconciled away again.
+            vendor_export = getattr(getattr(w, "env", None),
+                                    "vendor_export", None)
+            if vendor_export is not None:
+                vendor_export.remove(key[0], key[1])
 
 
 def make_worker(switch, port, ou, *, cache, env, statuses, refresh_sentinels,

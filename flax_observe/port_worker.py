@@ -387,11 +387,22 @@ class PortWorker(threading.Thread):
         # ghost's host-side bins. Optional wiring -- env.vendor_export is
         # only set by __main__.main (never by make_env, so tests that build
         # envs directly are unaffected).
+        #
+        # Guarded: this export is a side channel, not the core persistence
+        # path. VendorExport itself never raises (it catches OSError
+        # internally), but this call must survive ANY exception regardless --
+        # an unguarded raise here would propagate up through _cycle_once and
+        # skip the emit_audit_event loop that follows _persist(), silently
+        # dropping this cycle's transition events for an unrelated failure.
         vendor_export = getattr(self.env, "vendor_export", None)
         if vendor_export is not None:
-            vendor_export.update(
-                self.switch, self.port,
-                vendor=resolved["bmc_vendor"],
-                bmc_ip=self.port_state.get("bmc_ip"),
-                bmc_mac=self.port_state.get("bmc_mac"),
-            )
+            try:
+                vendor_export.update(
+                    self.switch, self.port,
+                    vendor=resolved["bmc_vendor"],
+                    bmc_ip=self.port_state.get("bmc_ip"),
+                    bmc_mac=self.port_state.get("bmc_mac"),
+                )
+            except Exception:
+                log.exception("vendor_export.update failed for %s/%s",
+                              self.switch, self.port)
