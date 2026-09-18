@@ -58,3 +58,6 @@ node_modules/
 
 # stray root duplicate of flax_{post,control}/static/flax-logo.svg
 /flax-logo.svg
+
+# unlock-with-ubuntu station bundle -- a build artifact (like post.tgz), never committed
+unlock-with-ubuntu*.tgz
