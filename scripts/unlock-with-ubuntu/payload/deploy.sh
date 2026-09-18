@@ -41,9 +41,17 @@ mkdir -p /etc/flax
 if [ ! -f /etc/flax/mezz-flash.conf ]; then
     cat > /etc/flax/mezz-flash.conf <<'EOF'
 # Cards the station must never flash, as bus:device or a full BDF, space
-# separated. Cards holding an IPv4 address are skipped automatically; this is
-# for one that is unaddressed at boot but still must not be touched.
+# separated. Cards holding an IPv4 address are skipped automatically, but only
+# once DHCP has run -- and the unit does not wait for the network, because a
+# deployed station has none. Pin anything that matters here rather than relying
+# on that. A deployed blade has only the mezzanine card, so this is normally
+# empty; it exists for development nodes carrying a PCIe uplink.
 PROTECT_PCI=""
+
+# Power the node off when the run completes, after lighting IDENT. The blade is
+# pulled live on every cycle, so without this the rootfs is hard-cut every time.
+# Set to 0 on a development node to keep it up and sshable for reading logs.
+SHUTDOWN_ON_DONE="1"
 EOF
 fi
 

@@ -38,6 +38,9 @@ exec > >(tee -a "$log") 2>&1
 echo "=== unlock_mellanox.sh $(date -u +%FT%TZ) ==="
 [ -f MANIFEST ] && cat MANIFEST
 
+# PROTECT_PCI is read by mezz_select.py; SHUTDOWN_ON_DONE is read here.
+[ -f /etc/flax/mezz-flash.conf ] && . /etc/flax/mezz-flash.conf
+
 # globals consumed by common_mellanox.sh's domstflint
 allow_psid_change=1
 no_fw_ctrl=0
@@ -150,3 +153,24 @@ ipmitool chassis policy always-on || true
 echo "DONE -- lighting identify (indefinite blink)"
 ipmitool chassis identify force
 echo "=== end $(date -u +%FT%TZ) ==="
+
+# Identify first, then power off -- the same order post.sh uses, where it is
+# known to survive the transition (the BMC runs on standby power, so the blink
+# outlives the host). Reversed, the blade goes dark before the LED is set and
+# the operator has no signal at all.
+#
+# NOT `ipmitool chassis power off`, which post.sh uses: that is an immediate
+# hard off, harmless there because post runs from a RAM-based live ISO with no
+# disk to dirty. This station has a real rootfs that is otherwise hard-cut on
+# every blade pull, and avoiding that is the whole point of powering down.
+#
+# always-on is a resume-after-power-loss policy, not a "must always be on"
+# rule, so a deliberate shutdown does not fight it: re-seating the blade
+# re-applies power and the BMC brings the host back up.
+if [ "${SHUTDOWN_ON_DONE:-1}" = "1" ]; then
+    echo "powering off cleanly (rootfs stays consistent across the pull)"
+    sync
+    shutdown -h now
+else
+    echo "SHUTDOWN_ON_DONE=0 -- staying up (dev: log readable over ssh)"
+fi
