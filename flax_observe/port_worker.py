@@ -362,6 +362,10 @@ class PortWorker(threading.Thread):
         # bmc_kind_cached is the probe-result dict {kind, creds_used, ...};
         # persist only the kind string (never creds_used) under the clean key.
         resolved["bmc_kind"] = (self.port_state.get("bmc_kind_cached") or {}).get("kind")
+        # bmc_vendor: the firmware-vendor taxonomy that replaces bmc_kind.
+        # Both are emitted during the additive migration; bmc_kind is frozen.
+        resolved["bmc_vendor"] = (
+            self.port_state.get("bmc_kind_cached") or {}).get("vendor")
         # redfish_version: the BMC's Redfish service version (from the unauth
         # service root). bmc-fw uses the low OEM AMI version to recognise an
         # un-updatable board. Host-power-independent; None for non-redfish BMCs.

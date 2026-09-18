@@ -49,6 +49,7 @@ import subprocess
 import time as _time_mod
 
 from flax_observe import ll as ll_mod
+from flax_observe import bmc_vendor as _bmc_vendor
 
 log = logging.getLogger("flax-observe.state_machine")
 
@@ -186,8 +187,21 @@ def _kind_retry_due(cache):
             and _secs_since(cache.get("probed_at")) >= PRODUCT_NAME_RETRY_SECS)
 
 
+def _taxonomy_stale(cache):
+    """A cache written before the current taxonomy is ignored and re-probed.
+
+    The old values cannot be translated: a cached "openbmc" may be facebook or
+    phosphor and the distinction was never recorded. Without this, our fleet --
+    cached openbmc WITH a product_name, so neither _product_name_retry_due nor
+    _kind_retry_due ever fires -- would never re-probe and the vendor lane would
+    appear inert after deploy.
+    """
+    return (cache or {}).get("taxonomy_version") != _bmc_vendor.TAXONOMY_VERSION
+
+
 def _reprobe_due(cache):
-    return _product_name_retry_due(cache) or _kind_retry_due(cache)
+    return (_product_name_retry_due(cache) or _kind_retry_due(cache)
+            or _taxonomy_stale(cache))
 
 
 def _reprobe_kwargs(cache):
@@ -728,8 +742,10 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
         if (_prior_cache
                 and _prior_cache.get("for_mac") == mac
                 and _prior_cache.get("kind") in CONFIRMED_BMC_KINDS
+                and not _taxonomy_stale(_prior_cache)
                 and not _reprobe_due(_prior_cache)):
             probe = {"kind": _prior_cache.get("kind"),
+                     "vendor": _prior_cache.get("vendor"),
                      "product_name": _prior_cache.get("product_name"),
                      "creds_used": _prior_cache.get("creds_used"),
                      "redfish_version": _prior_cache.get("redfish_version"),
@@ -799,6 +815,8 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
         _probe = bmc_probe_by_mac[verdict.bmc_mac]
         port_state["bmc_kind_cached"] = {
             "kind": _probe.get("kind"),
+            "vendor": _probe.get("vendor", _bmc_vendor.UNKNOWN),
+            "taxonomy_version": _bmc_vendor.TAXONOMY_VERSION,
             "creds_used": _probe.get("creds_used"),
             "product_name": _probe.get("product_name"),
             "redfish_version": _probe.get("redfish_version"),
@@ -948,6 +966,8 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
                 probe_host, credentials, bmc_creds, redfish_creds=redfish_creds,
                 **({} if mac_changed else _reprobe_kwargs(cache)))
             cache = {"kind": probe["kind"],
+                     "vendor": probe.get("vendor", _bmc_vendor.UNKNOWN),
+                     "taxonomy_version": _bmc_vendor.TAXONOMY_VERSION,
                      "creds_used": probe["creds_used"],
                      "product_name": probe.get("product_name"),
                      "redfish_version": probe.get("redfish_version"),

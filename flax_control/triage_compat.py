@@ -153,6 +153,7 @@ def observe_row_to_triage_status(row: dict[str, Any], *, ou: str) -> dict[str, A
         # Platform fields for the BMC-FW updater (additive; legacy UI ignores them).
         "product_name":       resolved.get("product_name") or "unknown",
         "bmc_kind":           resolved.get("bmc_kind") or "unknown",
+        "bmc_vendor":         resolved.get("bmc_vendor") or "unknown",
         # redfish_version: BMC Redfish service version (unauth service root,
         # host-power-independent). bmc-fw keys on the low OEM AMI version to
         # recognise an un-updatable board. "" when absent (non-redfish BMCs).
