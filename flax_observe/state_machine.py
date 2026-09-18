@@ -559,6 +559,57 @@ def _ensure_inband_admin_configured(
 # 12-var per-port state machine
 # ---------------------------------------------------------------------------
 
+def _power_transport(vendor, kind):
+    """Which transport reads a BMC's power (+ watts): "ipmi", "ssh" or None.
+
+    Pure decision, no I/O. Routes on the VENDOR CAPABILITY table rather than
+    the old `kind == "openbmc"` / `kind == "traditional"` label comparison,
+    which sent Phosphor boards -- perfectly capable of IPMI -- down the ssh
+    path that reads power state and never the SDR, so their watts were never
+    read at all.
+
+      ipmi == FULL (phosphor, ami_legacy) -> "ipmi": one RMCP+ session reads
+          power status AND the SDR (watts).
+      else ssh == FULL (facebook)         -> "ssh": power state only; no
+          wattage is a property of that firmware, not a failure.
+
+    Vendor UNKNOWN (or missing from a pre-taxonomy cache): LEGACY FALLBACK on
+    the frozen kind label -- openbmc -> "ssh", traditional -> "ipmi", anything
+    else -> None -- so a board whose vendor could not be read (e.g. a flaky
+    os-release marker) keeps today's exact behaviour instead of losing its
+    power reads until restart. This fallback goes away in phase 5 together
+    with bmc_kind.
+    """
+    if vendor in _bmc_vendor.VENDORS:
+        caps = _bmc_vendor.caps_for(vendor)
+        if caps.ipmi == _bmc_vendor.FULL:
+            return "ipmi"
+        if caps.ssh == _bmc_vendor.FULL:
+            return "ssh"
+        return None
+    if kind == "openbmc":
+        return "ssh"
+    if kind == "traditional":
+        return "ipmi"
+    return None
+
+
+def _serial_via_ssh(vendor, kind):
+    """True when the chassis serial comes from the ssh FRU chain.
+
+    The serial source is deliberately NOT moved with the power transport: the
+    ssh chain reads `fru print 0` (baseboard only) while the LAN
+    chassis_serial_traditional reads `ipmitool fru` (ALL FRU devices) and can
+    pick up a non-baseboard Product Serial, which would silently change tile
+    serials and inventory matching. So any vendor with ssh (phosphor,
+    facebook) keeps the ssh chain; an UNKNOWN vendor falls back on the frozen
+    kind (openbmc -> ssh), same as _power_transport.
+    """
+    if vendor in _bmc_vendor.VENDORS:
+        return _bmc_vendor.caps_for(vendor).ssh == _bmc_vendor.FULL
+    return kind == "openbmc"
+
+
 def port_worker_one_iter(port_state, switch_facts, emit_event, env):
     """Run one polling iteration of the 12-var state machine for one port.
 
@@ -1015,21 +1066,14 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
         sn = None
         pwr = "unknown"
         watts = None
-        if kind == "openbmc" and creds_used:
+        # Transport is chosen by vendor capability (see _power_transport);
+        # the serial source by the ssh capability (see _serial_via_ssh).
+        vendor = cache.get("vendor") or _bmc_vendor.UNKNOWN
+        transport = _power_transport(vendor, kind) if creds_used else None
+        serial_via_ssh = _serial_via_ssh(vendor, kind)
+        if transport == "ssh":
             pwr = _bmc_power_status_openbmc(probe_host, creds_used)
-            sn = _chassis_serial_openbmc(probe_host, creds_used)
-            # Some openbmc BMCs (e.g. Tioga Pass) do not expose chassis
-            # or product serial via the SSH FRU path that
-            # chassis_serial_openbmc uses, but DO expose them via
-            # traditional IPMI on UDP:623. Walk bmc_creds for a working
-            # pair before giving up.
-            if sn is None:
-                for c in bmc_creds:
-                    sn = _chassis_serial_traditional(
-                        bmc_ip, (c["bmcuser"], c["bmcpass"]))
-                    if sn is not None:
-                        break
-        elif kind == "traditional" and creds_used:
+        if transport == "ipmi":
             # Mitigation 1: skip if soltriage holds an SOL session on this
             # BMC -- competing RMCP+ sessions evict the SOL slot on AMI
             # MegaRAC's small (4-8 slot) session table.
@@ -1051,10 +1095,28 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
                 # chassis. Once latched, skip the refetch every cycle --
                 # saves one RMCP+ session per poll. Hardware swap clears
                 # chassis_sn above (mac_changed branch), forcing refetch.
-                if port_state.get("chassis_sn") and not mac_changed:
+                # (A vendor with ssh reads its serial over ssh below instead.)
+                if serial_via_ssh:
+                    pass
+                elif port_state.get("chassis_sn") and not mac_changed:
                     sn = None  # latch keeps the existing value below
                 else:
                     sn = _chassis_serial_traditional(bmc_ip, creds_used)
+        # Serial over ssh runs AFTER the IPMI block, and also on a SOL-active
+        # skip: ssh does not touch the BMC's RMCP+ session table.
+        if transport is not None and serial_via_ssh:
+            sn = _chassis_serial_openbmc(probe_host, creds_used)
+            # Some openbmc BMCs (e.g. Tioga Pass) do not expose chassis
+            # or product serial via the SSH FRU path that
+            # chassis_serial_openbmc uses, but DO expose them via
+            # traditional IPMI on UDP:623. Walk bmc_creds for a working
+            # pair before giving up.
+            if sn is None:
+                for c in bmc_creds:
+                    sn = _chassis_serial_traditional(
+                        bmc_ip, (c["bmcuser"], c["bmcpass"]))
+                    if sn is not None:
+                        break
 
         # Latch decision: while the BMC is identified (chassis_sn latched)
         # and still pingable (bmcping=ok), a single failed IPMI power poll
