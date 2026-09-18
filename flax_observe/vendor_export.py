@@ -26,6 +26,15 @@ that already has the file open (or another bind-mount view of it) pinned to a
 stale snapshot. So writes are IN PLACE: the whole store is serialized to a
 string first, then a single truncate+write -- no temp file, no rename.
 
+Consequence for readers: truncate+write is NOT atomic from a concurrent
+reader's point of view. A reader that opens/reads this file at exactly the
+wrong instant can see it empty (right after truncate, before the write lands)
+or partial/malformed JSON (mid-write). This is a normal, expected race given
+the write strategy above, not a bug to fix here. A consumer must treat a
+`json.loads` failure (or a suspiciously-empty read) as "retry shortly", never
+as "there are no rows" -- the file has real content almost all the time; the
+race window is a single write() call.
+
 `updated_at` is "when the vendor/ip/mac last CHANGED", not "when this port was
 last seen". Workers cycle every ~10s across ~80 ports; rewriting the file on
 every cycle for rows that haven't changed would mean constant disk I/O and
@@ -56,10 +65,12 @@ should prefer the newest `updated_at`, e.g.:
         /etc/flax/bmc_vendor.json
 
 Freshness note: flax-observe runs only on the bang currently holding the MGMT
-VIP (flax-observe.service's ExecStartPre VIP-gate). The standby bang's copy of
-this file is whatever the last master happened to write there before losing
-the VIP -- which may be an empty `{}` if it was never master. Do not read this
-file on the standby and expect it to be current.
+VIP (flax-observe.service's ExecStartPre VIP-gate). With a `--limit
+bang-gouda` deploy, the standby (bang-edam) has NO file at all -- it has never
+run the code that writes it, and runs the old unit instead. It does not hold
+"possibly `{}`"; that would imply a version of flax-observe ran there and
+wrote an empty store, which has not happened. Do not read this file on the
+standby and expect it to exist, let alone be current.
 """
 import json
 import logging

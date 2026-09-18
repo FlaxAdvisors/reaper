@@ -188,13 +188,23 @@ def _kind_retry_due(cache):
 
 
 def _taxonomy_stale(cache):
-    """A cache written before the current taxonomy is ignored and re-probed.
+    """A cache stamped with an older taxonomy version is ignored and re-probed
+    once.
 
-    The old values cannot be translated: a cached "openbmc" may be facebook or
-    phosphor and the distinction was never recorded. Without this, our fleet --
-    cached openbmc WITH a product_name, so neither _product_name_retry_due nor
-    _kind_retry_due ever fires -- would never re-probe and the vendor lane would
-    appear inert after deploy.
+    NOT what makes a deploy re-probe: `bmc_kind_cached` lives only in
+    `PortWorker.port_state` (in-memory), and `PortWorker._hydrate` does not
+    restore it from the persisted `observe_state` row -- unlike `vars`,
+    `nic_mac`, `bmc_mac`, `chassis_sn` and `product_name`, which it does
+    restore. So every process restart already starts every port with no cache
+    at all and re-probes regardless of this check; a deploy re-probing is a
+    consequence of that, not of this stamp. This stamp is future-proofing for
+    two cases that do not exist today: a `bmc_kind_cached` that is later made
+    to persist or hydrate across a restart, and a taxonomy-version bump that
+    lands in an already-running process with no restart at all.
+
+    The old values cannot be translated either way: a cached "openbmc" may be
+    facebook or phosphor and the distinction was never recorded, so migration
+    is by re-probe, never by data backfill.
     """
     return (cache or {}).get("taxonomy_version") != _bmc_vendor.TAXONOMY_VERSION
 
