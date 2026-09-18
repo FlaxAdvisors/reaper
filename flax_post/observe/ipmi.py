@@ -1,5 +1,5 @@
 # flax_post/observe/ipmi.py
-"""Owned IPMI producer: serial(FRU) · power · HSC watts · SDR · SEL + liveness ping.
+"""Owned IPMI producer: serial(FRU ID 0) · power · HSC watts · SDR · SEL + liveness ping.
 
 Mirrors flax_observe.ipmi / flax_observe.bmc_probe (kept flax_post-self-contained
 per the no-cross-import rule, like flax_post/fwd/creds.py). One pass writes the
@@ -16,6 +16,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 from .. import queries, records, state
 from ..fwd import creds as _creds
+from . import family_map_live as _fm_live
+from . import fru as _fru
 
 log = logging.getLogger("flax-post.ipmi")
 
@@ -59,6 +61,14 @@ BMC_CREDS_PATH = os.environ.get("FLAX_POST_BMC_CREDS", "/etc/flax/credentials-bm
 # NOT the USERID credentials-bmc.json. Absent/empty -> no fallback (eindhoven, whose
 # post boards all answer IPMI, never mounts it).
 REDFISH_CREDS_PATH = os.environ.get("FLAX_POST_REDFISH_CREDS", "/etc/flax/credentials-redfish.json")
+
+# FRU ID 0 only (spec 2026-09-14-fru-id0-only §6.1): the blade's identity and
+# board come from `ipmitool fru print 0`; a FRU 0 that is absent ("Device not
+# present") is read again, 2 s apart, before it counts as absent.
+FRU0_READS = 3
+FRU0_RETRY_S = 2.0
+_FRU0 = ["fru", "print", "0"]
+_sleep = time.sleep
 
 
 def _load_redfish_creds(path=None):
@@ -150,42 +160,6 @@ def _default_ping(ip, timeout=1):
         return False
 
 
-def _serial_from_fru(text):
-    """Product/Chassis Serial, skipping empty multi-FRU lines (mirrors bmc_probe)."""
-    for needle in ("Product Serial", "Chassis Serial"):
-        for line in text.splitlines():
-            if needle in line:
-                v = line.split(":", 1)[1].strip()
-                if v:
-                    return v
-    return None
-
-
-def _product_serial_from_fru(text):
-    """The slot occupant's identity: the "Product Serial" of the Builtin FRU
-    Device (ID 0) block only. A dump whose ID 0 block is missing or carries no
-    Product Serial ("Device not present") yields None — never another device's
-    serial (the HPE 640SFP28 NIC FRU has its own Product Serial). Text with no
-    "FRU Device Description" headers at all (`fru print 0`, fixtures) is the
-    baseboard. No Chassis Serial fallback (a lot number shared across blades) and
-    never a Redfish serial — spec 2026-09-14-post-occupant-reset §3."""
-    lines = (text or "").splitlines()
-    if any(line.startswith("FRU Device Description") for line in lines):
-        block, inside = [], False
-        for line in lines:
-            if line.startswith("FRU Device Description"):
-                inside = "(ID 0)" in line
-            elif inside:
-                block.append(line)
-        lines = block
-    for line in lines:
-        if ":" in line:
-            k, v = line.split(":", 1)
-            if k.strip() == "Product Serial" and v.strip():
-                return v.strip()
-    return None
-
-
 def _parse_power(text):
     o = text.lower()
     return "on" if "is on" in o else ("off" if "is off" in o else "unknown")
@@ -239,72 +213,79 @@ def _parse_sel(text):
     return out
 
 
-def _parse_fru(text):
-    """Full FRU dump -> {field: value}. Duplicate field names across multi-FRU
-    output collapse last-wins — deterministic for the same text, which is all
-    the inventory content-hash dedupe needs."""
-    out = {}
-    for line in text.splitlines():
-        if ":" not in line:
-            continue
-        k, v = line.split(":", 1)
-        k, v = k.strip(), v.strip()
-        if k and v:
-            out[k] = v
-    return out
+def _read_fru0(ip, user, password, ipmi_runner, family_map):
+    """(text, read_baseboard dict) of `ipmitool fru print 0`, re-read while
+    absent. Raises when the BMC does not answer the first read."""
+    text, bb = "", None
+    for attempt in range(FRU0_READS):
+        if attempt:
+            _sleep(FRU0_RETRY_S)
+        try:
+            t = ipmi_runner(ip, user, password, list(_FRU0))
+        except Exception:
+            if bb is None:
+                raise
+            break
+        text, bb = t, _fru.read_baseboard(t, family_map)
+        if bb["state"] != "absent":
+            break
+    return text, bb
 
 
-def bmc_data_check(ip, creds, ipmi_runner, ping) -> "dict | None":
-    """The slot ladder's bmc-ready evidence (ruling 2026-09-12): the BMC answers
-    ping AND `ipmitool fru` returns the board identity the population rules
-    are built on. {board_mfg, product, serial} on success, None otherwise —
-    a BMC that pings but has not brought IPMI back yet is None."""
+def _fru0_fields(text):
+    """FRU ID 0's fields (first non-empty value per key); {} when absent.
+    The work-record inventory payload: never the NIC / M.2 blocks."""
+    for b in _fru.fru_blocks(text):
+        if b["id"] == 0:
+            return dict(b["fields"]) if b["present"] else {}
+    return {}
+
+
+def _family_map(family_map):
+    return _fm_live.current() if family_map is None else family_map
+
+
+def bmc_data_check(ip, creds, ipmi_runner, ping, family_map=None) -> "dict | None":
+    """The slot ladder's bmc-ready evidence (ruling 2026-09-12; FRU ID 0 only
+    2026-09-14): the BMC answers ping AND `ipmitool fru print 0`. Returns the
+    fru.read_baseboard dict whenever IPMI answered -- state ok, no_serial, or
+    absent after FRU0_READS reads -- and None only for no ping or no answer
+    from any credential. The ladder decides what each state means."""
     if not ip or not ping(ip):
         return None
+    fm = _family_map(family_map)
     for c in creds or []:
         try:
-            text = ipmi_runner(ip, c["bmcuser"], c["bmcpass"], ["fru"])
+            _text, bb = _read_fru0(ip, c["bmcuser"], c["bmcpass"], ipmi_runner, fm)
         except Exception:
             continue
-        # The BASEBOARD is the first FRU device in the dump; _parse_fru is
-        # last-wins across devices (NIC, M.2 adapter) and would name the wrong
-        # board. The serial can come from any block (Product, else Chassis).
-        board = _first_fru_field(text, "Board Mfg")
-        product = _first_fru_field(text, "Board Product") or _first_fru_field(text, "Product Name")
-        fru = _parse_fru(text)
-        serial = fru.get("Product Serial") or fru.get("Chassis Serial")
-        if board and serial:
-            return {"board_mfg": board, "product": product or "", "serial": serial}
+        return bb
     return None
 
 
-def _first_fru_field(text, key):
-    for line in text.splitlines():
-        if ":" in line:
-            k, v = line.split(":", 1)
-            if k.strip() == key and v.strip():
-                return v.strip()
-    return None
-
-
-def probe_blade(ip, creds, ipmi_runner, redfish_client=None):
+def probe_blade(ip, creds, ipmi_runner, redfish_client=None, family_map=None):
     """All IPMI fields for one BMC, best-effort; first working credential wins.
 
-    When IPMI answers nothing (a Redfish-only AMI board — no IPMI, or MegaRAC
-    session exhaustion), the optional redfish_client fills the fields IPMI could
-    not read (serial, power). IPMI stays the primary path; Redfish is a pure
-    fallback, so a working IPMI board never touches it (no regression)."""
+    serial and product_serial (the occupant identity) are the ship serial of
+    FRU ID 0 (fru.read_baseboard; None when FRU 0 is absent or has no ship
+    serial -- never another FRU device's). `fru` is FRU 0's fields only.
+
+    When IPMI answers nothing at all (a Redfish-only AMI board), the optional
+    redfish_client fills serial and power. A board whose FRU 0 was read never
+    gets a Redfish serial, and product_serial is never Redfish."""
     result = {"serial": None, "power_on": None, "watts": None, "sdr": {},
               "sel": [], "fru": {}, "product_serial": None}
+    fm = _family_map(family_map)
+    answered = False
     for c in creds:
         u, p = c["bmcuser"], c["bmcpass"]
         try:
-            fru_txt = ipmi_runner(ip, u, p, ["fru"])
-            result["serial"] = _serial_from_fru(fru_txt)
-            result["product_serial"] = _product_serial_from_fru(fru_txt)
-            result["fru"] = _parse_fru(fru_txt)
+            text, bb = _read_fru0(ip, u, p, ipmi_runner, fm)
         except Exception:
             continue
+        answered = True
+        result["serial"] = result["product_serial"] = bb["serial"]
+        result["fru"] = _fru0_fields(text)
         try:
             combined_txt = _power_and_sdr(ip, u, p, ipmi_runner)
             result["power_on"] = _parse_power(combined_txt)
@@ -317,16 +298,17 @@ def probe_blade(ip, creds, ipmi_runner, redfish_client=None):
         except Exception:
             pass
         break                       # first working cred wins
-    _redfish_fill(result, redfish_client)
+    _redfish_fill(result, redfish_client, serial=not answered)
     return result
 
 
-def _redfish_fill(result, redfish_client):
+def _redfish_fill(result, redfish_client, serial=True):
     """Backfill serial/power/watts from Redfish for fields IPMI left unread. No-op
-    when IPMI already supplied them (fallback only) or no client is configured."""
+    when IPMI already supplied them (fallback only) or no client is configured.
+    serial=False when FRU 0 was read: its answer (even no serial) is final."""
     if redfish_client is None:
         return
-    if not result.get("serial"):
+    if serial and not result.get("serial"):
         try:
             s, _ = redfish_client.get_serial()
             if s:
