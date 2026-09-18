@@ -20,7 +20,12 @@
 # Pass/fail is NOT distinguishable at the rack by design (operator decision):
 # a failure shows up later as a card whose lock is still set when it goes into
 # service. The log is the record; read it over ssh while a working NIC is in.
-set -u
+# NO `set -u`. common_mellanox.sh is shared verbatim with the post lane and its
+# domstflint() assigns binfile=$3 while getdevinfo() calls it with two args --
+# fatal under -u. That cost the first three live runs on 2026-09-18: every card
+# query died, nothing was flashed, and IDENT still blinked "done", so a card
+# went back into service still locked. update_mellanox.sh has always run
+# without -u; the station matches it. See tests/test_unlock_shell_compat.py.
 
 here=$(cd "$(dirname "$0")" && pwd)
 cd "$here" || exit 1
