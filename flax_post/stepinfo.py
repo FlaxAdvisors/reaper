@@ -123,17 +123,31 @@ def _discover(rec, row, step, status):
     elif step == "bmc-ready":
         fru = lad.get("bmc_fru") or {}
         mark = marks.get("bmcready")
+        state = fru.get("state")
+        field = fru.get("serial_field") or "Product Serial"
+        fru0 = {"ok": "ok", "no_serial": "no ship serial",
+                "absent": "not present: %s" % (fru.get("reason") or "no FRU 0")}.get(state)
+        if fru0 is None:
+            fru0 = "read" if fru else "not read"
+        board = ("%s %s" % (fru.get("board_mfg") or "", fru.get("board_product") or fru.get("product") or "")).strip()
         rows = [["BMC IP", rec.get("bmc_ip") or "none"], ["BMC ping", _yn(rec.get("bmc_pinged"))],
                 ["data read at", _t(mark) or "not yet"],
                 ["after power-on", ("+" + _dur(p_on, mark)) if (mark and p_on) else ""],
-                ["board", ("%s %s" % (fru.get("board_mfg", ""), fru.get("product", ""))).strip() or "not read"],
-                ["FRU serial", fru.get("serial") or "not read"],
+                ["board", board or "not read"],
+                ["FRU 0", fru0],
+                ["serial (%s)" % field, fru.get("serial") or ("empty" if state == "no_serial" else "not read")],
+                ["family", fru.get("family") or ("unknown" if state in ("ok", "no_serial") else "")],
                 ["budget", "%s s" % blades.bmc_ready_budget_s(len(lad.get("bmc_ready_attempts") or []))],
                 ["retries", "%d of %d" % (len(lad.get("bmc_ready_attempts") or []),
                                           len(blades.bmc_ready_retry_budgets()))]]
         notes.append("the BMC goes dark for 60-100 s after the chassis power-on and comes back in stages (ping before IPMI); "
                      "nothing that reads it (firmware probe, the agent's FRU/SEL/SDR stages, the population rules) starts before "
-                     "it answers `ipmitool fru` with a board manufacturer and a serial")
+                     "it answers `ipmitool fru print 0` with the blade's own FRU (ID 0); the NIC and M.2 FRU devices never count")
+        if state == "absent":
+            notes.insert(0, "the BMC answers but has no FRU 0 (%s): it is read again until the retries run out, then the rung faults"
+                         % (fru.get("reason") or "no FRU 0 block"))
+        elif state == "no_serial":
+            notes.insert(0, "FRU 0 has no %s: the run continues, and the population check fails it (do not ship)" % field)
     elif step in ("host-pinged", "host-ssh"):
         key = "ping" if step == "host-pinged" else "ssh"
         mark = marks.get(key)

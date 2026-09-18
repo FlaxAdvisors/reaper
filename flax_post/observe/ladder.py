@@ -245,9 +245,16 @@ def advance(ladder, snap, evidence, now):
     if rung == "bmc-ready":
         # Ruling 2026-09-12: no agent and no BMC-side probe until the BMC has
         # proven it answers a real data read (ping alone lies for ~a minute
-        # after the chassis power-on). The evidence is the FRU identity the
-        # population rules depend on; it is kept on the slice for the modal.
+        # after the chassis power-on). The evidence is FRU ID 0 (spec
+        # 2026-09-14-fru-id0-only §6.1): ok and no_serial pass (a missing ship
+        # serial fails the population check later); absent does NOT pass --
+        # it is kept on the slice for the modal and the fault text.
         data = ev.get("bmcdata")
+        if isinstance(data, dict) and data.get("state") == "absent":
+            lad["bmc_fru"] = dict(data)
+            data = None
+        elif not data and (lad.get("bmc_fru") or {}).get("state") == "absent":
+            lad.pop("bmc_fru")          # the latest evidence is "not answering", not "absent"
         if data:
             lad["marks"]["bmcready"] = now
             lad["bmc_fru"] = dict(data) if isinstance(data, dict) else {}
@@ -266,8 +273,14 @@ def advance(ladder, snap, evidence, now):
                 lad["since"] = now
             else:
                 total = sum(a.get("waited_s") or 0 for a in attempts) + waited
-                lad = fault(lad, rung, "BMC not answering data reads after %d attempts (%ds)"
-                            % (len(attempts) + 1, total), now)
+                last = lad.get("bmc_fru") or {}
+                if last.get("state") == "absent":
+                    reason = "FRU 0 not present after %d attempts (%ds): %s" % (
+                        len(attempts) + 1, total, last.get("reason") or "no FRU 0")
+                else:
+                    reason = "BMC not answering data reads after %d attempts (%ds)" % (
+                        len(attempts) + 1, total)
+                lad = fault(lad, rung, reason, now)
         return lad, acts
 
     if rung == "fw-gates":
