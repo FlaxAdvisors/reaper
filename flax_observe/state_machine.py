@@ -1077,7 +1077,16 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
             # Mitigation 1: skip if soltriage holds an SOL session on this
             # BMC -- competing RMCP+ sessions evict the SOL slot on AMI
             # MegaRAC's small (4-8 slot) session table.
-            if _sol_active(bmc_ip):
+            if (_bmc_vendor.caps_for(vendor).ssh == _bmc_vendor.FULL
+                    and (not bmc_ip or _sol_active(bmc_ip))):
+                # A vendor that ALSO has ssh (phosphor) does not skip: with no
+                # IPv4 bmc_ip (link-local-only reach) or a live SOL session, it
+                # reads power over ssh on probe_host instead -- live, no RMCP+
+                # session, watts None. Nothing is skipped, so no
+                # sol_active_skip event. ami_legacy (ssh NONE) and unknown
+                # vendors never enter here.
+                pwr = _bmc_power_status_openbmc(probe_host, creds_used)
+            elif _sol_active(bmc_ip):
                 emit_event({
                     "kind": "sol_active_skip",
                     "switch": switch,
