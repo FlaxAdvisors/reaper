@@ -195,7 +195,7 @@ apply_flax_observe_image_tag: "0.9.159"  # 0.9.159 = bmc_vendor phase 1: probe e
 apply_flax_reconcile_image_tag: "0.9.132"  # LIVE tag; 0.9.133/0.9.134 carry only post changes and were not rolled to core (a flax_stack roll bounces postgres)
 apply_flax_switch_sense_image_tag: "0.9.132"  # LIVE tag; 0.9.133/0.9.134 carry only post changes and were not rolled to core (a flax_stack roll bounces postgres)
 apply_flax_discover_image_tag: "0.9.132"  # LIVE tag; 0.9.133/0.9.134 carry only post changes and were not rolled to core (a flax_stack roll bounces postgres)
-apply_flax_stack_flax_control_image_tag: "0.9.132"  # LIVE tag; 0.9.133/0.9.134 carry only post changes and were not rolled to core (a flax_stack roll bounces postgres)
+apply_flax_stack_flax_control_image_tag: "0.9.159"  # 0.9.159 = console serves bmc_vendor in the per-port row (hand-rolled 2026-09-18 per build-and-deploy §7, --no-deps, postgres untouched); only flax_control change since 0.9.132; previously: LIVE tag; 0.9.133/0.9.134 carry only post changes and were not rolled to core (a flax_stack roll bounces postgres)
 # SOL console (flax-post-sol Node relay + flax_post/web SOL modal), 2026-07-10.
 apply_flax_post_sol_image_tag: "0.9.119"  # 0.9.119 = mark always relaunches SOL; auto-relaunch on ipmitool drop messages; browser client reconnects forever + idle indicator
 apply_flax_post_ladder_ports: ""  # every slot: the engine power-on was proven on et8b4 2026-09-11 and every guard held on the other 46 for 3 h
