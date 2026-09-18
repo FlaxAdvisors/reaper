@@ -30,6 +30,7 @@ import subprocess
 import tempfile
 import time
 
+from . import bmc_vendor as _bmc_vendor
 from .ipmi import _default_ipmi_runner
 
 log = logging.getLogger("flax-observe.bmc_probe")
@@ -55,6 +56,11 @@ _FRU_CHAIN = ("ipmitool fru print 0 2>/dev/null"
               " || /usr/local/fbpackages/fruid/fruid-util iom 2>/dev/null"
               " || weutil 2>/dev/null"
               " || true")
+
+# Second classification signal, read in the same ssh session as os-release.
+# Facebook OpenBMC ships the /usr/local/bin/*-util family; Phosphor does not.
+# Verified absent on eindhoven et6b1 and braintree et8b1, 2026-09-18.
+_FB_UTILS_PROBE = ("test -x /usr/local/bin/fruid-util && echo yes || echo no")
 
 # Redfish identification transport. BMCs ship self-signed certs + legacy
 # ciphers, so verification is off and SECLEVEL is lowered -- identical to
@@ -222,7 +228,13 @@ def probe_bmc_kind(ip, credentials, bmc_creds,
     """Identify what kind of BMC sits at `ip`.
 
     Returns {"kind": "openbmc"|"traditional"|"redfish"|"unknown",
+             "vendor": "ami_legacy"|"facebook"|"phosphor"|"unknown",
              "product_name": str|None, "creds_used": (user, pass)|None}.
+
+    `kind` is FROZEN and deprecated -- it mixes axes (a capability, a protocol
+    and a vendor) and cannot distinguish an AMI OEM board from a Phosphor one.
+    `vendor` is the replacement; see flax_observe/bmc_vendor.py. Both are
+    emitted until every consumer has moved.
 
     Strategy (first positive identification wins):
       1. Probe TCP:22 + UDP:623 + TCP:443 to fast-fail non-BMC IPs.
@@ -275,7 +287,19 @@ def probe_bmc_kind(ip, credentials, bmc_creds,
                     # Some Tioga Pass BMCs answer "Device not present" to the
                     # on-BMC FRU read while LAN IPMI serves the same FRU 0.
                     pn = _lan_fru_product_name(ip, bmc_creds, ipmi_runner)
-                return {"kind": "openbmc", "product_name": pn,
+                # Second signal. None (not False) when the probe could not run:
+                # bmc_vendor.vendor_from_probe treats that as UNKNOWN rather
+                # than assuming absence, because Facebook OpenBMC may report the
+                # same ID= as Phosphor and must never be routed to IPMI.
+                fb_present = None
+                try:
+                    _fb = ssh_runner(ip, credentials["obmcuser"],
+                                     credentials["obmcpass"], _FB_UTILS_PROBE)
+                    fb_present = "yes" in (_fb or "").lower()
+                except Exception:
+                    fb_present = None
+                vendor = _bmc_vendor.vendor_from_probe(rel, fb_present)
+                return {"kind": "openbmc", "vendor": vendor, "product_name": pn,
                         "creds_used": (credentials["obmcuser"],
                                        credentials["obmcpass"])}
         except Exception:
@@ -286,7 +310,9 @@ def probe_bmc_kind(ip, credentials, bmc_creds,
             try:
                 fru = ipmi_runner(ip, c["bmcuser"], c["bmcpass"], ["fru"])
                 pn = _parse_fru_product_name(fru)
-                return {"kind": "traditional", "product_name": pn,
+                return {"kind": "traditional",
+                        "vendor": _bmc_vendor.AMI_LEGACY,
+                        "product_name": pn,
                         "creds_used": (c["bmcuser"], c["bmcpass"])}
             except Exception:
                 continue
@@ -307,11 +333,13 @@ def probe_bmc_kind(ip, credentials, bmc_creds,
             # `and creds_used` -- correctly no-ops rather than flailing at a
             # BMC we hold no working credential for.
             return {"kind": "redfish",
+                    "vendor": _bmc_vendor.AMI_LEGACY,
                     "product_name": info.get("product_name"),
                     "creds_used": None,
                     "redfish_version": info.get("redfish_version")}
 
-    return {"kind": "unknown", "product_name": None, "creds_used": None}
+    return {"kind": "unknown", "vendor": _bmc_vendor.UNKNOWN,
+            "product_name": None, "creds_used": None}
 
 
 def _lan_fru_product_name(ip, bmc_creds, ipmi_runner):
