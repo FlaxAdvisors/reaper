@@ -45,7 +45,7 @@ def current(path=None):
             else:
                 try:
                     fm = load_family_map_dir(path)
-                except (OSError, re.error):
+                except (OSError, re.error, ValueError):
                     fm = _cache["map"] if _cache["path"] == path else {}
             _cache.update(path=path, mtime=mtime, map=fm)
         return _cache["map"]
