@@ -57,10 +57,21 @@ _FRU_CHAIN = ("ipmitool fru print 0 2>/dev/null"
               " || weutil 2>/dev/null"
               " || true")
 
-# Second classification signal, read in the same ssh session as os-release.
+# os-release read, combined with the second classification signal in the SAME
+# ssh call -- not a separate third connection to dropbear. This used to be two
+# calls (os-release, then a standalone fb-utils probe); SSH_AFTER_PORT_PROBE_SECS
+# above documents that a loaded Tioga Pass's dropbear flakes under exactly a
+# rapid back-to-back-to-back connect pattern. If only that third call failed,
+# the result was kind=openbmc with a product_name already present -- so
+# neither _product_name_retry_due nor _kind_retry_due ever fires -- and
+# vendor=unknown latched forever with no retry predicate to ever fire and
+# correct it. Folding the two reads into one call (2026-09-18) removes that
+# failure mode and the extra up-to-SSH_TIMEOUT_SECS latency per openbmc probe.
 # Facebook OpenBMC ships the /usr/local/bin/*-util family; Phosphor does not.
 # Verified absent on eindhoven et6b1 and braintree et8b1, 2026-09-18.
-_FB_UTILS_PROBE = ("test -x /usr/local/bin/fruid-util && echo yes || echo no")
+_OS_RELEASE_CMD = ("cat /etc/os-release; "
+                   "test -x /usr/local/bin/fruid-util "
+                   "&& echo FLAX_FBUTILS=yes || echo FLAX_FBUTILS=no")
 
 # Redfish identification transport. BMCs ship self-signed certs + legacy
 # ciphers, so verification is off and SECLEVEL is lowered -- identical to
@@ -161,6 +172,26 @@ def _parse_fru_product_name(fru_text):
         k, v = line.split(":", 1)
         if k.strip() == "Product Name":
             return v.strip()
+    return None
+
+
+def _parse_fb_utils_marker(text):
+    """True/False/None for the FLAX_FBUTILS= marker appended to the combined
+    os-release ssh command's output (see _OS_RELEASE_CMD).
+
+    None means the marker line itself is missing from the read -- a truncated
+    read, or any shell oddity that swallowed the second half of the command --
+    and must be treated as 'could not determine', never as 'confirmed absent'.
+    bmc_vendor.vendor_from_probe treats fb_utils_present=None as UNKNOWN, not a
+    guess from the os-release ID alone: Facebook OpenBMC may report the same
+    ID= as Phosphor and must never be routed to IPMI it does not serve.
+    """
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if line == "FLAX_FBUTILS=yes":
+            return True
+        if line == "FLAX_FBUTILS=no":
+            return False
     return None
 
 
@@ -273,7 +304,7 @@ def probe_bmc_kind(ip, credentials, bmc_creds,
             _sleep(max(0.0, SSH_AFTER_PORT_PROBE_SECS - (_monotonic() - probed_at)))
         try:
             rel = ssh_runner(ip, credentials["obmcuser"],
-                             credentials["obmcpass"], "cat /etc/os-release")
+                             credentials["obmcpass"], _OS_RELEASE_CMD)
             if "openbmc" in rel.lower():
                 pn = None
                 try:
@@ -287,17 +318,15 @@ def probe_bmc_kind(ip, credentials, bmc_creds,
                     # Some Tioga Pass BMCs answer "Device not present" to the
                     # on-BMC FRU read while LAN IPMI serves the same FRU 0.
                     pn = _lan_fru_product_name(ip, bmc_creds, ipmi_runner)
-                # Second signal. None (not False) when the probe could not run:
-                # bmc_vendor.vendor_from_probe treats that as UNKNOWN rather
-                # than assuming absence, because Facebook OpenBMC may report the
-                # same ID= as Phosphor and must never be routed to IPMI.
-                fb_present = None
-                try:
-                    _fb = ssh_runner(ip, credentials["obmcuser"],
-                                     credentials["obmcpass"], _FB_UTILS_PROBE)
-                    fb_present = "yes" in (_fb or "").lower()
-                except Exception:
-                    fb_present = None
+                # Second classification signal, read in THIS SAME ssh call as
+                # os-release (_OS_RELEASE_CMD above) -- not a separate third
+                # connection to dropbear. A missing marker line (rather than an
+                # explicit FLAX_FBUTILS=no) means the second signal could not
+                # be determined, which bmc_vendor.vendor_from_probe treats as
+                # UNKNOWN rather than assuming absence, because Facebook
+                # OpenBMC may report the same ID= as Phosphor and must never be
+                # routed to IPMI.
+                fb_present = _parse_fb_utils_marker(rel)
                 vendor = _bmc_vendor.vendor_from_probe(rel, fb_present)
                 return {"kind": "openbmc", "vendor": vendor, "product_name": pn,
                         "creds_used": (credentials["obmcuser"],
