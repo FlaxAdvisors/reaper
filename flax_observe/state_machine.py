@@ -1100,6 +1100,14 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
                 # Mitigation 3: one RMCP+ session for both `power status`
                 # and `sdr` via ipmitool's `exec` script form.
                 pwr, watts = _bmc_power_and_sdr_traditional(bmc_ip, creds_used)
+                # SDR-stall fallback (et7b2, 2026-09-18): on some phosphor
+                # BMCs the combined exec hangs in `sdr` past the runner
+                # timeout while plain power status answers in ~5s. A vendor
+                # that also has ssh re-reads power over ssh; watts stay as
+                # the IPMI read returned them (None). ami_legacy has no ssh.
+                if (pwr == "unknown" and _bmc_vendor.caps_for(vendor).ssh
+                        == _bmc_vendor.FULL):
+                    pwr = _bmc_power_status_openbmc(probe_host, creds_used)
                 # Mitigation 2: Product Serial is invariant for a given
                 # chassis. Once latched, skip the refetch every cycle --
                 # saves one RMCP+ session per poll. Hardware swap clears
