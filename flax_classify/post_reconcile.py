@@ -1,10 +1,12 @@
 """Post-lane reservation lifecycle: pure reconcile decision + DB apply.
 
 `plan_post_reconcile` decides, from plain data, which source='post' reservations
-to evict (blade replaced, or port link-down past the window) and which debounce
-timers to write into user_context.post. `reconcile_post_reservations` is the thin
-DB apply layer. See
-docs/superpowers/specs/2026-07-02-post-reservation-lifecycle-design.md.
+to evict (blade replaced -- by a comms-confirmed new BMC at once (Rule 2b) or
+by a foreign mac after a debounce (Rule 2) -- or port link-down past the
+window (Rule 3)) and which debounce timers to write into user_context.post.
+`reconcile_post_reservations` is the thin DB apply layer. See
+docs/superpowers/specs/2026-07-02-post-reservation-lifecycle-design.md and
+docs/superpowers/specs/2026-09-19-post-replace-on-confirmed-bmc-design.md.
 """
 import collections
 import datetime
@@ -12,7 +14,8 @@ import logging
 
 from .formula import _normalise_rabbit_port
 from .kea_hosts import read_post_reservations, stamp_post_timers
-from .desired_reservations import delete_desired, upsert_desired
+from .desired_reservations import _norm_mac, delete_desired, upsert_desired
+from .post_reserve import _COMMS_CONFIRMED
 
 log = logging.getLogger(__name__)
 
@@ -38,10 +41,55 @@ def _elapsed(iso_since, now):
         return 0.0
 
 
-def plan_post_reconcile(reservations, switch_facts, now, cfg):
+# Rule 2b only ever evicts these kinds; a NULL/legacy kind is left to Rules 2/3.
+_REPLACE_KINDS = frozenset({"bmc", "host"})
+
+
+def _canon(mac):
+    """desired_reservations._norm_mac, or None for a missing/malformed mac."""
+    try:
+        return _norm_mac(mac)
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+def _confirmed_replacement(r, info, obs):
+    """Rule 2b: the comms-confirmed BMC mac that replaced reservation `r` at
+    its slot, or None.
+
+    Fires only when the port is link-up, r's mac is gone from it, observe
+    has confirmed a BMC by COMMUNICATION (not the switch-side single_mac
+    bmc_mac label, which a lone host NIC gets during every BMC flash), and
+    that confirmed mac differs from r's and is on the port NOW (guards a
+    stale observe latch). A dark BMC can never produce this signal, so the
+    flash-safety branch below is not weakened.
+    """
+    if not obs or info.get("link") != "link":
+        return None
+    if r.get("kind") not in _REPLACE_KINDS:
+        return None
+    if obs.get("source") not in _COMMS_CONFIRMED:
+        return None
+    port_macs = {m for m in map(_canon, info.get("macs") or []) if m}
+    mine = _canon(r.get("mac"))
+    new_bmc = _canon(obs.get("bmc_mac"))
+    if mine is None or mine in port_macs:
+        return None
+    if new_bmc is None or new_bmc == mine or new_bmc not in port_macs:
+        return None
+    return new_bmc
+
+
+def plan_post_reconcile(reservations, switch_facts, now, cfg, observed=None):
     """Compute {deletes, timer_writes} for source='post' reservations.
 
     See module docstring + spec. Pure: no I/O, deterministic given `now`.
+
+    observed: {(switch, "et{p}b{s}"): observe_state.resolved}, the shape of
+    post_reserve.observed_by_port. When given, Rule 2b runs first: a
+    reservation whose slot now holds a different comms-confirmed BMC is
+    evicted on this pass (no debounce, no timer write). None/{} -> 2b off,
+    identical to the pre-2b plan.
     """
     # Unreachable in practice: __main__._post_reconcile_cfg always sets this
     # key (registry value or its own -1 fail-safe). Defense-in-depth only --
@@ -66,6 +114,24 @@ def plan_post_reconcile(reservations, switch_facts, now, cfg):
         if k is not None:
             reserved_by_port[(r["switch"], k)].add(_norm(r["mac"]))
 
+    def _obs_for(sw, k):
+        return observed.get((sw, f"et{k[0]}b{k[1]}")) if observed else None
+
+    # Rule 2b pre-pass (D4, BMC-led): slots whose departed BMC reservation
+    # 2b evicts this pass. A host nic is 2b-evicted only at one of these --
+    # never by itself, since a powered-off host's nic ages out of the FDB
+    # while its BMC is confirmed on standby.
+    swapped = set()
+    for r in reservations if observed else ():
+        if (r.get("kind") != "bmc" or r.get("operator_note")
+                or _norm(r["mac"]) in flash_macs):
+            continue
+        k = _key(r.get("port"))
+        info = port_index.get((r["switch"], k)) if k is not None else None
+        if info is not None and _confirmed_replacement(
+                r, info, _obs_for(r["switch"], k)) is not None:
+            swapped.add((r["switch"], k))
+
     deletes = []
     timer_writes = {}
     for r in reservations:
@@ -80,6 +146,20 @@ def plan_post_reconcile(reservations, switch_facts, now, cfg):
             # reservation and its timers untouched rather than risk evicting on
             # missing data. (A reachable switch normally reports an idle port as
             # 'nolink', so Rule 3 still governs genuine vacancy.)
+            continue
+
+        # Rule 2b: a comms-confirmed different BMC now occupies this slot and
+        # r's mac is gone -> blade swapped; evict on this pass, before Rules
+        # 3/2 can stamp a timer for it. Only at a `swapped` slot, i.e. one
+        # whose departed BMC reservation 2b evicts this pass: a host nic is
+        # never evicted by itself (an off host's nic ages out of the FDB).
+        new_bmc = None
+        if (r["switch"], k) in swapped:
+            new_bmc = _confirmed_replacement(r, info, _obs_for(r["switch"], k))
+        if new_bmc is not None:
+            log.info("post-reconcile replaced mac=%s kind=%s slot=%s/%s by bmc=%s",
+                     mac, r.get("kind"), r["switch"], r.get("port"), new_bmc)
+            deletes.append(mac)
             continue
 
         link = info.get("link")
