@@ -351,11 +351,15 @@ def reconcile_post_reservations(pool, *, facts, now, cfg,
     deleted_macs.update(superseded)
 
     # Log-only: an ipv4 still held by two post reservations after this pass's
-    # evictions means kea will refuse that lease. No action taken here.
-    for ip, rows in sorted(duplicate_ipv4(reservations, deleted_macs).items()):
-        log.warning("post-reconcile duplicate ipv4=%s held by %s", ip,
-                    ", ".join(f"{_norm(r['mac'])}@{r['switch']}/{r.get('port')}"
-                              for r in rows))
+    # evictions means kea will refuse that lease. No action taken here; never
+    # breaks the reconcile.
+    try:
+        for ip, rows in sorted(duplicate_ipv4(reservations, deleted_macs).items()):
+            log.warning("post-reconcile duplicate ipv4=%s held by %s", ip,
+                        ", ".join(f"{_norm(r['mac'])}@{r['switch']}/{r.get('port')}"
+                                  for r in rows))
+    except Exception:
+        log.exception("post-reconcile duplicate-ipv4 check failed")
 
     # Keep-set desired emission (Task 3): every reservation the plan retains
     # (i.e. NOT in plan.deletes, NOT superseded above) AND that the reserve
