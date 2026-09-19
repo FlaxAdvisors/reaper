@@ -185,6 +185,11 @@ def run_post_lane(pool, geometry_path, cycle_secs, role_defs=None,
     keep-set pass doesn't re-upsert them from their stale (still-present)
     kea row and instead evicts them for the materializer to delete. Also
     defaults to an empty frozenset for the no-op summary shape.
+
+    observed (Rule 2b, spec 2026-09-19-post-replace-on-confirmed-bmc): the
+    same observed_by_port dict the reserve pass uses, threaded into
+    reconcile_post_reservations so the planner can recognise a blade swap
+    from observe's comms-confirmed BMC, independent of the sticky purge.
     """
     try:
         order = read_post_order(pool)
@@ -201,7 +206,8 @@ def run_post_lane(pool, geometry_path, cycle_secs, role_defs=None,
             pool, facts=facts, now=db_now(pool),
             cfg=_post_reconcile_cfg(cycle_secs, role_defs or {}),
             derived_macs=summary.get("derived_macs", frozenset()),
-            purged_macs=summary.get("purged_macs", frozenset()))
+            purged_macs=summary.get("purged_macs", frozenset()),
+            observed=observed)
         if recon["deleted"]:
             log.info("post-reconcile deleted=%d timers=%d",
                      recon["deleted"], recon["timers"])

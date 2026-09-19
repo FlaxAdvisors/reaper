@@ -212,7 +212,8 @@ def plan_post_reconcile(reservations, switch_facts, now, cfg, observed=None):
 
 def reconcile_post_reservations(pool, *, facts, now, cfg,
                                 derived_macs: frozenset = frozenset(),
-                                purged_macs: frozenset = frozenset()):
+                                purged_macs: frozenset = frozenset(),
+                                observed: dict | None = None):
     """Read source='post' reservations, plan the reconcile, apply it: stamp
     debounce timers and mirror the eviction/keep decisions into
     desired_reservations. Returns {"deleted", "timers"}. Best-effort per
@@ -279,6 +280,14 @@ def reconcile_post_reservations(pool, *, facts, now, cfg,
     evictions are counted in the returned `deleted`. Default empty frozenset
     preserves prior behaviour.
 
+    observed (Rule 2b, spec 2026-09-19-post-replace-on-confirmed-bmc): the
+    observed_by_port dict run_post_lane already built for the reserve pass,
+    handed to plan_post_reconcile so a slot whose comms-confirmed BMC differs
+    from a reservation's (now-absent) mac evicts that reservation on this
+    pass (a host reservation only together with its slot's departed BMC).
+    A mac both 2b-evicted and sticky-purged is evicted once (the
+    superseded loop below skips plan.deletes). Default None -> 2b off.
+
     kind fallback: read_post_reservations' kind column is a bare
     classify->>'kind' jsonb extraction (kea_hosts._READ_POST_SQL) with no
     COALESCE, so it is NULL whenever a post row's classify context predates
@@ -287,7 +296,7 @@ def reconcile_post_reservations(pool, *, facts, now, cfg,
     common case and the historical implicit kind.
     """
     reservations = read_post_reservations(pool)
-    plan = plan_post_reconcile(reservations, facts, now, cfg)
+    plan = plan_post_reconcile(reservations, facts, now, cfg, observed=observed)
     if plan.timer_writes:
         stamp_post_timers(pool, plan.timer_writes)
     deleted = len(plan.deletes)
