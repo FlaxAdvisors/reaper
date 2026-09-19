@@ -178,6 +178,18 @@ def run_post_lane(pool, geometry_path, cycle_secs, role_defs=None,
     fresh rows with the (possibly stale) actual-kea-row echo. summary.get(...)
     defaults to an empty frozenset for the order_no-falsy no-op summary shape
     ({"written": 0, "purged": 0}), which carries no derived_macs key.
+
+    purged_macs (sticky-purge fix, et28b3 2026-09-19): the macs whose desired
+    row run_post_reservations' sticky-slot purge actually deleted this
+    cycle, threaded into reconcile_post_reservations the same way so its
+    keep-set pass doesn't re-upsert them from their stale (still-present)
+    kea row and instead evicts them for the materializer to delete. Also
+    defaults to an empty frozenset for the no-op summary shape.
+
+    observed (Rule 2b, spec 2026-09-19-post-replace-on-confirmed-bmc): the
+    same observed_by_port dict the reserve pass uses, threaded into
+    reconcile_post_reservations so the planner can recognise a blade swap
+    from observe's comms-confirmed BMC, independent of the sticky purge.
     """
     try:
         order = read_post_order(pool)
@@ -193,7 +205,9 @@ def run_post_lane(pool, geometry_path, cycle_secs, role_defs=None,
         recon = reconcile_post_reservations(
             pool, facts=facts, now=db_now(pool),
             cfg=_post_reconcile_cfg(cycle_secs, role_defs or {}),
-            derived_macs=summary.get("derived_macs", frozenset()))
+            derived_macs=summary.get("derived_macs", frozenset()),
+            purged_macs=summary.get("purged_macs", frozenset()),
+            observed=observed)
         if recon["deleted"]:
             log.info("post-reconcile deleted=%d timers=%d",
                      recon["deleted"], recon["timers"])
