@@ -77,6 +77,21 @@ def sel_delta(prev_entries, entries):
             if (e.get("id"), e.get("ts"), e.get("event")) not in seen]
 
 
+def inventory_payload(fru, sdr, prev):
+    """The inventory content to hash for this pass: parsed FRU fields + SDR
+    sensor NAMES, with an empty read carried forward from `prev`.
+
+    An empty SDR or FRU from a pass means "no answer this time" (the SDR
+    read times out on slow BMCs), not "no sensors" -- the same rule ipmi.py
+    applies to post_state. Hashing the empty read flipped the hash on every
+    full <-> empty alternation and appended a duplicate record each pass
+    (dut 45740: 17,461 inventory records, 8 distinct). `prev` is the latest
+    stored inventory payload (its "hash" key is ignored)."""
+    prev = prev or {}
+    return {"fru": fru or prev.get("fru") or {},
+            "sdr_sensors": sorted(sdr) if sdr else list(prev.get("sdr_sensors") or [])}
+
+
 def role_keys(settings) -> dict:
     """The post role's record_keys stamps ({order, customer}); nulls omitted.
 
@@ -155,9 +170,11 @@ def record_observation(*, p0_mac, serial, fru, sdr, sel, keys, pool=None) -> Non
         # inventory = the STABLE hardware description: parsed FRU fields +
         # SDR sensor NAMES (presence topology — DIMM sensors appear/disappear
         # with DIMMs). Sensor VALUES are excluded: they change every poll.
-        inv = {"fru": fru or {}, "sdr_sensors": sorted(sdr or {})}
-        h = canonical_hash(inv)
+        # An empty FRU/SDR read carries the previous record's forward (see
+        # inventory_payload): a timed-out read is not a hardware change.
         prev = latest_payload(conn, dut_id, "inventory")
+        inv = inventory_payload(fru, sdr, prev)
+        h = canonical_hash(inv)
         if not prev or prev.get("hash") != h:
             inv["hash"] = h
             append_record(conn, dut_id, kind="inventory", keys=keys, payload=inv)
