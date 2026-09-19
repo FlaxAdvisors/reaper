@@ -210,6 +210,18 @@ def plan_post_reconcile(reservations, switch_facts, now, cfg, observed=None):
     return ReconcilePlan(deletes, timer_writes)
 
 
+def duplicate_ipv4(reservations, removed):
+    """{ipv4: [row, ...]} for every ipv4 held by 2+ reservations whose mac
+    is not in `removed` (normalised macs evicted this pass). Pure; feeds
+    the log-only duplicate warning -- two kea rows for one ipv4 make kea
+    refuse the lease ("multiple records were found"), the et28b3 symptom."""
+    by_ip = collections.defaultdict(list)
+    for r in reservations:
+        if r.get("ipv4") and _norm(r["mac"]) not in removed:
+            by_ip[r["ipv4"]].append(r)
+    return {ip: rows for ip, rows in by_ip.items() if len(rows) > 1}
+
+
 def reconcile_post_reservations(pool, *, facts, now, cfg,
                                 derived_macs: frozenset = frozenset(),
                                 purged_macs: frozenset = frozenset(),
@@ -337,6 +349,13 @@ def reconcile_post_reservations(pool, *, facts, now, cfg,
                 "desired write (post superseded delete) failed for macs=%s",
                 superseded)
     deleted_macs.update(superseded)
+
+    # Log-only: an ipv4 still held by two post reservations after this pass's
+    # evictions means kea will refuse that lease. No action taken here.
+    for ip, rows in sorted(duplicate_ipv4(reservations, deleted_macs).items()):
+        log.warning("post-reconcile duplicate ipv4=%s held by %s", ip,
+                    ", ".join(f"{_norm(r['mac'])}@{r['switch']}/{r.get('port')}"
+                              for r in rows))
 
     # Keep-set desired emission (Task 3): every reservation the plan retains
     # (i.e. NOT in plan.deletes, NOT superseded above) AND that the reserve
