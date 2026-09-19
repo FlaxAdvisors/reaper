@@ -268,7 +268,8 @@ def run_post_reservations(pool, *, order_no, racks, facts, observed=None,
     them with the order prefix (+rack tag), and upsert desired_reservations
     (owner_role='post'), sticky-purging any other desired occupant of that
     exact slot. `order_no` falsy -> no writes (hard kill switch; there is no
-    default order). Returns {'written', 'purged', 'derived_macs'}.
+    default order). Returns {'written', 'purged', 'derived_macs',
+    'purged_macs'}.
 
     Post-3b demolition: the LEGACY kea writers this function used to call
     (upsert_kea_host, purge_superseded_slot_hosts) are gone -- the
@@ -284,11 +285,22 @@ def run_post_reservations(pool, *, order_no, racks, facts, observed=None,
     see reconcile_post_reservations' docstring for why the keep-set echo was
     clobbering this exact derivation otherwise. A mac is only added here when
     its upsert_desired call actually succeeds.
+
+    purged_macs (sticky-purge fix, et28b3 2026-09-19): the frozenset of macs
+    (normalised lowercase) whose desired row the sticky-slot purge
+    (delete_desired_slot) ACTUALLY deleted this cycle -- reported through its
+    deleted_macs out-param, so a raising or no-op purge contributes nothing.
+    `purged` stays the rowcount sum. reconcile_post_reservations needs the
+    identities: the superseded occupant's kea row is still present (the
+    materializer deletes it only on its next pass), and without this set the
+    keep-set pass re-upserts its desired row from that stale kea row in the
+    same run_post_lane pass, undoing the purge forever.
     """
     if not order_no:
         return {"written": 0, "purged": 0}
     written = purged = 0
     derived_macs = set()
+    purged_macs = set()
     for switch, rack_tag in racks:
         prefix = order_prefix(order_no) + rack_tag
         # Shared-switch scoping: when post-geometry slots are known, restrict this
@@ -318,13 +330,15 @@ def run_post_reservations(pool, *, order_no, racks, facts, observed=None,
             try:
                 purged += delete_desired_slot(
                     pool, owner_role="post", switch=r["switch"],
-                    port=r["port_token"], kind=r["kind"], keep_mac=r["mac"])
+                    port=r["port_token"], kind=r["kind"], keep_mac=r["mac"],
+                    deleted_macs=purged_macs)
             except Exception:
                 log.exception("desired slot purge (post) failed for mac=%s",
                              r["mac"])
             written += 1
     return {"written": written, "purged": purged,
-            "derived_macs": frozenset(derived_macs)}
+            "derived_macs": frozenset(derived_macs),
+            "purged_macs": frozenset(purged_macs)}
 
 
 def render_isc(resolved):

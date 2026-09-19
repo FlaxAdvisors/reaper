@@ -131,7 +131,8 @@ def plan_post_reconcile(reservations, switch_facts, now, cfg):
 
 
 def reconcile_post_reservations(pool, *, facts, now, cfg,
-                                derived_macs: frozenset = frozenset()):
+                                derived_macs: frozenset = frozenset(),
+                                purged_macs: frozenset = frozenset()):
     """Read source='post' reservations, plan the reconcile, apply it: stamp
     debounce timers and mirror the eviction/keep decisions into
     desired_reservations. Returns {"deleted", "timers"}. Best-effort per
@@ -174,7 +175,29 @@ def reconcile_post_reservations(pool, *, facts, now, cfg,
     Under post-enforce (legacy kea write gated) that echo was a deadlock:
     the derived row could never converge because this pass immediately
     overwrote it every cycle. Default empty frozenset preserves prior
-    behavior for any caller that doesn't thread it through.
+    behavior for any caller that doesn't thread it through. The same echo
+    also ran in the OTHER direction -- see purged_macs below.
+
+    purged_macs (sticky-purge fix, et28b3 2026-09-19): macs (normalised
+    lowercase) whose desired row `run_post_reservations`' sticky-slot purge
+    actually deleted earlier in this same pass -- the prior occupant of a
+    slot a different, comms-confirmed mac now claims. Its kea row is still
+    present (the materializer deletes it only on its next pass), and
+    plan_post_reconcile does not evict it: Rule 2 needs a FOREIGN occupant,
+    and the new mac is itself reserved (the dark-BMC-mid-flash safety
+    branch, deliberately left as is). So without this set the keep-set loop
+    re-upserted the purged mac's desired row from its stale kea row every
+    pass, the materializer saw desired == actual, and the superseded
+    reservation lived forever (two kea rows for one ipv4 -> kea refuses the
+    new BMC's lease). A purged mac is therefore skipped by the keep-set AND
+    evicted via delete_desired(owner_role="post") (belt-and-braces; the
+    purge already removed the row) so the materializer deletes its kea row,
+    EXCEPT when plan_post_reconcile's own protections apply -- the
+    reservation carries an operator_note, or the mac is in cfg flash_macs --
+    or the mac is also in derived_macs (re-derived fresh this pass: never
+    evict it). Protected macs keep the prior keep-set behaviour. These
+    evictions are counted in the returned `deleted`. Default empty frozenset
+    preserves prior behaviour.
 
     kind fallback: read_post_reservations' kind column is a bare
     classify->>'kind' jsonb extraction (kea_hosts._READ_POST_SQL) with no
@@ -200,16 +223,42 @@ def reconcile_post_reservations(pool, *, facts, now, cfg,
             log.exception(
                 "desired write (post delete) failed for macs=%s", plan.deletes)
 
+    # Sticky-purge fix: a mac the reserve pass's sticky-slot purge removed
+    # this pass must not be echoed back from its stale kea row below. Evict
+    # it (so the materializer deletes the kea row) unless the planner's own
+    # protections cover it (operator_note / flash_macs, mirroring
+    # plan_post_reconcile) or the reserve pass re-derived it this pass.
+    deleted_macs = set(plan.deletes)
+    purged = {_norm(m) for m in purged_macs}
+    flash_macs = {_norm(m) for m in cfg.get("flash_macs") or ()}
+    noted = {_norm(r["mac"]) for r in reservations if r.get("operator_note")}
+    superseded = []
+    for r in reservations:
+        mac = _norm(r["mac"])
+        if (mac in purged and mac not in derived_macs
+                and mac not in deleted_macs and mac not in noted
+                and mac not in flash_macs and mac not in superseded):
+            superseded.append(mac)
+    if superseded:
+        deleted += len(superseded)
+        try:
+            delete_desired(pool, owner_role="post", macs=superseded)
+        except Exception:
+            log.exception(
+                "desired write (post superseded delete) failed for macs=%s",
+                superseded)
+    deleted_macs.update(superseded)
+
     # Keep-set desired emission (Task 3): every reservation the plan retains
-    # (i.e. NOT in plan.deletes) AND that the reserve pass did NOT already
-    # derive fresh this cycle (i.e. NOT in derived_macs) is upserted into
+    # (i.e. NOT in plan.deletes, NOT superseded above) AND that the reserve
+    # pass did NOT already derive fresh this cycle (i.e. NOT in derived_macs)
+    # is upserted into
     # desired_reservations. Per-row try/except (final-review fix; was one
     # try/except around the whole pass) -- a keep-set failure for one mac
     # (e.g. missing table pre-migration, or a mid-pass DB error for that row)
     # must never break the reconcile NOR block the remaining macs' keep-set
     # upserts this cycle; the timer stamp + delete-mirror above have already
     # applied by this point regardless.
-    deleted_macs = set(plan.deletes)
     for r in reservations:
         mac = _norm(r["mac"])
         if mac in deleted_macs or mac in derived_macs:

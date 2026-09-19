@@ -123,20 +123,30 @@ def sweep_desired_not_in(pool: ConnectionPool, *, owner_role, keep_macs) -> int:
 
 
 def delete_desired_slot(pool: ConnectionPool, *, owner_role, switch, port,
-                        kind, keep_mac) -> int:
+                        kind, keep_mac, deleted_macs: set | None = None) -> int:
     """Delete the (switch, port, kind) desired row(s) owned by owner_role
     whose mac is NOT keep_mac -- mirrors purge_superseded_slot_hosts for the
     post lane (the prior occupant of THIS exact slot, superseded by a
     different mac now claiming it). Returns rows deleted.
+
+    deleted_macs: optional set the caller owns; when given, the (normalised)
+    mac of every row this call actually deleted is added to it (DELETE ...
+    RETURNING mac). The post lane needs WHICH macs were purged, not just how
+    many, so its keep-set pass can stop re-echoing them from the stale kea
+    row (see post_reconcile.reconcile_post_reservations' purged_macs).
+    Omitted -> behaviour and return value unchanged.
     """
     norm_keep = _norm_mac(keep_mac)
     with pool.connection() as conn:
         cur = conn.execute(
             "DELETE FROM desired_reservations "
             "WHERE owner_role = %s AND switch = %s AND port = %s "
-            "AND kind = %s AND mac <> %s",
+            "AND kind = %s AND mac <> %s RETURNING mac",
             (owner_role, switch, port, kind, norm_keep),
         )
+        rows = cur.fetchall()
+        if deleted_macs is not None:
+            deleted_macs.update(_norm_mac(r[0]) for r in rows)
         return cur.rowcount
 
 
