@@ -70,8 +70,13 @@ def _confirmed_replacement(r, info, obs):
         return None
     if obs.get("source") not in _COMMS_CONFIRMED:
         return None
-    port_macs = {m for m in map(_canon, info.get("macs") or []) if m}
     mine = _canon(r.get("mac"))
+    # observe names this mac as the slot's CURRENT host nic -- never
+    # "departed" (final-review fix, race (a)): a reservation can't be both
+    # the confirmed nic and the thing bb's arrival replaced.
+    if mine is not None and mine == _canon(obs.get("nic_mac")):
+        return None
+    port_macs = {m for m in map(_canon, info.get("macs") or []) if m}
     new_bmc = _canon(obs.get("bmc_mac"))
     if mine is None or mine in port_macs:
         return None
@@ -299,6 +304,11 @@ def reconcile_post_reservations(pool, *, facts, now, cfg,
     pass (a host reservation only together with its slot's departed BMC).
     A mac both 2b-evicted and sticky-purged is evicted once (the
     superseded loop below skips plan.deletes). Default None -> 2b off.
+    A mac plan.deletes names is nonetheless kept, not evicted, when it is
+    also in derived_macs: plan_post_reconcile judges it by its kea row's
+    recorded slot, but the reserve pass already re-derived it fresh
+    (possibly at a different slot) earlier in this same pass -- see
+    derived_macs above and the moved-blade final-review finding.
 
     kind fallback: read_post_reservations' kind column is a bare
     classify->>'kind' jsonb extraction (kea_hosts._READ_POST_SQL) with no
@@ -311,25 +321,40 @@ def reconcile_post_reservations(pool, *, facts, now, cfg,
     plan = plan_post_reconcile(reservations, facts, now, cfg, observed=observed)
     if plan.timer_writes:
         stamp_post_timers(pool, plan.timer_writes)
-    deleted = len(plan.deletes)
-    if plan.deletes:
+
+    # Final-review fix: plan.deletes judges a reservation by its kea row's
+    # RECORDED slot, but a mac in derived_macs was already re-derived fresh
+    # at (possibly) another slot earlier in THIS SAME pass. delete_desired
+    # deletes by mac across all slots, so mirroring plan.deletes verbatim
+    # here would evict that fresh row out from under itself (moved-blade
+    # race, final review finding). Split off those macs as `kept` -- they
+    # fall through to the keep-set loop below, which already skips derived
+    # macs, so they are neither deleted nor re-echoed from a stale kea row.
+    kept = [m for m in plan.deletes if m in derived_macs]
+    evict = [m for m in plan.deletes if m not in derived_macs]
+    if kept:
+        log.info("post-reconcile kept derived macs=%s despite planned eviction",
+                 kept)
+
+    deleted = len(evict)
+    if evict:
         # desired_reservations write: evict these macs from owner_role="post"
         # so the materializer notices their disappearance and deletes the
         # corresponding kea row on its own next pass. Guarded so a write
         # failure (incl UndefinedTable pre-migration) never breaks the
         # reconcile.
         try:
-            delete_desired(pool, owner_role="post", macs=plan.deletes)
+            delete_desired(pool, owner_role="post", macs=evict)
         except Exception:
             log.exception(
-                "desired write (post delete) failed for macs=%s", plan.deletes)
+                "desired write (post delete) failed for macs=%s", evict)
 
     # Sticky-purge fix: a mac the reserve pass's sticky-slot purge removed
     # this pass must not be echoed back from its stale kea row below. Evict
     # it (so the materializer deletes the kea row) unless the planner's own
     # protections cover it (operator_note / flash_macs, mirroring
     # plan_post_reconcile) or the reserve pass re-derived it this pass.
-    deleted_macs = set(plan.deletes)
+    deleted_macs = set(evict)
     purged = {_norm(m) for m in purged_macs}
     flash_macs = {_norm(m) for m in cfg.get("flash_macs") or ()}
     noted = {_norm(r["mac"]) for r in reservations if r.get("operator_note")}
