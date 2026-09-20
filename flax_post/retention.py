@@ -14,11 +14,27 @@ from .db import get_pool
 
 log = logging.getLogger("flax-post.retention")
 
+def _num(name, default, cast):
+    """Numeric env var, falling back to `default` on anything unparseable.
+
+    A typo must not take the post-observe process down at import: this module
+    ships disabled, and a bad number alongside ENABLED=false would otherwise
+    raise ValueError during `import flax_post.retention`."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return cast(raw)
+    except ValueError:
+        log.warning("records-retention: ignoring bad %s=%r, using %r", name, raw, default)
+        return default
+
+
 ENABLED = os.environ.get("FLAX_RECORDS_RETENTION_ENABLED", "false").strip().lower() in (
     "1", "true", "yes", "on")
-KEEP = int(os.environ.get("FLAX_RECORDS_KEEP", "5"))
-INTERVAL_SECS = float(os.environ.get("FLAX_RECORDS_RETENTION_INTERVAL_SECS", "3600"))
-MAX_DELETES = int(os.environ.get("FLAX_RECORDS_MAX_DELETES", "20000"))
+KEEP = _num("FLAX_RECORDS_KEEP", 5, int)
+INTERVAL_SECS = _num("FLAX_RECORDS_RETENTION_INTERVAL_SECS", 3600.0, float)
+MAX_DELETES = _num("FLAX_RECORDS_MAX_DELETES", 20000, int)
 
 _ACTIONS = ("records", "empty_serial_records", "dut_rows", "capped_remaining")
 _last_run = None
@@ -37,7 +53,6 @@ def run_retention(pool=None, *, keep=None, max_deletes=None, enabled=None,
     now = time.monotonic() if now is None else now
     if _last_run is not None and now - _last_run < interval_secs:
         return None
-    _last_run = now
 
     keep = KEEP if keep is None else keep
     max_deletes = MAX_DELETES if max_deletes is None else max_deletes
@@ -46,6 +61,10 @@ def run_retention(pool=None, *, keep=None, max_deletes=None, enabled=None,
         rows = conn.execute(
             "SELECT action, n FROM work_records_retain(%s, %s, %s)",
             (keep, False, max_deletes)).fetchall()
+    # Only a sweep that actually ran consumes the interval: a raising DB call
+    # leaves _last_run alone so the next pass retries, instead of going quiet
+    # for an hour on one transient failure.
+    _last_run = now
     counts = {a: int(n) for a, n in rows}
     out = {a: counts.get(a, 0) for a in _ACTIONS}
     if any(out[a] for a in ("records", "empty_serial_records", "dut_rows")):
