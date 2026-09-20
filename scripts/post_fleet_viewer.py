@@ -394,13 +394,33 @@ def _norm_id(value):
     return bare if _BARE_MAC_RE.match(bare) else s
 
 
+def _id_tokens(q):
+    """The typed list, uniquified on the COMPARED form: the same ID spelled two
+    ways -- different case, or a MAC with and without its separators -- is one
+    ID and is looked up once. The first spelling seen is the one kept, and the
+    order typed is preserved."""
+    seen, out = set(), []
+    for token in (q or "").split():
+        key = _norm_id(token)
+        if key and key not in seen:
+            seen.add(key)
+            out.append(token)
+    return out
+
+
+def _id_dupes(q):
+    """How many tokens uniquifying dropped, so a paste holding the same ID
+    twice can say so instead of silently coming back shorter."""
+    return len((q or "").split()) - len(_id_tokens(q))
+
+
 def _id_search(rows, q):
     """Exact ID lookup for a whitespace-separated list, driven by the INPUT,
-    not by the fleet: one entry per token, in the order typed, as
-    (index, token, matching rows). Tokens are never deduped -- 48 pasted items
-    give indices 1..48 -- and a token that matches nothing keeps its index with
-    an empty list, so the index column never skips a number. Only ID_FIELDS
-    match, and only whole values: a serial prefix finds nothing."""
+    not by the fleet: one entry per unique ID, in the order typed, as
+    (index, token, matching rows). Indices run 1..N over the uniquified list
+    with no gaps, and an ID that matches nothing keeps its index with an empty
+    list, so the column never skips a number. Only ID_FIELDS match, and only
+    whole values: a serial prefix finds nothing."""
     index = {}
     for row in rows:
         for field in ID_FIELDS:
@@ -408,7 +428,7 @@ def _id_search(rows, q):
             if key:
                 index.setdefault(key, []).append(row)
     out = []
-    for i, token in enumerate((q or "").split(), 1):
+    for i, token in enumerate(_id_tokens(q), 1):
         hits, seen = [], set()
         for row in index.get(_norm_id(token), ()):
             if id(row) not in seen:          # a row indexed under two of its ID fields
@@ -455,8 +475,11 @@ def render_table(view_key, selected_cols, sort_col=None, sort_dir="asc", q="", a
         found = sum(1 for _i, _t, hits in id_entries if hits)
         missing = len(id_entries) - found
         n_rows = sum(len(hits) or 1 for _i, _t, hits in id_entries)
+        dropped = _id_dupes(q)
         search_note = (f"{found} of {len(id_entries)} IDs found &middot; {n_rows} rows"
                        + (f" &middot; {missing} not found" if missing else "")
+                       + (f" &middot; {dropped} duplicate{'' if dropped == 1 else 's'} dropped"
+                          if dropped else "")
                        + " &middot; ")
     elif q:
         needle = q.casefold()
@@ -708,7 +731,7 @@ PAGE = """<!doctype html>
     <div class="ctrl-group search">
       <div class="lbl">Search</div>
       <input id="q" type="search" placeholder="serial, mac, port, anything..." value="{q_attr}" autocomplete="off">
-      <label title="Match a whitespace-separated list of IDs exactly (serial, BMC MAC or host MAC) instead of searching for substrings. Each ID keeps its position: 48 pasted IDs give rows numbered 1-48, and one that matches nothing still gets its own numbered, blank line.">
+      <label title="Match a whitespace-separated list of IDs exactly (serial, BMC MAC or host MAC) instead of searching for substrings. The list is uniquified first (the same ID in two spellings, or a MAC with and without colons, counts once), then numbered 1-N in the order typed; an ID that matches nothing still gets its own numbered, blank line.">
         <input id="ids" type="checkbox" {ids_checked}>exact ID list</label>
       <label title="Also match the text of each blade's post_artifact captures (a slower scan, cached 30s)." id="art-label">
         <input id="art" type="checkbox" {art_checked} {art_disabled}>also search node artifacts</label>
