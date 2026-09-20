@@ -49,7 +49,7 @@ def run_gc_pass(gc_once=None) -> None:
         log.exception("post_state gc pass failed")
 
 
-def run_retention_pass(retention_once=None):
+def run_retention_pass(retention_once=None) -> None:
     # Default resolved at call time (module attribute lookup) so tests can
     # `mock.patch.object(__main__, "retention")`, same shape as run_gc_pass.
     # Off unless FLAX_RECORDS_RETENTION_ENABLED; the unit is VIP-gated, so the
