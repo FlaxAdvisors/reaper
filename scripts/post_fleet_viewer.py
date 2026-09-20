@@ -472,7 +472,7 @@ def render_table(view_key, selected_cols, sort_col=None, sort_dir="asc", q="", a
                        + (f" (fields, or artifacts on {len(art_hits)} blades)" if art else " (fields)")
                        + " &middot; ")
 
-    # In ID mode the typed order IS the output contract -- never reorder it.
+    # ID mode sorts whole index GROUPS below, not individual rows.
     if id_entries is None and sort_col in cols:
         rows = sorted(rows, key=lambda r: _natural_key(r.get(sort_col) if sort_col != "art_hits"
                                                       else (r.get("art_hits") or {}).get("count")),
@@ -493,10 +493,24 @@ def render_table(view_key, selected_cols, sort_col=None, sort_dir="asc", q="", a
     if id_entries is not None:
         thead = '<th class="idx">#</th><th class="sid">Searched ID</th>' + thead
         span += 2
-        for i, token, hits in id_entries:
-            # Band by INDEX, not by row: every row of one ID shares a shade,
-            # and the next ID flips it -- a ledger for the eye.
-            band = "band-a" if i % 2 else "band-b"
+        if sort_col in cols:
+            # Sort whole groups, never individual rows: an ID that matched
+            # twice keeps its rows together. Not-found groups always sink to
+            # the bottom, both directions, in the order they were typed. The
+            # index column keeps its INPUT numbers -- it says which line of the
+            # pasted list a row came from, so it is not renumbered.
+            def _k(row):
+                return _natural_key(row.get(sort_col))
+            rev = sort_dir == "desc"
+            id_entries = [(i, t, sorted(h, key=_k, reverse=rev)) for i, t, h in id_entries]
+            found = [e for e in id_entries if e[2]]
+            found.sort(key=lambda e: _k(e[2][0]), reverse=rev)
+            id_entries = found + [e for e in id_entries if not e[2]]
+        for pos, (i, token, hits) in enumerate(id_entries, 1):
+            # Band by the group's POSITION on screen, not by row: every row of
+            # one ID shares a shade and the next ID flips it -- a ledger for
+            # the eye, which still reads once sorting has moved groups around.
+            band = "band-a" if pos % 2 else "band-b"
             lead = f'<td class="idx">{i}</td>'
             if hits:
                 for r in hits:
