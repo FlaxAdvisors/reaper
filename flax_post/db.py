@@ -1,4 +1,4 @@
-"""Postgres connection pool for flax-post (read-only, source='post' devices)."""
+"""Postgres connection pool for flax-post (append-only writer, source='post' devices)."""
 import os
 
 from psycopg_pool import ConnectionPool

@@ -9,7 +9,7 @@ import os
 import threading
 import time
 
-from .. import records
+from .. import records, retention
 from . import gc, ipmi
 
 log = logging.getLogger("flax-post.observe")
@@ -49,6 +49,17 @@ def run_gc_pass(gc_once=None) -> None:
         log.exception("post_state gc pass failed")
 
 
+def run_retention_pass(retention_once=None) -> None:
+    # Default resolved at call time (module attribute lookup) so tests can
+    # `mock.patch.object(__main__, "retention")`, same shape as run_gc_pass.
+    # Off unless FLAX_RECORDS_RETENTION_ENABLED; the unit is VIP-gated, so the
+    # sweep only runs on the primary.
+    try:
+        (retention_once or retention.run_retention)()
+    except Exception:
+        log.exception("records retention pass failed")
+
+
 def _power_loop():
     while True:
         run_power_pass()
@@ -72,6 +83,7 @@ def main():
     while True:
         run_pass()
         run_gc_pass()
+        run_retention_pass()
         time.sleep(PROBE_INTERVAL_S)
 
 

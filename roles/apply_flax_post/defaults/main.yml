@@ -33,6 +33,14 @@ apply_flax_post_nic_flash_timeout: 900
 apply_flax_post_nic_fw_force_bmc_reset: "false"
 apply_flax_post_state_gc_grace_secs: 300
 
+# Work-record rolling retention (spec 2026-09-19-work-records-rolling-retention).
+# Ships DISABLED: the deploy changes no data. The operator dry-runs the policy
+# function, works the backlog in capped runs, then flips this to true.
+apply_flax_post_records_retention_enabled: false
+apply_flax_post_records_keep: 5
+apply_flax_post_records_retention_interval_secs: 3600
+apply_flax_post_records_max_deletes: 20000
+
 # Slot ladder (spec 2026-09-11 post-slot-ladder)
 apply_flax_post_biosd_control_port: 8449
 apply_flax_post_nicd_control_port: 8450
