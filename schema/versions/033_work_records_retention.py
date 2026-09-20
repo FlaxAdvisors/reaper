@@ -115,12 +115,19 @@ BEGIN
         )
         SELECT count(*) FILTER (WHERE NOT empty), count(*) FILTER (WHERE empty)
           INTO deleted_records, deleted_empty FROM capped;
-        -- What WOULD be record-less after this run: a superseded pairing (all
-        -- its records are victims, no age gate) or one already record-less and
-        -- past the age gate.
+        -- What WOULD be record-less after this run. A superseded pairing counts
+        -- only when the cap covers ALL of its records -- the wet branch deletes
+        -- its row only if nothing is left behind, and dry must say the same
+        -- (spec §4: a dry run's counts are exactly what a real run deletes).
+        WITH capped AS (
+            SELECT id FROM _retain_victims ORDER BY at ASC, id ASC LIMIT max_deletes
+        )
         SELECT count(*) INTO deleted_duts
           FROM dut d
-         WHERE d.dut_id IN (SELECT dut_id FROM _retain_superseded)
+         WHERE (d.dut_id IN (SELECT dut_id FROM _retain_superseded)
+                AND NOT EXISTS (SELECT 1 FROM work_records w
+                                  LEFT JOIN capped c ON c.id = w.id
+                                 WHERE w.dut_id = d.dut_id AND c.id IS NULL))
             OR (d.first_seen < now() - interval '24 hours'
                 AND NOT EXISTS (SELECT 1 FROM work_records w WHERE w.dut_id = d.dut_id));
     END IF;
