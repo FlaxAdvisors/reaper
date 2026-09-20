@@ -112,6 +112,15 @@ def _cached(key, fn, ttl=None):
     return value
 
 
+# A pasted ID list is long: 48 serials is ~670 chars, so the old 200-char
+# clip silently ate most of one. Still bounded -- this arrives in a URL.
+Q_MAX_CHARS = 4000
+
+
+def _clip_q(value):
+    return (value or "").strip()[:Q_MAX_CHARS]
+
+
 def _port_key(port):
     m = re.match(r"^et(\d+)b(\d+)$", port or "")
     return (int(m.group(1)), int(m.group(2))) if m else (9999, 9999)
@@ -371,6 +380,44 @@ def _cell(col, value):
     return html.escape(value)
 
 
+ID_FIELDS = ("serial", "bmc_mac", "host_mac")
+_BARE_MAC_RE = re.compile(r"[0-9a-f]{12}\Z")
+_MAC_SEP_RE = re.compile(r"[:.-]")
+
+
+def _norm_id(value):
+    """An ID as compared: case-folded, and a MAC-shaped token loses its
+    separators, so 98039ba6fdfc, 98:03:9B:A6:FD:FC and 98-03-9b-a6-fd-fc all
+    compare equal. Everything else (a serial) is compared case-folded only."""
+    s = str(value or "").strip().casefold()
+    bare = _MAC_SEP_RE.sub("", s)
+    return bare if _BARE_MAC_RE.match(bare) else s
+
+
+def _id_search(rows, q):
+    """Exact ID lookup for a whitespace-separated list, driven by the INPUT,
+    not by the fleet: one entry per token, in the order typed, as
+    (index, token, matching rows). Tokens are never deduped -- 48 pasted items
+    give indices 1..48 -- and a token that matches nothing keeps its index with
+    an empty list, so the index column never skips a number. Only ID_FIELDS
+    match, and only whole values: a serial prefix finds nothing."""
+    index = {}
+    for row in rows:
+        for field in ID_FIELDS:
+            key = _norm_id(row.get(field))
+            if key:
+                index.setdefault(key, []).append(row)
+    out = []
+    for i, token in enumerate((q or "").split(), 1):
+        hits, seen = [], set()
+        for row in index.get(_norm_id(token), ()):
+            if id(row) not in seen:          # a row indexed under two of its ID fields
+                seen.add(id(row))
+                hits.append(row)
+        out.append((i, token, hits))
+    return out
+
+
 def _row_matches(row, needle):
     """Case-insensitive substring over every field the view fetched for the
     row, shown or not -- not just the ticked columns."""
@@ -388,7 +435,8 @@ def render_art_hits(entry):
     return links + (f' <span class="more">+{more} more</span>' if more > 0 else "")
 
 
-def render_table(view_key, selected_cols, sort_col=None, sort_dir="asc", q="", art=False):
+def render_table(view_key, selected_cols, sort_col=None, sort_dir="asc", q="", art=False,
+                 ids=False):
     view = VIEWS[view_key]
     cols = [c for c in selected_cols if c in dict(view["columns"])] or view["default"]
     labels = dict(view["columns"])
@@ -398,7 +446,19 @@ def render_table(view_key, selected_cols, sort_col=None, sort_dir="asc", q="", a
     q = (q or "").strip()
     art_hits = None
     search_note = ""
-    if q:
+    id_entries = None
+    if q and ids:
+        # Input-driven: the table is the list that was typed, one index per
+        # token. Artifact search is skipped -- it takes a single term, and one
+        # query per token would be N round trips.
+        id_entries = _id_search(rows, q)
+        found = sum(1 for _i, _t, hits in id_entries if hits)
+        missing = len(id_entries) - found
+        n_rows = sum(len(hits) or 1 for _i, _t, hits in id_entries)
+        search_note = (f"{found} of {len(id_entries)} IDs found &middot; {n_rows} rows"
+                       + (f" &middot; {missing} not found" if missing else "")
+                       + " &middot; ")
+    elif q:
         needle = q.casefold()
         if art:
             art_hits = fetch_artifact_hits(q)
@@ -412,7 +472,8 @@ def render_table(view_key, selected_cols, sort_col=None, sort_dir="asc", q="", a
                        + (f" (fields, or artifacts on {len(art_hits)} blades)" if art else " (fields)")
                        + " &middot; ")
 
-    if sort_col in cols:
+    # In ID mode the typed order IS the output contract -- never reorder it.
+    if id_entries is None and sort_col in cols:
         rows = sorted(rows, key=lambda r: _natural_key(r.get(sort_col) if sort_col != "art_hits"
                                                       else (r.get("art_hits") or {}).get("count")),
                       reverse=(sort_dir == "desc"))
@@ -427,11 +488,30 @@ def render_table(view_key, selected_cols, sort_col=None, sort_dir="asc", q="", a
                 f'{label}{arrow}</th>')
 
     thead = "".join(th(c) for c in cols)
+    span = len(cols)
     body_rows = []
-    for r in rows:
-        tds = "".join(f"<td>{_cell(c, r.get(c))}</td>" for c in cols)
-        body_rows.append(f"<tr>{tds}</tr>")
-    tbody = "".join(body_rows) or f'<tr><td colspan="{len(cols)}" class="empty">no rows</td></tr>'
+    if id_entries is not None:
+        thead = '<th class="idx">#</th><th class="sid">Searched ID</th>' + thead
+        span += 2
+        for i, token, hits in id_entries:
+            # Band by INDEX, not by row: every row of one ID shares a shade,
+            # and the next ID flips it -- a ledger for the eye.
+            band = "band-a" if i % 2 else "band-b"
+            lead = f'<td class="idx">{i}</td>'
+            if hits:
+                for r in hits:
+                    tds = "".join(f"<td>{_cell(c, r.get(c))}</td>" for c in cols)
+                    body_rows.append(f'<tr class="{band}">{lead}'
+                                     f'<td class="sid">{html.escape(token)}</td>{tds}</tr>')
+            else:
+                blanks = "<td></td>" * len(cols)
+                body_rows.append(f'<tr class="{band}">{lead}'
+                                 f'<td class="sid miss">{html.escape(token)}</td>{blanks}</tr>')
+    else:
+        for r in rows:
+            tds = "".join(f"<td>{_cell(c, r.get(c))}</td>" for c in cols)
+            body_rows.append(f"<tr>{tds}</tr>")
+    tbody = "".join(body_rows) or f'<tr><td colspan="{span}" class="empty">no rows</td></tr>'
 
     err = ""
     if _last_error["msg"] and time.time() - _last_error["at"] < 30:
@@ -545,14 +625,14 @@ PAGE = """<!doctype html>
     --bg:#eef1f4; --surface:#fff; --border:#d3dae1; --text:#161d24;
     --dim:#5c6b78; --accent:#0d7d8f;
     --good:#1c8a5c; --good-bg:#e0f3e8; --warn:#a8690b; --warn-bg:#faedd8;
-    --bad:#b6432a; --bad-bg:#fbe6e0; --dimbg:#e7eaed;
+    --bad:#b6432a; --bad-bg:#fbe6e0; --dimbg:#e7eaed; --band:#f4f7f9;
   }}
   @media (prefers-color-scheme: dark){{
     :root{{
       --bg:#0f1418; --surface:#161d23; --border:#2b353e; --text:#e8edf1;
       --dim:#9aa8b3; --accent:#54d3e0;
       --good:#4fd398; --good-bg:#123328; --warn:#f0b154; --warn-bg:#3a2c11;
-      --bad:#f28468; --bad-bg:#3a1f18; --dimbg:#232c33;
+      --bad:#f28468; --bad-bg:#3a1f18; --dimbg:#232c33; --band:#1b232a;
     }}
   }}
   *{{box-sizing:border-box}}
@@ -593,6 +673,11 @@ PAGE = """<!doctype html>
   td{{padding:7px 12px;border-bottom:1px solid var(--border);font-family:ui-monospace,SFMono-Regular,monospace;
       font-size:12.5px;white-space:nowrap}}
   tr:last-child td{{border-bottom:none}}
+  tr.band-b td{{background:var(--band)}}
+  tr.band-a td{{background:var(--surface)}}
+  td.idx,th.idx{{text-align:right;color:var(--dim);font-variant-numeric:tabular-nums;width:1%}}
+  td.sid,th.sid{{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:nowrap}}
+  td.sid.miss{{color:var(--bad);font-weight:600}}
   tr:hover td{{background:var(--dimbg)}}
   td.empty{{color:var(--dim);font-family:inherit;text-align:center;padding:20px}}
   .pill{{display:inline-block;padding:1px 8px;border-radius:20px;font-size:11px;font-weight:600}}
@@ -609,8 +694,10 @@ PAGE = """<!doctype html>
     <div class="ctrl-group search">
       <div class="lbl">Search</div>
       <input id="q" type="search" placeholder="serial, mac, port, anything..." value="{q_attr}" autocomplete="off">
-      <label title="Also match the text of each blade's post_artifact captures (a slower scan, cached 30s)">
-        <input id="art" type="checkbox" {art_checked}>also search node artifacts</label>
+      <label title="Match a whitespace-separated list of IDs exactly (serial, BMC MAC or host MAC) instead of searching for substrings. Each ID keeps its position: 48 pasted IDs give rows numbered 1-48, and one that matches nothing still gets its own numbered, blank line.">
+        <input id="ids" type="checkbox" {ids_checked}>exact ID list</label>
+      <label title="Also match the text of each blade's post_artifact captures (a slower scan, cached 30s)." id="art-label">
+        <input id="art" type="checkbox" {art_checked} {art_disabled}>also search node artifacts</label>
     </div>
     <div class="ctrl-group">
       <div class="lbl">View</div>
@@ -663,7 +750,12 @@ PAGE = """<!doctype html>
     if (sortCol) {{ params.set('sort', sortCol); params.set('dir', sortDir); }}
     const q = document.getElementById('q').value.trim();
     if (q) params.set('q', q);
-    if (document.getElementById('art').checked) params.set('art', '1');
+    const idsOn = document.getElementById('ids').checked;
+    if (idsOn) params.set('ids', '1');
+    // artifact search takes a single term -- it has no meaning for a list
+    const artBox = document.getElementById('art');
+    artBox.disabled = idsOn;
+    if (artBox.checked && !idsOn) params.set('art', '1');
     const mine = ++seq;
     fetch(`/fragment?${{params}}`)
       .then(r => r.text())
@@ -676,6 +768,7 @@ PAGE = """<!doctype html>
       const u = new URL(a.href);
       q ? u.searchParams.set('q', q) : u.searchParams.delete('q');
       params.has('art') ? u.searchParams.set('art', '1') : u.searchParams.delete('art');
+      params.has('ids') ? u.searchParams.set('ids', '1') : u.searchParams.delete('ids');
       a.href = u;
     }});
   }}
@@ -689,7 +782,8 @@ PAGE = """<!doctype html>
 </body></html>"""
 
 
-def render_page(view_key, selected_cols, sort_col=None, sort_dir="asc", q="", art=False):
+def render_page(view_key, selected_cols, sort_col=None, sort_dir="asc", q="", art=False,
+                ids=False):
     carry = (("&q=" + urllib.parse.quote(q)) if q else "") + ("&art=1" if art else "")
     view_links = "".join(
         f'<a href="/?view={k}{html.escape(carry)}" class="{"active" if k == view_key else ""}">'
@@ -704,7 +798,7 @@ def render_page(view_key, selected_cols, sort_col=None, sort_dir="asc", q="", ar
         for key, label in view["columns"]
     )
     cols = sorted(selset, key=lambda c: [k for k, _ in view["columns"]].index(c))
-    table_html = render_table(view_key, cols, sort_col, sort_dir, q, art)
+    table_html = render_table(view_key, cols, sort_col, sort_dir, q, art, ids)
     source = "this host (local)" if LOCAL_MODE else BANG_HOST
     return PAGE.format(
         view_links=view_links,
@@ -715,7 +809,9 @@ def render_page(view_key, selected_cols, sort_col=None, sort_dir="asc", q="", ar
         sort_dir_json=json.dumps(sort_dir),
         source=html.escape(source),
         q_attr=html.escape(q or "", quote=True),
-        art_checked="checked" if art else "",
+        art_checked="checked" if (art and not ids) else "",
+        art_disabled="disabled" if ids else "",
+        ids_checked="checked" if ids else "",
     )
 
 
@@ -735,8 +831,9 @@ class Handler(BaseHTTPRequestHandler):
         sort_dir = qs.get("dir", ["asc"])[0]
         if sort_dir not in ("asc", "desc"):
             sort_dir = "asc"
-        q = qs.get("q", [""])[0].strip()[:200]
+        q = _clip_q(qs.get("q", [""])[0])
         art = qs.get("art", [""])[0] == "1"
+        ids = qs.get("ids", [""])[0] == "1"
 
         if parsed.path in ("/node", "/artifact"):
             try:
@@ -755,10 +852,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if parsed.path == "/fragment":
                 body = render_table(view_key, selected_cols or VIEWS[view_key]["default"],
-                                     sort_col, sort_dir, q, art)
+                                     sort_col, sort_dir, q, art, ids)
                 content_type = "text/html; charset=utf-8"
             else:
-                body = render_page(view_key, selected_cols, sort_col, sort_dir, q, art)
+                body = render_page(view_key, selected_cols, sort_col, sort_dir, q, art, ids)
                 content_type = "text/html; charset=utf-8"
         except Exception as exc:  # noqa: BLE001
             body = f"<pre>error: {html.escape(str(exc))}</pre>"
