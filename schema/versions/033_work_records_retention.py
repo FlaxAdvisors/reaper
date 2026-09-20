@@ -36,42 +36,98 @@ AS $fn$
 DECLARE
     over_cap bigint := 0;
     deleted_records bigint := 0;
+    deleted_empty bigint := 0;
+    deleted_duts bigint := 0;
 BEGIN
     IF keep < 1 OR max_deletes < 1 THEN
         RAISE EXCEPTION 'keep and max_deletes must be >= 1 (got %, %)', keep, max_deletes;
     END IF;
 
-    CREATE TEMP TABLE _retain_victims (id bigint PRIMARY KEY, at timestamptz) ON COMMIT DROP;
+    CREATE TEMP TABLE _retain_victims (id bigint PRIMARY KEY, at timestamptz, empty boolean)
+        ON COMMIT DROP;
 
-    -- Victims: outside the newest `keep` of their (dut_id, kind, keys) group
-    -- AND not the earliest record of their (dut_id, kind) (the birth record).
+    -- Superseded empty-serial DUTs: the same NIC has a real-serial pairing
+    -- whose newest record is newer. Every record of such a DUT is a victim
+    -- (spec D4) -- its identity is unknown, so its history cannot be trusted
+    -- to any assembly.
+    CREATE TEMP TABLE _retain_superseded (dut_id bigint PRIMARY KEY) ON COMMIT DROP;
+    INSERT INTO _retain_superseded (dut_id)
+    SELECT e.dut_id
+      FROM dut e
+      JOIN LATERAL (SELECT max(at) AS newest FROM work_records w WHERE w.dut_id = e.dut_id) en
+        ON true
+     WHERE e.serial = ''
+       AND en.newest IS NOT NULL
+       AND EXISTS (
+            SELECT 1 FROM dut r
+             JOIN LATERAL (SELECT max(at) AS newest FROM work_records w WHERE w.dut_id = r.dut_id) rn
+               ON true
+             WHERE r.p0_mac = e.p0_mac AND r.serial <> ''
+               AND rn.newest IS NOT NULL AND rn.newest > en.newest);
+
+    INSERT INTO _retain_victims (id, at, empty)
+    SELECT w.id, w.at, true
+      FROM work_records w JOIN _retain_superseded s ON s.dut_id = w.dut_id;
+
+    -- Ordinary victims: outside the newest `keep` of their (dut_id, kind,
+    -- keys) group, and not the birth record of their (dut_id, kind). An
+    -- empty-serial DUT gets no birth pin (spec D3).
     WITH ranked AS (
-        SELECT w.id, w.at,
+        SELECT w.id, w.at, d.serial = '' AS empty,
                row_number() OVER (PARTITION BY w.dut_id, w.kind, w.keys
                                   ORDER BY w.at DESC, w.id DESC) AS rn_new,
                row_number() OVER (PARTITION BY w.dut_id, w.kind
                                   ORDER BY w.at ASC, w.id ASC) AS rn_old
           FROM work_records w
+          JOIN dut d ON d.dut_id = w.dut_id
+         WHERE w.dut_id NOT IN (SELECT dut_id FROM _retain_superseded)
     )
-    INSERT INTO _retain_victims (id, at)
-    SELECT id, at FROM ranked WHERE rn_new > keep AND rn_old > 1;
+    INSERT INTO _retain_victims (id, at, empty)
+    SELECT id, at, false FROM ranked
+     WHERE rn_new > keep AND (empty OR rn_old > 1);
 
     SELECT greatest(count(*) - max_deletes, 0) INTO over_cap FROM _retain_victims;
 
     IF NOT dry_run THEN
         WITH capped AS (
-            SELECT id FROM _retain_victims ORDER BY at ASC, id ASC LIMIT max_deletes
+            SELECT id, empty FROM _retain_victims ORDER BY at ASC, id ASC LIMIT max_deletes
         ), gone AS (
-            DELETE FROM work_records w USING capped c WHERE w.id = c.id RETURNING 1
+            DELETE FROM work_records w USING capped c WHERE w.id = c.id RETURNING c.empty
         )
-        SELECT count(*) INTO deleted_records FROM gone;
+        SELECT count(*) FILTER (WHERE NOT empty), count(*) FILTER (WHERE empty)
+          INTO deleted_records, deleted_empty FROM gone;
+
+        -- DUT rows left with no records. A superseded empty-serial pairing
+        -- goes with its records (spec D4: "and the row with them"); the 24h
+        -- age gate is only for a pairing a writer minted seconds ago and has
+        -- not appended to yet (spec D5), which a superseded row is not.
+        WITH gone AS (
+            DELETE FROM dut d
+             WHERE NOT EXISTS (SELECT 1 FROM work_records w WHERE w.dut_id = d.dut_id)
+               AND (d.dut_id IN (SELECT dut_id FROM _retain_superseded)
+                    OR d.first_seen < now() - interval '24 hours')
+            RETURNING 1
+        )
+        SELECT count(*) INTO deleted_duts FROM gone;
     ELSE
-        SELECT least(count(*), max_deletes) INTO deleted_records FROM _retain_victims;
+        WITH capped AS (
+            SELECT empty FROM _retain_victims ORDER BY at ASC, id ASC LIMIT max_deletes
+        )
+        SELECT count(*) FILTER (WHERE NOT empty), count(*) FILTER (WHERE empty)
+          INTO deleted_records, deleted_empty FROM capped;
+        -- What WOULD be record-less after this run: a superseded pairing (all
+        -- its records are victims, no age gate) or one already record-less and
+        -- past the age gate.
+        SELECT count(*) INTO deleted_duts
+          FROM dut d
+         WHERE d.dut_id IN (SELECT dut_id FROM _retain_superseded)
+            OR (d.first_seen < now() - interval '24 hours'
+                AND NOT EXISTS (SELECT 1 FROM work_records w WHERE w.dut_id = d.dut_id));
     END IF;
 
     RETURN QUERY VALUES ('records', deleted_records),
-                        ('empty_serial_records', 0::bigint),
-                        ('dut_rows', 0::bigint),
+                        ('empty_serial_records', deleted_empty),
+                        ('dut_rows', deleted_duts),
                         ('capped_remaining', over_cap);
 END;
 $fn$;
