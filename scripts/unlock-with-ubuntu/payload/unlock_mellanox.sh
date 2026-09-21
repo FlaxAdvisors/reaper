@@ -77,23 +77,40 @@ if [ -z "$targets" ]; then
 fi
 
 # --- flash ----------------------------------------------------------------
-for mlxdev in $targets; do
-    echo "--- $mlxdev ---"
-    if ! getdevinfo "$mlxdev"; then
-        echo "$mlxdev: query failed; skipping."
-        continue
-    fi
+# common_mellanox.sh's getdevinfo() greps an UNANCHORED 'PSID:', which also
+# matches the 'Orig PSID:' line mstflint prints once a card's PSID has been
+# changed -- so $devpsid comes back holding BOTH values, newline-joined. Every
+# later comparison then fails: the FWMAP lookup misses and an already-unlocked
+# card reads as unknown. Re-derive it from the same query output with an
+# anchored match. common_mellanox.sh is shared verbatim with the post lane and
+# is not ours to edit (see the header), so the narrowing happens here.
+function narrowpsid()
+{
+    local only
+    only=$(printf "%s\n" $devinfo | grep '^PSID:' | cut -d':' -f2 | sed 's/^\s*//')
+    [ -n "$only" ] && devpsid="$only"
+}
+
+# The burn pass. Every "we cannot burn this" exit is a `return`, never the
+# loop's `continue`: a card we have no image for is still a card that has to
+# PXE boot when it goes into service, so it must still reach the UEFI pass.
+# That coupling is exactly what cost et26b3 its UEFI ROM on 2026-09-21.
+function burnpass()
+{
+    local mlxdev=$1
+    local entry fwdir fwbin img want have bininfo binfwver binpsid
+
     entry="${FWMAP[$devpsid]:-}"
     if [ -z "$entry" ]; then
-        echo "$mlxdev: PSID $devpsid is not in the map; skipping."
-        continue
+        echo "$mlxdev: PSID $devpsid is not in the map; no burn."
+        return 0
     fi
     fwdir="${entry%%|*}"
     fwbin="${entry##*|}"
     img="fw/${fwdir}/${fwbin}"
     if [ ! -f "$img" ]; then
-        echo "$mlxdev: image missing from bundle ($img); skipping."
-        continue
+        echo "$mlxdev: image missing from bundle ($img); no burn."
+        return 0
     fi
     # The rootfs takes a hard power cut every cycle (blade pulled while up), so
     # a truncated image is a real possibility, not a theoretical one.
@@ -101,7 +118,7 @@ for mlxdev in $targets; do
     have=$(sha256sum "$img" | cut -d' ' -f1)
     if [ -z "$want" ] || [ "$want" != "$have" ]; then
         echo "$mlxdev: checksum FAILED for $img (want=${want:-<absent>} have=$have); refusing to burn."
-        continue
+        return 0
     fi
 
     binfwver=""; binpsid=""
@@ -112,26 +129,59 @@ for mlxdev in $targets; do
 
     if [ "$devfwver" == "$binfwver" ] && [ "$devpsid" == "$binpsid" ]; then
         echo "$mlxdev: already at target FW+PSID; no burn."
-    else
-        domstflint burn "$mlxdev" "$img"
-        domstfwreset "$mlxdev"
-        sleep 5
-        # The record that proves the lock cleared: Security Attributes should no
-        # longer carry secure-fw once the unlocked image is on the card.
-        getdevinfo "$mlxdev"
-        echo "$mlxdev: POST-FLASH fw=$devfwver psid=$devpsid sec=[$devsecure]"
+        return 0
     fi
 
-    # UEFI expansion ROM -- the card must PXE boot once it goes into service.
+    domstflint burn "$mlxdev" "$img"
+    domstfwreset "$mlxdev"
+    sleep 5
+    # The record that proves the lock cleared: Security Attributes should no
+    # longer carry secure-fw once the unlocked image is on the card.
+    getdevinfo "$mlxdev"
+    narrowpsid
+    echo "$mlxdev: POST-FLASH fw=$devfwver psid=$devpsid sec=[$devsecure]"
+}
+
+# The UEFI expansion ROM pass -- the card must PXE boot once it goes into
+# service, and the fleet standard is UEFI, not legacy-PXE-only.
+#
+# Fails CLOSED. An unreadable config query is the case with the LEAST evidence
+# the ROM is on, so it must set it rather than assume it. The old
+# `${uefival:-1}` had that exactly backwards, and it is how the 06:13-07:41
+# runs on et26b3 passed over a card whose ROM was off: mstfwreset had failed
+# with ME_MAD_SEND_FAILED(8), so the config being read still belonged to the
+# outgoing locked image. `mstconfig set` writes the Next Boot column and is
+# idempotent, so re-setting an already-enabled card costs nothing.
+function uefipass()
+{
+    local mlxdev=$1
+    local uefival
     uefival=$(domstconfig query "$mlxdev" | grep "EXP_ROM_UEFI_x86_ENABLE" \
         | sed -re 's/^\s+EXP_ROM_UEFI_x86_ENABLE\s+\S+\(([01])\)\s*$/\1/')
-    if [ "${uefival:-1}" == "0" ]; then
-        echo "$mlxdev: enabling EXP_ROM_UEFI_x86_ENABLE"
-        domstconfig set "$mlxdev" "EXP_ROM_UEFI_x86_ENABLE=true"
-        domstfwreset "$mlxdev"
-        needbmcreset=1
-        sleep 5
+    if [ "$uefival" == "1" ]; then
+        echo "$mlxdev: EXP_ROM_UEFI_x86_ENABLE already set"
+        return 0
     fi
+    if [ -z "$uefival" ]; then
+        echo "$mlxdev: could not read EXP_ROM_UEFI_x86_ENABLE; setting it anyway"
+    else
+        echo "$mlxdev: enabling EXP_ROM_UEFI_x86_ENABLE"
+    fi
+    domstconfig set "$mlxdev" "EXP_ROM_UEFI_x86_ENABLE=true"
+    domstfwreset "$mlxdev"
+    needbmcreset=1
+    sleep 5
+}
+
+for mlxdev in $targets; do
+    echo "--- $mlxdev ---"
+    if ! getdevinfo "$mlxdev"; then
+        echo "$mlxdev: query failed; skipping."
+        continue
+    fi
+    narrowpsid
+    burnpass "$mlxdev"
+    uefipass "$mlxdev"
 done
 
 # --- signal ---------------------------------------------------------------
