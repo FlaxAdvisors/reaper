@@ -124,9 +124,9 @@ def upsert_kea_host(pool: ConnectionPool, *,
         conn.execute(_INSERT_V6_SQL, (ipv6_address, host_id))
 
 
-# Project host(address): ipv6_reservations.address is INET (renders with a
-# /128 suffix), but kea.lease6.address is VARCHAR holding the bare canonical
-# address -- host() strips the prefix so the lease6 release actually matches.
+# Project host(address): the bare canonical address as text. The release fn
+# takes text[] and casts it back to inet, because kea.lease6.address is INET
+# since Kea schema 22 (migration 035; 023's text compare raised inet = text).
 _SELECT_V6_ADDRS = "SELECT host(address) FROM kea.ipv6_reservations WHERE host_id = ANY(%s)"
 
 
@@ -137,7 +137,7 @@ def release_leases_for_hosts(pool: ConnectionPool, *, hwaddrs, v6_addrs):
     runs as its owner with search_path=kea so Kea's lease triggers resolve.
     The CALLER wraps this in try/except: a release failure must not fail the
     cycle. Deletes kea.lease4 by hwaddr (bytea) and kea.lease6 by reserved
-    address (text).
+    address (text, cast to inet inside the function).
     """
     if not hwaddrs and not v6_addrs:
         return
