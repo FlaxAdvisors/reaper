@@ -1,9 +1,14 @@
 """Post-device reservations (kea.hosts, source='post') joined to active DHCP leases.
 
-Post devices live on an unobserved switch (rabbit-edam): there is no observe_state
-for them. Their only state is the static reservation written by
-flax_classify/post_reserve.py (user_context.source='post') plus whether Kea has
-handed out an active lease (kea.lease4, state=0).
+Post devices are reserved by flax_classify/post_reserve.py
+(user_context.source='post'); `post_devices` reports each reservation plus
+whether Kea has handed out an active lease for it (kea.lease4, state=0).
+
+The post switch IS observed. (It was not when this module was written, and that
+claim outlived the fact: rabbit-edam carries 48 observe_state rows, 46 with both
+bmc_mac and nic_mac, measured 2026-09-20.) `post_observed` below reads
+flax-observe's identity witness so the producer can tell a reservation that
+still belongs to the blade on the port from one a departed blade left behind.
 """
 from .db import get_pool
 
@@ -60,3 +65,25 @@ def post_devices() -> list[dict]:
         cur = conn.execute(_SQL)
         rows = cur.fetchall()
     return [_row_to_device(r) for r in rows]
+
+
+# The NARROWED contract, not observe_state itself (migration 034). Post is a
+# consumer of flax-observe's published identity, so observe stays free to
+# restructure `resolved` behind the view. See docs/flax-storage-delta.md.
+_OBSERVED_SQL = (
+    "SELECT port, bmc_mac, nic_mac, chassis_sn "
+    "FROM observe_identity WHERE switch = %s"
+)
+
+
+def post_observed(switch: str) -> dict:
+    """flax-observe's per-port identity for one switch -> {port: {...}}.
+
+    Values may be None: a port observe knows about but has not resolved yet
+    carries no bmc_mac/nic_mac. Callers must treat "unknown" as "not
+    confirmed" -- never as "matches"."""
+    with get_pool().connection() as conn:
+        cur = conn.execute(_OBSERVED_SQL, (switch,))
+        rows = cur.fetchall()
+    return {port: {"bmc_mac": bmc_mac, "nic_mac": nic_mac, "chassis_sn": chassis_sn}
+            for port, bmc_mac, nic_mac, chassis_sn in rows}
