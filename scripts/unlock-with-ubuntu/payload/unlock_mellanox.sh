@@ -91,6 +91,19 @@ function narrowpsid()
     [ -n "$only" ] && devpsid="$only"
 }
 
+# Who this card IS. A BDF names the SLOT -- every card the station handles sits
+# in the same one -- so a log keyed on it cannot be read back as a history:
+# reviewing 2026-09-21 showed four burn attempts at 5e:00.0 with no way to tell
+# one card retried four times from four cards. mstflint already reports the
+# identity in the query getdevinfo() parses, so this costs one more grep.
+function cardident()
+{
+    devmac=$(printf "%s\n" $devinfo | grep '^Base MAC:' | awk '{print $3}')
+    devguid=$(printf "%s\n" $devinfo | grep '^Base GUID:' | awk '{print $3}')
+    devmac="${devmac:-unknown}"
+    devguid="${devguid:-unknown}"
+}
+
 # The burn pass. Every "we cannot burn this" exit is a `return`, never the
 # loop's `continue`: a card we have no image for is still a card that has to
 # PXE boot when it goes into service, so it must still reach the UEFI pass.
@@ -105,6 +118,7 @@ function burnpass()
         echo "$mlxdev: PSID $devpsid is not in the map; no burn."
         return 0
     fi
+
     fwdir="${entry%%|*}"
     fwbin="${entry##*|}"
     img="fw/${fwdir}/${fwbin}"
@@ -133,12 +147,31 @@ function burnpass()
     fi
 
     domstflint burn "$mlxdev" "$img"
-    domstfwreset "$mlxdev"
+    cardburned=yes
+
+    # mstfwreset's exit status is the difference between "the new image is
+    # running" and "the new image is merely in flash". It fails on these cards
+    # with ME_MAD_SEND_FAILED(8) -- mstflint says so itself ("Failed to update
+    # FW boot address. Power cycle the device in order to load the new FW") --
+    # and the old code ignored it and carried on as though the card had
+    # activated. It had not: the config the UEFI pass then read still belonged
+    # to the OUTGOING image. Record it so the log can say the card needs
+    # another pass rather than leaving that to be inferred from a warning
+    # buried in mstflint's output.
+    if domstfwreset "$mlxdev"; then
+        cardactivated=yes
+    else
+        cardactivated=no
+        echo "$mlxdev: WARNING mstfwreset failed -- new FW is in flash but NOT"
+        echo "$mlxdev: running. The card needs a cold power cycle, then a"
+        echo "$mlxdev: second station pass to finish (config below is stale)."
+    fi
     sleep 5
     # The record that proves the lock cleared: Security Attributes should no
     # longer carry secure-fw once the unlocked image is on the card.
     getdevinfo "$mlxdev"
     narrowpsid
+    cardident
     echo "$mlxdev: POST-FLASH fw=$devfwver psid=$devpsid sec=[$devsecure]"
 }
 
@@ -158,16 +191,23 @@ function uefipass()
     local uefival
     uefival=$(domstconfig query "$mlxdev" | grep "EXP_ROM_UEFI_x86_ENABLE" \
         | sed -re 's/^\s+EXP_ROM_UEFI_x86_ENABLE\s+\S+\(([01])\)\s*$/\1/')
-    if [ "$uefival" == "1" ]; then
+    # A card whose new image is in flash but not running reports the OUTGOING
+    # image's config, so "already on" is not evidence about the image the card
+    # will actually boot. Set it regardless and let the second pass confirm.
+    if [ "$uefival" == "1" ] && [ "$cardactivated" != "no" ]; then
         echo "$mlxdev: EXP_ROM_UEFI_x86_ENABLE already set"
+        carduefi=already
         return 0
     fi
     if [ -z "$uefival" ]; then
         echo "$mlxdev: could not read EXP_ROM_UEFI_x86_ENABLE; setting it anyway"
+    elif [ "$cardactivated" == "no" ]; then
+        echo "$mlxdev: card not activated; setting EXP_ROM_UEFI_x86_ENABLE regardless"
     else
         echo "$mlxdev: enabling EXP_ROM_UEFI_x86_ENABLE"
     fi
     domstconfig set "$mlxdev" "EXP_ROM_UEFI_x86_ENABLE=true"
+    carduefi=set
     domstfwreset "$mlxdev"
     needbmcreset=1
     sleep 5
@@ -180,8 +220,24 @@ for mlxdev in $targets; do
         continue
     fi
     narrowpsid
+    cardident
+    # Per-card state the two passes report back through.
+    cardburned=no
+    cardactivated=n/a
+    carduefi=unknown
+    echo "$mlxdev: card mac=$devmac guid=$devguid psid=$devpsid fw=$devfwver sec=[$devsecure]"
+
     burnpass "$mlxdev"
     uefipass "$mlxdev"
+
+    # ONE greppable line per card per run -- this is the station's history.
+    # `grep RESULT /var/log/flax/mezz-flash/*.log` answers "was this card ever
+    # unlocked, and did it get its UEFI ROM" without reading any prose.
+    echo "$mlxdev: RESULT mac=$devmac guid=$devguid psid=$devpsid fw=$devfwver" \
+         "sec=[$devsecure] burned=$cardburned activated=$cardactivated uefi=$carduefi"
+    if [ "$cardactivated" == "no" ]; then
+        echo "$mlxdev: NEEDS-SECOND-PASS mac=$devmac -- cold power cycle, then re-run"
+    fi
 done
 
 # --- signal ---------------------------------------------------------------
