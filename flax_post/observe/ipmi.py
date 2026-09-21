@@ -352,17 +352,38 @@ def probe_power(ip, creds, ipmi_runner, redfish_client=None):
 
 
 def _process_blade(d, hosts, creds, ipmi_runner, ping, set_state, upsert_node, order_no,
-                   keys=None, record_observation=None, switch=SWITCH, make_redfish=None):
+                   keys=None, record_observation=None, switch=SWITCH, make_redfish=None,
+                   observed=None):
     """Heavy pass for one BMC: serial(FRU) · watts · SDR · SEL + host liveness.
 
     Power + bmc liveness are deliberately NOT written to live post_state here — the
     fast lane (run_power_once) owns them, so this slow pass (bounded by the worst
     BMC) can't write a stale power value over a fresh one. Durable post_node still
     records power for history. Self-contained for its own worker thread; the two
-    writes use independent try/excepts so a failure on one tier never skips the other."""
+    writes use independent try/excepts so a failure on one tier never skips the other.
+
+    `observed` is flax-observe's per-port identity ({port: {bmc_mac, nic_mac,
+    chassis_sn}}, from the observe_identity view). It gates every write that
+    ATTRIBUTES this probe's answer to a blade. A departed BMC keeps its kea
+    reservation but loses its lease, so the reservation_ip fallback below can
+    reach whatever the SUCCESSOR now answers on; pairing that answer with
+    hosts[port] (slot-keyed) files the successor's identity under the departed
+    blade, which is how ghost `dut` rows are minted. So: probe freely, but write
+    identity only for a reservation observe still vouches for, and take the NIC
+    from observe rather than from the slot."""
     port = d["port"]
     bmc_ip = d.get("lease_ip") or d.get("reservation_ip")
     host = hosts.get(port)
+    obs = (observed or {}).get(port) or {}
+    # Vouched = observe says THIS bmc mac is the one on this port right now.
+    # No observe row (or no bmc_mac) is "unknown", which is NOT "confirmed":
+    # a genuinely new blade stays unrecorded until observe catches up.
+    _res_mac = (d.get("mac") or "").strip().lower()
+    _obs_mac = (obs.get("bmc_mac") or "").strip().lower()
+    vouched = bool(_res_mac) and _res_mac == _obs_mac
+    # Pair the NIC by identity, never by slot and never by MAC arithmetic
+    # (the +1/+3 blades break any offset rule).
+    p0_mac = (obs.get("nic_mac") or None) if vouched else None
     host_ip = (host.get("lease_ip") or host.get("reservation_ip")) if host else None
     host_pinged = bool(host_ip and ping(host_ip))
     rc = make_redfish(bmc_ip) if (make_redfish and bmc_ip) else None
@@ -374,7 +395,18 @@ def _process_blade(d, hosts, creds, ipmi_runner, ping, set_state, upsert_node, o
     # them from this pass's write rather than merging None/{} over a previously-good
     # reading — this pass "didn't get an answer this time", not "the answer is now
     # unknown". Only write what this pass actually read.
-    live_fields = {"serial": fields["serial"], "sel": fields["sel"]}
+    # serial is what ANSWERED the probe; attributing it to an unvouched
+    # reservation is the mislabel we are preventing. Slot telemetry (watts,
+    # sdr, sel, host_pinged) is true of the port either way, so it still writes.
+    live_fields = {"sel": fields["sel"]}
+    if vouched:
+        live_fields["serial"] = fields["serial"]
+        _sn = obs.get("chassis_sn")
+        if _sn and fields["serial"] and _sn != fields["serial"]:
+            # Observability only: observe's chassis_sn can lag a swap, so a
+            # mismatch must not gate the write (that would blind a present blade).
+            log.warning("ipmi: %s serial disagrees with observe chassis_sn (%s != %s)",
+                        port, fields["serial"], _sn)
     if fields["watts"] is not None:
         live_fields["watts"] = fields["watts"]
     if fields["sdr"]:
@@ -384,23 +416,26 @@ def _process_blade(d, hosts, creds, ipmi_runner, ping, set_state, upsert_node, o
                   host_pinged=host_pinged, **live_fields)
     except Exception:
         log.exception("ipmi: failed to write post_state for %s", port)
-    if d.get("mac"):
+    if d.get("mac") and vouched:
         try:
             upsert_node(d["mac"], serial=fields["serial"],
-                        host_mac=host.get("mac") if host else None, order_no=order_no,
+                        host_mac=p0_mac, order_no=order_no,
                         last_switch=switch, last_port=port,
                         power_on=fields["power_on"], sel=fields["sel"])
         except Exception:
             log.exception("ipmi: failed to upsert post_node for %s", d.get("mac"))
-    if record_observation is not None:
+    if record_observation is not None and p0_mac:
         try:
             record_observation(
-                p0_mac=host.get("mac") if host else None,
+                p0_mac=p0_mac,
                 serial=fields["serial"], fru=fields.get("fru") or {},
                 sdr=fields["sdr"], sel=fields["sel"], keys=keys or {})
         except Exception:
             log.exception("ipmi: work-record write failed for %s", port)
-    return port, d.get("mac"), fields.get("product_serial")
+    # An unvouched read must look to apply_occupants exactly like a reservation
+    # that did not answer (occupant_change §3) -- it may neither trigger nor
+    # confirm an occupant change.
+    return port, d.get("mac"), (fields.get("product_serial") if vouched else None)
 
 
 # Occupant identity (spec 2026-09-14-post-occupant-reset §3/§4). A post_state
@@ -582,7 +617,7 @@ def _process_blade_power(d, creds, ipmi_runner, ping, set_state, switch=SWITCH, 
 def run_once(devices=None, creds=None, ipmi_runner=None, ping=None,
              set_state=None, upsert_node=None, settings=None, workers=None,
              record_observation=None, switch=None, make_redfish=None,
-             prior=None, run_owner=None) -> None:
+             prior=None, run_owner=None, observed=None) -> None:
     """One pass over the post BMCs, FANNED OUT across a worker pool.
 
     Each BMC is an independent IPMI session, so probing 48 blades sequentially
@@ -597,6 +632,10 @@ def run_once(devices=None, creds=None, ipmi_runner=None, ping=None,
         ipmi_runner = _default_ipmi_runner
     if ping is None:
         ping = _default_ping
+    # Production is the only path that reads the DB for itself; a caller that
+    # injects its own writers gets exactly the `observed` it passed (same rule
+    # the occupant `prior` read below follows).
+    _production = set_state is None
     # The occupant check (spec 2026-09-14-post-occupant-reset §3) needs the
     # rows as they were before this pass. Production reads them here; callers
     # that inject their own writers pass `prior` or get no occupant check.
@@ -622,6 +661,15 @@ def run_once(devices=None, creds=None, ipmi_runner=None, ping=None,
 
     if switch is None:
         switch = _post_switch()
+    # flax-observe's identity witness for this switch. One read per pass, not
+    # per worker thread. Unreadable -> `observed` stays None, which fails every
+    # identity gate closed: this pass writes telemetry but attributes nothing.
+    if observed is None and _production:
+        try:
+            observed = queries.post_observed(switch)
+        except Exception:
+            log.exception("ipmi: could not read observe identity; "
+                          "this pass will write no identity")
     order_no = settings.get("order_no")
     keys = records.role_keys(settings)      # {"order":…, "customer":…}, nulls omitted
     hosts = {d["port"]: d for d in devices
@@ -634,7 +682,7 @@ def run_once(devices=None, creds=None, ipmi_runner=None, ping=None,
     def work(d):
         return _process_blade(d, hosts, creds, ipmi_runner, ping, set_state, upsert_node, order_no,
                               keys=keys, record_observation=record_observation, switch=switch,
-                              make_redfish=make_redfish)
+                              make_redfish=make_redfish, observed=observed)
 
     n = DEFAULT_WORKERS if workers is None else workers
     n = max(1, min(n, len(bmcs)))
