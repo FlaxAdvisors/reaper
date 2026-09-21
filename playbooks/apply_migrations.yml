@@ -1,0 +1,102 @@
+---
+# Apply alembic migrations to the site's PRIMARY, from an explicitly pinned
+# flax-control image. Schema only — it starts, stops and recreates nothing.
+#
+#   ansible-playbook -i inventories/<site>/hosts.yml \
+#     --vault-password-file ~/.vault_pass_<site> playbooks/apply_migrations.yml \
+#     -e migration_image_tag=0.9.164
+#
+# WHY THIS EXISTS. apply_flax_stack's own alembic task (roles/apply_flax_stack/
+# tasks/systemd.yml) runs `docker compose run ... flax-control`, which resolves
+# the image from apply_flax_stack_flax_control_image_tag — the CONSOLE's tag.
+# That tag is deliberately held back (eindhoven pinned it at 0.9.159 while
+# flax_post moved to 0.9.163) because rolling flax-stack recreates postgres.
+# So the migration step rode a tag chosen for a different reason, and a
+# migration newer than the console could not be applied by it at all. The
+# documented workaround (docs/build-and-deploy.md §4) was a hand-rolled
+# `docker run`, which is how people end up bind-mounting migration files into
+# an older image. Pin the tag here instead, and the workaround is unnecessary.
+#
+# Tag defaults to apply_flax_post_image_tag because flax_post/version.py is the
+# tag source of truth for the whole bundle (build-and-deploy §2). Override with
+# -e when the image is newer than the inventory pin, which is the normal case
+# between a build and its deploy.
+#
+# Run playbooks/pg_ha_check.yml before and after (memory: pg-ha-check-around-
+# db-changes). This playbook asserts the primary by evidence, not by config,
+# but it does not check that the standby is streaming.
+- name: Apply alembic migrations (primary only)
+  hosts: jumphosts
+  gather_facts: false
+  vars:
+    migration_image_tag: "{{ apply_flax_post_image_tag }}"
+    migration_compose_path: "{{ apply_flax_stack_compose_path | default('/etc/flax/flax-stack/docker-compose.yml') }}"
+  tasks:
+    - name: Probe local recovery state
+      become: true
+      ansible.builtin.command: >
+        docker compose -f {{ migration_compose_path }} exec -T postgres
+        psql -U postgres -d flax -tAc "SELECT pg_is_in_recovery()"
+      register: mig_recovery
+      changed_when: false
+      check_mode: false
+
+    # A standby is read-only, so alembic would fail there anyway; ending the
+    # play is quieter than a failure and keeps this runnable against the group.
+    - name: End play on a standby
+      ansible.builtin.meta: end_host
+      when: mig_recovery.stdout | trim != 'f'
+
+    - name: Assert the pinned image is present on this host
+      ansible.builtin.command: docker image inspect flax-control:{{ migration_image_tag }}
+      register: mig_image
+      changed_when: false
+      failed_when: mig_image.rc != 0
+
+    - name: Read alembic state before
+      become: true
+      ansible.builtin.command: >
+        docker compose -f {{ migration_compose_path }} exec -T postgres
+        psql -U postgres -d flax -tAc "SELECT version_num FROM alembic_version"
+      register: mig_before
+      changed_when: false
+
+    # PGPASSWORD is handed to the docker CLI through the task environment and
+    # forwarded by a valueless `-e PGPASSWORD`, so the secret never appears in
+    # the container's argv or in this host's process list — unlike the role's
+    # own task, which interpolates it into the command line.
+    # No `become` here on purpose: sudo's env_reset would drop PGPASSWORD
+    # from the task environment, and docker needs no root on these hosts.
+    - name: Run alembic upgrade head
+      environment:
+        PGPASSWORD: "{{ apply_flax_stack_postgres_superuser_password }}"
+      ansible.builtin.command: >
+        docker run --rm --network host
+          -e PGPASSWORD
+          -e PGUSER=postgres
+          -e PGHOST=127.0.0.1
+          -e PGPORT=5432
+          -e PGDATABASE=flax
+          -w /app/schema
+          flax-control:{{ migration_image_tag }}
+          python -m alembic upgrade head
+      register: mig_run
+      # alembic logs through logging -> STDERR. Matching on stdout alone
+      # reports 'ok' for a run that really did migrate (the same latent
+      # bug lives in roles/apply_flax_stack/tasks/systemd.yml).
+      changed_when: (mig_run.stdout ~ mig_run.stderr) is search('Running upgrade')
+
+    - name: Read alembic state after
+      become: true
+      ansible.builtin.command: >
+        docker compose -f {{ migration_compose_path }} exec -T postgres
+        psql -U postgres -d flax -tAc "SELECT version_num FROM alembic_version"
+      register: mig_after
+      changed_when: false
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} image=flax-control:{{ migration_image_tag }}
+          alembic {{ mig_before.stdout | trim }} -> {{ mig_after.stdout | trim }}
+          {{ '(already at head)' if not mig_run.changed else '(migrated)' }}
