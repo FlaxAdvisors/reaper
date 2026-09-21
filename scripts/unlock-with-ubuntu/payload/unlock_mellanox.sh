@@ -104,6 +104,29 @@ function cardident()
     devguid="${devguid:-unknown}"
 }
 
+# What reset levels does this card actually offer RIGHT NOW? mstfwreset's own
+# query subcommand answers it, read-only.
+#
+# Captured at two moments, because only the pair is evidence. The post lane
+# finishes a card in one boot -- burn, mstfwreset, sleep 5, UEFI tweak, no
+# reboot -- and the station cannot, but we do not know whether that is inherent
+# to a just-burned LOCKED card or something about how we ask. post never meets
+# the question because it refuses locked cards outright (update_mellanox.sh:177).
+#
+# The only reading we have is from an already-unlocked card, which reports
+# levels 3 and 4 supported. A locked card's baseline has never been captured.
+# If the post-failure reading comes back with nothing supported, the cold power
+# cycle is inherent and no --level choice buys a single pass; if it still
+# offers a level, it is worth trying that level before accepting two passes.
+function resetlevels()
+{
+    local mlxdev=$1
+    local when=$2
+    echo "--- reset-levels ($when) $mlxdev ---"
+    mstfwreset -d "$mlxdev" query 2>&1 | sed 's/^/    /'
+    echo "--- end reset-levels ($when) ---"
+}
+
 # The burn pass. Every "we cannot burn this" exit is a `return`, never the
 # loop's `continue`: a card we have no image for is still a card that has to
 # PXE boot when it goes into service, so it must still reach the UEFI pass.
@@ -112,6 +135,7 @@ function burnpass()
 {
     local mlxdev=$1
     local entry fwdir fwbin img want have bininfo binfwver binpsid
+    local burnlog resetlog
 
     entry="${FWMAP[$devpsid]:-}"
     if [ -z "$entry" ]; then
@@ -146,8 +170,24 @@ function burnpass()
         return 0
     fi
 
-    domstflint burn "$mlxdev" "$img"
+    # A locked card's reset-level baseline, taken while it is still locked and
+    # unburned. Never captured before, and the post-failure reading below means
+    # nothing without it -- it could not distinguish a card that LOST the
+    # capability from one that never advertised it.
+    resetlevels "$mlxdev" "pre-burn"
+
+    # mstflint reports the FW boot address during the BURN, before mstfwreset
+    # is ever called, so that -- not the reset -- is what decides whether a
+    # single pass is possible. Grade it without losing the live log.
+    burnlog=$(mktemp)
+    domstflint burn "$mlxdev" "$img" 2>&1 | tee "$burnlog"
     cardburned=yes
+    if grep -q "Failed to update FW boot address" "$burnlog"; then
+        cardbootaddr=failed
+    else
+        cardbootaddr=ok
+    fi
+    rm -f "$burnlog"
 
     # mstfwreset's exit status is the difference between "the new image is
     # running" and "the new image is merely in flash". It fails on these cards
@@ -158,13 +198,20 @@ function burnpass()
     # to the OUTGOING image. Record it so the log can say the card needs
     # another pass rather than leaving that to be inferred from a warning
     # buried in mstflint's output.
-    if domstfwreset "$mlxdev"; then
+    resetlog=$(mktemp)
+    domstfwreset "$mlxdev" > "$resetlog" 2>&1
+    cardresetrc=$?
+    cat "$resetlog"
+    rm -f "$resetlog"
+    if [ "$cardresetrc" -eq 0 ]; then
         cardactivated=yes
     else
         cardactivated=no
-        echo "$mlxdev: WARNING mstfwreset failed -- new FW is in flash but NOT"
-        echo "$mlxdev: running. The card needs a cold power cycle, then a"
-        echo "$mlxdev: second station pass to finish (config below is stale)."
+        echo "$mlxdev: WARNING mstfwreset failed (rc=$cardresetrc) -- new FW is"
+        echo "$mlxdev: in flash but NOT running. The card needs a cold power"
+        echo "$mlxdev: cycle, then a second station pass to finish (the config"
+        echo "$mlxdev: read below still belongs to the OUTGOING image)."
+        resetlevels "$mlxdev" "post-failure"
     fi
     sleep 5
     # The record that proves the lock cleared: Security Attributes should no
@@ -224,6 +271,8 @@ for mlxdev in $targets; do
     # Per-card state the two passes report back through.
     cardburned=no
     cardactivated=n/a
+    cardresetrc=n/a
+    cardbootaddr=n/a
     carduefi=unknown
     echo "$mlxdev: card mac=$devmac guid=$devguid psid=$devpsid fw=$devfwver sec=[$devsecure]"
 
@@ -234,7 +283,8 @@ for mlxdev in $targets; do
     # `grep RESULT /var/log/flax/mezz-flash/*.log` answers "was this card ever
     # unlocked, and did it get its UEFI ROM" without reading any prose.
     echo "$mlxdev: RESULT mac=$devmac guid=$devguid psid=$devpsid fw=$devfwver" \
-         "sec=[$devsecure] burned=$cardburned activated=$cardactivated uefi=$carduefi"
+         "sec=[$devsecure] burned=$cardburned bootaddr=$cardbootaddr" \
+         "activated=$cardactivated resetrc=$cardresetrc uefi=$carduefi"
     if [ "$cardactivated" == "no" ]; then
         echo "$mlxdev: NEEDS-SECOND-PASS mac=$devmac -- cold power cycle, then re-run"
     fi
