@@ -42,6 +42,25 @@ python3 "$here/fwmap.py" "$src/update_mellanox.sh" > "$build/nic_fw_map.tsv"
 psids=$(wc -l < "$build/nic_fw_map.tsv")
 echo "   $psids PSIDs"
 
+echo "== OPN -> PSID map from the share's symlinks =="
+# The fallback route for a card whose PSID has no FWMAP row. Only three
+# OEM-branded PSIDs are catalogued, but every card reports its own part number,
+# and the share keeps an OPN symlink beside each PSID dir
+# (MCX4411A-ACQ -> MT_2450112034). Building the map from those links lets the
+# station resolve a lock nobody has catalogued instead of walking away from it.
+( cd "$share" && for l in *; do
+    [ -L "$l" ] || continue
+    printf '%s\t%s\n' "$l" "$(readlink "$l")"
+  done ) | sort > "$build/nic_opn_map.tsv"
+opns=$(wc -l < "$build/nic_opn_map.tsv")
+echo "   $opns OPNs"
+# Same call as the FWMAP extraction: a silently empty map yields a bundle that
+# installs cleanly and then quietly loses the coverage it was built for.
+if [ "$opns" -eq 0 ]; then
+    echo "FATAL: no OPN symlinks under $share -- the OPN fallback would be dead."
+    exit 1
+fi
+
 echo "== payload =="
 cp -a "$here/payload/." "$build/"
 # A local test run of mezz_select.py leaves __pycache__ behind in the source
@@ -88,6 +107,7 @@ built  : $(date -u +%FT%TZ)
 host   : $(hostname)
 repo   : $(git -C "$repo" rev-parse --short HEAD 2>/dev/null || echo unknown)
 psids  : $psids
+opns   : $opns
 images : $count
 EOF
 cat "$build/MANIFEST"

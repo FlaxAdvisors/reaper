@@ -2,13 +2,7 @@
 # scripts/unlock-with-ubuntu/payload/mezz_select.py
 """Pick which Mellanox cards the unlock station may flash.
 
-The station may carry a PCIe ConnectX uplink alongside the jumpered mezzanine
-card it exists to flash. Burning the uplink would kill the operator's own
-session mid-flash, so selection is by EXCLUSION from three independent sources:
-
-  1. any card whose netdev holds an IPv4 address
-  2. the card backing the default route
-  3. explicit PROTECT_PCI entries in /etc/flax/mezz-flash.conf
+Selection is by EXCLUSION, and PROTECT_PCI is the ONLY thing that excludes.
 
 A card is protected as a WHOLE -- both functions of a dual-port card share one
 flash image -- so protection is matched at bus:device ("19:00"), never at the
@@ -18,6 +12,18 @@ Deliberately NOT positive selection by a pinned mezzanine BDF: that fails
 silently on an unexpected board (nothing selected, station blinks 'done',
 nothing flashed), and the station has no way to signal failure at the rack.
 Exclusion plus a logged target list is the safer trade.
+
+HISTORY (2026-09-21, operator decision): this also used to exclude any card
+holding an IPv4 address or backing the default route, to avoid burning the
+card carrying the operator's own ssh session mid-flash. That is REMOVED. We
+routinely flash NICs on PXE-live-booted machines and the link returns after the
+FW update and reset, so the caution bought nothing -- and it cost real
+coverage, because a failed-unlock card that came back up with a lease was
+silently skipped. That is precisely the card that most needs another pass:
+it may carry a new PSID and still be locked, or still need its UEFI ROM.
+
+Addressed cards are still REPORTED, because flashing the card under your own
+session is worth knowing about. They are simply no longer refused.
 """
 
 
@@ -27,19 +33,24 @@ def card(bdf):
 
 
 def select(devices, ifaces, protect=()):
-    """-> {"targets": [...], "protected": [...]}, both sorted.
+    """-> {"targets": [...], "protected": [...], "addressed": [...]}, all sorted.
 
     devices: every 15b3: BDF seen by lspci, e.g. ["06:00.0", "19:00.0", "19:00.1"]
     ifaces:  [{"pci": bdf, "ipv4": bool, "default_route": bool}, ...]
     protect: config entries, each a BDF or a bare bus:device
+
+    `ifaces` no longer gates anything -- it only populates "addressed", which
+    the caller logs so the operator can see it is about to flash a card that
+    currently holds a lease.
     """
     blocked = {card(p) for p in protect}
-    for i in ifaces:
-        if i.get("ipv4") or i.get("default_route"):
-            blocked.add(card(i["pci"]))
+    addressed = {card(i["pci"]) for i in ifaces
+                 if i.get("ipv4") or i.get("default_route")}
     targets = [d for d in devices
                if d.endswith(".0") and card(d) not in blocked]
-    return {"targets": sorted(targets), "protected": sorted(blocked)}
+    return {"targets": sorted(targets),
+            "protected": sorted(blocked),
+            "addressed": sorted(addressed)}
 
 
 # --- system gathering (thin; the logic above is what the tests cover) -------
@@ -98,7 +109,10 @@ if __name__ == "__main__":
     import sys
     got = select(_devices(), _ifaces(), _protect())
     if got["protected"]:
-        sys.stderr.write("protected (addressed / configured): %s\n"
+        sys.stderr.write("protected (PROTECT_PCI): %s\n"
                          % " ".join(got["protected"]))
+    if got["addressed"]:
+        sys.stderr.write("NOTE: these cards hold an address and will still be "
+                         "flashed: %s\n" % " ".join(got["addressed"]))
     for t in got["targets"]:
         print(t)

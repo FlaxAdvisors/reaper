@@ -55,6 +55,19 @@ while IFS=$'\t' read -r psid fwdir fwbin; do
     FWMAP["$psid"]="${fwdir}|${fwbin}"
 done < nic_fw_map.tsv
 echo "map: ${#FWMAP[@]} PSIDs"
+
+# OPN -> PSID, built at bundle time from the mellanox share's symlinks
+# (MCX4411A-ACQ -> MT_2450112034). The fallback route for a card whose PSID
+# has no FWMAP row: only three OEM-branded PSIDs are catalogued, but any card
+# still reports its own part number.
+declare -A OPNMAP=()
+if [ -f nic_opn_map.tsv ]; then
+    while IFS=$'\t' read -r opn opnpsid; do
+        [ -n "${opn:-}" ] || continue
+        OPNMAP["$opn"]="$opnpsid"
+    done < nic_opn_map.tsv
+fi
+echo "opn map: ${#OPNMAP[@]} OPNs"
 if [ "${#FWMAP[@]}" -eq 0 ]; then
     echo "FATAL: empty nic_fw_map.tsv -- bad bundle, flashing nothing."
     exit 1
@@ -104,6 +117,17 @@ function cardident()
     devguid="${devguid:-unknown}"
 }
 
+# The card's own part number, which it reports regardless of how its PSID is
+# branded. mstconfig prints it with a hardware revision suffix
+# (MCX4411A-ACQ_Ax); the share's OPN symlinks are the bare form.
+function cardopn()
+{
+    local name
+    name=$(mstconfig -d "$1" q 2>/dev/null | grep '^Name:' | awk '{print $2}')
+    devopn="${name%%_*}"
+    devopn="${devopn:-unknown}"
+}
+
 # What reset levels does this card actually offer RIGHT NOW? mstfwreset's own
 # query subcommand answers it, read-only.
 #
@@ -134,13 +158,23 @@ function resetlevels()
 function burnpass()
 {
     local mlxdev=$1
-    local entry fwdir fwbin img want have bininfo binfwver binpsid
+    local entry fwdir fwbin img want have bininfo binfwver binpsid viapsid
     local burnlog resetlog
 
     entry="${FWMAP[$devpsid]:-}"
     if [ -z "$entry" ]; then
-        echo "$mlxdev: PSID $devpsid is not in the map; no burn."
-        return 0
+        # No FWMAP row -- an OEM lock nobody has catalogued. Do not walk away:
+        # the card reports its own OPN and the share resolves that to an image
+        # the bundle already carries. Operator decision 2026-09-21: resolve and
+        # burn rather than skip and wait for a map row to be added.
+        viapsid="${OPNMAP[$devopn]:-}"
+        [ -n "$viapsid" ] && entry="${FWMAP[$viapsid]:-}"
+        if [ -z "$entry" ]; then
+            echo "$mlxdev: PSID $devpsid not in map and OPN $devopn does not" \
+                 "resolve to a bundled image; no burn."
+            return 0
+        fi
+        echo "$mlxdev: PSID $devpsid not in map; resolved by OPN $devopn -> $viapsid"
     fi
 
     fwdir="${entry%%|*}"
@@ -165,9 +199,18 @@ function burnpass()
     binpsid=$(printf "%s\n" $bininfo | grep 'PSID:' | cut -d':' -f2 | sed 's/^\s*//')
     echo "$mlxdev: dev fw=$devfwver psid=$devpsid sec=[$devsecure] | img fw=$binfwver psid=$binpsid"
 
+    # post's needsverup() compares FW and PSID only, which is right there --
+    # it refuses locked cards outright, so it never meets one that is at the
+    # target image and STILL locked. The station is the only place that happens,
+    # and it is exactly what a FAILED unlock looks like: the burn landed, the
+    # activation did not, and the card came back re-branded but locked. Walking
+    # away from it would strand the one card that most needs another pass.
     if [ "$devfwver" == "$binfwver" ] && [ "$devpsid" == "$binpsid" ]; then
-        echo "$mlxdev: already at target FW+PSID; no burn."
-        return 0
+        if [ "$devsecure" != "secure-fw" ]; then
+            echo "$mlxdev: already at target FW+PSID and unlocked; no burn."
+            return 0
+        fi
+        echo "$mlxdev: at target FW+PSID but STILL secure-fw -- re-burning to clear the lock."
     fi
 
     # A locked card's reset-level baseline, taken while it is still locked and
@@ -219,6 +262,7 @@ function burnpass()
     getdevinfo "$mlxdev"
     narrowpsid
     cardident
+    cardopn "$mlxdev"
     echo "$mlxdev: POST-FLASH fw=$devfwver psid=$devpsid sec=[$devsecure]"
 }
 
@@ -268,13 +312,14 @@ for mlxdev in $targets; do
     fi
     narrowpsid
     cardident
+    cardopn "$mlxdev"
     # Per-card state the two passes report back through.
     cardburned=no
     cardactivated=n/a
     cardresetrc=n/a
     cardbootaddr=n/a
     carduefi=unknown
-    echo "$mlxdev: card mac=$devmac guid=$devguid psid=$devpsid fw=$devfwver sec=[$devsecure]"
+    echo "$mlxdev: card mac=$devmac guid=$devguid opn=$devopn psid=$devpsid fw=$devfwver sec=[$devsecure]"
 
     burnpass "$mlxdev"
     uefipass "$mlxdev"
@@ -282,7 +327,7 @@ for mlxdev in $targets; do
     # ONE greppable line per card per run -- this is the station's history.
     # `grep RESULT /var/log/flax/mezz-flash/*.log` answers "was this card ever
     # unlocked, and did it get its UEFI ROM" without reading any prose.
-    echo "$mlxdev: RESULT mac=$devmac guid=$devguid psid=$devpsid fw=$devfwver" \
+    echo "$mlxdev: RESULT mac=$devmac guid=$devguid opn=$devopn psid=$devpsid fw=$devfwver" \
          "sec=[$devsecure] burned=$cardburned bootaddr=$cardbootaddr" \
          "activated=$cardactivated resetrc=$cardresetrc uefi=$carduefi"
     if [ "$cardactivated" == "no" ]; then
