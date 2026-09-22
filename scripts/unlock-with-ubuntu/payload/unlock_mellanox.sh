@@ -57,6 +57,8 @@ soldev="${MEZZ_SOL_DEV:-/dev/console}"
 # a redraw. Issue file only: the console copy gets no escapes.
 clockline='(redrawn \d \t UTC -- refreshes every 20s)'
 issuefile="${MEZZ_ISSUE:-/etc/issue.d/mezz-flash.issue}"
+# Machine-readable state for a triage mezz_flash agent (see writestatus).
+statusfile="${MEZZ_STATUS:-/run/flax/mezz-flash-status.json}"
 
 # The serial getty is up before this finishes, and Enter in SOL reprints the
 # issue file -- which still holds the PREVIOUS card's verdict. Replace it first,
@@ -134,6 +136,36 @@ function historytable()
         && echo "  * pre-fix log: burned/boot ROM were never checked"
 }
 
+# One card as JSON, for the status file a triage agent reads. Values are
+# tokens from mstflint/mstconfig or our own verdicts, so no escaping is needed.
+function cardjsonobj()
+{
+    local lock jump
+    lock=cleared; [ "$devsecure" = "secure-fw" ] && lock=locked
+    jump=no; [ "$cardlivefish" = "yes" ] && jump=yes
+    printf '{"mac":"%s","opn":"%s","psid":"%s","fw":"%s","lock":"%s","jumper":"%s","burned":"%s","bootrom":"%s","romset":"%s","verdict":"%s"}' \
+        "${devmac:-unknown}" "${devopn:-unknown}" "${devpsid:-unknown}" \
+        "${devfwver:-unknown}" "$lock" "$jump" "${cardburned:-no}" \
+        "${cardbootrom:-unknown}" "${cardromset:-none}" "$1"
+}
+
+# The status file. A jumper-less run leaves the node on the network, so an
+# agent can read this instead of scraping SOL; a jumpered card leaves both the
+# BMC and the NIC dark, and then the rack signal is all there is.
+# Written at every progress step too, so a tile shows RUNNING during a burn
+# rather than going blank for three minutes.
+function writestatus()
+{
+    local state=$1 text=$2 cards=$3
+    local tmp="${statusfile}.tmp"
+    mkdir -p "$(dirname "$statusfile")" 2>/dev/null
+    printf '{"ts":"%s","state":"%s","text":"%s","host":"%s","cards":[%s]}\n' \
+        "$(date -u +%FT%TZ)" "$state" "$text" "$(hostname)" "$cards" \
+        > "$tmp" 2>/dev/null && mv -f "$tmp" "$statusfile" 2>/dev/null
+    # Same content next to the logs: /run is tmpfs and empty after a reboot.
+    cp -f "$statusfile" "$logdir/status.json" 2>/dev/null || true
+}
+
 function bannerbody()
 {
     echo "=================== MEZZ FLASH STATION ==================="
@@ -154,7 +186,8 @@ function bannerbody()
 function progress()
 {
     mkdir -p "$(dirname "$issuefile")" 2>/dev/null
-    { bannerbody "$(date -u +%FT%TZ)  RUNNING -- $1" \
+    writestatus RUNNING "$1" "$cardjson"
+    { bannerbody "$(date -u +%FT%TZ)  RUNNING  $1" \
                  "Leave the card in until the verdict." "in progress"
       echo "$clockline"; } > "$issuefile" 2>/dev/null || true
     # Enter at `login:` only reprints the prompt, never the issue file (tested
@@ -562,6 +595,7 @@ anyproblem=0
 anyflip=0
 flipwhy=""
 cardblocks=""
+cardjson=""
 for mlxdev in $targets; do
     echo "--- $mlxdev ---"
     if ! getdevinfo "$mlxdev"; then
@@ -586,6 +620,7 @@ for mlxdev in $targets; do
     burnpass "$mlxdev"
     uefipass "$mlxdev"
     cardv=$(cardverdict)
+    cardjson="$cardjson${cardjson:+,}$(cardjsonobj "$cardv")"
     # Finished: freeze this card's block so a second card does not hide it.
     cardblocks="$cardblocks$(cardfields "$cardv")
 "
@@ -639,15 +674,27 @@ else
     verdict=DONE
 fi
 
+# `<state>  <text>`: the state is a fixed token so a triage agent can parse
+# the status line without reading prose (operator intent 2026-09-22). The
+# operator wording lives in the text.
 case "$verdict:$flipwhy" in
-    DONE:*)             headline="DONE -- card unlocked, boot ROM on (UEFI+PXE). Pull it." ;;
+    DONE:*)             state=DONE
+                        headline="card unlocked, boot ROM on (UEFI+PXE). Pull it." ;;
     FLIP:*remove-jumper*fit-jumper*|FLIP:*fit-jumper*remove-jumper*)
-                        headline="MIXED -- cards need different jumper states; see below." ;;
-    FLIP:*remove-jumper*) headline="HALF DONE -- REMOVE THE JUMPER and run again (boot ROM still to set)." ;;
-    FLIP:*fit-jumper*)  headline="LOCKED -- FIT THE JUMPER and run again (cannot unlock without it)." ;;
-    PROBLEM:*)          headline="PROBLEM -- not finished; read the RESULT lines below." ;;
+                        state=MIXED
+                        headline="cards need different jumper states; see below." ;;
+    FLIP:*remove-jumper*) state=REMOVE-JUMPER
+                        headline="half done: REMOVE THE JUMPER and run again (boot ROM still to set)." ;;
+    FLIP:*fit-jumper*)  state=FIT-JUMPER
+                        headline="still locked: FIT THE JUMPER and run again (cannot unlock without it)." ;;
+    PROBLEM:*)          state=PROBLEM
+                        headline="not finished; read the rows below." ;;
 esac
-[ -z "$targets" ] && headline="PROBLEM -- no Mellanox card found."
+if [ -z "$targets" ]; then
+    state=PROBLEM
+    headline="no Mellanox card found."
+fi
+writestatus "$state" "$headline" "$cardjson"
 
 # The banner: printed on the console now, and left in the serial getty's issue
 # file so pressing Enter in SOL shows it again later. It carries recent RESULT
@@ -657,7 +704,7 @@ banner=$(
     # The card fields are already frozen into $cardblocks by the loop, so pass
     # an empty live block here.
     devmac=""
-    bannerbody "$(date -u +%FT%TZ)  $headline"
+    bannerbody "$(date -u +%FT%TZ)  $state  $headline"
 )
 echo "$banner"
 timeout 5 sh -c 'printf "\r\n%s\r\n" "$1" | sed "s/$/\r/" > "$2"' _ "$banner" "$soldev" 2>/dev/null || true
