@@ -59,6 +59,9 @@ clockline='(redrawn \d \t UTC -- refreshes every 20s)'
 issuefile="${MEZZ_ISSUE:-/etc/issue.d/mezz-flash.issue}"
 # Machine-readable state for a triage mezz_flash agent (see writestatus).
 statusfile="${MEZZ_STATUS:-/run/flax/mezz-flash-status.json}"
+# Which bundle this station runs, for the agent and for the log.
+bundlever=$(awk '/^repo/ {print $3}' MANIFEST 2>/dev/null)
+bundlever="${bundlever:-unknown}"
 
 # The serial getty is up before this finishes, and Enter in SOL reprints the
 # issue file -- which still holds the PREVIOUS card's verdict. Replace it first,
@@ -149,6 +152,41 @@ function cardjsonobj()
         "${cardbootrom:-unknown}" "${cardromset:-none}" "$1"
 }
 
+# The same rows the banner table shows, as JSON, newest first, capped at 5.
+# A jumpered run is invisible while it happens -- no SOL, no BMC, no NIC --
+# so its outcome can only be reported on the NEXT jumper-less boot, and the
+# agent needs these rows to do it. `verified` is false for a pre-fix log,
+# which recorded burned/boot ROM without checking either.
+function historyjson()
+{
+    local f stamp
+    for f in $(ls -t "$logdir"/*.log 2>/dev/null); do
+        [ "$f" = "$log" ] && continue
+        stamp=$(basename "$f" .log)
+        grep " RESULT " "$f" 2>/dev/null | tac | awk -v s="$stamp" '''
+        {
+            mac=""; opn=""; psid=""; fw=""; sec=""; burn=""; rom=""; verd="";
+            for (i = 1; i <= NF; i++) {
+                split($i, kv, "=");
+                if (kv[1] == "mac") mac = kv[2];
+                else if (kv[1] == "opn") opn = kv[2];
+                else if (kv[1] == "psid") psid = kv[2];
+                else if (kv[1] == "fw") fw = kv[2];
+                else if (kv[1] == "sec") sec = kv[2];
+                else if (kv[1] == "burned") burn = kv[2];
+                else if (kv[1] == "bootrom" || kv[1] == "uefi") rom = kv[2];
+                else if (kv[1] == "verdict") verd = kv[2];
+            }
+            gsub(/\[|\]/, "", sec);
+            ver = (verd == "") ? "false" : "true";
+            if (verd == "") verd = "unknown";
+            lock = (sec == "secure-fw") ? "locked" : "cleared";
+            printf "{\"when\":\"%s\",\"mac\":\"%s\",\"opn\":\"%s\",\"psid\":\"%s\",\"fw\":\"%s\",\"lock\":\"%s\",\"burned\":\"%s\",\"bootrom\":\"%s\",\"verdict\":\"%s\",\"verified\":%s}\n",
+                   s, mac, opn, psid, fw, lock, burn, rom, verd, ver;
+        }'''
+    done | head -5 | paste -sd, -
+}
+
 # The status file. A jumper-less run leaves the node on the network, so an
 # agent can read this instead of scraping SOL; a jumpered card leaves both the
 # BMC and the NIC dark, and then the rack signal is all there is.
@@ -159,8 +197,9 @@ function writestatus()
     local state=$1 text=$2 cards=$3
     local tmp="${statusfile}.tmp"
     mkdir -p "$(dirname "$statusfile")" 2>/dev/null
-    printf '{"ts":"%s","state":"%s","text":"%s","host":"%s","cards":[%s]}\n' \
-        "$(date -u +%FT%TZ)" "$state" "$text" "$(hostname)" "$cards" \
+    printf '{"ts":"%s","state":"%s","text":"%s","station":true,"bundle":"%s","host":"%s","cards":[%s],"history":[%s]}\n' \
+        "$(date -u +%FT%TZ)" "$state" "$text" "$bundlever" "$(hostname)" \
+        "$cards" "$(historyjson)" \
         > "$tmp" 2>/dev/null && mv -f "$tmp" "$statusfile" 2>/dev/null
     # Same content next to the logs: /run is tmpfs and empty after a reboot.
     cp -f "$statusfile" "$logdir/status.json" 2>/dev/null || true
