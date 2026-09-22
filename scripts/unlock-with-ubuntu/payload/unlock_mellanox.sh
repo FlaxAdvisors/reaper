@@ -403,7 +403,7 @@ function romneeds()
 # What this card needs next, from what the two passes found.
 function cardverdict()
 {
-    if [ "$cardburned" = "failed" ] || [ "$carduefi" = "failed" ]; then
+    if [ "$cardburned" = "failed" ] || [ "$cardbootrom" = "failed" ]; then
         echo problem
     elif [ "$cardnoimage" = "yes" ] && \
          { [ "$cardlivefish" = "yes" ] || [ "$devsecure" = "secure-fw" ]; }; then
@@ -412,7 +412,7 @@ function cardverdict()
         echo remove-jumper
     elif [ "$devsecure" = "secure-fw" ]; then
         echo fit-jumper
-    elif [ "$carduefi" = "already" ] || [ "$carduefi" = "set" ]; then
+    elif [ "$cardbootrom" = "already" ] || [ "$cardbootrom" = "set" ]; then
         echo done
     else
         echo problem
@@ -426,14 +426,14 @@ function uefipass()
     # Livefish cannot write config at all, and a set on a still-locked image
     # is lost when the card is unlocked. Either way, not in this pass.
     if [ "$cardlivefish" = "yes" ]; then
-        echo "$mlxdev: jumper fitted (livefish) -- the UEFI ROM cannot be set" \
+        echo "$mlxdev: jumper fitted (livefish) -- the boot ROM settings cannot be set" \
              "now. Remove the jumper and run again."
-        carduefi=pending
+        cardbootrom=pending
         return 0
     fi
     if [ "$devsecure" = "secure-fw" ]; then
-        echo "$mlxdev: still locked -- UEFI ROM left for the pass after the unlock."
-        carduefi=pending
+        echo "$mlxdev: still locked -- boot ROM settings left for the pass after the unlock."
+        cardbootrom=pending
         return 0
     fi
     romneeds "$(domstconfig query "$mlxdev" 2>/dev/null)"
@@ -442,7 +442,7 @@ function uefipass()
     # will actually boot. Set everything regardless and let the next pass confirm.
     if [ -z "$romargs" ] && [ "$cardactivated" != "no" ]; then
         echo "$mlxdev: boot ROM config already set (UEFI x86 ROM, PXE ROM, legacy PXE)"
-        carduefi=already
+        cardbootrom=already
         return 0
     fi
     if [ "$cardactivated" == "no" ]; then
@@ -455,7 +455,7 @@ function uefipass()
     progress "setting the boot ROM ($tags) on card $devmac -- DO NOT PULL."
     if ! domstconfig set "$mlxdev" "$want"; then
         echo "$mlxdev: WARNING mstconfig set FAILED ($tags); the card will not PXE boot."
-        carduefi=failed
+        cardbootrom=failed
         return 0
     fi
     # Read it back: the set writes the Next Boot column, so that is the
@@ -463,11 +463,11 @@ function uefipass()
     romneeds "$(domstconfig query "$mlxdev" 2>/dev/null)"
     if [ -n "$romargs" ]; then
         echo "$mlxdev: WARNING set reported OK but still wrong on Next Boot: $romtags"
-        carduefi=failed
+        cardbootrom=failed
         return 0
     fi
     cardromset="$tags"
-    carduefi=set
+    cardbootrom=set
     nicchanged=1
     domstfwreset "$mlxdev"
     needbmcreset=1
@@ -494,7 +494,7 @@ for mlxdev in $targets; do
     cardactivated=n/a
     cardresetrc=n/a
     cardbootaddr=n/a
-    carduefi=unknown
+    cardbootrom=unknown
     cardromset=none
     echo "$mlxdev: card mac=$devmac guid=$devguid opn=$devopn psid=$devpsid fw=$devfwver sec=[$devsecure] livefish=$cardlivefish"
 
@@ -508,10 +508,10 @@ for mlxdev in $targets; do
 
     # ONE greppable line per card per run -- this is the station's history.
     # `grep RESULT /var/log/flax/mezz-flash/*.log` answers "was this card ever
-    # unlocked, and did it get its UEFI ROM" without reading any prose.
+    # unlocked, and did it get its boot ROM settings" without reading any prose.
     echo "$mlxdev: RESULT mac=$devmac guid=$devguid opn=$devopn psid=$devpsid fw=$devfwver" \
          "sec=[$devsecure] burned=$cardburned bootaddr=$cardbootaddr" \
-         "activated=$cardactivated resetrc=$cardresetrc uefi=$carduefi" \
+         "activated=$cardactivated resetrc=$cardresetrc bootrom=$cardbootrom" \
          "romset=$cardromset livefish=$cardlivefish verdict=$cardv"
     if [ "$cardactivated" == "no" ]; then
         echo "$mlxdev: NEEDS-SECOND-PASS mac=$devmac -- cold power cycle, then re-run"
@@ -523,7 +523,7 @@ done
 # BEFORE the blink is set, and the BMC must be answering again first. Reversed,
 # the blade sits dark and finished-looking-like-still-working.
 if [ $needbmcreset -ne 0 ]; then
-    echo "cold-resetting BMC after UEFI change"
+    echo "cold-resetting BMC after boot ROM change"
     progress "resetting the BMC (about 1 min) -- DO NOT PULL."
     ipmitool mc reset cold
     for _ in $(seq 1 30); do
@@ -552,10 +552,10 @@ else
 fi
 
 case "$verdict:$flipwhy" in
-    DONE:*)             headline="DONE -- card unlocked, UEFI ROM on. Pull it." ;;
+    DONE:*)             headline="DONE -- card unlocked, boot ROM on (UEFI+PXE). Pull it." ;;
     FLIP:*remove-jumper*fit-jumper*|FLIP:*fit-jumper*remove-jumper*)
                         headline="MIXED -- cards need different jumper states; see below." ;;
-    FLIP:*remove-jumper*) headline="HALF DONE -- REMOVE THE JUMPER and run again (UEFI ROM still to set)." ;;
+    FLIP:*remove-jumper*) headline="HALF DONE -- REMOVE THE JUMPER and run again (boot ROM still to set)." ;;
     FLIP:*fit-jumper*)  headline="LOCKED -- FIT THE JUMPER and run again (cannot unlock without it)." ;;
     PROBLEM:*)          headline="PROBLEM -- not finished; read the RESULT lines below." ;;
 esac
