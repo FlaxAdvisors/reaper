@@ -1,0 +1,10 @@
+[Unit]
+Description=Check every 30s whether the SOL console has stopped transmitting
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=30
+AccuracySec=5
+
+[Install]
+WantedBy=timers.target

@@ -25,7 +25,7 @@ mkdir -p "$dst"
 cp -a "$here"/. "$dst"/
 rm -f "$dst/deploy.sh"
 chmod 0755 "$dst/unlock_mellanox.sh" "$dst/common_mellanox.sh" "$dst/mezz_select.py" \
-    "$dst/serial_console_fixup.sh"
+    "$dst/serial_console_fixup.sh" "$dst/serial_watchdog.sh"
 
 echo "== in-band IPMI =="
 # The BMC is unreachable over LAN once a jumpered card is seated, so every
@@ -78,10 +78,15 @@ echo "== service =="
 install -m 0644 "$here/mezz-flash.service" /etc/systemd/system/mezz-flash.service
 install -m 0644 "$here/mezz-flash-banner.service" /etc/systemd/system/mezz-flash-banner.service
 install -m 0644 "$here/mezz-flash-serial.service" /etc/systemd/system/mezz-flash-serial.service
+install -m 0644 "$here/mezz-flash-watchdog.service" /etc/systemd/system/mezz-flash-watchdog.service
+install -m 0644 "$here/mezz-flash-watchdog.timer" /etc/systemd/system/mezz-flash-watchdog.timer
 install -m 0644 "$here/mezz-flash-banner.timer" /etc/systemd/system/mezz-flash-banner.timer
 systemctl daemon-reload
 # The banner timer is safe to start now: it only redraws the login prompt.
 systemctl enable --now mezz-flash-banner.timer
+# Safe to start now: it only restarts the SOL login prompt, and only when that
+# port has stopped transmitting (at most once per 5 min).
+systemctl enable --now mezz-flash-watchdog.timer
 # Installed but NOT enabled (2026-09-22). On et9b1 re-probing the SOL UART at
 # boot brought it up TX-stalled, and with console=ttyS1 on the kernel line every
 # PID1 status line then blocked ~30s: ssh came up 22 minutes into boot. It stays
