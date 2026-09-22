@@ -98,72 +98,19 @@ function cardfields()
     printf "  %-13s %s\n" "Verdict:" "$verdicttext"
 }
 
-# Earlier runs as a table: one heading row, then values only. Newest first,
-# and narrow enough for an 80-column SOL screen. A row from a pre-fix log
-# (no verdict= field) is starred -- those logged burned=yes / uefi=set
-# without checking anything.
-function historytable()
-{
-    local f stamp any
-    any=$(for f in $(ls -t "$logdir"/*.log 2>/dev/null); do
-        [ "$f" = "$log" ] && continue
-        stamp=$(basename "$f" .log)
-        grep " RESULT " "$f" 2>/dev/null | tac | awk -v s="$stamp" '''
-        {
-            mac=""; opn=""; fw=""; sec=""; burn=""; rom=""; verd="";
-            for (i = 1; i <= NF; i++) {
-                split($i, kv, "=");
-                if (kv[1] == "mac") mac = kv[2];
-                else if (kv[1] == "opn") opn = kv[2];
-                else if (kv[1] == "fw") fw = kv[2];
-                else if (kv[1] == "sec") sec = kv[2];
-                else if (kv[1] == "burned") burn = kv[2];
-                else if (kv[1] == "bootrom" || kv[1] == "uefi") rom = kv[2];
-                else if (kv[1] == "verdict") verd = kv[2];
-            }
-            star = (verd == "") ? "*" : " ";
-            if (verd == "") verd = "?";
-            gsub(/\[|\]/, "", sec);
-            lock = (sec == "secure-fw") ? "LOCK" : "ok";
-            when = substr(s, 5, 4) "-" substr(s, 10, 4);
-            printf "  %-9s %-12s %-12.12s %-10.10s %-4s %-4.4s %-8.8s %s%s\n",
-                   when, mac, opn, fw, lock, burn, rom, verd, star;
-        }'''
-    done | head -10)
-    [ -n "$any" ] || return 0
-    printf "  %-9s %-12s %-12s %-10s %-4s %-4s %-8s %s\n" \
-           WHEN MAC PART FW LOCK BURN BOOTROM VERDICT
-    printf "%s\n" "$any"
-    # grep, not a case on the whole blob: the starred row is rarely the last.
-    printf "%s\n" "$any" | grep -q "\*$" \
-        && echo "  * pre-fix log: burned/boot ROM were never checked"
-}
-
-# One card as JSON, for the status file a triage agent reads. Values are
-# tokens from mstflint/mstconfig or our own verdicts, so no escaping is needed.
-function cardjsonobj()
-{
-    local lock jump
-    lock=cleared; [ "$devsecure" = "secure-fw" ] && lock=locked
-    jump=no; [ "$cardlivefish" = "yes" ] && jump=yes
-    printf '{"mac":"%s","opn":"%s","psid":"%s","fw":"%s","lock":"%s","jumper":"%s","burned":"%s","bootrom":"%s","romset":"%s","verdict":"%s"}' \
-        "${devmac:-unknown}" "${devopn:-unknown}" "${devpsid:-unknown}" \
-        "${devfwver:-unknown}" "$lock" "$jump" "${cardburned:-no}" \
-        "${cardbootrom:-unknown}" "${cardromset:-none}" "$1"
-}
-
-# The same rows the banner table shows, as JSON, newest first, capped at 5.
-# A jumpered run is invisible while it happens -- no SOL, no BMC, no NIC --
-# so its outcome can only be reported on the NEXT jumper-less boot, and the
-# agent needs these rows to do it. `verified` is false for a pre-fix log,
-# which recorded burned/boot ROM without checking either.
-function historyjson()
+# Every RESULT row from earlier runs, newest first, as TSV:
+#   sig  when  mac  opn  psid  fw  lock  burn  bootrom  verdict  verified
+# `sig` is everything except the timestamp, so repeats of an unchanged state
+# collapse (operator decision 2026-09-22: five identical rows say nothing five
+# times -- keep the newest and count the rest). Both the banner table and the
+# status file's history[] are built from this.
+function historyraw()
 {
     local f stamp
     for f in $(ls -t "$logdir"/*.log 2>/dev/null); do
         [ "$f" = "$log" ] && continue
         stamp=$(basename "$f" .log)
-        grep " RESULT " "$f" 2>/dev/null | tac | awk -v s="$stamp" '''
+        grep " RESULT " "$f" 2>/dev/null | tac | awk -v s="$stamp" '
         {
             mac=""; opn=""; psid=""; fw=""; sec=""; burn=""; rom=""; verd="";
             for (i = 1; i <= NF; i++) {
@@ -181,10 +128,86 @@ function historyjson()
             ver = (verd == "") ? "false" : "true";
             if (verd == "") verd = "unknown";
             lock = (sec == "secure-fw") ? "locked" : "cleared";
-            printf "{\"when\":\"%s\",\"mac\":\"%s\",\"opn\":\"%s\",\"psid\":\"%s\",\"fw\":\"%s\",\"lock\":\"%s\",\"burned\":\"%s\",\"bootrom\":\"%s\",\"verdict\":\"%s\",\"verified\":%s}\n",
-                   s, mac, opn, psid, fw, lock, burn, rom, verd, ver;
-        }'''
-    done | head -5 | paste -sd, -
+            sig = mac "|" opn "|" psid "|" fw "|" lock "|" burn "|" rom "|" verd;
+            print sig "\t" s "\t" mac "\t" opn "\t" psid "\t" fw "\t" lock \
+                  "\t" burn "\t" rom "\t" verd "\t" ver;
+        }'
+    done
+}
+
+# Earlier runs as a table: one heading row, then values only. Newest first,
+# unchanged repeats collapsed with an xN count, and narrow enough for an
+# 80-column SOL screen. A row from a pre-fix log (no verdict= field) is
+# starred -- those logged burned=yes / uefi=set without checking anything.
+function historytable()
+{
+    local rows
+    rows=$(historyraw | awk -F'\t' '
+        function short(v) {
+            if (v == "remove-jumper") return "rm-jump";
+            if (v == "fit-jumper") return "fit-jump";
+            if (v == "unknown") return "?";
+            return v;
+        }
+        { if (!($1 in rec)) { order[++n] = $1; rec[$1] = $0 } cnt[$1]++ }
+        END {
+            # Oldest first: the newest row ends up next to the current
+            # card, and the status line below it is what stays on screen.
+            last = (n < 5) ? n : 5;
+            for (i = last; i >= 1; i--) {
+                split(rec[order[i]], f, "\t");
+                when = substr(f[2], 5, 4) "-" substr(f[2], 10, 4);
+                lock = (f[7] == "locked") ? "LOCK" : "ok";
+                verd = short(f[10]) ((f[11] == "true") ? "" : "*");
+                runs = (cnt[order[i]] > 1) ? "x" cnt[order[i]] : "";
+                printf "  %-9s %-12s %-12.12s %-10.10s %-4s %-4.4s %-7.7s %-8.8s %-4s\n",
+                       when, f[3], f[4], f[6], lock, f[8], f[9], verd, runs;
+            }
+        }')
+    [ -n "$rows" ] || return 0
+    printf "  %-9s %-12s %-12s %-10s %-4s %-4s %-7s %-8s %-4s\n" \
+           WHEN MAC PART FW LOCK BURN BOOTROM VERDICT RUNS
+    printf "%s\n" "$rows"
+    # grep, not a case on the whole blob: the starred row is rarely the last.
+    printf "%s\n" "$rows" | grep -q "\*" \
+        && echo "  * pre-fix log: burned/boot ROM were never checked"
+}
+
+# The same collapsed rows as JSON, for the status file. A jumpered run is
+# invisible while it happens -- no SOL, no BMC, no NIC -- so its outcome can
+# only be reported on the NEXT jumper-less boot, and the agent needs these.
+# `verified` is false for a pre-fix log, which recorded burned/boot ROM
+# without checking either; `runs` counts collapsed repeats.
+function historyjson()
+{
+    historyraw | awk -F'\t' '
+        { if (!($1 in rec)) { order[++n] = $1; rec[$1] = $0 } cnt[$1]++ }
+        END {
+            out = "";
+            for (i = 1; i <= n && i <= 5; i++) {
+                split(rec[order[i]], f, "\t");
+                out = out (i > 1 ? "," : "") \
+                  "{\"when\":\"" f[2] "\",\"mac\":\"" f[3] "\",\"opn\":\"" f[4] \
+                  "\",\"psid\":\"" f[5] "\",\"fw\":\"" f[6] "\",\"lock\":\"" f[7] \
+                  "\",\"burned\":\"" f[8] "\",\"bootrom\":\"" f[9] \
+                  "\",\"verdict\":\"" f[10] "\",\"verified\":" f[11] \
+                  ",\"runs\":" cnt[order[i]] "}";
+            }
+            print out;
+        }'
+}
+
+# One card as JSON, for the status file a triage agent reads. Values are
+# tokens from mstflint/mstconfig or our own verdicts, so no escaping is needed.
+function cardjsonobj()
+{
+    local lock jump
+    lock=cleared; [ "$devsecure" = "secure-fw" ] && lock=locked
+    jump=no; [ "$cardlivefish" = "yes" ] && jump=yes
+    printf '{"mac":"%s","opn":"%s","psid":"%s","fw":"%s","lock":"%s","jumper":"%s","burned":"%s","bootrom":"%s","romset":"%s","verdict":"%s"}' \
+        "${devmac:-unknown}" "${devopn:-unknown}" "${devpsid:-unknown}" \
+        "${devfwver:-unknown}" "$lock" "$jump" "${cardburned:-no}" \
+        "${cardbootrom:-unknown}" "${cardromset:-none}" "$1"
 }
 
 # The status file. A jumper-less run leaves the node on the network, so an
@@ -205,17 +228,21 @@ function writestatus()
     cp -f "$statusfile" "$logdir/status.json" 2>/dev/null || true
 }
 
+# Order matters on a SOL console that scrolls (operator decision
+# 2026-09-22): title, then the history table oldest first, then the card in
+# hand, and the status line LAST -- so the one line that must not scroll off
+# is the last thing written.
 function bannerbody()
 {
     echo "=================== MEZZ FLASH STATION ==================="
-    echo "$1"
-    [ -n "$2" ] && echo "$2"
+    echo "--- earlier runs (oldest first) ---"
+    historytable
     echo
     printf "%s" "$cardblocks"
     cardfields "$3"
     echo
-    echo "--- earlier runs (most recent first) ---"
-    historytable
+    echo "$1"
+    [ -n "$2" ] && echo "$2"
     echo "=========================================================="
 }
 
