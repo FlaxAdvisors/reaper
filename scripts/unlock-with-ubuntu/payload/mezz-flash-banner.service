@@ -1,0 +1,10 @@
+[Unit]
+Description=Redraw the SOL login prompt with the mezz-flash station banner
+# Enter at `login:` never reprints the issue file, and a SOL session opened
+# after a run has no scrollback, so without this an operator who cannot log in
+# has no way to see the verdict. --reload redraws every waiting getty with the
+# current /etc/issue.d/mezz-flash.issue.
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/agetty --reload

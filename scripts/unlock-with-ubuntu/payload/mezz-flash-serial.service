@@ -1,0 +1,14 @@
+[Unit]
+Description=Make sure the SOL console has a login prompt (re-probe an undetected UART)
+# See serial_console_fixup.sh: the SOL UART is intermittently left
+# uart:unknown at boot, which leaves SOL with no prompt and no station banner.
+After=systemd-udev-trigger.service systemd-udev-settle.service
+Before=getty.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/flax/mezzflash/serial_console_fixup.sh
+
+[Install]
+WantedBy=getty.target

@@ -18,13 +18,14 @@ dst=/opt/flax/mezzflash
 echo "== packages (needs network; the deployed station will have none) =="
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq mstflint ipmitool
+apt-get install -y -qq mstflint ipmitool setserial
 
 echo "== payload -> $dst =="
 mkdir -p "$dst"
 cp -a "$here"/. "$dst"/
 rm -f "$dst/deploy.sh"
-chmod 0755 "$dst/unlock_mellanox.sh" "$dst/common_mellanox.sh" "$dst/mezz_select.py"
+chmod 0755 "$dst/unlock_mellanox.sh" "$dst/common_mellanox.sh" "$dst/mezz_select.py" \
+    "$dst/serial_console_fixup.sh"
 
 echo "== in-band IPMI =="
 # The BMC is unreachable over LAN once a jumpered card is seated, so every
@@ -75,16 +76,36 @@ ipmitool chassis policy always-on || echo "  (could not set power policy)"
 
 echo "== service =="
 install -m 0644 "$here/mezz-flash.service" /etc/systemd/system/mezz-flash.service
+install -m 0644 "$here/mezz-flash-banner.service" /etc/systemd/system/mezz-flash-banner.service
+install -m 0644 "$here/mezz-flash-serial.service" /etc/systemd/system/mezz-flash-serial.service
+install -m 0644 "$here/mezz-flash-banner.timer" /etc/systemd/system/mezz-flash-banner.timer
 systemctl daemon-reload
-systemctl enable mezz-flash.service
+# The banner timer is safe to start now: it only redraws the login prompt.
+systemctl enable --now mezz-flash-banner.timer
+# Installed but NOT enabled (2026-09-22). On et9b1 re-probing the SOL UART at
+# boot brought it up TX-stalled, and with console=ttyS1 on the kernel line every
+# PID1 status line then blocked ~30s: ssh came up 22 minutes into boot. It stays
+# off until console= is off the station's kernel line.
+systemctl disable mezz-flash-serial.service 2>/dev/null || true
+
+# Debian's own setserial services save the port state at shutdown and restore
+# it at boot -- the other half of that race. Never let them run, and drop the
+# state they saved so nothing restores it.
+systemctl disable --now setserial.service etc-setserial.service 2>/dev/null || true
+systemctl mask setserial.service etc-setserial.service 2>/dev/null || true
+rm -f /var/lib/setserial/autoserial.conf /var/lib/setserial/autoserial.conf.old
+# `|| true`: a boot with systemd.mask=mezz-flash.service on the kernel line
+# (how a station is booted to be upgraded) makes enable fail, which under
+# set -e used to abort the install before this point. The enable link from
+# the first install survives that mask, and the mask itself is /run-only.
+systemctl enable mezz-flash.service || echo "  (enable refused -- runtime-masked this boot? link kept from the first install)"
 # Deliberately NOT started here: installing should never flash a card that the
 # operator has not yet jumpered and seated on purpose.
 
 echo
 echo "Installed. It runs on the NEXT boot."
-# `start` is a no-op once the unit has run: it is Type=oneshot with
-# RemainAfterExit=yes, so after the boot run it stays "active" and systemd
-# treats a start as already-satisfied. `restart` is the one that re-runs it.
-echo "  re-run now  : sudo systemctl restart mezz-flash   (NOT start -- oneshot stays active)"
+# Type=simple: once a run has exited the unit is inactive, so `start` runs it
+# again. It does NOT hold boot; watch progress on the SOL banner.
+echo "  re-run now  : sudo systemctl start mezz-flash"
 echo "  logs        : /var/log/flax/mezz-flash/"
 echo "  config      : /etc/flax/mezz-flash.conf (PROTECT_PCI, SHUTDOWN_ON_DONE)"

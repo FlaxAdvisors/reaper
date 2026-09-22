@@ -1,20 +1,22 @@
 [Unit]
 Description=Mellanox mezzanine FW-lock unlock pass (flash, then blink IDENT)
-# The station's whole cycle is: blade inserted -> boots -> this runs -> IDENT
-# blinks -> operator pulls the blade live. There is no clean shutdown, ever.
-After=multi-user.target
+# The station's whole cycle is: blade inserted -> boots -> this runs -> the
+# rack signal (IDENT / power) and the SOL banner give the verdict.
+#
+# Type=simple, NOT oneshot (operator decision 2026-09-22): boot must not wait
+# for a burn (4-5 min), so the SOL login prompt is up while the station works
+# and the banner can show progress. Ordered after the prompts for that reason.
+After=multi-user.target getty.target mezz-flash-serial.service
 Wants=multi-user.target
 
 [Service]
-Type=oneshot
-RemainAfterExit=yes
+Type=simple
 WorkingDirectory=/opt/flax/mezzflash
 # In-band IPMI only: with a jumpered mezzanine card the BMC's NC-SI path is
 # dark, so there is no LAN to reach it over. Wait for the KCS device rather
 # than racing ipmi_si's probe.
 ExecStartPre=/bin/sh -c 'for i in $(seq 1 30); do [ -e /dev/ipmi0 ] && exit 0; sleep 1; done; echo "no /dev/ipmi0"; exit 0'
 ExecStart=/opt/flax/mezzflash/unlock_mellanox.sh
-TimeoutStartSec=1800
 StandardOutput=journal
 StandardError=journal
 

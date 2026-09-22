@@ -13,13 +13,17 @@
 #   3. The PSID->image map is DATA (nic_fw_map.tsv), extracted from the
 #      original's FWMAP at build time. Never hand-edit it here; fix FWMAP and
 #      rebuild, or the station and the fleet disagree about what a card should be.
-#   4. Ends with `ipmitool chassis identify force` -- an indefinite blink that
-#      means DONE, the operator's only signal at the rack. Solid blue is
-#      power-on and means nothing about this script.
-#
-# Pass/fail is NOT distinguishable at the rack by design (operator decision):
-# a failure shows up later as a card whose lock is still set when it goes into
-# service. The log is the record; read it over ssh while a working NIC is in.
+#   4. Ends in one of three rack signals (power state + IDENT), because that
+#      is all an operator reliably notes. Solid blue is power-on and means
+#      nothing about this script. REVISED 2026-09-22 (operator decision): the
+#      old "pass/fail not distinguishable at the rack" design let a card that
+#      was never unlocked, or never got its UEFI ROM, go back into service
+#      looking done.
+#        DONE     IDENT blinking            -> card finished, pull it
+#        FLIP     dark (off, no blink)      -> flip the jumper state, run again
+#        PROBLEM  on, no blink, after ~15m  -> read SOL (jumper-less only)
+#      The verdict and recent RESULT lines are also printed to /dev/console
+#      and left in /etc/issue.d, so Enter in SOL shows them.
 # NO `set -u`. common_mellanox.sh is shared verbatim with the post lane and its
 # domstflint() assigns binfile=$3 while getdevinfo() calls it with two args --
 # fatal under -u. That cost the first three live runs on 2026-09-18: every card
@@ -30,7 +34,7 @@
 here=$(cd "$(dirname "$0")" && pwd)
 cd "$here" || exit 1
 
-logdir=/var/log/flax/mezz-flash
+logdir="${MEZZ_LOGDIR:-/var/log/flax/mezz-flash}"
 mkdir -p "$logdir"
 log="$logdir/$(date -u +%Y%m%dT%H%M%SZ).log"
 exec > >(tee -a "$log") 2>&1
@@ -40,6 +44,44 @@ echo "=== unlock_mellanox.sh $(date -u +%FT%TZ) ==="
 
 # PROTECT_PCI is read by mezz_select.py; SHUTDOWN_ON_DONE is read here.
 [ -f /etc/flax/mezz-flash.conf ] && . /etc/flax/mezz-flash.conf
+
+# Where the operator-facing verdict goes. /dev/console is whatever the LAST
+# console= on the kernel command line names -- the SOL port on every blade
+# type we install (ttyS1 on Leopard), without this script knowing which.
+soldev="${MEZZ_SOL_DEV:-/dev/console}"
+# agetty --reload (mezz-flash-banner.timer, every 20s) skips the redraw when
+# the rendered issue text is unchanged -- measured on et9b1, 0 redraws in 35s.
+# A SOL session opened after the run has no scrollback, so the banner has to
+# repaint on every tick for a reattach to see it. \d and \t are agetty's own
+# date/time escapes, expanded at every render, so this line makes every reload
+# a redraw. Issue file only: the console copy gets no escapes.
+clockline='(redrawn \d \t UTC -- refreshes every 20s)'
+issuefile="${MEZZ_ISSUE:-/etc/issue.d/mezz-flash.issue}"
+
+# The serial getty is up before this finishes, and Enter in SOL reprints the
+# issue file -- which still holds the PREVIOUS card's verdict. Replace it first,
+# or an operator who swapped cards reads the old card's DONE mid-run.
+#
+# The station does not hold boot (Type=simple), so the prompt is up while it
+# works: progress() keeps the banner saying what it is doing right now.
+function progress()
+{
+    mkdir -p "$(dirname "$issuefile")" 2>/dev/null
+    printf "%s\n%s\n%s\n%s\n%s\n\n" \
+        "=================== MEZZ FLASH STATION ===================" \
+        "$(date -u +%FT%TZ)  RUNNING -- $1" \
+        "Leave the card in until the verdict." \
+        "==========================================================" \
+        "$clockline" > "$issuefile" 2>/dev/null || true
+    # Enter at `login:` only reprints the prompt, never the issue file (tested
+    # on et9b1). --reload makes the waiting getty redraw WITH it, so push it.
+    agetty --reload >/dev/null 2>&1 || true
+}
+progress "starting; looking for Mellanox cards."
+
+# A DONE blink from the previous run survives a host power cycle on the BMC.
+# Clear it now so the only blink the operator can see is THIS run's verdict.
+ipmitool chassis identify 0 >/dev/null 2>&1 || true
 
 # globals consumed by common_mellanox.sh's domstflint
 allow_psid_change=1
@@ -90,11 +132,32 @@ else
     targets=$(python3 ./mezz_select.py)
 fi
 echo "targets: ${targets:-<none>}"
+progress "cards: ${targets:-none found}"
 if [ -z "$targets" ]; then
     echo "No target cards. Nothing to flash."
 fi
 
 # --- flash ----------------------------------------------------------------
+# Jumper fitted <=> the card is in livefish. Measured over 40 live runs on
+# et9b1/et9b4 (2026-09-21/22), and it decides everything below:
+#   livefish:  mstflint burns fine, but mstconfig can write NOTHING ("Device in
+#              Livefish mode is not supported") and mstfwreset fails with
+#              ME_MAD_SEND_FAILED(8). 27/27 jumpered runs.
+#   no jumper: mstconfig works, but burning a locked card is always refused
+#              ("Changing PSID is unsupported under controlled FW"). 13/13.
+# So unlocking takes TWO passes -- a jumpered burn, then a jumper-less pass
+# that sets the UEFI ROM, which the unlocked image defaults to OFF -- and the
+# station has to say which one a card needs next. mstflint's query reads the
+# same either way, so it cannot tell them apart; mstconfig can.
+function cardmode()
+{
+    if mstconfig -d "$1" q 2>&1 | grep -qi "livefish"; then
+        cardlivefish=yes
+    else
+        cardlivefish=no
+    fi
+}
+
 # common_mellanox.sh's getdevinfo() greps an UNANCHORED 'PSID:', which also
 # matches the 'Orig PSID:' line mstflint prints once a card's PSID has been
 # changed -- so $devpsid comes back holding BOTH values, newline-joined. Every
@@ -164,7 +227,14 @@ function burnpass()
 {
     local mlxdev=$1
     local entry fwdir fwbin img want have bininfo binfwver binpsid viapsid
-    local burnlog resetlog
+    local burnlog resetlog burnrc
+
+    if [ "$cardlivefish" = "no" ] && [ "$devsecure" = "secure-fw" ]; then
+        echo "$mlxdev: locked and NO jumper -- controlled FW refuses the PSID" \
+             "change every time; not burning. Fit the jumper and run again."
+        cardburned=needs-jumper
+        return 0
+    fi
 
     entry="${FWMAP[$devpsid]:-}"
     if [ -z "$entry" ]; then
@@ -177,6 +247,7 @@ function burnpass()
         if [ -z "$entry" ]; then
             echo "$mlxdev: PSID $devpsid not in map and OPN $devopn does not" \
                  "resolve to a bundled image; no burn."
+            cardnoimage=yes
             return 0
         fi
         echo "$mlxdev: PSID $devpsid not in map; resolved by OPN $devopn -> $viapsid"
@@ -187,6 +258,7 @@ function burnpass()
     img="fw/${fwdir}/${fwbin}"
     if [ ! -f "$img" ]; then
         echo "$mlxdev: image missing from bundle ($img); no burn."
+        cardnoimage=yes
         return 0
     fi
     # The rootfs takes a hard power cut every cycle (blade pulled while up), so
@@ -195,6 +267,7 @@ function burnpass()
     have=$(sha256sum "$img" | cut -d' ' -f1)
     if [ -z "$want" ] || [ "$want" != "$have" ]; then
         echo "$mlxdev: checksum FAILED for $img (want=${want:-<absent>} have=$have); refusing to burn."
+        cardburned=failed
         return 0
     fi
 
@@ -228,7 +301,16 @@ function burnpass()
     # is ever called, so that -- not the reset -- is what decides whether a
     # single pass is possible. Grade it without losing the live log.
     burnlog=$(mktemp)
+    progress "BURNING firmware on card $devmac -- DO NOT PULL (about 3 min)."
     domstflint burn "$mlxdev" "$img" 2>&1 | tee "$burnlog"
+    burnrc=${PIPESTATUS[0]}
+    # The old code never looked: every refused burn was logged burned=yes.
+    if [ "$burnrc" -ne 0 ] || grep -q -- "^-E-" "$burnlog"; then
+        echo "$mlxdev: WARNING burn FAILED (rc=$burnrc); the card is unchanged."
+        cardburned=failed
+        rm -f "$burnlog"
+        return 0
+    fi
     cardburned=yes
     nicchanged=1
     if grep -q "Failed to update FW boot address" "$burnlog"; then
@@ -282,28 +364,109 @@ function burnpass()
 # with ME_MAD_SEND_FAILED(8), so the config being read still belonged to the
 # outgoing locked image. `mstconfig set` writes the Next Boot column and is
 # idempotent, so re-setting an already-enabled card costs nothing.
+# The boot-ROM settings every card must leave with, as key:wanted:set-arg:tag.
+# Only UEFI x86 has been seen wrong -- the unlocked MT_2450112034 image
+# defaults it False(0) -- but operator decision 2026-09-22 is to enforce all
+# three: one set, one read-back, and an image or OEM default we have not met
+# cannot ship a card that will not PXE boot. LEGACY_BOOT_PROTOCOL is for
+# legacy-BIOS PXE only; it keeps both boot modes working.
+BOOTROM_KEYS="EXP_ROM_UEFI_x86_ENABLE:1:EXP_ROM_UEFI_x86_ENABLE=true:UEFI
+EXP_ROM_PXE_ENABLE:1:EXP_ROM_PXE_ENABLE=true:PXE
+LEGACY_BOOT_PROTOCOL:1:LEGACY_BOOT_PROTOCOL=PXE:LEGACY"
+
+# The number in parens that mstconfig prints for one key: True(1) -> 1,
+# PXE(1) -> 1. Empty when the key is absent or the query failed.
+function romvalue()
+{
+    printf "%s\n" "$1" | grep -E "^\s+$2\s" \
+        | sed -re "s/^\s+$2\s+\S+\(([0-9]+)\)\s*$/\1/"
+}
+
+# From one query's output, which settings are not yet what we want.
+# -> romargs (for mstconfig set) and romtags (for the log). Fails CLOSED: an
+# unreadable key counts as wrong, so an unreadable query sets all of them.
+function romneeds()
+{
+    local key want arg tag
+    romargs=""
+    romtags=""
+    while IFS=: read -r key want arg tag; do
+        [ -n "$key" ] || continue
+        if [ "$(romvalue "$1" "$key")" != "$want" ]; then
+            romargs="$romargs $arg"
+            romtags="${romtags:+$romtags,}$tag"
+        fi
+    done <<< "$BOOTROM_KEYS"
+    romargs="${romargs# }"
+}
+
+# What this card needs next, from what the two passes found.
+function cardverdict()
+{
+    if [ "$cardburned" = "failed" ] || [ "$carduefi" = "failed" ]; then
+        echo problem
+    elif [ "$cardnoimage" = "yes" ] && \
+         { [ "$cardlivefish" = "yes" ] || [ "$devsecure" = "secure-fw" ]; }; then
+        echo problem
+    elif [ "$cardlivefish" = "yes" ]; then
+        echo remove-jumper
+    elif [ "$devsecure" = "secure-fw" ]; then
+        echo fit-jumper
+    elif [ "$carduefi" = "already" ] || [ "$carduefi" = "set" ]; then
+        echo done
+    else
+        echo problem
+    fi
+}
+
 function uefipass()
 {
     local mlxdev=$1
     local uefival
-    uefival=$(domstconfig query "$mlxdev" | grep "EXP_ROM_UEFI_x86_ENABLE" \
-        | sed -re 's/^\s+EXP_ROM_UEFI_x86_ENABLE\s+\S+\(([01])\)\s*$/\1/')
+    # Livefish cannot write config at all, and a set on a still-locked image
+    # is lost when the card is unlocked. Either way, not in this pass.
+    if [ "$cardlivefish" = "yes" ]; then
+        echo "$mlxdev: jumper fitted (livefish) -- the UEFI ROM cannot be set" \
+             "now. Remove the jumper and run again."
+        carduefi=pending
+        return 0
+    fi
+    if [ "$devsecure" = "secure-fw" ]; then
+        echo "$mlxdev: still locked -- UEFI ROM left for the pass after the unlock."
+        carduefi=pending
+        return 0
+    fi
+    romneeds "$(domstconfig query "$mlxdev" 2>/dev/null)"
     # A card whose new image is in flash but not running reports the OUTGOING
     # image's config, so "already on" is not evidence about the image the card
-    # will actually boot. Set it regardless and let the second pass confirm.
-    if [ "$uefival" == "1" ] && [ "$cardactivated" != "no" ]; then
-        echo "$mlxdev: EXP_ROM_UEFI_x86_ENABLE already set"
+    # will actually boot. Set everything regardless and let the next pass confirm.
+    if [ -z "$romargs" ] && [ "$cardactivated" != "no" ]; then
+        echo "$mlxdev: boot ROM config already set (UEFI x86 ROM, PXE ROM, legacy PXE)"
         carduefi=already
         return 0
     fi
-    if [ -z "$uefival" ]; then
-        echo "$mlxdev: could not read EXP_ROM_UEFI_x86_ENABLE; setting it anyway"
-    elif [ "$cardactivated" == "no" ]; then
-        echo "$mlxdev: card not activated; setting EXP_ROM_UEFI_x86_ENABLE regardless"
+    if [ "$cardactivated" == "no" ]; then
+        echo "$mlxdev: card not activated; setting every boot ROM key regardless"
+        romneeds ""
     else
-        echo "$mlxdev: enabling EXP_ROM_UEFI_x86_ENABLE"
+        echo "$mlxdev: boot ROM config needs: $romtags"
     fi
-    domstconfig set "$mlxdev" "EXP_ROM_UEFI_x86_ENABLE=true"
+    local want="$romargs" tags="$romtags"
+    progress "setting the boot ROM ($tags) on card $devmac -- DO NOT PULL."
+    if ! domstconfig set "$mlxdev" "$want"; then
+        echo "$mlxdev: WARNING mstconfig set FAILED ($tags); the card will not PXE boot."
+        carduefi=failed
+        return 0
+    fi
+    # Read it back: the set writes the Next Boot column, so that is the
+    # evidence the card will boot with the ROMs on.
+    romneeds "$(domstconfig query "$mlxdev" 2>/dev/null)"
+    if [ -n "$romargs" ]; then
+        echo "$mlxdev: WARNING set reported OK but still wrong on Next Boot: $romtags"
+        carduefi=failed
+        return 0
+    fi
+    cardromset="$tags"
     carduefi=set
     nicchanged=1
     domstfwreset "$mlxdev"
@@ -311,32 +474,45 @@ function uefipass()
     sleep 5
 }
 
+anyproblem=0
+anyflip=0
+flipwhy=""
 for mlxdev in $targets; do
     echo "--- $mlxdev ---"
     if ! getdevinfo "$mlxdev"; then
-        echo "$mlxdev: query failed; skipping."
+        echo "$mlxdev: RESULT query failed; verdict=problem"
+        anyproblem=1
         continue
     fi
     narrowpsid
     cardident
     cardopn "$mlxdev"
+    cardmode "$mlxdev"
     # Per-card state the two passes report back through.
+    cardnoimage=no
     cardburned=no
     cardactivated=n/a
     cardresetrc=n/a
     cardbootaddr=n/a
     carduefi=unknown
-    echo "$mlxdev: card mac=$devmac guid=$devguid opn=$devopn psid=$devpsid fw=$devfwver sec=[$devsecure]"
+    cardromset=none
+    echo "$mlxdev: card mac=$devmac guid=$devguid opn=$devopn psid=$devpsid fw=$devfwver sec=[$devsecure] livefish=$cardlivefish"
 
     burnpass "$mlxdev"
     uefipass "$mlxdev"
+    cardv=$(cardverdict)
+    case "$cardv" in
+        problem) anyproblem=1 ;;
+        remove-jumper|fit-jumper) anyflip=1; flipwhy="$flipwhy $cardv" ;;
+    esac
 
     # ONE greppable line per card per run -- this is the station's history.
     # `grep RESULT /var/log/flax/mezz-flash/*.log` answers "was this card ever
     # unlocked, and did it get its UEFI ROM" without reading any prose.
     echo "$mlxdev: RESULT mac=$devmac guid=$devguid opn=$devopn psid=$devpsid fw=$devfwver" \
          "sec=[$devsecure] burned=$cardburned bootaddr=$cardbootaddr" \
-         "activated=$cardactivated resetrc=$cardresetrc uefi=$carduefi"
+         "activated=$cardactivated resetrc=$cardresetrc uefi=$carduefi" \
+         "romset=$cardromset livefish=$cardlivefish verdict=$cardv"
     if [ "$cardactivated" == "no" ]; then
         echo "$mlxdev: NEEDS-SECOND-PASS mac=$devmac -- cold power cycle, then re-run"
     fi
@@ -348,6 +524,7 @@ done
 # the blade sits dark and finished-looking-like-still-working.
 if [ $needbmcreset -ne 0 ]; then
     echo "cold-resetting BMC after UEFI change"
+    progress "resetting the BMC (about 1 min) -- DO NOT PULL."
     ipmitool mc reset cold
     for _ in $(seq 1 30); do
         sleep 5
@@ -358,9 +535,59 @@ fi
 # Keep "insert the blade and it boots" true across BMC resets.
 ipmitool chassis policy always-on || true
 
-echo "DONE -- lighting identify (indefinite blink)"
-ipmitool chassis identify force
-echo "=== end $(date -u +%FT%TZ) ==="
+# --- verdict --------------------------------------------------------------
+# The operator sees at most power state + IDENT, and SOL only when the node is
+# up WITHOUT the jumper (NC-SI rides the card, so a jumpered card leaves the
+# BMC unreachable). Three outcomes, operator decision 2026-09-22:
+#
+#   DONE     IDENT blinking. Powered off only if this run changed a card.
+#   FLIP     IDENT off, powered off: flip the jumper state and run again.
+#   PROBLEM  IDENT off, left up: something failed; SOL / the log says what.
+if [ -z "$targets" ] || [ "$anyproblem" -ne 0 ]; then
+    verdict=PROBLEM
+elif [ "$anyflip" -ne 0 ]; then
+    verdict=FLIP
+else
+    verdict=DONE
+fi
+
+case "$verdict:$flipwhy" in
+    DONE:*)             headline="DONE -- card unlocked, UEFI ROM on. Pull it." ;;
+    FLIP:*remove-jumper*fit-jumper*|FLIP:*fit-jumper*remove-jumper*)
+                        headline="MIXED -- cards need different jumper states; see below." ;;
+    FLIP:*remove-jumper*) headline="HALF DONE -- REMOVE THE JUMPER and run again (UEFI ROM still to set)." ;;
+    FLIP:*fit-jumper*)  headline="LOCKED -- FIT THE JUMPER and run again (cannot unlock without it)." ;;
+    PROBLEM:*)          headline="PROBLEM -- not finished; read the RESULT lines below." ;;
+esac
+[ -z "$targets" ] && headline="PROBLEM -- no Mellanox card found."
+
+# The banner: printed on the console now, and left in the serial getty's issue
+# file so pressing Enter in SOL shows it again later. It carries recent RESULT
+# lines from EARLIER runs too: a jumpered run's verdict can only be read on a
+# later jumper-less boot.
+banner=$(
+    echo "=================== MEZZ FLASH STATION ==================="
+    echo "$(date -u +%FT%TZ)  $headline"
+    echo "--- this run and earlier ones (newest last) ---"
+    grep -h " RESULT " $(ls "$logdir"/*.log 2>/dev/null | sort | tail -6) 2>/dev/null \
+        | sed -E 's/^[^ ]+ RESULT //; s/ guid=[^ ]+//; s/ bootaddr=[^ ]+ activated=[^ ]+ resetrc=[^ ]+//' \
+        | sed -E '/ verdict=/!s/$/  [UNVERIFIED: pre-fix log]/' \
+        | tail -8
+    echo "=========================================================="
+)
+echo "$banner"
+timeout 5 sh -c 'printf "\r\n%s\r\n" "$1" | sed "s/$/\r/" > "$2"' _ "$banner" "$soldev" 2>/dev/null || true
+mkdir -p "$(dirname "$issuefile")" 2>/dev/null
+printf "%s\n%s\n\n" "$banner" "$clockline" > "$issuefile" 2>/dev/null || true
+agetty --reload >/dev/null 2>&1 || true
+
+if [ "$verdict" = "DONE" ]; then
+    echo "lighting identify (indefinite blink) = DONE"
+    ipmitool chassis identify force
+else
+    ipmitool chassis identify 0 || true
+fi
+echo "=== end $(date -u +%FT%TZ) verdict=$verdict ==="
 
 # Identify first, then power off -- the same order post.sh uses, where it is
 # known to survive the transition (the BMC runs on standby power, so the blink
@@ -372,15 +599,18 @@ echo "=== end $(date -u +%FT%TZ) ==="
 # disk to dirty. This station has a real rootfs that is otherwise hard-cut on
 # every blade pull, and avoiding that is the whole point of powering down.
 #
-# always-on is a resume-after-power-loss policy, not a "must always be on"
-# rule, so a deliberate shutdown does not fight it: re-seating the blade
-# re-applies power and the BMC brings the host back up.
-#
-# Only after a run that CHANGED a card. A no-op run stays up: there is nothing
-# the power-off protects, and powering off would make every node carrying a
-# finished card impossible to boot for anything else.
-if [ "$nicchanged" -eq 0 ]; then
-    echo "NO-CHANGE -- no card was burned or reconfigured; staying up"
+# DONE powers off only if a card was changed: a no-op run stays up, so a node
+# carrying a finished card can still be booted to investigate things.
+# FLIP always powers off -- dark is its whole signal. PROBLEM stays up, so it
+# can be read over SOL / ssh.
+poweroff=0
+case "$verdict" in
+    DONE) [ "$nicchanged" -ne 0 ] && poweroff=1 ;;
+    FLIP) poweroff=1 ;;
+esac
+if [ "$poweroff" -eq 0 ]; then
+    [ "$verdict" = "DONE" ] && echo "NO-CHANGE -- no card was burned or reconfigured; staying up"
+    [ "$verdict" = "PROBLEM" ] && echo "PROBLEM -- staying up so it can be read"
 elif [ "${SHUTDOWN_ON_DONE:-1}" = "1" ]; then
     echo "powering off cleanly (rootfs stays consistent across the pull)"
     sync
@@ -388,3 +618,7 @@ elif [ "${SHUTDOWN_ON_DONE:-1}" = "1" ]; then
 else
     echo "SHUTDOWN_ON_DONE=0 -- staying up (dev: log readable over ssh)"
 fi
+# Explicit: the verdict is on the rack and in the log, not in the exit status.
+# Without this the last `[ ... ] && echo` above leaks a 1 and the unit reads
+# "failed" after a perfectly good run.
+exit 0
