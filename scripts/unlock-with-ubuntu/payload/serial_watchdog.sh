@@ -39,6 +39,16 @@ printf '%s %s\n' "$tx" "$lastfix" > "$state" 2>/dev/null
 [ -n "$prevtx" ] || exit 0
 [ "$tx" = "$prevtx" ] || exit 0
 
+# Never pull the rug out from under an operator: restarting the getty kills a
+# login session on that tty. It is also the one case where a frozen counter is
+# expected -- an idle shell writes nothing. Retried on the next tick, so it
+# heals by itself once they log out.
+if who 2>/dev/null | awk '{print $2}' | grep -qx "$tty" \
+   || loginctl list-sessions --no-legend 2>/dev/null | grep -qw "$tty"; then
+    echo "$tty: TX frozen at $tx, but a login session is on it -- not restarting"
+    exit 0
+fi
+
 # A port with no prompt on it is the undetected-UART case, not this one.
 [ "$(systemctl is-active "serial-getty@$tty.service" 2>/dev/null)" = "active" ] || exit 0
 
