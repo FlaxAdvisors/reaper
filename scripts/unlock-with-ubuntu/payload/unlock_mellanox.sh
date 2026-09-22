@@ -61,18 +61,102 @@ issuefile="${MEZZ_ISSUE:-/etc/issue.d/mezz-flash.issue}"
 # The serial getty is up before this finishes, and Enter in SOL reprints the
 # issue file -- which still holds the PREVIOUS card's verdict. Replace it first,
 # or an operator who swapped cards reads the old card's DONE mid-run.
+# The card this run is working on, one key per line (operator decision
+# 2026-09-22): what matters now reads as a list at the top of the screen, not
+# as one dense key=value row lost among single-line log noise.
+function cardfields()
+{
+    local verdicttext=$1
+    [ -n "$devmac" ] || return 0
+    printf "  %-13s %s\n" "Card MAC:" "${devmac:-unknown}"
+    printf "  %-13s %s\n" "Part:" "${devopn:-unknown}"
+    printf "  %-13s %s\n" "PSID:" "${devpsid:-unknown}"
+    printf "  %-13s %s\n" "Firmware:" "${devfwver:-unknown}"
+    if [ "$devsecure" = "secure-fw" ]; then
+        printf "  %-13s %s\n" "Lock:" "LOCKED (secure-fw)"
+    else
+        printf "  %-13s %s\n" "Lock:" "cleared"
+    fi
+    if [ "$cardlivefish" = "yes" ]; then
+        printf "  %-13s %s\n" "Jumper:" "fitted (livefish)"
+    else
+        printf "  %-13s %s\n" "Jumper:" "not fitted"
+    fi
+    printf "  %-13s %s\n" "Burned:" "${cardburned:-no}"
+    case "${cardbootrom:-unknown}" in
+        already) printf "  %-13s %s\n" "Boot ROM:" "already on (UEFI+PXE+legacy)" ;;
+        set)     printf "  %-13s %s\n" "Boot ROM:" "set: ${cardromset:-none}" ;;
+        pending) printf "  %-13s %s\n" "Boot ROM:" "pending (needs the other jumper state)" ;;
+        failed)  printf "  %-13s %s\n" "Boot ROM:" "FAILED" ;;
+        *)       printf "  %-13s %s\n" "Boot ROM:" "${cardbootrom:-unknown}" ;;
+    esac
+    printf "  %-13s %s\n" "Verdict:" "$verdicttext"
+}
+
+# Earlier runs as a table: one heading row, then values only. Newest first,
+# and narrow enough for an 80-column SOL screen. A row from a pre-fix log
+# (no verdict= field) is starred -- those logged burned=yes / uefi=set
+# without checking anything.
+function historytable()
+{
+    local f stamp any
+    any=$(for f in $(ls -t "$logdir"/*.log 2>/dev/null); do
+        [ "$f" = "$log" ] && continue
+        stamp=$(basename "$f" .log)
+        grep " RESULT " "$f" 2>/dev/null | tac | awk -v s="$stamp" '''
+        {
+            mac=""; opn=""; fw=""; sec=""; burn=""; rom=""; verd="";
+            for (i = 1; i <= NF; i++) {
+                split($i, kv, "=");
+                if (kv[1] == "mac") mac = kv[2];
+                else if (kv[1] == "opn") opn = kv[2];
+                else if (kv[1] == "fw") fw = kv[2];
+                else if (kv[1] == "sec") sec = kv[2];
+                else if (kv[1] == "burned") burn = kv[2];
+                else if (kv[1] == "bootrom" || kv[1] == "uefi") rom = kv[2];
+                else if (kv[1] == "verdict") verd = kv[2];
+            }
+            star = (verd == "") ? "*" : " ";
+            if (verd == "") verd = "?";
+            gsub(/\[|\]/, "", sec);
+            lock = (sec == "secure-fw") ? "LOCK" : "ok";
+            when = substr(s, 5, 4) "-" substr(s, 10, 4);
+            printf "  %-9s %-12s %-12.12s %-10.10s %-4s %-4.4s %-8.8s %s%s\n",
+                   when, mac, opn, fw, lock, burn, rom, verd, star;
+        }'''
+    done | head -10)
+    [ -n "$any" ] || return 0
+    printf "  %-9s %-12s %-12s %-10s %-4s %-4s %-8s %s\n" \
+           WHEN MAC PART FW LOCK BURN BOOTROM VERDICT
+    printf "%s\n" "$any"
+    # grep, not a case on the whole blob: the starred row is rarely the last.
+    printf "%s\n" "$any" | grep -q "\*$" \
+        && echo "  * pre-fix log: burned/boot ROM were never checked"
+}
+
+function bannerbody()
+{
+    echo "=================== MEZZ FLASH STATION ==================="
+    echo "$1"
+    [ -n "$2" ] && echo "$2"
+    echo
+    printf "%s" "$cardblocks"
+    cardfields "$3"
+    echo
+    echo "--- earlier runs (most recent first) ---"
+    historytable
+    echo "=========================================================="
+}
+
 #
 # The station does not hold boot (Type=simple), so the prompt is up while it
 # works: progress() keeps the banner saying what it is doing right now.
 function progress()
 {
     mkdir -p "$(dirname "$issuefile")" 2>/dev/null
-    printf "%s\n%s\n%s\n%s\n%s\n\n" \
-        "=================== MEZZ FLASH STATION ===================" \
-        "$(date -u +%FT%TZ)  RUNNING -- $1" \
-        "Leave the card in until the verdict." \
-        "==========================================================" \
-        "$clockline" > "$issuefile" 2>/dev/null || true
+    { bannerbody "$(date -u +%FT%TZ)  RUNNING -- $1" \
+                 "Leave the card in until the verdict." "in progress"
+      echo "$clockline"; } > "$issuefile" 2>/dev/null || true
     # Enter at `login:` only reprints the prompt, never the issue file (tested
     # on et9b1). --reload makes the waiting getty redraw WITH it, so push it.
     agetty --reload >/dev/null 2>&1 || true
@@ -477,6 +561,7 @@ function uefipass()
 anyproblem=0
 anyflip=0
 flipwhy=""
+cardblocks=""
 for mlxdev in $targets; do
     echo "--- $mlxdev ---"
     if ! getdevinfo "$mlxdev"; then
@@ -501,6 +586,9 @@ for mlxdev in $targets; do
     burnpass "$mlxdev"
     uefipass "$mlxdev"
     cardv=$(cardverdict)
+    # Finished: freeze this card's block so a second card does not hide it.
+    cardblocks="$cardblocks$(cardfields "$cardv")
+"
     case "$cardv" in
         problem) anyproblem=1 ;;
         remove-jumper|fit-jumper) anyflip=1; flipwhy="$flipwhy $cardv" ;;
@@ -566,14 +654,10 @@ esac
 # lines from EARLIER runs too: a jumpered run's verdict can only be read on a
 # later jumper-less boot.
 banner=$(
-    echo "=================== MEZZ FLASH STATION ==================="
-    echo "$(date -u +%FT%TZ)  $headline"
-    echo "--- this run and earlier ones (newest last) ---"
-    grep -h " RESULT " $(ls "$logdir"/*.log 2>/dev/null | sort | tail -6) 2>/dev/null \
-        | sed -E 's/^[^ ]+ RESULT //; s/ guid=[^ ]+//; s/ bootaddr=[^ ]+ activated=[^ ]+ resetrc=[^ ]+//' \
-        | sed -E '/ verdict=/!s/$/  [UNVERIFIED: pre-fix log]/' \
-        | tail -8
-    echo "=========================================================="
+    # The card fields are already frozen into $cardblocks by the loop, so pass
+    # an empty live block here.
+    devmac=""
+    bannerbody "$(date -u +%FT%TZ)  $headline"
 )
 echo "$banner"
 timeout 5 sh -c 'printf "\r\n%s\r\n" "$1" | sed "s/$/\r/" > "$2"' _ "$banner" "$soldev" 2>/dev/null || true
