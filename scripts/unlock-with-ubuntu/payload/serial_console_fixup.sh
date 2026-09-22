@@ -58,9 +58,14 @@ function txnow()
 [ "${reprobed:-0}" = "1" ] || exit 0
 
 before=$(txnow)
-# Make the waiting prompt repaint, which is the traffic we then measure.
+# Generate the traffic ourselves. Relying on `agetty --reload` was wrong: the
+# getty starts with --no-block and may not be up yet, so a HEALTHY port read
+# as dead (et9b1, 21:19 2026-09-22). The write is wrapped in `timeout` because
+# on a stalled port it blocks -- which is exactly the case being tested.
+dev="${MEZZ_TTY_DEV:-/dev/$tty}"
+timeout 3 sh -c 'printf "\r\n" > "$1"' _ "$dev" 2>/dev/null || true
 agetty --reload >/dev/null 2>&1 || true
-sleep "${MEZZ_TX_SETTLE:-2}"
+sleep "${MEZZ_TX_SETTLE:-3}"
 after=$(txnow)
 if [ -n "$before" ] && [ "$before" = "$after" ]; then
     echo "$tty: re-probed but still not transmitting (tx stuck at $before);" \
