@@ -33,8 +33,41 @@ if grep "^$n:" "$info" 2>/dev/null | grep -q "uart:unknown"; then
     echo "$tty: SOL UART not detected at boot; re-probing ($port irq $irq)"
     setserial "/dev/$tty" port "$port" irq "$irq" autoconfig auto_irq
     grep "^$n:" "$info" 2>/dev/null
+    reprobed=1
 fi
 # The getty generator skipped the port if it was dead when it ran, so start
 # the prompt ourselves. Idempotent when it is already running.
 systemctl --no-block start "serial-getty@$tty.service"
+
+# Prove it actually transmits before leaving it alive. A dead port is harmless
+# -- writes to it fail fast -- but a port that is alive and NOT draining costs
+# PID1 ~30s per console line (et9b1, 2026-09-22), and that is what turns a
+# boot or a shutdown into twenty minutes. If the re-probe did not restore TX,
+# put the port back to `uart none` and stop the prompt: a console nobody can
+# read beats a console that blocks everyone.
+function txnow()
+{
+    if [ -n "$MEZZ_TX_PROBE_INFO" ]; then
+        "$MEZZ_TX_PROBE_INFO"
+    else
+        cat "$info" 2>/dev/null
+    fi | grep "^$n:" | sed -nE 's/.* tx:([0-9]+).*/\1/p'
+}
+
+# Only for a port we woke: one that was already up is the kernel's business.
+[ "${reprobed:-0}" = "1" ] || exit 0
+
+before=$(txnow)
+# Make the waiting prompt repaint, which is the traffic we then measure.
+agetty --reload >/dev/null 2>&1 || true
+sleep "${MEZZ_TX_SETTLE:-2}"
+after=$(txnow)
+if [ -n "$before" ] && [ "$before" = "$after" ]; then
+    echo "$tty: re-probed but still not transmitting (tx stuck at $before);" \
+         "reverting so console writes fail fast instead of blocking"
+    systemctl stop "serial-getty@$tty.service" >/dev/null 2>&1 || true
+    setserial "/dev/$tty" uart none 2>/dev/null || true
+    exit 0
+fi
+echo "$tty: transmitting again (tx $before -> $after)"
 exit 0

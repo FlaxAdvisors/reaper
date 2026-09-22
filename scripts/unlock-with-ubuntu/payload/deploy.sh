@@ -87,11 +87,12 @@ systemctl enable --now mezz-flash-banner.timer
 # Safe to start now: it only restarts the SOL login prompt, and only when that
 # port has stopped transmitting (at most once per 5 min).
 systemctl enable --now mezz-flash-watchdog.timer
-# Installed but NOT enabled (2026-09-22). On et9b1 re-probing the SOL UART at
-# boot brought it up TX-stalled, and with console=ttyS1 on the kernel line every
-# PID1 status line then blocked ~30s: ssh came up 22 minutes into boot. It stays
-# off until console= is off the station's kernel line.
-systemctl disable mezz-flash-serial.service 2>/dev/null || true
+# Enabled, but ordered after mezz-flash.service so it cannot hang a boot: the
+# early version cost et9b1 a 22-minute boot (TX-stalled port + console=ttyS1 =
+# ~30s per PID1 console line). It also reverts the port to `uart none` if the
+# re-probe does not restore TX.
+systemctl enable --now mezz-flash-serial.service 2>/dev/null \
+    || echo "  (mezz-flash-serial enable refused -- masked this boot?)"
 
 # Debian's own setserial services save the port state at shutdown and restore
 # it at boot -- the other half of that race. Never let them run, and drop the

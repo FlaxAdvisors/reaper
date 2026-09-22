@@ -1,9 +1,14 @@
 [Unit]
 Description=Make sure the SOL console has a login prompt (re-probe an undetected UART)
-# See serial_console_fixup.sh: the SOL UART is intermittently left
-# uart:unknown at boot, which leaves SOL with no prompt and no station banner.
-After=systemd-udev-trigger.service systemd-udev-settle.service
-Before=getty.target
+# The SOL UART is intermittently left uart:unknown at boot (9 of 16 recorded
+# boots on et9b1), which leaves SOL with no prompt and no station banner.
+#
+# Ordered AFTER mezz-flash.service, deliberately (operator decision
+# 2026-09-22): re-probing EARLY in boot woke the port in a TX-stalled state,
+# and with console=ttyS1 every PID1 status line then blocked ~30s -- that boot
+# reached ssh 22 minutes in. By the time the station has started, the boot is
+# already through multi-user, so a stalled port costs nothing.
+After=mezz-flash.service multi-user.target getty.target
 
 [Service]
 Type=oneshot
@@ -11,4 +16,4 @@ RemainAfterExit=yes
 ExecStart=/opt/flax/mezzflash/serial_console_fixup.sh
 
 [Install]
-WantedBy=getty.target
+WantedBy=multi-user.target
