@@ -45,6 +45,11 @@ echo "=== unlock_mellanox.sh $(date -u +%FT%TZ) ==="
 allow_psid_change=1
 no_fw_ctrl=0
 needbmcreset=0
+# Did this run change any card? Only a run that did may power the node off.
+# A no-op run (every card already at target, unlocked, UEFI on) leaves it up,
+# so a node with a finished card can still be booted to investigate things.
+# Operator decision 2026-09-22, after et9b1 went dark on a no-op pass.
+nicchanged=0
 
 source ./common_mellanox.sh
 
@@ -225,6 +230,7 @@ function burnpass()
     burnlog=$(mktemp)
     domstflint burn "$mlxdev" "$img" 2>&1 | tee "$burnlog"
     cardburned=yes
+    nicchanged=1
     if grep -q "Failed to update FW boot address" "$burnlog"; then
         cardbootaddr=failed
     else
@@ -299,6 +305,7 @@ function uefipass()
     fi
     domstconfig set "$mlxdev" "EXP_ROM_UEFI_x86_ENABLE=true"
     carduefi=set
+    nicchanged=1
     domstfwreset "$mlxdev"
     needbmcreset=1
     sleep 5
@@ -368,7 +375,13 @@ echo "=== end $(date -u +%FT%TZ) ==="
 # always-on is a resume-after-power-loss policy, not a "must always be on"
 # rule, so a deliberate shutdown does not fight it: re-seating the blade
 # re-applies power and the BMC brings the host back up.
-if [ "${SHUTDOWN_ON_DONE:-1}" = "1" ]; then
+#
+# Only after a run that CHANGED a card. A no-op run stays up: there is nothing
+# the power-off protects, and powering off would make every node carrying a
+# finished card impossible to boot for anything else.
+if [ "$nicchanged" -eq 0 ]; then
+    echo "NO-CHANGE -- no card was burned or reconfigured; staying up"
+elif [ "${SHUTDOWN_ON_DONE:-1}" = "1" ]; then
     echo "powering off cleanly (rootfs stays consistent across the pull)"
     sync
     shutdown -h now

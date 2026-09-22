@@ -51,6 +51,7 @@ PROTECT_PCI=""
 # Power the node off when the run completes, after lighting IDENT. The blade is
 # pulled live on every cycle, so without this the rootfs is hard-cut every time.
 # Set to 0 on a development node to keep it up and sshable for reading logs.
+# A run that changed no card never powers off, whatever this says.
 SHUTDOWN_ON_DONE="1"
 EOF
 fi
