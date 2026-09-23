@@ -25,7 +25,7 @@ mkdir -p "$dst"
 cp -a "$here"/. "$dst"/
 rm -f "$dst/deploy.sh"
 chmod 0755 "$dst/unlock_mellanox.sh" "$dst/common_mellanox.sh" "$dst/mezz_select.py" \
-    "$dst/serial_console_fixup.sh" "$dst/serial_watchdog.sh"
+    "$dst/serial_console_fixup.sh" "$dst/serial_watchdog.sh" "$dst/station_ident.py"
 
 echo "== in-band IPMI =="
 # The BMC is unreachable over LAN once a jumpered card is seated, so every
@@ -36,6 +36,24 @@ ipmi_devintf
 EOF
 modprobe ipmi_si 2>/dev/null || true
 modprobe ipmi_devintf 2>/dev/null || true
+
+echo "== station identity =="
+# A station is keyed on its blade FRU serial, so a blade that cannot report
+# one cannot be tracked -- and an untracked station silently flashes cards
+# nobody can audit. Operator decision 2026-09-22: fault the slot, build
+# another. Gate it HERE, at commissioning, where a human is standing by and
+# the network is up, rather than at 3am on a rack.
+ident_json=$("$here/station_ident.py" 2>/tmp/station_ident.err)
+ident_rc=$?
+if [ "$ident_rc" != "0" ]; then
+    echo "$ident_json"
+    cat /tmp/station_ident.err >&2
+    echo >&2
+    echo "FATAL: this blade cannot be a flash station." >&2
+    echo "       Fault the slot and build another flash server." >&2
+    exit 1
+fi
+echo "   $(echo "$ident_json" | python3 -c 'import json,sys; d=json.load(sys.stdin); print("%s (%s, family %s)" % (d["station_sn"], d["serial_field"], d["family"]))')"
 
 echo "== config =="
 mkdir -p /etc/flax
