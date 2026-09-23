@@ -72,6 +72,30 @@ find "$build" -name "*.pyc" -delete 2>/dev/null || true
 # NOT its getpcidev (which enumerates every ConnectX in the box).
 cp "$src/common_mellanox.sh" "$build/common_mellanox.sh"
 
+echo "== blade identity: FRU parser + family map =="
+# VERBATIM copies, refreshed at build time -- the same call this script already
+# makes for FWMAP. A station that identifies a blade differently from the fleet
+# would put a run on the wrong tile, so drift is a build failure, not a
+# runtime surprise. reaper-devel tests/test_fru_copies_drift.py pins the bytes.
+# This overwrites the committed payload/flaxfru/ copy on purpose: the payload
+# tree can go stale between commits, this extraction cannot.
+mkdir -p "$build/flaxfru"
+: > "$build/flaxfru/__init__.py"
+for m in fru family_map; do
+    src_mod="$repo/flax_observe/$m.py"
+    [ -f "$src_mod" ] || { echo "FATAL: no $src_mod"; exit 1; }
+    cp "$src_mod" "$build/flaxfru/$m.py"
+done
+
+# The family map is per-SITE and decides which FRU field is the ship serial
+# (leopard -> Chassis Serial, everyone else -> Product Serial). This script
+# already runs on a bang, so take that bang's deployed map.
+fmdir="${FAMILY_MAP:-/etc/flax/family-map}"
+[ -d "$fmdir" ] || { echo "FATAL: family map not found at $fmdir (run this on a bang, or set FAMILY_MAP=)"; exit 1; }
+mkdir -p "$build/family-map"
+cp "$fmdir"/*.txt "$build/family-map/" || { echo "FATAL: no family-map .txt files in $fmdir"; exit 1; }
+echo "   $(ls "$build/family-map" | wc -l) families"
+
 echo "== firmware images =="
 # Extracted with python3's zipfile rather than unzip(1): python3 is already
 # required for the map extraction, and depending on unzip too would mean the
