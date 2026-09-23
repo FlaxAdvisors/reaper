@@ -134,6 +134,7 @@
     - name: Apply role apply_triage_compose
       ansible.builtin.import_role:
         name: apply_triage_compose
+      tags: [triage_compose]
 
     - name: Apply role apply_node_exporter
       ansible.builtin.import_role:
