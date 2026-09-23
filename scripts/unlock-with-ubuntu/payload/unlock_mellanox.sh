@@ -63,6 +63,14 @@ statusfile="${MEZZ_STATUS:-/run/flax/mezz-flash-status.json}"
 bundlever=$(awk '/^repo/ {print $3}' MANIFEST 2>/dev/null)
 bundlever="${bundlever:-unknown}"
 
+# Where the tile lives. The DEFAULT GATEWAY, not a name: `bang` resolves to
+# the keepalived VIP (192.168.88.10), which a station holding a free-pool
+# lease may not route to -- while the bang is 172.x.0.1 on every lab VLAN.
+pushgw=$(ip -o route show default 2>/dev/null | awk '{print $3; exit}')
+pushurl="${MEZZ_PUSH_URL:-${pushgw:+http://$pushgw:5555/api/v1/mezz-flash}}"
+pushfails=0
+pushdead=0
+
 # Who this BLADE is. Read ONCE: ipmitool fru is slow, the banner updates at
 # every progress step, and a blade cannot change identity mid-run. In band
 # over KCS -- a jumpered card leaves the BMC dark over LAN.
@@ -233,6 +241,28 @@ function writestatus()
         > "$tmp" 2>/dev/null && mv -f "$tmp" "$statusfile" 2>/dev/null
     # Same content next to the logs: /run is tmpfs and empty after a reboot.
     cp -f "$statusfile" "$logdir/status.json" 2>/dev/null || true
+    pushstatus
+}
+
+# Best-effort push. NEVER fails a run -- flashing is the job, reporting is not.
+#
+# A jumpered card passes no traffic at all, so a jumpered run is offline for
+# its entire duration. `pushdead` is what keeps that from costing ~30s per
+# flash: after two failures we stop trying, and re-arm once for the verdict in
+# case the link came back.
+function pushstatus()
+{
+    [ -n "$pushurl" ] || return 0
+    [ "$pushdead" = 1 ] && return 0
+    if curl -fsS --connect-timeout 1 --max-time 2 \
+            -H 'Content-Type: application/json' \
+            --data-binary @"$statusfile" "$pushurl" >/dev/null 2>&1; then
+        pushfails=0
+    else
+        pushfails=$((pushfails+1))
+        [ "$pushfails" -ge 2 ] && pushdead=1
+    fi
+    return 0
 }
 
 # Order matters on a SOL console that scrolls (operator decision
@@ -792,6 +822,7 @@ if [ -z "$targets" ]; then
     state=PROBLEM
     headline="no Mellanox card found."
 fi
+pushdead=0        # one last try: the link may have returned
 writestatus "$state" "$headline" "$cardjson"
 
 # The banner: printed on the console now, and left in the serial getty's issue

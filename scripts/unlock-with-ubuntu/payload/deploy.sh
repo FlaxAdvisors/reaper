@@ -72,6 +72,11 @@ PROTECT_PCI=""
 # Set to 0 on a development node to keep it up and sshable for reading logs.
 # A run that changed no card never powers off, whatever this says.
 SHUTDOWN_ON_DONE="1"
+
+# Where to push status for the triage tile. Empty = derive from the default
+# route (the bang is the gateway on every lab VLAN). Set explicitly only if
+# this station is on a network whose gateway is not the bang.
+MEZZ_PUSH_URL=""
 EOF
 fi
 
