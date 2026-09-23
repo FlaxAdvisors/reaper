@@ -114,6 +114,13 @@ services:
       - BMC_FW_SHARE_BASE=http://bang/export/share
       - BMC_FW_MODE=enforce
       - BMC_FW_ENABLE_PORTS=
+      # Hard opt-out, outranks MODE and ENABLE_PORTS, and holds the host OFF too.
+      # et26b3 is the mezzanine FW-unlock station: its card is swapped by hand,
+      # which changes the BMC MAC and so the slot identity, and a slot read as
+      # new can draw a power-on under POWER_ON=true + enforce.
+      # Zone A (rabbit-gouda Et5 left, Et9 center, Et27 right; added to triage
+      # 2026-09-21) is kept out of bmc_fw entirely.
+      - BMC_FW_DISABLE_PORTS=et26b3,et5b1,et5b2,et5b3,et5b4,et9b1,et9b2,et9b3,et9b4,et27b1,et27b2,et27b3,et27b4
       - BMC_FW_POWER_ON=true
       # Backup EEPROM (spec 2026-09-01-bmc-backup-chip-design.md). The cache
       # holds ONE extracted image-bmc shared by every node; /run is a 13 GB
@@ -170,3 +177,13 @@ services:
       # other port stays blocked even if it reports a delta. Widen with a
       # glob (et10b*) or empty (= all) once the flash is proven on metal.
       - BIOS_FW_ENABLE_PORTS=
+      # Hard opt-out, outranks MODE and ENABLE_PORTS. Nothing is touched on
+      # these ports at all: no ACK (so post.sh never shuts one down), no
+      # flash, no hold-release power-on, and no row on the page.
+      # et26b3 is the mezzanine FW-unlock station (see bmc_fw above).
+      # Zone A (rabbit-gouda Et5 left, Et9 center, Et27 right) is kept out
+      # of bios_fw for the same reason it is kept out of bmc_fw, plus one
+      # of its own: those breakouts may hold Tioga Pass blades serving as
+      # NIC flashing stations, which the manifest DOES manage.
+      # Globs are allowed here (et5b*); spelled out to match bmc_fw's line.
+      - BIOS_FW_DISABLE_PORTS=et26b3,et5b1,et5b2,et5b3,et5b4,et9b1,et9b2,et9b3,et9b4,et27b1,et27b2,et27b3,et27b4
