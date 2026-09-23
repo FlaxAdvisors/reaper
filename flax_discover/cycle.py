@@ -5,8 +5,14 @@ devices, derives each port's family (latch + back-off), enumerates VMs and
 assigns a stable per-port vm_n, and upserts the devices table.
 
 Stateful across cycles: the loaded family-map (+ its dir mtime), the back-off
-tracker, and the last product_name seen per MAC (to reset back-off when it
-changes). See spec §4.2.
+tracker, the last product_name seen per MAC (to reset back-off when it
+changes), and the latch-mismatch clock (_contra).
+
+See spec §4.2 -- AMENDED 2026-09-23: `family` is no longer write-once. It is
+latched per MAC, but the BMC's MAC comes out of the mezzanine CARD, so a card
+moved between platforms used to drag its old family onto the new blade and
+steer it to the wrong VLAN. A SUSTAINED family mismatch now breaks the latch;
+relocation and absence deliberately do not. See flax-state-delta.md entry 4.
 """
 import logging
 import os
@@ -49,17 +55,67 @@ def _is_known(family) -> bool:
     return bool(family) and family != "unknown"
 
 
+def _port_link(facts: dict, switch: str, port: str):
+    return (facts.get(switch, {}).get("ports", {})
+            .get(_internal_to_arista(port), {}).get("link"))
+
+
+def one_sighting_per_anchor(observe: list, facts: dict) -> list:
+    """Collapse observe rows so no anchor MAC appears at two ports.
+
+    `devices` is ON CONFLICT (mac), so two rows carrying the same BMC MAC write
+    the SAME row -- and this is not hypothetical. When a blade leaves port A,
+    observe HOLDS its identity at last-known until the link-down commits
+    (DOWN_DEBOUNCE_SECS=30), so for ~30s port A still publishes the old blade's
+    bmc_mac and cached product_name while port B publishes the same MAC with the
+    new blade's. Left alone, the two rows disagree about family, the last write
+    wins in unspecified order (read_observe_rows has no ORDER BY), and the value
+    alternates every cycle -- flipping desired_vid and making reconcile re-steer
+    two live ports, in a loop that self-feeds through the generation-bump NOTIFY.
+
+    The held row is the one whose port no longer has link, so prefer the linked
+    sighting. Port name breaks a tie, only so the result cannot depend on row
+    order.
+    """
+    best: dict = {}
+    passthrough = []
+    for row in observe:
+        resolved = row.get("resolved") or {}
+        anchor = resolved.get("bmc_mac") or resolved.get("nic_mac")
+        if not anchor:
+            passthrough.append(row)     # nothing to collide on
+            continue
+        anchor = normalise_mac(anchor)
+        rank = (1 if _port_link(facts, row["switch"], row["port"]) == "link"
+                else 0, row["port"])
+        if anchor not in best or rank > best[anchor][0]:
+            best[anchor] = (rank, row)
+    return passthrough + [r for _, r in best.values()]
+
+
 class Discoverer:
     def __init__(self, family_map_dir: str, base_secs: float, max_secs: float,
-                 vacancy_debounce_secs: float = 600.0):
+                 vacancy_debounce_secs: float = 600.0,
+                 contra_debounce_secs: float = 300.0):
         self.family_map_dir = family_map_dir
         self.backoff = MatchBackoff(base_secs, max_secs)
         self.vacancy_debounce_secs = vacancy_debounce_secs
+        # How long a DIFFERENT known family must persist before it breaks the
+        # latch. WALL CLOCK, not a cycle count: cycles fire on LISTEN with a
+        # ~1.5s coalescing window, not only on the poll timer, so "twice
+        # running" can be 1.5s apart and would filter almost nothing.
+        self.contra_debounce_secs = contra_debounce_secs
         self._fm: dict = {}
         self._fm_mtime = None
-        # mac -> last product_name. Only accumulates UNKNOWN-family MACs:
-        # known families short-circuit in _derive_family before the _last_pn
-        # write, so this stays small -- no pruning needed.
+        # mac -> (contradicting product_name, when it was FIRST seen). Reset
+        # whenever the reading changes, so only a sustained disagreement counts
+        # and an oscillating one never accumulates. See _latch_broken.
+        self._contra: dict = {}
+        # mac -> last product_name, to reset back-off when the reading changes.
+        # Mostly UNKNOWN-family MACs, since a known family short-circuits in
+        # _derive_family before this write -- but a MAC whose latch has just
+        # been broken by a sustained mismatch also lands here for the cycle it
+        # takes to re-derive. Bounded by the port count either way.
         self._last_pn: dict = {}
 
     def _maybe_reload_family_map(self) -> None:
@@ -70,10 +126,48 @@ class Discoverer:
             self.backoff.clear_all()
             log.info("family-map reloaded (%d families)", len(self._fm))
 
+    def _latch_broken(self, mac, current, product_name, now) -> bool:
+        """Does the blade's own FRU sustainedly disagree with the latch?
+
+        The latch is keyed by MAC, but on these blades the BMC's MAC comes out
+        of the MEZZANINE CARD's own MAC block -- so it identifies the CARD, not
+        the blade. A card harvested from a tiogapass and seated in a leopard
+        drags `family=tiogapass` with it, and classify then steers the leopard
+        onto vid 17 (measured live on et9b2, 2026-09-23: one devices row holding
+        both `family tiogapass` and `product_name Leopard ORv2-DDR4`).
+
+        RELOCATION IS DELIBERATELY NOT A TRIGGER (operator decision
+        2026-09-23). The latch surviving a move is what keeps a blade
+        identifiable while it is being moved and its BMC has not come back on a
+        stable address. Absence is not a trigger either: run_one_cycle treats an
+        empty poll as no-data and never wipes a port on it. Only positive,
+        sustained disagreement counts.
+        """
+        # Only a KNOWN, different family is evidence. product_name is empty or
+        # unmapped while a BMC is still coming up -- that is what the derive
+        # back-off below exists for, and it is not a mismatch.
+        observed = match_family(self._fm, product_name)
+        if not (_is_known(observed) and observed != current):
+            self._contra.pop(mac, None)
+            return False
+        # Debounce on wall clock (flax-state-ref.md: "transitions that would
+        # clear or reverse a latch are debounced -- required to persist for a
+        # minimum duration"). Breaking the latch re-steers a live port and
+        # re-IPs a blade, so one bad FRU read must not do it.
+        seen_pn, first_seen = self._contra.get(mac, (None, None))
+        if seen_pn != product_name:
+            self._contra[mac] = (product_name, now)     # (re)start the clock
+            return False
+        if now - first_seen >= self.contra_debounce_secs:
+            self._contra.pop(mac, None)
+            return True
+        return False
+
     def _derive_family(self, mac, product_name, existing_latched, now) -> str:
         """Latch + back-off. Returns the family to write."""
         current = existing_latched.get("family")
-        if _is_known(current):
+        if _is_known(current) and not self._latch_broken(mac, current,
+                                                         product_name, now):
             return current
         if self._last_pn.get(mac) != product_name:
             self.backoff.reset(mac)
@@ -85,6 +179,12 @@ class Discoverer:
             self.backoff.forget(mac)
             return family
         self.backoff.record_miss(mac, now)
+        # `current` is necessarily not-known here: a known family either returned
+        # early above, or broke the latch -- and a break requires match_family to
+        # have hit, so the call above cannot have missed. So this never
+        # downgrades a known family (which would not steer, but WOULD rewrite the
+        # reservation hostname to `unknown...` and defeat classify's bmc-only
+        # host suppression).
         return "unknown"
 
     def run_one_cycle(self, pool, now: float) -> dict:
@@ -92,6 +192,7 @@ class Discoverer:
         observe = read_observe_rows(pool)
         facts = read_switch_facts(pool)
         existing = read_devices(pool)
+        observe = one_sighting_per_anchor(observe, facts)
 
         vm_by_port: dict = {}
         latched_by_mac: dict = {}
