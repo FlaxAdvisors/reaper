@@ -11,8 +11,8 @@ changes).
 See spec §4.2 -- AMENDED 2026-09-23: `family` is no longer write-once. It is
 latched per MAC, but the BMC's MAC comes out of the mezzanine CARD, so a card
 moved between platforms used to drag its old family onto the new blade and
-steer it to the wrong VLAN. A known family mismatch now breaks the latch at
-once; relocation and absence deliberately do not. See flax-state-delta.md
+steer it to the wrong VLAN. A LIVE known family mismatch now breaks the latch
+at once; relocation, absence and held (stale) readings deliberately do not. See flax-state-delta.md
 entry 4.
 """
 import logging
@@ -64,6 +64,20 @@ def _port_fdb(facts: dict, switch: str, port: str) -> set:
     return {normalise_mac(m) for m in macs}
 
 
+def _is_live(facts: dict, switch: str, port: str, mac: str) -> bool:
+    """Is this observe row's reading about a blade that is physically there NOW?
+
+    Observe HOLDS a departed blade's identity at last-known while the port's
+    link-down is uncommitted (DOWN_DEBOUNCE_SECS=30), and with no time limit
+    while its switch is unreachable. A held row always has link down or no
+    switch_facts at all, so either of these marks a live reading: the port has
+    link, or its switch MAC address table holds the MAC.
+    """
+    link = (facts.get(switch, {}).get("ports", {})
+            .get(_internal_to_arista(port), {}).get("link"))
+    return link == "link" or mac in _port_fdb(facts, switch, port)
+
+
 def one_sighting_per_anchor(observe: list, facts: dict) -> list:
     """Collapse observe rows so no anchor MAC appears at two ports.
 
@@ -80,8 +94,8 @@ def one_sighting_per_anchor(observe: list, facts: dict) -> list:
     A switch never holds one MAC on two ports -- only the held-identity / lease
     view does (operator ruling 2026-09-23). So a duplicate is settled against
     PHYSICAL REALITY: keep the sighting whose port's MAC address table currently
-    holds the anchor. Not link state (a held row at a re-occupied slot has link)
-    and not port order. If the table does not settle it -- no port holds the
+    holds the anchor -- the switch's own answer, not a proxy for it such as
+    link state, and not port order. If the table does not settle it -- no port holds the
     MAC, or more than one does -- write NEITHER this cycle: the same no-data
     treatment as an empty poll, so the devices row stays as it was.
 
@@ -159,15 +173,23 @@ class Discoverer:
         empty or unmapped while a BMC is still coming up -- that is what the
         derive back-off exists for, and it is not a mismatch. Only a KNOWN,
         DIFFERENT family is evidence.
+
+        And only a LIVE reading (see _is_live) may break it. Without a debounce,
+        a held row's stale product_name would otherwise flap the family: after
+        a move settles to port B, a steer flushes B's MAC table, observe at B
+        goes briefly empty, and the still-held port A row -- now a lone
+        sighting -- broke the latch straight back (review of d1d50b7).
         """
         observed = match_family(self._fm, product_name)
         return _is_known(observed) and observed != current
 
-    def _derive_family(self, mac, product_name, existing_latched, now) -> str:
-        """Latch + back-off. Returns the family to write."""
+    def _derive_family(self, mac, product_name, existing_latched, now,
+                       live: bool = True) -> str:
+        """Latch + back-off. Returns the family to write. A known family is
+        kept unless a LIVE reading breaks it."""
         current = existing_latched.get("family")
-        if _is_known(current) and not self._latch_broken(current,
-                                                         product_name):
+        if _is_known(current) and not (
+                live and self._latch_broken(current, product_name)):
             return current
         if self._last_pn.get(mac) != product_name:
             self.backoff.reset(mac)
@@ -241,7 +263,9 @@ class Discoverer:
             # else the nic (a host-only port still has a derivable family).
             anchor = bmc_mac or nic_mac
             prior = latched_by_mac.get(anchor, {})
-            family = self._derive_family(anchor, product_name, prior, now)
+            family = self._derive_family(
+                anchor, product_name, prior, now,
+                live=_is_live(facts, sw, port, anchor))
 
             if bmc_mac:
                 keep_macs.append(bmc_mac)
