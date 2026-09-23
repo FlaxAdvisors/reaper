@@ -63,6 +63,13 @@ statusfile="${MEZZ_STATUS:-/run/flax/mezz-flash-status.json}"
 bundlever=$(awk '/^repo/ {print $3}' MANIFEST 2>/dev/null)
 bundlever="${bundlever:-unknown}"
 
+# Who this BLADE is. Read ONCE: ipmitool fru is slow, the banner updates at
+# every progress step, and a blade cannot change identity mid-run. In band
+# over KCS -- a jumpered card leaves the BMC dark over LAN.
+identjson=$("$here/station_ident.py" 2>/dev/null)
+identrc=$?
+[ -n "$identjson" ] || identjson='{"station_sn":"","state":"no_serial"}'
+
 # The serial getty is up before this finishes, and Enter in SOL reprints the
 # issue file -- which still holds the PREVIOUS card's verdict. Replace it first,
 # or an operator who swapped cards reads the old card's DONE mid-run.
@@ -220,9 +227,9 @@ function writestatus()
     local state=$1 text=$2 cards=$3
     local tmp="${statusfile}.tmp"
     mkdir -p "$(dirname "$statusfile")" 2>/dev/null
-    printf '{"ts":"%s","state":"%s","text":"%s","station":true,"bundle":"%s","host":"%s","cards":[%s],"history":[%s]}\n' \
+    printf '{"ts":"%s","state":"%s","text":"%s","station":true,"bundle":"%s","host":"%s","ident":%s,"cards":[%s],"history":[%s]}\n' \
         "$(date -u +%FT%TZ)" "$state" "$text" "$bundlever" "$(hostname)" \
-        "$cards" "$(historyjson)" \
+        "$identjson" "$cards" "$(historyjson)" \
         > "$tmp" 2>/dev/null && mv -f "$tmp" "$statusfile" 2>/dev/null
     # Same content next to the logs: /run is tmpfs and empty after a reboot.
     cp -f "$statusfile" "$logdir/status.json" 2>/dev/null || true
@@ -260,6 +267,31 @@ function progress()
     # on et9b1). --reload makes the waiting getty redraw WITH it, so push it.
     agetty --reload >/dev/null 2>&1 || true
 }
+
+# Belt and braces for a FRU EEPROM that died AFTER commissioning (deploy.sh
+# already refuses to install on a blade with no serial). Refuse to flash
+# rather than run untracked: rule #4 above already chose loud failure over a
+# card going back into service looking done.
+#
+# Mirrors the PROBLEM rack signal exactly -- IDENT off, LEFT POWERED ON -- so
+# an operator reads "this slot needs a human" the same way, and SOL still
+# works to say why (no jumper is fitted in this path; the blade simply cannot
+# name itself).
+if [ "$identrc" != "0" ]; then
+    state=STATION-FAULT
+    headline="blade has no ship serial in FRU 0 -- fault this slot, build another station."
+    cardjson=""
+    writestatus "$state" "$headline" "$cardjson"
+    banner=$(devmac=""; bannerbody "$(date -u +%FT%TZ)  $state  $headline")
+    echo "$banner"
+    timeout 5 sh -c 'printf "\r\n%s\r\n" "$1" | sed "s/$/\r/" > "$2"' _ "$banner" "$soldev" 2>/dev/null || true
+    mkdir -p "$(dirname "$issuefile")" 2>/dev/null
+    printf "%s\n%s\n\n" "$banner" "$clockline" > "$issuefile" 2>/dev/null || true
+    agetty --reload >/dev/null 2>&1 || true
+    ipmitool chassis identify 0 || true     # IDENT off; do NOT power off
+    exit 1
+fi
+
 progress "starting; looking for Mellanox cards."
 
 # A DONE blink from the previous run survives a host power cycle on the BMC.
