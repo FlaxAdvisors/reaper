@@ -97,9 +97,26 @@ def _default_route_mac():
 
 
 def main():
-    fm = {}
-    if os.path.isdir(FAMILY_MAP_DIR):
-        fm = load_family_map_dir(FAMILY_MAP_DIR)
+    # A missing or empty family map must NOT silently become the
+    # DEFAULT_SERIAL_FIELD ("Product Serial") fallback in flaxfru/fru.py:
+    # match_family({}, ...) always returns None, so on a platform that
+    # carries BOTH Chassis Serial and Product Serial this would report a
+    # different serial than the fleet with state == "ok" -- the exact
+    # cross-field fallback operator ruling 2026-09-14 forbids. Fault closed
+    # instead (family-map/ is build-generated and not committed, so this is
+    # hit every time this runs from a bare checkout).
+    if not os.path.isdir(FAMILY_MAP_DIR):
+        sys.stderr.write(
+            "station_ident: no family map at %s -- cannot pick a serial "
+            "field without one. Refusing to guess.\n" % FAMILY_MAP_DIR)
+        return 1
+    fm = load_family_map_dir(FAMILY_MAP_DIR)
+    if not fm:
+        sys.stderr.write(
+            "station_ident: family map at %s loaded no families -- cannot "
+            "pick a serial field without one. Refusing to guess.\n"
+            % FAMILY_MAP_DIR)
+        return 1
     ident = build_ident(_run(["ipmitool", "fru"]),
                         _run(["ipmitool", "lan", "print", LAN_CHANNEL]),
                         fm,

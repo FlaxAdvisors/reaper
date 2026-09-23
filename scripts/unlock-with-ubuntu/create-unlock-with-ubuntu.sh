@@ -63,6 +63,12 @@ fi
 
 echo "== payload =="
 cp -a "$here/payload/." "$build/"
+# Belt-and-braces for station_ident.py's mode: `cp -a` and tar both preserve
+# whatever mode git checked it out with, so a mode regression in the repo
+# (100644 instead of 100755) would otherwise ride silently into every bundle
+# and fail closed as a bare "Permission denied" on the blade. Both call sites
+# (this build and deploy.sh) run it directly.
+chmod 0755 "$build/station_ident.py"
 # A local test run of mezz_select.py leaves __pycache__ behind in the source
 # tree; it must not ride along into the bundle.
 find "$build" -name "__pycache__" -type d -prune -exec rm -rf {} + 2>/dev/null || true
@@ -95,6 +101,20 @@ fmdir="${FAMILY_MAP:-/etc/flax/family-map}"
 mkdir -p "$build/family-map"
 cp "$fmdir"/*.txt "$build/family-map/" || { echo "FATAL: no family-map .txt files in $fmdir"; exit 1; }
 echo "   $(ls "$build/family-map" | wc -l) families"
+
+echo "== smoke test: exercise what was just assembled =="
+# This would have caught C1 (station_ident.py shipped 100644, so every
+# deploy.sh aborted at Permission denied on every blade) at BUILD time
+# instead of on a rack. rc 0 (identified) or 1 (no_serial/no family match --
+# this build host need not itself be a flashable blade) are both fine; any
+# other code -- 126 Permission denied included -- is not.
+smoke_rc=0
+python3 "$build/station_ident.py" >/dev/null 2>&1 || smoke_rc=$?
+if [ "$smoke_rc" != 0 ] && [ "$smoke_rc" != 1 ]; then
+    echo "FATAL: station_ident.py smoke test exited $smoke_rc (want 0 or 1)"
+    exit 1
+fi
+( cd "$build" && python3 -c 'import flaxfru.fru, flaxfru.family_map' )
 
 echo "== firmware images =="
 # Extracted with python3's zipfile rather than unzip(1): python3 is already

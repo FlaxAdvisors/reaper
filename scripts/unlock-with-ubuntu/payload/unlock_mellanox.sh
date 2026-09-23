@@ -66,7 +66,19 @@ bundlever="${bundlever:-unknown}"
 # Where the tile lives. The DEFAULT GATEWAY, not a name: `bang` resolves to
 # the keepalived VIP (192.168.88.10), which a station holding a free-pool
 # lease may not route to -- while the bang is 172.x.0.1 on every lab VLAN.
-pushgw=$(ip -o route show default 2>/dev/null | awk '{print $3; exit}')
+#
+# `via`-aware: a scope-link default route ("default dev eth0", no gateway
+# IP) has no third field to grab -- `awk '{print $3; exit}'` would read that
+# as the INTERFACE NAME and build "http://eth0:5555/...". Walk the fields for
+# the one that follows "via" instead, which is absent (and so correctly
+# empty) on a scope-link route.
+function _default_gw()
+{
+    ip -o route show default 2>/dev/null \
+        | awk '{for(i=1;i<NF;i++) if($i=="via"){print $(i+1); exit}}'
+}
+
+pushgw=$(_default_gw)
 pushurl="${MEZZ_PUSH_URL:-${pushgw:+http://$pushgw:5555/api/v1/mezz-flash}}"
 pushfails=0
 pushdead=0
@@ -74,9 +86,14 @@ pushdead=0
 # Who this BLADE is. Read ONCE: ipmitool fru is slow, the banner updates at
 # every progress step, and a blade cannot change identity mid-run. In band
 # over KCS -- a jumpered card leaves the BMC dark over LAN.
-identjson=$("$here/station_ident.py" 2>/dev/null)
+#
+# stderr NOT dropped: it is the only message saying which field was empty for
+# which family, the script already tees everything to the run log and SOL
+# (`exec > >(tee -a "$log") 2>&1` above), so keeping it costs nothing and
+# putting the reason on the console is exactly the point.
+identjson=$("$here/station_ident.py")
 identrc=$?
-[ -n "$identjson" ] || identjson='{"station_sn":"","state":"no_serial"}'
+[ -n "$identjson" ] || identjson='{"station_sn":"","serial_field":"","family":"","state":"no_serial","bmc_mac":"","bmc_ip":"","host_mac":"","host":""}'
 
 # The serial getty is up before this finishes, and Enter in SOL reprints the
 # issue file -- which still holds the PREVIOUS card's verdict. Replace it first,
@@ -252,6 +269,18 @@ function writestatus()
 # case the link came back.
 function pushstatus()
 {
+    # pushurl is computed once at the top, but the unit has no network
+    # dependency (After=multi-user.target getty.target only -- deliberate,
+    # a jumpered station never gets one) and its ExecStartPre returns as soon
+    # as /dev/ipmi0 exists. So a jumper-LESS run -- precisely the run that is
+    # supposed to report -- can start before DHCP has a lease, freeze
+    # pushurl empty forever, and silently push nothing all run including the
+    # final verdict. Re-probe lazily while it is still empty; cheap, and
+    # pushdead still bounds the total cost once a URL is in hand.
+    if [ -z "$pushurl" ]; then
+        pushgw=$(_default_gw)
+        pushurl="${MEZZ_PUSH_URL:-${pushgw:+http://$pushgw:5555/api/v1/mezz-flash}}"
+    fi
     [ -n "$pushurl" ] || return 0
     [ "$pushdead" = 1 ] && return 0
     if curl -fsS --connect-timeout 1 --max-time 2 \
@@ -318,7 +347,7 @@ if [ "$identrc" != "0" ]; then
     mkdir -p "$(dirname "$issuefile")" 2>/dev/null
     printf "%s\n%s\n\n" "$banner" "$clockline" > "$issuefile" 2>/dev/null || true
     agetty --reload >/dev/null 2>&1 || true
-    ipmitool chassis identify 0 || true     # IDENT off; do NOT power off
+    ipmitool chassis identify 0 >/dev/null 2>&1 || true     # IDENT off; do NOT power off
     exit 1
 fi
 

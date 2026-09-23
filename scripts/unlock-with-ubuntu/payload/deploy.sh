@@ -18,7 +18,7 @@ dst=/opt/flax/mezzflash
 echo "== packages (needs network; the deployed station will have none) =="
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq mstflint ipmitool setserial
+apt-get install -y -qq mstflint ipmitool setserial curl
 
 echo "== payload -> $dst =="
 mkdir -p "$dst"
@@ -43,16 +43,24 @@ echo "== station identity =="
 # nobody can audit. Operator decision 2026-09-22: fault the slot, build
 # another. Gate it HERE, at commissioning, where a human is standing by and
 # the network is up, rather than at 3am on a rack.
-ident_json=$("$here/station_ident.py" 2>/tmp/station_ident.err)
-ident_rc=$?
+ident_err=$(mktemp)
+trap 'rm -f "$ident_err"' EXIT
+# Under `set -eu`, a plain `x=$(cmd)` takes cmd's exit status -- -e would
+# fire right here and kill the script before ident_rc=$? ever ran, silently
+# skipping the FATAL block below (and everything after it). The `|| ident_rc=$?`
+# form lets a failing station_ident.py be handled instead of fatal to the
+# whole script.
+ident_rc=0
+ident_json=$("$here/station_ident.py" 2>"$ident_err") || ident_rc=$?
 if [ "$ident_rc" != "0" ]; then
     echo "$ident_json"
-    cat /tmp/station_ident.err >&2
+    cat "$ident_err" >&2
     echo >&2
     echo "FATAL: this blade cannot be a flash station." >&2
     echo "       Fault the slot and build another flash server." >&2
     exit 1
 fi
+rm -f "$ident_err"
 echo "   $(echo "$ident_json" | python3 -c 'import json,sys; d=json.load(sys.stdin); print("%s (%s, family %s)" % (d["station_sn"], d["serial_field"], d["family"]))')"
 
 echo "== config =="
