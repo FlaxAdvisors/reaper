@@ -1,13 +1,13 @@
 """Write-side I/O for flax-discover: latch-aware devices upsert + vm_n.
 
 Latch rules (see spec 2026-06-15-flax-discover-design.md §4.2):
-  - serial/product_name: write-once.
-  - family: write-once EXCEPT on a sustained mismatch (amended 2026-09-23). The
+  - serial/product_name: refreshed when present, carried forward when absent.
+  - family: write-once EXCEPT on a known mismatch (amended 2026-09-23). The
     latch is keyed by MAC, but the BMC's MAC comes out of the mezzanine CARD, so
     a card moved between platforms dragged its old family onto the new blade and
-    classify steered that blade to the wrong VLAN. The cycle breaks the latch
-    when the blade's own product_name resolves to a DIFFERENT known family and
-    that reading persists; relocation and absence deliberately do NOT break it.
+    classify steered that blade to the wrong VLAN. The cycle breaks the latch,
+    at once, when the blade's own product_name resolves to a DIFFERENT known
+    family; relocation, absence and an unmapped name deliberately do NOT.
     Either way the cycle computes the final `latched` dict and passes it here;
     this module just writes it. See flax-state-delta.md entry 4.
   - last_seen + location (switch/port) always refresh.
