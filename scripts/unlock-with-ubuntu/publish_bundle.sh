@@ -3,7 +3,7 @@
 # for self-update (payload/self_update.sh) as <dir>/mezz-flash.tgz and
 # <dir>/mezz-flash.version. Called by create-unlock-with-ubuntu.sh when
 # PUBLISH= is set; on a bang <dir> is /srv/pxe, served on every lab VLAN's
-# gateway address by the pxe nginx vhost.
+# gateway address by the pxe nginx vhost's catch-all `location /`.
 #
 # Both are written tmp + mv, the tarball FIRST and the version file LAST: a
 # station that reads the new version must find the new tarball complete

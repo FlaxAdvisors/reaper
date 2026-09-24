@@ -48,17 +48,6 @@ server {
         tcp_nopush on;
     }
 
-    # Mezz-flash station self-update (scripts/unlock-with-ubuntu). Stations
-    # ask their DEFAULT GATEWAY, not a /v<vid>/ path -- a station does not know
-    # its VLAN -- so these two files sit at the top level on every address.
-    # Published by create-unlock-with-ubuntu.sh PUBLISH=/srv/pxe.
-    location ~ ^/mezz-flash\.(tgz|version)$ {
-        root {{ apply_bang_services_pxe_root }};
-        default_type application/octet-stream;
-        sendfile on;
-        tcp_nopush on;
-    }
-
     # Network-install asset trees: served on every VIP (vid + mgmt) so a
     # DUT in any VLAN can fetch installer ISOs and repo bits. Mirrors the
     # legacy /etc/apache2/conf.d/install.conf + isos.conf alias pairs.
