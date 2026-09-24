@@ -23,6 +23,7 @@ dst="$root/opt/flax/mezzflash"
 stage="$root/opt/flax/mezzflash.staging"
 issuefile="$root/etc/issue.d/mezz-flash-update.issue"
 routewait="${MEZZ_ROUTE_WAIT:-20}"
+netdevgrace="${MEZZ_NETDEV_GRACE:-3}"
 
 localver=$(awk '/^version/ {print $3}' "$dst/MANIFEST" 2>/dev/null)
 localver="${localver:-unknown}"
@@ -57,8 +58,31 @@ function _default_gw()
 
 tmp=$(mktemp -d) || finish "check failed (no tmp), running $localver"
 
+# Any interface but lo, whatever its vendor: a dev node's PCIe uplink must
+# still reach the bang while its jumpered mezz card is in. NOT an lspci check
+# for Mellanox -- a livefish card still enumerates as vendor 15b3, it just
+# never gets a netdev.
+function _have_nic()
+{
+    local n
+    for n in "$root"/sys/class/net/*; do
+        [ -e "$n" ] || continue
+        [ "${n##*/}" = lo ] || return 0
+    done
+    return 1
+}
+
 # The unit has no network dependency on purpose: a jumpered card never gets a
-# lease, and this bounded wait is all that costs a jumpered boot.
+# lease. With only lo there is nothing to wait for, so give udev a short grace
+# to create a late netdev (this unit does not wait for udev to settle) and
+# move on -- the pathological jumpered boot costs ${netdevgrace}s, not the
+# whole route wait.
+for i in $(seq 1 "$netdevgrace"); do
+    _have_nic && break
+    [ "$i" -lt "$netdevgrace" ] && sleep 1
+done
+_have_nic || finish "no network (no NIC, only lo), running $localver"
+
 gw=""
 for _ in $(seq 1 "$routewait"); do
     gw=$(_default_gw)
