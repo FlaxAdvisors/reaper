@@ -1,0 +1,299 @@
+#!/bin/bash
+# bios-fw-update -- push a host BIOS image to a TiogaPass OpenBMC over Redfish,
+# follow the job, and report what the BMC's own /usr/sbin/bios-update did.
+#
+# RENDERED FROM THE SITE VAULT by roles/apply_bmc_scripts. RULE ZERO: the value
+# below is the BMC root credential from the vaulted credentials-bmc.json (root
+# entry). It is used for Redfish (via a netrc on a process substitution) and for
+# the BMC root shell (sshpass -e). It never appears in argv, ps or output.
+#
+#   bios-fw-update version <bmc-ip>
+#       -> bios_active Version (empty on failure)
+#   bios-fw-update busy <bmc-ip>
+#       -> {"busy":bool,"reason":...,"task_id":...,...}; exit 0 idle, 3 busy
+#   bios-fw-update flash <bmc-ip> <artifact-url> [--port <et25b1>]
+#       -> JSON progress lines, then one {"phase":"verdict",...} record
+#
+# Exit codes: 0 the BMC job completed (read the verdict for what that means);
+#             1 failure; 2 usage; 3 INTERLOCK -- nothing was pushed.
+#
+# WHY THIS EXISTS (2026-09-24). The same bios-update runs whether the image
+# arrives from the WebUI, a manual Redfish push or bios_fw. What differed was
+# everything around it:
+#   * THE INTERLOCK. A push is refused while any update job on the BMC is live,
+#     or ended less than QUIET_S ago -- bios-update's ME-changed branch fires
+#     its HSC cut 20 s AFTER its job completes. A 423 (HttpPushUriTargetsBusy)
+#     is treated as busy. This bin NEVER clears that flag: forcing it and
+#     pushing again can start a second bios-update on the same chip, and the
+#     first to finish returns the SPI mux under the other's flashcp.
+#   * THE VERDICT. The Redfish Task reads "Completed" whether the host came up
+#     or not. bios-update states the truth only in the BMC journal, which is
+#     volatile (4 MiB, ~15 min). It is read here, immediately, and emitted.
+#   * THE CUT CHECK. On the ME-changed branch bios-update schedules
+#     `i2cset -f -y 7 0x45 0xd9 0x0c`. That was observed NOT to cut power
+#     (et25b4 13:58, et26b3 18:03 on 2026-09-24: same BMC boot straight through).
+#     This bin reports whether the BMC actually went down; it takes NO power
+#     action itself. Recovery belongs to bios_fw.
+# Design: reaper-devel docs/superpowers/specs/2026-09-24-fw-agents-latch-and-
+# bootcheck-move-design.md.
+set -uo pipefail
+
+export SSHPASS={{ bmc_root_password | quote }}
+RF_USER=root
+
+QUIET_S="${BIOS_FW_UPDATE_QUIET_S:-60}"          # after a job ends
+POLL_S="${BIOS_FW_UPDATE_POLL_S:-5}"
+TASK_WAIT_S="${BIOS_FW_UPDATE_TASK_WAIT_S:-900}"
+POLL_FAIL_MAX="${BIOS_FW_UPDATE_POLL_FAIL_MAX:-12}"
+CUT_WAIT_S="${BIOS_FW_UPDATE_CUT_WAIT_S:-75}"    # 20 s timer + margin
+CUT_POLL_S="${BIOS_FW_UPDATE_CUT_POLL_S:-5}"
+LOCK_DIR="${BIOS_FW_UPDATE_LOCK_DIR:-/run/flax}"
+SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10 -o HostKeyAlgorithms=+ssh-rsa"
+
+# ── transport (each has a test hook; production leaves the hooks unset) ──────
+
+# rf <METHOD> <ip> <path> [curl args...] -> body, then a final line HTTP=<code>
+rf() {
+    local method="$1" ip="$2" path="$3"; shift 3
+    if [ -n "${FLAX_REDFISH_EXEC:-}" ]; then
+        "$FLAX_REDFISH_EXEC" "$method" "$path" "$@"
+        return $?
+    fi
+    curl -sk --netrc-file <(printf 'machine %s login %s password %s\n' "$ip" "$RF_USER" "$SSHPASS") \
+        --connect-timeout 6 --max-time "${RF_MAX_TIME:-15}" -X "$method" \
+        -w '\nHTTP=%{http_code}' "https://${ip}${path}" "$@"
+}
+
+bmc() {   # bmc <ip> <remote command>
+    if [ -n "${FLAX_BMC_REMOTE_EXEC:-}" ]; then
+        "$FLAX_BMC_REMOTE_EXEC" "$1" "$2"
+        return $?
+    fi
+    sshpass -e ssh -n -T $SSH_OPTS "root@$1" "$2"
+}
+
+fetch() {  # fetch <url> <out>
+    if [ -n "${FLAX_FETCH_EXEC:-}" ]; then
+        "$FLAX_FETCH_EXEC" "$1" "$2"
+        return $?
+    fi
+    curl -fsSL --max-time 300 -o "$2" "$1"
+}
+
+now_s() { if [ -n "${FLAX_NOW:-}" ]; then echo "$FLAX_NOW"; else date +%s; fi; }
+nap()   { [ "${1:-0}" -gt 0 ] 2>/dev/null && sleep "$1"; return 0; }
+
+body_of() { sed '$d'; }                                   # strip HTTP= line
+code_of() { tail -n 1 | sed -n 's/^HTTP=//p'; }
+
+emit() {  # emit <phase> <percent> <task_id> <state> [reason]
+    printf '{"phase":"%s","percent":%s,"task_id":"%s","state":"%s","reason":"%s"}\n' \
+        "$1" "${2:-0}" "${3:-}" "${4:-}" "${5:-}"
+}
+
+# ── the interlock ─────────────────────────────────────────────────────────────
+
+# Prints one JSON verdict; returns 0 idle, 3 busy. Unreadable = busy (fail closed).
+busy_check() {
+    local ip="$1" coll ids docs="[" first=1 id t
+    coll=$(rf GET "$ip" /redfish/v1/TaskService/Tasks)
+    if [ "$(printf '%s' "$coll" | code_of)" != "200" ]; then
+        printf '{"busy":true,"reason":"tasks_unreadable"}\n'; return 3
+    fi
+    ids=$(printf '%s' "$coll" | body_of | python3 -c '
+import sys, json
+try:
+    for m in json.load(sys.stdin).get("Members", []):
+        print(m.get("@odata.id", "").rstrip("/").rsplit("/", 1)[-1])
+except Exception:
+    print("__UNREADABLE__")')
+    case "$ids" in *__UNREADABLE__*) printf '{"busy":true,"reason":"tasks_unreadable"}\n'; return 3;; esac
+    for id in $ids; do
+        t=$(rf GET "$ip" "/redfish/v1/TaskService/Tasks/$id")
+        if [ "$(printf '%s' "$t" | code_of)" != "200" ]; then
+            printf '{"busy":true,"reason":"tasks_unreadable","task_id":"%s"}\n' "$id"; return 3
+        fi
+        [ $first = 1 ] || docs="$docs,"; first=0
+        docs="$docs$(printf '%s' "$t" | body_of)"
+    done
+    docs="$docs]"
+    printf '%s' "$docs" | NOW="$(now_s)" QUIET="$QUIET_S" python3 -c '
+import sys, json, os, re, calendar, time
+now = float(os.environ["NOW"]); quiet = float(os.environ["QUIET"])
+LIVE = {"New", "Starting", "Running", "Pending", "Stopping", "Suspended",
+        "Interrupted", "Cancelling", "Service"}
+def epoch(s):
+    m = re.match(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.\d+)?(Z|[+-]\d\d:\d\d)?$", s or "")
+    if not m:
+        return None
+    t = calendar.timegm(time.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S"))
+    tz = m.group(2)
+    if tz and tz != "Z":
+        sign = 1 if tz[0] == "+" else -1
+        t -= sign * (int(tz[1:3]) * 3600 + int(tz[4:6]) * 60)
+    return t
+try:
+    tasks = json.loads(sys.stdin.read())
+except Exception:
+    print(json.dumps({"busy": True, "reason": "tasks_unreadable"})); sys.exit(3)
+for t in tasks:
+    if t.get("TaskState") in LIVE:
+        print(json.dumps({"busy": True, "reason": "job_running", "task_id": t.get("Id"),
+                          "state": t.get("TaskState"), "percent": t.get("PercentComplete")}))
+        sys.exit(3)
+latest = None
+for t in tasks:
+    e = epoch(t.get("EndTime"))
+    if e is not None and (latest is None or e > latest[0]):
+        latest = (e, t)
+if latest and now - latest[0] < quiet:
+    e, t = latest
+    print(json.dumps({"busy": True, "reason": "quiet_window", "task_id": t.get("Id"),
+                      "ended_at": t.get("EndTime"), "ended_s_ago": int(now - e),
+                      "quiet_until_epoch": int(e + quiet)}))
+    sys.exit(3)
+print(json.dumps({"busy": False, "reason": "idle"}))'
+}
+
+# A local lock as well, so two callers on THIS host never race the Redfish check.
+take_lock() {
+    local ip="$1" dir="$LOCK_DIR"
+    [ -w "$dir" ] || dir="${TMPDIR:-/tmp}"
+    exec 9>"$dir/fw-update-${ip}.lock" || return 1
+    flock -n 9
+}
+
+# ── subcommands ───────────────────────────────────────────────────────────────
+
+cmd_version() {
+    rf GET "$1" /redfish/v1/UpdateService/FirmwareInventory/bios_active | body_of \
+      | python3 -c 'import sys, json
+try: print(json.load(sys.stdin).get("Version") or "")
+except Exception: print("")'
+}
+
+cmd_busy() { busy_check "$1"; }
+
+boot_id() { bmc "$1" 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null | tr -d '\r\n '; }
+
+cmd_flash() {
+    local ip="${1:?bmc ip required}" url="${2:?artifact url required}"; shift 2 || true
+    local port=""
+    while [ $# -gt 0 ]; do case "$1" in --port) port="$2"; shift 2;; *) shift;; esac; done
+
+    if ! take_lock "$ip"; then
+        emit interlock 0 "" Busy local_lock
+        echo "another bios/bmc fw update for $ip is running on this host" >&2; return 3
+    fi
+    local b
+    b=$(busy_check "$ip"); local brc=$?
+    printf '%s\n' "$b" | sed 's/^{/{"phase":"interlock",/'
+    [ $brc -eq 0 ] || return 3
+
+    local art; art="$(mktemp "${TMPDIR:-/tmp}/bios-fw-XXXXXX.tar")"
+    trap 'rm -f "$art"' RETURN
+    if ! fetch "$url" "$art" || [ ! -s "$art" ]; then
+        emit fetching 0 "" FetchFailed; echo "fetch failed: $url" >&2; return 1
+    fi
+
+    local boot0 t0; boot0="$(boot_id "$ip")"; t0="$(now_s)"
+
+    emit flashing 0 "" Uploading
+    local resp code task
+    resp=$(RF_MAX_TIME=600 rf POST "$ip" /redfish/v1/UpdateService/update \
+        -F 'UpdateParameters={"Targets":["/redfish/v1/Managers/bmc"],"@Redfish.OperationApplyTime":"Immediate"};type=application/json' \
+        -F "UpdateFile=@${art};filename=image.tar;type=application/octet-stream")
+    code="$(printf '%s' "$resp" | code_of)"
+    if [ "$code" = "423" ]; then
+        emit interlock 0 "" Busy http_423
+        echo "BMC reports an update in progress (423); not overriding it" >&2; return 3
+    fi
+    if [ "$code" != "200" ] && [ "$code" != "202" ]; then
+        emit flashing 0 "" Rejected "http_$code"; printf '%s\n' "$resp" | body_of >&2; return 1
+    fi
+    task=$(printf '%s' "$resp" | body_of | python3 -c 'import sys, json, re
+d = sys.stdin.read()
+try: o = json.loads(d).get("@odata.id", "")
+except Exception: o = ""
+m = re.search(r"/TaskService/Tasks/([^\"/\s]+)", o or d)
+print(m.group(1) if m else "")')
+    [ -n "$task" ] || { emit flashing 0 "" Rejected no_task_id; return 1; }
+
+    local deadline=$(( $(now_s) + TASK_WAIT_S )) fails=0 st pct t
+    while :; do
+        t=$(rf GET "$ip" "/redfish/v1/TaskService/Tasks/$task")
+        if [ "$(printf '%s' "$t" | code_of)" != "200" ]; then
+            fails=$((fails + 1))
+            if [ $fails -ge "$POLL_FAIL_MAX" ]; then emit flashing 0 "$task" Unreachable; return 1; fi
+        else
+            fails=0
+            read -r st pct < <(printf '%s' "$t" | body_of | python3 -c 'import sys, json
+try: d = json.load(sys.stdin); print(d.get("TaskState", ""), d.get("PercentComplete", 0) or 0)
+except Exception: print("", 0)')
+            emit flashing "${pct:-0}" "$task" "${st:-}"
+            case "$st" in
+                Completed) break ;;
+                Exception|Killed|Cancelled) echo "task $task ended: $st" >&2; return 1 ;;
+            esac
+        fi
+        [ "$(now_s)" -lt "$deadline" ] || { emit flashing "${pct:-0}" "$task" Timeout; return 1; }
+        nap "$POLL_S"
+    done
+
+    # The journal, NOW, before it rolls: bios-update's lines plus flashcp's
+    # "diff blocks" (logged under bios-update[<flashcp pid>]).
+    local jl
+    jl=$(bmc "$ip" "journalctl --no-pager -o short-iso --since @${t0} 2>/dev/null | grep -E 'bios-update\\[' | grep -v 'Processing blocks'" 2>/dev/null)
+
+    local verdict
+    verdict=$(printf '%s' "$jl" | PORT="$port" TASK="$task" python3 -c '
+import sys, json, os, re
+lines = [l.rstrip() for l in sys.stdin if l.strip()]
+txt = "\n".join(lines)
+def has(s): return s in txt
+me = None
+if has("ME region is unchanged"): me = False
+if has("ME region DIFFERS") or has("assuming the ME region changes") or has("assuming it changes"): me = True
+m = re.search(r"diff blocks: (\d+)", txt); diff = int(m.group(1)) if m else None
+m = re.search(r"host state after power-on: (\S+)", txt); hs = m.group(1) if m else None
+err = [l for l in lines if "bios-update: error" in l]
+if not lines:                              ending = "unknown"
+elif err and not has("flash complete"):    ending = "failed"
+elif me and has("scheduling node power cycle"): ending = "me_changed_cycle_scheduled"
+elif me:                                   ending = "me_changed_no_cycle"
+elif hs and "Off" not in hs and hs != "unknown": ending = "booted"
+elif has("host did not come up"):          ending = "poweron_failed"
+else:                                      ending = "unknown"
+print(json.dumps({"phase": "verdict", "port": os.environ.get("PORT", ""),
+                  "task_id": os.environ.get("TASK", ""), "ending": ending,
+                  "me_changed": me, "diff_blocks": diff, "host_state_after_poweron": hs,
+                  "errors": err[-3:], "lines": [l[-200:] for l in lines[-40:]]}))')
+
+    local ending
+    ending=$(printf '%s' "$verdict" | python3 -c 'import sys, json; print(json.load(sys.stdin)["ending"])')
+    if [ "$ending" = "me_changed_cycle_scheduled" ]; then
+        # Did the scheduled cut really happen? A dropped BMC (no answer) or a new
+        # boot_id says yes; the same boot_id after CUT_WAIT_S says it did not.
+        local cut="unknown" cd=$(( $(now_s) + CUT_WAIT_S )) b1
+        while [ "$(now_s)" -lt "$cd" ]; do
+            nap "$CUT_POLL_S"
+            b1="$(boot_id "$ip")"
+            if [ -z "$b1" ]; then cut="bmc_dropped"; break; fi
+            if [ -n "$boot0" ] && [ "$b1" != "$boot0" ]; then cut="bmc_rebooted"; break; fi
+        done
+        if [ "$cut" = "unknown" ] && [ -n "$boot0" ] && [ "$(boot_id "$ip")" = "$boot0" ]; then
+            cut="cut_missing"
+        fi
+        verdict=$(printf '%s' "$verdict" | CUT="$cut" python3 -c 'import sys, json, os
+d = json.load(sys.stdin); d["cut"] = os.environ["CUT"]; print(json.dumps(d))')
+    fi
+    printf '%s\n' "$verdict"
+    return 0
+}
+
+case "${1:-}" in
+    version) [ $# -eq 2 ] || { echo "usage: bios-fw-update version <bmc-ip>" >&2; exit 2; }; cmd_version "$2" ;;
+    busy)    [ $# -eq 2 ] || { echo "usage: bios-fw-update busy <bmc-ip>" >&2; exit 2; }; cmd_busy "$2" ;;
+    flash)   [ $# -ge 3 ] || { echo "usage: bios-fw-update flash <bmc-ip> <artifact-url> [--port P]" >&2; exit 2; }; shift; cmd_flash "$@" ;;
+    *) echo "usage: bios-fw-update {version|busy|flash} ..." >&2; exit 2 ;;
+esac

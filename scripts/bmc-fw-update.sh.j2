@@ -1,0 +1,236 @@
+#!/bin/bash
+# bmc-fw-update -- flash a TiogaPass OpenBMC image over Redfish and wait for the
+# BMC to come back activated. Reaper replacement for ghost's
+# playbooks/roles/utils/files/bin/bmc-fw-update (2026-06-23); same interface and
+# the same output records, so bmc_fw (triage services/api/bmcfw/worker.py) needs
+# no change:
+#
+#   bmc-fw-update version <bmc-ip> [--id <fw-inventory-id>]
+#   bmc-fw-update flash   <bmc-ip> <artifact-url> [--same] [--downgrade] [--port <et6b1>]
+#       -> {"phase":...,"percent":N,"task_id":"...","state":"..."} lines
+#
+# Exit codes: 0 activated at a new version; 1 failure; 2 usage;
+#             3 INTERLOCK -- nothing was pushed (state "InterlockBusy").
+#
+# RENDERED FROM THE SITE VAULT by roles/apply_bmc_scripts. RULE ZERO: the BMC
+# root credential comes from the vaulted credentials-bmc.json (root entry) and
+# reaches curl through a netrc on a process substitution -- never argv, never
+# output. (Ghost's version carried a literal default credential and passed it
+# with -u.)
+#
+# Observed behaviour this is built around (ghost, validated et10b1 2026-06-23):
+#   * The BMC self-reboots to ACTIVATE after the image write -- Redfish is down
+#     ~10-15 min. The flash MUST tolerate that drop.
+#   * TaskState stays "New" while PercentComplete climbs (it never reports
+#     "Completed" on this Phosphor build). Success = the BMC returns at a NEW
+#     version, not TaskState.
+# Added 2026-09-24:
+#   * THE INTERLOCK. No push while any update job on the BMC is live or ended
+#     less than QUIET_S ago, or while another fw update for the same BMC runs
+#     on this host. A 423 is busy too; the busy flag is never cleared here.
+# NOTE: NOT `set -e` -- the poll loop must survive the activation drop.
+set -uo pipefail
+
+export SSHPASS={{ bmc_root_password | quote }}
+RF_USER=root
+
+FW_ID_DEFAULT="${BMC_FW_ID:-bmc_active}"
+ACTIVATION_WAIT_SECS="${BMC_FW_ACTIVATION_WAIT:-1500}"   # 25 min cap
+POLL_SECS="${BMC_FW_POLL_SECS:-10}"
+ACT_POLL_SECS="${BMC_FW_ACT_POLL_SECS:-15}"
+QUIET_S="${BMC_FW_UPDATE_QUIET_S:-60}"
+LOCK_DIR="${BMC_FW_UPDATE_LOCK_DIR:-/run/flax}"
+
+# flax-forget-port lives alongside this bin; used on flash success to tell
+# flax-observe to forget the port's pre-flash identity (the BMC MAC moves
+# +1 -> +2 on activation). Resolved next to $0, then PATH.
+SELF_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+FORGET_BIN="${FLAX_FORGET_BIN:-$SELF_DIR/flax-forget-port}"
+[ -x "$FORGET_BIN" ] || FORGET_BIN="$(command -v flax-forget-port 2>/dev/null || echo "$FORGET_BIN")"
+
+# ── transport (test hooks; production leaves them unset) ──────────────────────
+
+rf() {   # rf <METHOD> <ip> <path> [curl args...] -> body, then HTTP=<code>
+    local method="$1" ip="$2" path="$3"; shift 3
+    if [ -n "${FLAX_REDFISH_EXEC:-}" ]; then
+        "$FLAX_REDFISH_EXEC" "$method" "$path" "$@"
+        return $?
+    fi
+    curl -sk --netrc-file <(printf 'machine %s login %s password %s\n' "$ip" "$RF_USER" "$SSHPASS") \
+        --connect-timeout 6 --max-time "${RF_MAX_TIME:-15}" -X "$method" \
+        -w '\nHTTP=%{http_code}' "https://${ip}${path}" "$@"
+}
+fetch() {
+    if [ -n "${FLAX_FETCH_EXEC:-}" ]; then "$FLAX_FETCH_EXEC" "$1" "$2"; return $?; fi
+    curl -skLo "$2" --max-time 120 "$1"
+}
+alive() {
+    if [ -n "${FLAX_PING_EXEC:-}" ]; then "$FLAX_PING_EXEC" "$1"; return $?; fi
+    ping -c1 -W2 "$1" >/dev/null 2>&1
+}
+nap() { [ "${1:-0}" -gt 0 ] 2>/dev/null && sleep "$1"; return 0; }
+body_of() { sed '$d'; }
+code_of() { tail -n 1 | sed -n 's/^HTTP=//p'; }
+
+jver() {   # <ip> <fw-id> -> Version, or empty on any failure
+    local r; r=$(rf GET "$1" "/redfish/v1/UpdateService/FirmwareInventory/${2}")
+    [ "$(printf '%s' "$r" | code_of)" = "200" ] || { echo ""; return; }
+    printf '%s' "$r" | body_of | python3 -c 'import sys, json
+try: print(json.load(sys.stdin).get("Version") or "")
+except Exception: print("")'
+}
+
+emit() { printf '{"phase":"%s","percent":%s,"task_id":"%s","state":"%s"}\n' "$1" "${2:-0}" "${3:-}" "${4:-}"; }
+
+# ── the interlock (same rules as bios-fw-update's busy_check) ─────────────────
+busy_check() {
+    local ip="$1" coll ids docs="[" first=1 id t
+    coll=$(rf GET "$ip" /redfish/v1/TaskService/Tasks)
+    [ "$(printf '%s' "$coll" | code_of)" = "200" ] || { echo "tasks_unreadable"; return 3; }
+    ids=$(printf '%s' "$coll" | body_of | python3 -c '
+import sys, json
+try:
+    for m in json.load(sys.stdin).get("Members", []):
+        print(m.get("@odata.id", "").rstrip("/").rsplit("/", 1)[-1])
+except Exception:
+    print("__UNREADABLE__")')
+    case "$ids" in *__UNREADABLE__*) echo "tasks_unreadable"; return 3;; esac
+    for id in $ids; do
+        t=$(rf GET "$ip" "/redfish/v1/TaskService/Tasks/$id")
+        [ "$(printf '%s' "$t" | code_of)" = "200" ] || { echo "tasks_unreadable"; return 3; }
+        [ $first = 1 ] || docs="$docs,"; first=0
+        docs="$docs$(printf '%s' "$t" | body_of)"
+    done
+    printf '%s]' "$docs" | QUIET="$QUIET_S" python3 -c '
+import sys, json, os, re, calendar, time
+quiet = float(os.environ["QUIET"]); now = time.time()
+LIVE = {"New", "Starting", "Running", "Pending", "Stopping", "Suspended",
+        "Interrupted", "Cancelling", "Service"}
+def epoch(s):
+    m = re.match(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.\d+)?(Z|[+-]\d\d:\d\d)?$", s or "")
+    if not m: return None
+    t = calendar.timegm(time.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S"))
+    tz = m.group(2)
+    if tz and tz != "Z":
+        t -= (1 if tz[0] == "+" else -1) * (int(tz[1:3]) * 3600 + int(tz[4:6]) * 60)
+    return t
+try: tasks = json.loads(sys.stdin.read())
+except Exception: print("tasks_unreadable"); sys.exit(3)
+for t in tasks:
+    if t.get("TaskState") in LIVE:
+        print("job_running task=%s state=%s" % (t.get("Id"), t.get("TaskState"))); sys.exit(3)
+ends = [e for e in (epoch(t.get("EndTime")) for t in tasks) if e is not None]
+if ends and now - max(ends) < quiet:
+    print("quiet_window ended_s_ago=%d" % int(now - max(ends))); sys.exit(3)
+print("idle")'
+}
+
+take_lock() {
+    local dir="$LOCK_DIR"; [ -w "$dir" ] || dir="${TMPDIR:-/tmp}"
+    exec 9>"$dir/fw-update-${1}.lock" || return 1
+    flock -n 9
+}
+
+# ── subcommands ───────────────────────────────────────────────────────────────
+
+cmd_version() {
+    local bmc="${1:?bmc ip required}"; shift || true
+    local fwid="$FW_ID_DEFAULT"
+    while [ $# -gt 0 ]; do case "$1" in --id) fwid="$2"; shift 2;; *) shift;; esac; done
+    jver "$bmc" "$fwid"
+}
+
+cmd_flash() {
+    local bmc="${1:?bmc ip required}" arturl="${2:?artifact url required}"; shift 2 || true
+    # --same / --downgrade accepted for symmetry; the skip/downgrade DECISION is
+    # the worker's (it only calls flash when it intends to proceed).
+    local port=""
+    while [ $# -gt 0 ]; do case "$1" in --same|--downgrade) shift;; --port) port="$2"; shift 2;; *) shift;; esac; done
+    local fwid="$FW_ID_DEFAULT"
+
+    if ! take_lock "$bmc"; then
+        emit flashing 0 "" InterlockBusy; echo "interlock: local_lock (another fw update for $bmc on this host)" >&2; return 3
+    fi
+    local why; why=$(busy_check "$bmc"); local brc=$?
+    if [ $brc -ne 0 ]; then
+        emit flashing 0 "" InterlockBusy; echo "interlock: $why" >&2; return 3
+    fi
+
+    local pre; pre="$(jver "$bmc" "$fwid")"            # baseline version
+    local art; art="$(mktemp "${TMPDIR:-/tmp}/bmc-fw-XXXXXX.tar")"
+    trap 'rm -f "$art"' RETURN
+    if ! fetch "$arturl" "$art" || [ ! -s "$art" ]; then
+        emit flashing 0 "" FetchFailed; echo "fetch failed: $arturl" >&2; return 1
+    fi
+
+    emit flashing 0 "" Uploading
+    local resp code task
+    resp=$(RF_MAX_TIME=600 rf POST "$bmc" /redfish/v1/UpdateService/update -i \
+        -H 'Content-Type: application/octet-stream' --data-binary "@${art}")
+    code="$(printf '%s' "$resp" | code_of)"
+    if [ "$code" = "423" ]; then
+        emit flashing 0 "" InterlockBusy; echo "interlock: http_423 (BMC reports an update in progress; not overriding)" >&2; return 3
+    fi
+    task="$(printf '%s' "$resp" | body_of | python3 -c 'import sys, re
+data = sys.stdin.read()
+m = re.search(r"(?i)^location:\s*\S*/Tasks/(\S+)\s*$", data, re.M)
+if not m: m = re.search(r"/redfish/v1/TaskService/Tasks/([^\"\s]+)", data)
+print(m.group(1) if m else "")' 2>/dev/null)"
+    if [ -z "$task" ]; then
+        emit flashing 0 "" Rejected; echo "update POST rejected (http $code):" >&2; printf '%s\n' "$resp" | body_of >&2; return 1
+    fi
+
+    # Monitor the write. Tolerate Redfish drops: once progress was seen, a lost
+    # connection means the BMC is rebooting to ACTIVATE. Genuine task errors fail.
+    local seen=0 fails=0 tj st pct
+    while true; do
+        tj="$(rf GET "$bmc" "/redfish/v1/TaskService/Tasks/${task}")"
+        if [ "$(printf '%s' "$tj" | code_of)" != "200" ]; then
+            fails=$((fails + 1))
+            if [ "$seen" = 1 ]; then emit monitoring 99 "$task" Activating; break; fi
+            if [ "$fails" -ge 6 ]; then emit monitoring 0 "$task" Unreachable; echo "task $task unreadable" >&2; return 1; fi
+        else
+            fails=0
+            read -r st pct < <(printf '%s' "$tj" | body_of | python3 -c 'import sys, json
+try: d = json.load(sys.stdin); print(d.get("TaskState", "") or "New", d.get("PercentComplete", 0) or 0)
+except Exception: print("New", 0)')
+            if [ "${pct:-0}" -gt 0 ] 2>/dev/null; then seen=1; fi
+            emit monitoring "${pct:-0}" "$task" "${st:-New}"
+            case "$st" in
+                Completed) emit monitoring 100 "$task" Completed; break;;
+                Exception|Killed|Cancelled) echo "task $task ended: $st" >&2; return 1;;
+            esac
+        fi
+        nap "$POLL_SECS"
+    done
+
+    # Write committed; the BMC is (or is about to start) rebooting to activate
+    # -> its MAC flips +1 -> +2 when it returns. Forget the port identity NOW,
+    # at comms-loss, not after the ~13 min wait. Best-effort; no-op without --port.
+    if [ -n "$port" ] && [ -x "$FORGET_BIN" ]; then
+        "$FORGET_BIN" "$port" >&2 || true
+    fi
+
+    # Activation wait: success = the BMC returns at a version that DIFFERS from
+    # pre-flash (activation applied).
+    emit activating 99 "$task" Rebooting
+    local deadline cur; deadline=$(( $(date +%s) + ACTIVATION_WAIT_SECS ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        if alive "$bmc"; then
+            cur="$(jver "$bmc" "$fwid")"
+            if [ -n "$cur" ] && { [ "$cur" != "$pre" ] || [ -z "$pre" ]; }; then
+                emit activated 100 "$task" "$cur"; return 0
+            fi
+        fi
+        nap "$ACT_POLL_SECS"
+    done
+    emit fault 0 "$task" ActivationTimeout
+    echo "BMC did not return at a new version within ${ACTIVATION_WAIT_SECS}s" >&2; return 1
+}
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+    version) cmd_version "$@";;
+    flash)   cmd_flash "$@";;
+    *) echo "usage: bmc-fw-update {version <bmc> [--id ID] | flash <bmc> <url> [--same|--downgrade] [--port P]}" >&2; exit 2;;
+esac
