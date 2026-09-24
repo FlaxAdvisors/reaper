@@ -9,8 +9,11 @@ Description=Mellanox mezzanine FW-lock unlock pass (flash, then blink IDENT)
 # NOT After=mezz-flash-serial.service: the fixup runs After= THIS unit, and
 # the loop made systemd delete the station's job to break the cycle, so it
 # never ran at all (et9b4, 22:02 2026-09-22 -- a locked card never went dark).
-After=multi-user.target getty.target
-Wants=multi-user.target
+# The self-updater runs first (and may swap /opt/flax/mezzflash under us), so
+# this pass always starts on the bundle the bang published. Wants=, never
+# Requires=: an updater that fails must not stop a flash run.
+After=multi-user.target getty.target mezz-flash-update.service
+Wants=multi-user.target mezz-flash-update.service
 
 [Service]
 Type=simple

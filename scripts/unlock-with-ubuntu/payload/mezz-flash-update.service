@@ -1,0 +1,21 @@
+[Unit]
+Description=Update the mezz-flash station bundle from the bang (if a newer one is published)
+# Runs before every flash pass (mezz-flash.service is After=/Wants= this), so
+# a station picks up a published bundle on its next boot with a working NIC --
+# no known-good NIC swap, no systemd.mask= GRUB edit. No network dependency on
+# purpose: a jumpered card never gets a lease, and self_update.sh's own
+# bounded wait for a default route (20s) is all that costs a jumpered boot.
+Before=mezz-flash.service
+# No [Install]: it is pulled in only by mezz-flash.service's Wants=. Being
+# WantedBy=multi-user.target would also hold that target for the whole check.
+
+[Service]
+Type=oneshot
+# Route wait 20s + version fetch 5s (x2 with the `bang` fallback) + tgz 120s
+# + extract/install. Past this the flash pass starts regardless -- on the old
+# tree, because deploy.sh swaps the new one in only as its last step.
+TimeoutStartSec=240
+ExecStart=/opt/flax/mezzflash/self_update.sh
+StandardOutput=journal
+StandardError=journal
+

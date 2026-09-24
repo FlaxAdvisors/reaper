@@ -9,6 +9,12 @@
 #   scripts/unlock-with-ubuntu/create-unlock-with-ubuntu.sh
 #   # -> /tmp/unlock-with-ubuntu/unlock-with-ubuntu.tgz
 #
+# PUBLISH=/srv/pxe additionally publishes it as mezz-flash.tgz +
+# mezz-flash.version there, which every deployed station checks before each
+# flash pass (payload/self_update.sh). On an HA pair, build on one bang and
+# copy both files to the other (publish_bundle.sh says why). Needs write
+# access to that dir -- run the build with sudo -E, or copy afterwards.
+#
 # The resulting tarball is self-contained: scripts, systemd unit, and every
 # firmware image the map names. It is a BUILD ARTIFACT and is gitignored --
 # same call the repo already made for post.tgz. Never commit it.
@@ -25,6 +31,7 @@ repo=$(cd "$here/../.." && pwd)
 src="$repo/roles/apply_pxe_payloads/files/post"
 share="${SHARE:-/export/share/mellanox}"
 out="${OUT:-/tmp/unlock-with-ubuntu}"
+publish="${PUBLISH:-}"
 build="$out/build"
 
 echo "repo   : $repo"
@@ -145,11 +152,22 @@ echo "   $count images"
 echo "== checksums =="
 ( cd "$build" && find fw -type f | sort | xargs sha256sum > SHA256SUMS )
 
+# `version` is what a station compares against the published
+# mezz-flash.version to decide whether to update. -dirty marks a build from
+# uncommitted changes, so one never passes for the commit it sits on.
+repover=$(git -C "$repo" rev-parse --short HEAD 2>/dev/null || echo unknown)
+if [ "$repover" != unknown ] && [ -n "$(git -C "$repo" status --porcelain 2>/dev/null)" ]; then
+    repover="$repover-dirty"
+fi
+built=$(date -u +%Y%m%dT%H%M%SZ)
+version="$repover@$built"
+
 cat > "$build/MANIFEST" <<EOF
 bundle : unlock-with-ubuntu
-built  : $(date -u +%FT%TZ)
+version : $version
+built  : $built
 host   : $(hostname)
-repo   : $(git -C "$repo" rev-parse --short HEAD 2>/dev/null || echo unknown)
+repo   : $repover
 psids  : $psids
 opns   : $opns
 images : $count
@@ -159,6 +177,11 @@ cat "$build/MANIFEST"
 echo "== tarball =="
 tar -C "$build" -czf "$out/unlock-with-ubuntu.tgz" .
 ls -lh "$out/unlock-with-ubuntu.tgz"
+
+if [ -n "$publish" ]; then
+    echo "== publish -> $publish =="
+    "$here/publish_bundle.sh" "$out/unlock-with-ubuntu.tgz" "$version" "$publish"
+fi
 
 cat <<EOF
 
