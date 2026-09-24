@@ -11,7 +11,7 @@
 # description) are exactly what this suite gates:
 #   a. the thermtrip guard refuses BEFORE the write, and per-CPU
 #   b. a clean ssh return is never read as success
-#   c. the up-wait cap is 300s in production, not 20s
+#   c. the up-wait cap is 480s in production (raised from 300s 2026-09-24), not 20s
 #   d. an unreachable BMC during the window is the whole point of waiting
 #   e. one attempt: no internal retry of the write
 # Review round 2026-09-03 added a sixth: a single alive() probe can fabricate
@@ -118,6 +118,24 @@ esac
 STUB
 chmod +x "$work/stub"
 
+# Redfish stub for the interlock and --power-on (2026-09-24). Idle by default;
+# FIX_TASKS_CODE / FIX_OLD_TASK make it busy, FIX_RF_POWER sets PowerState.
+cat > "$work/rf" <<'RFSTUB'
+#!/bin/bash
+method="$1"; path="$2"; shift 2
+[ -n "${FIX_CMDLOG:-}" ] && printf 'RF %s %s %s\n' "$method" "$path" "$*" >> "$FIX_CMDLOG"
+case "$method $path" in
+  "GET /redfish/v1/TaskService/Tasks")
+      if [ -n "${FIX_OLD_TASK:-}" ]; then m='{"Members":[{"@odata.id":"/redfish/v1/TaskService/Tasks/1"}]}'; else m='{"Members":[]}'; fi
+      printf '%s\nHTTP=%s' "$m" "${FIX_TASKS_CODE:-200}" ;;
+  "GET /redfish/v1/TaskService/Tasks/1") printf '%s\nHTTP=200' "$FIX_OLD_TASK" ;;
+  "POST /redfish/v1/Systems/system/Actions/ComputerSystem.Reset") printf '\nHTTP=%s' "${FIX_RESET_CODE:-204}" ;;
+  "GET /redfish/v1/Systems/system") printf '{"PowerState":"%s"}\nHTTP=200' "${FIX_RF_POWER:-On}" ;;
+  *) printf '\nHTTP=404' ;;
+esac
+RFSTUB
+chmod +x "$work/rf"
+
 # One env-and-run helper. Extra args are FIX_*=value pairs (and, for the
 # debounce/duration-floor cases, env overrides like FLAX_POLL_INTERVAL) for
 # this one case. POLL_INTERVAL=0 and small DOWN_WAIT/BLADE_CYCLE_TIMEOUT caps
@@ -147,6 +165,8 @@ run_case() {  # $1=name $2=want-substring $3=cmdlog(opt, "" for none) $4...=FIX_
     [ -n "$cmdlog" ] && : > "$cmdlog"
     LAST_OUT=$(env FLAX_POLL_INTERVAL=0 FLAX_DOWN_WAIT=2 BLADE_CYCLE_TIMEOUT=2 \
           FLAX_DOWN_CONFIRM_N=2 FLAX_MIN_DOWN_S=0 \
+          FLAX_REDFISH_EXEC="$work/rf" FLAX_CYCLE_LOCK_DIR="$work" FLAX_PROGRESS_EVERY=1 \
+          FLAX_POWER_ON_WAIT=1 \
           FLAX_BMC_REMOTE_EXEC="$work/stub" FIX_IDCOUNTER="$idc" \
           FIX_ALIVECOUNTER="$alivec" FIX_CMDLOG="$cmdlog" \
           "$@" \
@@ -416,6 +436,90 @@ run_case "BMC up but power state unreadable reports bmc_degraded" \
       '"error":"bmc_degraded"' "" \
       FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3 FIX_POWERSTATE=""
 assert_no_cycled_key "$LAST_OUT" "bmc_degraded record carries no cycled key"
+
+# ----------------------------------------------- the interlock (2026-09-24) --
+
+cmdlog="$work/cmdlog_jobrunning"
+run_case "a live BMC update job blocks the cut (interlock_busy)" \
+      '"error":"interlock_busy","reason":"job_running' "$cmdlog" \
+      FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3 \
+      FIX_OLD_TASK='{"Id":"1","TaskState":"Running","PercentComplete":20}'
+assert_no_cycled_key "$LAST_OUT" "interlock_busy (job) record carries no cycled key"
+if grep -q 'i2cset' "$cmdlog"; then
+    echo "FAIL - live job: the write was sent anyway"; fail=$((fail+1))
+else
+    echo "ok   - live job: the write was never sent"; pass=$((pass+1))
+fi
+
+cmdlog="$work/cmdlog_quiet"
+run_case "a job that ended seconds ago blocks the cut (quiet window)" \
+      '"reason":"quiet_window' "$cmdlog" \
+      FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3 \
+      FIX_OLD_TASK="{\"Id\":\"1\",\"TaskState\":\"Completed\",\"EndTime\":\"$(date -u -d @$(( $(date +%s) - 20 )) +%Y-%m-%dT%H:%M:%S+00:00)\"}"
+if grep -q 'i2cset' "$cmdlog"; then
+    echo "FAIL - quiet window: the write was sent anyway"; fail=$((fail+1))
+else
+    echo "ok   - quiet window: the write was never sent"; pass=$((pass+1))
+fi
+
+cmdlog="$work/cmdlog_tasksdead"
+run_case "an unreadable job list blocks the cut (fail closed)" \
+      '"reason":"tasks_unreadable"' "$cmdlog" \
+      FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3 FIX_TASKS_CODE=503
+if grep -q 'i2cset' "$cmdlog"; then
+    echo "FAIL - unreadable jobs: the write was sent anyway"; fail=$((fail+1))
+else
+    echo "ok   - unreadable jobs: the write was never sent"; pass=$((pass+1))
+fi
+
+cmdlog="$work/cmdlog_locked"
+exec 8>"$work/fw-update-1.2.3.4.lock"; flock -n 8
+run_case "the local fw-update lock blocks the cut" \
+      '"reason":"local_lock"' "$cmdlog" \
+      FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3
+exec 8>&-
+if grep -q 'i2cset' "$cmdlog"; then
+    echo "FAIL - local lock: the write was sent anyway"; fail=$((fail+1))
+else
+    echo "ok   - local lock: the write was never sent"; pass=$((pass+1))
+fi
+
+# ------------------------------------------------ progress + --power-on -----
+
+run_case "progress lines narrate the cycle on stderr" \
+      'bmc-blade-power-cycle: [+' "" \
+      FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3
+
+run_power_on() {  # like run_case, with --power-on appended to the invocation
+    local name="$1" want="$2"; shift 2
+    LAST_OUT=$(env FLAX_POLL_INTERVAL=0 FLAX_DOWN_WAIT=2 BLADE_CYCLE_TIMEOUT=2 \
+          FLAX_DOWN_CONFIRM_N=2 FLAX_MIN_DOWN_S=0 FLAX_REDFISH_EXEC="$work/rf" \
+          FLAX_CYCLE_LOCK_DIR="$work" FLAX_POWER_ON_WAIT=1 \
+          FLAX_BMC_REMOTE_EXEC="$work/stub" FIX_IDCOUNTER="$work/idc.po.$RANDOM" \
+          FIX_ALIVECOUNTER="$work/al.po.$RANDOM" FIX_CMDLOG="" "$@" \
+          "$work/bin" cycle 1.2.3.4 --power-on 2>/dev/null)
+    if [[ "$LAST_OUT" == *"$want"* ]]; then echo "ok   - $name"; pass=$((pass+1))
+    else echo "FAIL - $name"; echo "       want: $want"; echo "       got:  $LAST_OUT"; fail=$((fail+1)); fi
+}
+run_power_on "--power-on that reaches On reports power_on:on" \
+      '"cycled":true,"down_s":' FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3 FIX_RF_POWER=On
+[[ "$LAST_OUT" == *'"power_on":"on"'* ]] && { echo "ok   - power_on:on field present"; pass=$((pass+1)); } || { echo "FAIL - power_on:on missing: $LAST_OUT"; fail=$((fail+1)); }
+run_power_on "--power-on where power-good never asserts: still cycled:true, power_on:failed" \
+      '"power_on":"failed"' FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3 FIX_RF_POWER=Off
+run_power_on "--power-on rejected by the BMC reports power_on:rejected" \
+      '"power_on":"rejected"' FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3 FIX_RESET_CODE=500
+
+if grep -q 'BLADE_CYCLE_TIMEOUT="${BLADE_CYCLE_TIMEOUT:-480}"' "$here/bmc-blade-power-cycle.sh.j2"; then
+    echo "ok   - production up-wait cap is 480s"; pass=$((pass+1))
+else
+    echo "FAIL - production up-wait cap is not 480s"; fail=$((fail+1))
+fi
+if grep -n 'SSHPASS' "$here/bmc-blade-power-cycle.sh.j2" | grep -vE '^[0-9]+:\s*#' \
+     | grep -vE 'export SSHPASS=|printf .machine %s login %s password %s|sshpass -e' | grep -q .; then
+    echo "FAIL - SSHPASS used outside export / netrc printf / sshpass -e"; fail=$((fail+1))
+else
+    echo "ok   - SSHPASS used only via export, the netrc printf and sshpass -e"; pass=$((pass+1))
+fi
 
 # ------------------------------------------------------------- structural ---
 

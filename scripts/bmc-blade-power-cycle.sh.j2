@@ -25,11 +25,18 @@
 # the ADI manufacturer-specific block): behaviour over five runs is the
 # entire basis for trusting it (design S2, S8 open question 1).
 #
-#   cycle <bmc-ip>  -> {"cycled":true,"down_s":<n>,"up_s":<n>}
+#   cycle <bmc-ip>              -> {"cycled":true,"down_s":<n>,"up_s":<n>}
+#   cycle <bmc-ip> --power-on   -> same, plus "power_on":"on|failed|rejected"
+#                                  (one Redfish On after the BMC is back)
+#
+# Progress lines ("bmc-blade-power-cycle: [+Ns] ...") go to STDERR; stdout
+# carries only the one JSON record callers parse.
 #
 # Errors as {"error":"<code>"}: bmc_unreachable, identity_unavailable,
 # thermtrip_latched, thermtrip_unknown, no_effect, never_returned,
-# identity_changed, bmc_degraded.
+# identity_changed, bmc_degraded (exit 1); interlock_busy with a "reason"
+# (exit 3 -- the write was NEVER sent: a BMC update job is live, ended
+# <60 s ago, the job list is unreadable, or the local lock is held).
 #
 # CONTRACT with biosfw.machine: no failure path may emit a "cycled" key -- a
 # caller takes the FIRST record carrying one, exactly as the rule
@@ -54,11 +61,26 @@ export SSHPASS={{ bmc_root_password | quote }}
 # instead of whatever the kernel's own TCP timeout would otherwise be.
 SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10 -o ServerAliveInterval=2 -o ServerAliveCountMax=1"
 
-# D4: 300s, drawn from the measured WORST case of four nodes cycled together
-# (110-200s; the last two returned at ~200s) plus margin -- deliberately NOT
-# the 20s single-node figure. A timeout written against 20s faults nodes
-# that are booting normally (design S2, D4).
-BLADE_CYCLE_TIMEOUT="${BLADE_CYCLE_TIMEOUT:-300}"
+# D4: was 300s, drawn from the measured WORST case of four nodes cycled
+# together (110-200s) plus margin. RAISED TO 480s on 2026-09-24: across the
+# fleet that day most cycles reported never_returned although the BMC HAD come
+# back. et25b1 (15:38) rebooted within ~1 min but did not answer ssh at its
+# reserved address until ~5 min (it takes a DHCP pool address first; bmc_fw
+# logged 172.17.0.x addresses right after cycles). 300s sat right on that
+# edge. A caller's own subprocess timeout must exceed this.
+BLADE_CYCLE_TIMEOUT="${BLADE_CYCLE_TIMEOUT:-480}"
+# Progress lines go to STDERR only (callers parse stdout JSON), one every
+# PROGRESS_EVERY seconds while waiting.
+PROGRESS_EVERY="${FLAX_PROGRESS_EVERY:-30}"
+
+# THE INTERLOCK (2026-09-24, same rules as bios-fw-update / bmc-fw-update):
+# no cut while any update job on the BMC is live, ended less than QUIET_S ago,
+# or the job list is unreadable; and not while another fw update / cycle for
+# this BMC holds the local lock. A 12V cut mid-flashcp leaves erased,
+# never-written blocks.
+QUIET_S="${FLAX_CYCLE_QUIET_S:-60}"
+LOCK_DIR="${FLAX_CYCLE_LOCK_DIR:-/run/flax}"
+RF_USER=root
 # How long to wait for the BMC to go DOWN before concluding the write did not
 # take (S4.1 step 4). Independent of BLADE_CYCLE_TIMEOUT: this bounds "did
 # anything happen at all", not the recovery itself -- a write that did
@@ -112,6 +134,74 @@ bmc() {
 
 json_err() { printf '{"error":"%s"}\n' "$1"; exit 1; }
 
+T_START=$(date +%s)
+say() { printf 'bmc-blade-power-cycle: [+%ss] %s\n' "$(( $(date +%s) - T_START ))" "$*" >&2; }
+
+# Redfish, for the interlock and --power-on. The credential reaches curl via a
+# netrc on a process substitution -- never argv. FLAX_REDFISH_EXEC is the test
+# hook (same shape as bios-fw-update's).
+rf() {   # rf <METHOD> <ip> <path> [curl args...] -> body, then HTTP=<code>
+    local method="$1" ip="$2" path="$3"; shift 3
+    if [ -n "${FLAX_REDFISH_EXEC:-}" ]; then
+        "$FLAX_REDFISH_EXEC" "$method" "$path" "$@"
+        return $?
+    fi
+    curl -sk --netrc-file <(printf 'machine %s login %s password %s\n' "$ip" "$RF_USER" "$SSHPASS") \
+        --connect-timeout 6 --max-time 15 -X "$method" \
+        -w '\nHTTP=%{http_code}' "https://${ip}${path}" "$@"
+}
+rf_body() { sed '$d'; }
+rf_code() { tail -n 1 | sed -n 's/^HTTP=//p'; }
+
+# Prints a reason; returns 0 idle, 3 busy. Unreadable = busy (fail closed).
+busy_check() {
+    local ip="$1" coll ids docs="[" first=1 id t
+    coll=$(rf GET "$ip" /redfish/v1/TaskService/Tasks)
+    [ "$(printf '%s' "$coll" | rf_code)" = "200" ] || { echo "tasks_unreadable"; return 3; }
+    ids=$(printf '%s' "$coll" | rf_body | python3 -c '
+import sys, json
+try:
+    for m in json.load(sys.stdin).get("Members", []):
+        print(m.get("@odata.id", "").rstrip("/").rsplit("/", 1)[-1])
+except Exception:
+    print("__UNREADABLE__")')
+    case "$ids" in *__UNREADABLE__*) echo "tasks_unreadable"; return 3;; esac
+    for id in $ids; do
+        t=$(rf GET "$ip" "/redfish/v1/TaskService/Tasks/$id")
+        [ "$(printf '%s' "$t" | rf_code)" = "200" ] || { echo "tasks_unreadable"; return 3; }
+        [ $first = 1 ] || docs="$docs,"; first=0
+        docs="$docs$(printf '%s' "$t" | rf_body)"
+    done
+    printf '%s]' "$docs" | QUIET="$QUIET_S" python3 -c '
+import sys, json, os, re, calendar, time
+quiet = float(os.environ["QUIET"]); now = time.time()
+LIVE = {"New", "Starting", "Running", "Pending", "Stopping", "Suspended",
+        "Interrupted", "Cancelling", "Service"}
+def epoch(s):
+    m = re.match(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.\d+)?(Z|[+-]\d\d:\d\d)?$", s or "")
+    if not m: return None
+    t = calendar.timegm(time.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S"))
+    tz = m.group(2)
+    if tz and tz != "Z":
+        t -= (1 if tz[0] == "+" else -1) * (int(tz[1:3]) * 3600 + int(tz[4:6]) * 60)
+    return t
+try: tasks = json.loads(sys.stdin.read())
+except Exception: print("tasks_unreadable"); sys.exit(3)
+for t in tasks:
+    if t.get("TaskState") in LIVE:
+        print("job_running task=%s state=%s" % (t.get("Id"), t.get("TaskState"))); sys.exit(3)
+ends = [e for e in (epoch(t.get("EndTime")) for t in tasks) if e is not None]
+if ends and now - max(ends) < quiet:
+    print("quiet_window ended_s_ago=%d" % int(now - max(ends))); sys.exit(3)
+print("idle")'
+}
+
+take_lock() {
+    local dir="$LOCK_DIR"; [ -w "$dir" ] || dir="${TMPDIR:-/tmp}"
+    exec 9>"$dir/fw-update-${1}.lock" || return 1
+    flock -n 9
+}
+
 # ONE round trip returns BOTH halves of identity: the BMC's mgmt MAC (stable
 # across a reboot) and its /etc/os-release VERSION_ID (build identity). A
 # blank MAC means the round trip failed outright. Reused for THREE things: the
@@ -149,10 +239,33 @@ wait_down() {  # $1 = ip; 0 once DOWN_CONFIRM_N CONSECUTIVE probes fail, 1 on th
 }
 
 wait_up() {  # $1 = ip; 0 once the BMC answers again, 1 on the BLADE_CYCLE_TIMEOUT cap
-    local ip="$1" deadline=$(( $(now_s) + BLADE_CYCLE_TIMEOUT ))
+    local ip="$1" deadline=$(( $(now_s) + BLADE_CYCLE_TIMEOUT )) next=$(( $(now_s) + PROGRESS_EVERY ))
     while :; do
         alive "$ip" && return 0
         [ "$(now_s)" -lt "$deadline" ] || return 1
+        if [ "$(now_s)" -ge "$next" ]; then
+            say "BMC still not answering ssh at $ip (cap ${BLADE_CYCLE_TIMEOUT}s)"
+            next=$(( $(now_s) + PROGRESS_EVERY ))
+        fi
+        sleep "$POLL_INTERVAL"
+    done
+}
+
+# --power-on: one Redfish On, then watch PowerState for POWER_ON_WAIT seconds.
+# Prints on | failed | rejected. Never retried.
+POWER_ON_WAIT="${FLAX_POWER_ON_WAIT:-60}"
+power_on() {
+    local ip="$1" r st deadline
+    r=$(rf POST "$ip" /redfish/v1/Systems/system/Actions/ComputerSystem.Reset \
+           -H 'Content-Type: application/json' -d '{"ResetType":"On"}')
+    case "$(printf '%s' "$r" | rf_code)" in 200|202|204) ;; *) echo rejected; return;; esac
+    deadline=$(( $(now_s) + POWER_ON_WAIT ))
+    while :; do
+        st=$(rf GET "$ip" /redfish/v1/Systems/system | rf_body | python3 -c 'import sys, json
+try: print(json.load(sys.stdin).get("PowerState", ""))
+except Exception: print("")')
+        [ "$st" = "On" ] && { echo on; return; }
+        [ "$(now_s)" -lt "$deadline" ] || { echo failed; return; }
         sleep "$POLL_INTERVAL"
     done
 }
@@ -219,6 +332,21 @@ cmd_cycle() {
     # for is never cycled -- "not lo" must never be waved through as "hi".
     case "$c0" in hi) ;; *) json_err thermtrip_unknown ;; esac
     case "$c1" in hi) ;; *) json_err thermtrip_unknown ;; esac
+    say "preflight ok (mac $mac0, $os0); thermtrip latches clear"
+
+    # 3b. THE INTERLOCK (2026-09-24). Last check before the cut: the local
+    # lock first (another fw update / cycle for this BMC on this host), then
+    # the BMC's own job list. Exit 3, write never sent.
+    if ! take_lock "$IP"; then
+        say "interlock: another fw update or cycle for $IP holds the local lock"
+        printf '{"error":"interlock_busy","reason":"local_lock"}\n'; exit 3
+    fi
+    why=$(busy_check "$IP"); brc=$?
+    if [ $brc -ne 0 ]; then
+        say "interlock: $why -- not cutting power"
+        printf '{"error":"interlock_busy","reason":"%s"}\n' "$why"; exit 3
+    fi
+    say "interlock clear (no BMC update job live or ended <${QUIET_S}s ago)"
 
     # 4. Issue the write. FIRE AND FORGET: the session dying mid-command IS
     # the expected outcome on success (S2 -- the BMC runs on the same
@@ -231,12 +359,15 @@ cmd_cycle() {
     # DOWN_WAIT. If the BMC never stops answering, the write did not do what
     # we expect -- report it now and do NOT go on to wait
     # BLADE_CYCLE_TIMEOUT for a reboot that was never coming.
-    wait_down "$IP" || json_err no_effect
+    say "12V cut sent (i2cset -f -y 7 0x45 0xd9 c); waiting for the BMC to drop"
+    wait_down "$IP" || { say "BMC never stopped answering within ${DOWN_WAIT}s"; json_err no_effect; }
     down_s=$(( $(now_s) - t0 ))
+    say "BMC down at ${down_s}s; waiting for it to return (cap ${BLADE_CYCLE_TIMEOUT}s)"
 
     # 6. Wait for RETURN, capped at BLADE_CYCLE_TIMEOUT (D4).
-    wait_up "$IP" || json_err never_returned
+    wait_up "$IP" || { say "BMC did not answer ssh at $IP within ${BLADE_CYCLE_TIMEOUT}s"; json_err never_returned; }
     up_s=$(( $(now_s) - t0 ))
+    say "BMC answering again at ${up_s}s"
 
     # THE SECOND independent guard against a false cycled:true (review
     # finding 2026-09-03; see MIN_DOWN_S above): even a DEBOUNCED "down" can
@@ -267,11 +398,28 @@ cmd_cycle() {
     # but degraded.
     state=$(bmc "$IP" 'obmcutil state 2>/dev/null | sed -n "s/.*CurrentPowerState *: *//p"' 2>/dev/null | tr -d '\r')
     [ -n "$state" ] || json_err bmc_degraded
+    say "same machine back (identity matches), power state '$state'"
 
+    # 8. Optional: one Redfish power-on. The cycle itself already succeeded,
+    # so the record stays cycled:true whatever the power-on does.
+    if [ "${POWER_ON_AFTER:-no}" = yes ]; then
+        say "powering on (Redfish ResetType On), watching PowerState for ${POWER_ON_WAIT}s"
+        pon=$(power_on "$IP")
+        say "power-on: $pon"
+        printf '{"cycled":true,"down_s":%s,"up_s":%s,"power_on":"%s"}\n' "$down_s" "$up_s" "$pon"
+        return
+    fi
     printf '{"cycled":true,"down_s":%s,"up_s":%s}\n' "$down_s" "$up_s"
 }
 
+USAGE="usage: bmc-blade-power-cycle cycle <bmc-ip> [--power-on]"
 case "${1:-}" in
-    cycle) [ $# -eq 2 ] || { echo "usage: bmc-blade-power-cycle cycle <bmc-ip>" >&2; exit 2; }; cmd_cycle "$2" ;;
-    *) echo "usage: bmc-blade-power-cycle cycle <bmc-ip>" >&2; exit 2 ;;
+    cycle)
+        case "$#:${3:-}" in
+            2:) ;;
+            3:--power-on) POWER_ON_AFTER=yes ;;
+            *) echo "$USAGE" >&2; exit 2 ;;
+        esac
+        cmd_cycle "$2" ;;
+    *) echo "$USAGE" >&2; exit 2 ;;
 esac
