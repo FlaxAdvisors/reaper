@@ -158,9 +158,22 @@ print(json.dumps({"busy": False, "reason": "idle"}))'
 # A local lock as well, so two callers on THIS host never race the Redfish check.
 take_lock() {
     local ip="$1" dir="$LOCK_DIR"
-    [ -w "$dir" ] || dir="${TMPDIR:-/tmp}"
     exec 9>"$dir/fw-update-${ip}.lock" || return 1
     flock -n 9
+}
+
+# The lock lives in LOCK_DIR (/run/flax), shared by the agents' containers
+# (root) and operators on the bang host. An operator without write access
+# re-runs this bin under passwordless sudo. There is deliberately NO fallback
+# directory: a lock taken in a different directory is no lock at all.
+# (FLAX_SUDO is the test hook.)
+need_lock_dir() {
+    [ -w "$LOCK_DIR" ] && return 0
+    if [ "$(id -u)" != 0 ] && "${FLAX_SUDO:-sudo}" -n true 2>/dev/null; then
+        exec "${FLAX_SUDO:-sudo}" -n "$0" "$@"
+    fi
+    echo "$(basename "$0"): cannot write the lock directory $LOCK_DIR; run as root or with passwordless sudo" >&2
+    exit 2
 }
 
 # ── subcommands ───────────────────────────────────────────────────────────────
@@ -291,6 +304,7 @@ d = json.load(sys.stdin); d["cut"] = os.environ["CUT"]; print(json.dumps(d))')
     return 0
 }
 
+[ "${1:-}" = flash ] && need_lock_dir "$@"
 case "${1:-}" in
     version) [ $# -eq 2 ] || { echo "usage: bios-fw-update version <bmc-ip>" >&2; exit 2; }; cmd_version "$2" ;;
     busy)    [ $# -eq 2 ] || { echo "usage: bios-fw-update busy <bmc-ip>" >&2; exit 2; }; cmd_busy "$2" ;;

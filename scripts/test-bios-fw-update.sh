@@ -161,5 +161,28 @@ else ok "credential absent from every recorded call"; fi
 refs=$(grep -n 'SSHPASS' "$work/bin" | grep -vE '^\s*[0-9]+:\s*#' | grep -vE 'export SSHPASS=|printf .machine %s login %s password %s|"\$SSHPASS"\)' )
 [ -z "$refs" ] && ok "SSHPASS used only via export, netrc printf and sshpass -e" || { rc=x; out="$refs"; bad "unexpected SSHPASS use"; }
 
+
+# ── the lock directory: sudo re-exec, never a fallback dir (2026-09-24) ─────
+rodir="$work/ro-lockdir"; mkdir -p "$rodir"; chmod 555 "$rodir"
+printf '#!/bin/bash\nexit 1\n' > "$work/nosudo"
+printf '#!/bin/bash\n[ "$1" = "-n" ] && [ "$2" = "true" ] && exit 0\nprintf "%%s\\n" "$*" > "$FIX_SUDOLOG"\nexit 0\n' > "$work/fakesudo"
+chmod +x "$work/nosudo" "$work/fakesudo"
+if [ "$(id -u)" != 0 ]; then
+    : > "$work/cmd.nosudo"
+    o=$(env FIX_CMDLOG="$work/cmd.nosudo" FLAX_SUDO="$work/nosudo" BIOS_FW_UPDATE_LOCK_DIR="$rodir" FLAX_REDFISH_EXEC="$work/rf" FLAX_BMC_REMOTE_EXEC="$work/ssh" FLAX_FETCH_EXEC="$work/fetch" \
+        "$work/bin" flash 10.0.0.1 http://share/TPC_P26F.tar 2>&1); r=$?
+    if [ $r -eq 2 ] && [[ "$o" == *"cannot write the lock directory"* ]] && ! grep -qE '^(POST|RF POST)|i2cset' "$work/cmd.nosudo"; then
+        echo "ok   - unwritable lock dir, no sudo -> exit 2, nothing sent"; pass=$((pass+1))
+    else echo "FAIL - unwritable lock dir, no sudo (rc=$r out=$o)"; fail=$((fail+1)); fi
+    export FIX_SUDOLOG="$work/sudolog"; : > "$FIX_SUDOLOG"
+    env FLAX_SUDO="$work/fakesudo" BIOS_FW_UPDATE_LOCK_DIR="$rodir" FLAX_REDFISH_EXEC="$work/rf" FLAX_BMC_REMOTE_EXEC="$work/ssh" FLAX_FETCH_EXEC="$work/fetch" "$work/bin" flash 10.0.0.1 http://share/TPC_P26F.tar >/dev/null 2>&1; r=$?
+    if [ $r -eq 0 ] && grep -q -- "-n $work/bin flash 10.0.0.1 http://share/TPC_P26F.tar" "$FIX_SUDOLOG"; then
+        echo "ok   - unwritable lock dir -> re-runs itself under sudo -n with the same args"; pass=$((pass+1))
+    else echo "FAIL - sudo re-exec (rc=$r log=$(cat "$FIX_SUDOLOG"))"; fail=$((fail+1)); fi
+else
+    echo "ok   - (skipped sudo re-exec cases: running as root)"; pass=$((pass+1))
+fi
+chmod 755 "$rodir"
+
 echo "---"; echo "pass=$pass fail=$fail"
 [ $fail -eq 0 ]

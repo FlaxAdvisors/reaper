@@ -548,5 +548,28 @@ else
     echo "FAIL - no-args invocation did not behave as a usage error"; fail=$((fail+1))
 fi
 
+
+# ── the lock directory: sudo re-exec, never a fallback dir (2026-09-24) ─────
+rodir="$work/ro-lockdir"; mkdir -p "$rodir"; chmod 555 "$rodir"
+printf '#!/bin/bash\nexit 1\n' > "$work/nosudo"
+printf '#!/bin/bash\n[ "$1" = "-n" ] && [ "$2" = "true" ] && exit 0\nprintf "%%s\\n" "$*" > "$FIX_SUDOLOG"\nexit 0\n' > "$work/fakesudo"
+chmod +x "$work/nosudo" "$work/fakesudo"
+if [ "$(id -u)" != 0 ]; then
+    : > "$work/cmd.nosudo"
+    o=$(env FIX_CMDLOG="$work/cmd.nosudo" FLAX_SUDO="$work/nosudo" FLAX_CYCLE_LOCK_DIR="$rodir" FLAX_REDFISH_EXEC="$work/rf" FLAX_BMC_REMOTE_EXEC="$work/stub" \
+        "$work/bin" cycle 1.2.3.4 2>&1); r=$?
+    if [ $r -eq 2 ] && [[ "$o" == *"cannot write the lock directory"* ]] && ! grep -qE '^(POST|RF POST)|i2cset' "$work/cmd.nosudo"; then
+        echo "ok   - unwritable lock dir, no sudo -> exit 2, nothing sent"; pass=$((pass+1))
+    else echo "FAIL - unwritable lock dir, no sudo (rc=$r out=$o)"; fail=$((fail+1)); fi
+    export FIX_SUDOLOG="$work/sudolog"; : > "$FIX_SUDOLOG"
+    env FLAX_SUDO="$work/fakesudo" FLAX_CYCLE_LOCK_DIR="$rodir" FLAX_REDFISH_EXEC="$work/rf" FLAX_BMC_REMOTE_EXEC="$work/stub" "$work/bin" cycle 1.2.3.4 >/dev/null 2>&1; r=$?
+    if [ $r -eq 0 ] && grep -q -- "-n $work/bin cycle 1.2.3.4" "$FIX_SUDOLOG"; then
+        echo "ok   - unwritable lock dir -> re-runs itself under sudo -n with the same args"; pass=$((pass+1))
+    else echo "FAIL - sudo re-exec (rc=$r log=$(cat "$FIX_SUDOLOG"))"; fail=$((fail+1)); fi
+else
+    echo "ok   - (skipped sudo re-exec cases: running as root)"; pass=$((pass+1))
+fi
+chmod 755 "$rodir"
+
 echo; echo "passed: $pass  failed: $fail"
 [ "$fail" -eq 0 ]

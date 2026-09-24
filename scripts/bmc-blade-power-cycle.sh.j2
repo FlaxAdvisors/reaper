@@ -197,7 +197,7 @@ print("idle")'
 }
 
 take_lock() {
-    local dir="$LOCK_DIR"; [ -w "$dir" ] || dir="${TMPDIR:-/tmp}"
+    local dir="$LOCK_DIR"
     exec 9>"$dir/fw-update-${1}.lock" || return 1
     flock -n 9
 }
@@ -268,6 +268,20 @@ except Exception: print("")')
         [ "$(now_s)" -lt "$deadline" ] || { echo failed; return; }
         sleep "$POLL_INTERVAL"
     done
+}
+
+# The lock lives in LOCK_DIR (/run/flax), shared by the agents' containers
+# (root) and operators on the bang host. An operator without write access
+# re-runs this bin under passwordless sudo. There is deliberately NO fallback
+# directory: a lock taken in a different directory is no lock at all.
+# (FLAX_SUDO is the test hook.)
+need_lock_dir() {
+    [ -w "$LOCK_DIR" ] && return 0
+    if [ "$(id -u)" != 0 ] && "${FLAX_SUDO:-sudo}" -n true 2>/dev/null; then
+        exec "${FLAX_SUDO:-sudo}" -n "$0" "$@"
+    fi
+    echo "$(basename "$0"): cannot write the lock directory $LOCK_DIR; run as root or with passwordless sudo" >&2
+    exit 2
 }
 
 cmd_cycle() {
@@ -413,6 +427,7 @@ cmd_cycle() {
 }
 
 USAGE="usage: bmc-blade-power-cycle cycle <bmc-ip> [--power-on]"
+[ "${1:-}" = cycle ] && need_lock_dir "$@"
 case "${1:-}" in
     cycle)
         case "$#:${3:-}" in
