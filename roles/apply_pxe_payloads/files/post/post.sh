@@ -388,7 +388,9 @@ if [ $action == "memtest" ]; then
 fi
 journalctl -la -u banghook > $logdir/banghook.log
 ps_begin dump "rsync to bang:/export/nodes"
+dumpok=0
 if rsync -SHAXav $macdir $dstdir; then
+    dumpok=1
     ps_done
 else
     ps_fail "rsync to the bang failed (rc $?) -- results are only on this node"
@@ -406,9 +408,22 @@ fi
 ## + '[' 1 -ne 0 ']'
 ## + ipmitool chassis identify 180
 
+# The last word on SOL. Collecting inventory is NOT a verdict (operator,
+# 2026-09-25): population and errors are judged in the GUI, so never let this
+# read as "done, pull it".
+if [ "$dumpok" = 1 ] && [ "$action" == "inventory" ]; then
+    donemsg="INVENTORY COLLECTED - check the GUI for population and errors !!! - CHECK THE GUI"
+elif [ "$dumpok" = 1 ]; then
+    donemsg="$action results collected - CHECK THE GUI"
+else
+    donemsg="$action results NOT delivered to the bang (dump failed) - CHECK THE GUI and the banghook journal"
+fi
 ps_begin poweroff
 ps_done
-ps_finish POWER-OFF "$action done -- powering off."
+ps_finish POWER-OFF "$donemsg"
+# Give the final frame time to reach SOL: without this the power cut beat the
+# repaint and the last thing SOL ever showed was "RUNNING dump" (et24b3).
+sleep 3
 if [ $ipmigood -eq 1 ]; then
     echo "using IPMI to power off."
     ipmitool chassis power off

@@ -167,8 +167,8 @@ def _logdir_blob(st, blob):
             s["name"] == "dump" and s["state"] == "running" for s in st["stages"]):
         return blob
     shipped = dict(st, state="DELIVERED",
-                   text="results delivered to the bang at %s; the node then "
-                        "identifies and powers off." % st["ts"])
+                   text="INVENTORY COLLECTED at %s -- not a pass: CHECK THE GUI for "
+                        "population and errors. The node then powers off." % st["ts"])
     return json.dumps(shipped, indent=None, separators=(",", ":")) + "\n"
 
 
