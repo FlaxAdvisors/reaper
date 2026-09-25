@@ -27,6 +27,11 @@
 #                    ->  {"cleared":true,"restarted":false}   rm ran, restart did
 #                                                             not; exit 1
 #                    ->  {"error":"ssh_unreachable"} | {"error":"rm_failed"}
+#   restart <bmc-ip> ->  {"restarted":true}
+#                    ->  {"error":"ssh_unreachable"} | {"error":"restart_failed"}  (exit 1)
+#   RESTART ONLY -- no rm. biosfw's post-flash recovery (09-23 spec R5) restarts
+#   EntityManager when the journal shows EM errors; deleting the cache there is a
+#   separate, unmeasured change (before_latest_fw_agent_work.md §4 concern 2).
 set -u
 
 EM_UNIT=xyz.openbmc_project.EntityManager.service
@@ -70,9 +75,23 @@ cmd_clear() {
     esac
 }
 
+cmd_restart() {
+    ip="$1"
+    out=$(bmc "$ip" "systemctl restart $EM_UNIT && systemctl is-active --quiet $EM_UNIT && echo RESTARTED")
+    rc=$?
+    case "$out" in
+        *RESTARTED*) printf '{"restarted":true}\n' ;;
+        *) [ "$rc" -eq 255 ] && json_err ssh_unreachable
+           json_err restart_failed ;;
+    esac
+}
+
 case "${1:-}" in
     clear)
         [ $# -eq 2 ] || { echo "usage: bmc-clear-entity-cache clear <bmc-ip>" >&2; exit 2; }
         cmd_clear "$2" ;;
-    *) echo "usage: bmc-clear-entity-cache clear <bmc-ip>" >&2; exit 2 ;;
+    restart)
+        [ $# -eq 2 ] || { echo "usage: bmc-clear-entity-cache {clear|restart} <bmc-ip>" >&2; exit 2; }
+        cmd_restart "$2" ;;
+    *) echo "usage: bmc-clear-entity-cache {clear|restart} <bmc-ip>" >&2; exit 2 ;;
 esac

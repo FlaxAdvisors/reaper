@@ -20,6 +20,14 @@
 # Errors as {"error":"<code>"}: ssh_unreachable, host_not_off,
 # request_rejected, window_unreadable.
 #
+#   watch <bmc-ip> -> the same outcome record plus "mode":"watch"; errors
+#                     ssh_unreachable, host_off, window_unreadable.
+#   READ-ONLY: never requests a power transition. It watches the boot already
+#   in progress -- the one bmc_fw's flash path just started, or a host that is
+#   already running (operator ruling O8, 2026-09-24). POST codes of the
+#   current cycle are trusted only once PS_PWROK has read hi: with power-good
+#   never asserted, CurrentBootCycleCount still names the PREVIOUS boot.
+#
 # CONTRACT with bmcfw.bios_boot: no failure path may emit an "outcome" key --
 # the parser takes the FIRST record carrying one.
 #
@@ -137,7 +145,40 @@ EOF
     done
 }
 
+emit_w() {  # same record as emit, tagged
+    printf '{"outcome":"%s","mode":"watch","cycle":%s,"codes":%s,"nonff":%s,"pwrok_s":%s,"elapsed_s":%s}\n' \
+        "$1" "$2" "$3" "$4" "$5" "$6"
+    exit 0
+}
+
+cmd_watch() {
+    IP="$1"
+    state=$(power_state) || true
+    [ -n "$state" ] || json_err ssh_unreachable
+    [ "$state" = Off ] && json_err host_off
+    c=$(cycle_count); case "$c" in ''|*[!0-9]*) json_err window_unreadable ;; esac
+    start=$(date +%s); pwrok_s=-1; codes=0; nonff=0
+    while :; do
+        now=$(( $(date +%s) - start ))
+        if [ "$pwrok_s" -lt 0 ] && [ "$(pwrok)" = hi ]; then pwrok_s=$now; fi
+        if [ "$pwrok_s" -ge 0 ]; then
+            c2=$(cycle_count); case "$c2" in ''|*[!0-9]*) c2="$c" ;; esac
+            c="$c2"
+            read -r codes nonff <<EOF
+$(postcodes "$c")
+EOF
+            [ "${nonff:-0}" -gt 0 ] && emit_w bios_executing "$c" "$codes" "$nonff" "$pwrok_s" "$now"
+        fi
+        if [ "$now" -ge "$WINDOW" ]; then
+            [ "$pwrok_s" -ge 0 ] || emit_w power_good_failed "$c" "$codes" "$nonff" "$pwrok_s" "$now"
+            emit_w no_bios_executing "$c" "$codes" "$nonff" "$pwrok_s" "$now"
+        fi
+        sleep "$POLL"
+    done
+}
+
 case "${1:-}" in
     check) [ $# -eq 2 ] || { echo "usage: bmc-boot-evidence check <bmc-ip>" >&2; exit 2; }; cmd_check "$2" ;;
-    *) echo "usage: bmc-boot-evidence check <bmc-ip>" >&2; exit 2 ;;
+    watch) [ $# -eq 2 ] || { echo "usage: bmc-boot-evidence {check|watch} <bmc-ip>" >&2; exit 2; }; cmd_watch "$2" ;;
+    *) echo "usage: bmc-boot-evidence {check|watch} <bmc-ip>" >&2; exit 2 ;;
 esac

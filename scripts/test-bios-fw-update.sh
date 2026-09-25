@@ -54,7 +54,10 @@ case "$2" in
       if [ "$n" -le "${FIX_BOOT_SAME_FOR:-999}" ]; then echo "${FIX_BOOT0:-aaaa}"
       elif [ "${FIX_BOOT_AFTER:-}" = "DOWN" ]; then exit 255
       else echo "${FIX_BOOT_AFTER:-bbbb}"; fi ;;
-  *journalctl*) cat "$FIX_JOURNAL" ;;
+  *journalctl*)
+      [ -n "${FIX_SSH_DOWN:-}" ] && exit 255
+      cat "$FIX_JOURNAL"
+      case "$2" in *JOURNAL_END*) echo JOURNAL_END ;; esac ;;
 esac
 STUB
 cat > "$work/fetch" <<'STUB'
@@ -183,6 +186,49 @@ else
     echo "ok   - (skipped sudo re-exec cases: running as root)"; pass=$((pass+1))
 fi
 chmod 755 "$rodir"
+
+# ── journal subcommand ────────────────────────────────────────────────────
+jrun() {  # jrun <name> -- runs `journal`, sets $out $rc
+    export FIX_CMDLOG="$work/cmd.$1"; : > "$FIX_CMDLOG"
+    out=$(FLAX_REDFISH_EXEC="$work/rf" FLAX_BMC_REMOTE_EXEC="$work/ssh" \
+          "$work/bin" journal 10.0.0.1 1790000000 2>"$work/err.$1"); rc=$?
+}
+cat > "$work/j.mixed" <<'J'
+2026-09-24T18:03:01+00:00 bmc bios-update[812]: ME region is unchanged
+2026-09-24T18:03:02+00:00 bmc power-control[301]: PowerControl: power supply power good failed to assert
+2026-09-24T18:03:03+00:00 bmc entity-manager[455]: terminate called after throwing an instance of 'std::runtime_error'
+2026-09-24T18:03:04+00:00 bmc fru-device[456]: JSON file not found /usr/share/entity-manager/configurations/eeprom.json
+2026-09-24T18:03:05+00:00 bmc systemd[1]: Started Something unrelated
+EM_INVENTORY
+/xyz/openbmc_project/inventory/system/board
+/xyz/openbmc_project/inventory/system/board/Cpld
+/xyz/openbmc_project/inventory/system/board/TiogaPass_Baseboard
+J
+FIX_JOURNAL="$work/j.mixed" jrun jmixed
+if [ $rc -eq 0 ] \
+   && echo "$out" | python3 -c 'import sys,json; d=json.load(sys.stdin); assert d["phase"]=="journal"; assert len(d["bios_update"])==1; assert len(d["power_control"])==1; assert len(d["entity_manager"])==2; assert d["em_inventory"]==["board","board/Cpld","board/TiogaPass_Baseboard"]; assert not any("unrelated" in l for k in ("bios_update","power_control","entity_manager") for l in d[k])'; then
+    ok "journal splits bios-update / power-control / entity-manager lines, drops the rest"
+else bad "journal splits bios-update / power-control / entity-manager lines, drops the rest"; fi
+
+: > "$work/j.empty"
+FIX_JOURNAL="$work/j.empty" jrun jempty
+if [ $rc -eq 0 ] && echo "$out" | python3 -c 'import sys,json; d=json.load(sys.stdin); assert d["power_control"]==[] and d["entity_manager"]==[]'; then
+    ok "journal with no matching lines is an empty record, exit 0 (not unreachable)"
+else bad "journal with no matching lines is an empty record, exit 0 (not unreachable)"; fi
+
+FIX_SSH_DOWN=1 FIX_JOURNAL="$work/j.empty" jrun jdown
+if [ $rc -eq 1 ] && [ "$out" = '{"error":"ssh_unreachable"}' ]; then
+    ok "journal on a dead ssh is ssh_unreachable, exit 1"
+else bad "journal on a dead ssh is ssh_unreachable, exit 1"; fi
+
+# the flash verdict carries the same lists
+FIX_JOURNAL="$work/j.mixed"   # reuse the flash fixture shape: completed task, ME unchanged
+printf '2026-09-24T18:03:06+00:00 bmc bios-update[812]: host state after power-on: Off\n' >> "$work/j.mixed"
+run vlists
+v=$(echo "$out" | grep '"phase": *"verdict"')
+if [ $rc -eq 0 ] && echo "$v" | python3 -c 'import sys,json; d=json.load(sys.stdin); assert len(d["power_control"])==1; assert len(d["entity_manager"])==2; assert all("bios-update[" in l for l in d["lines"])'; then
+    ok "flash verdict carries power_control / entity_manager; verdict lines stay bios-update only"
+else bad "flash verdict carries power_control / entity_manager; verdict lines stay bios-update only"; fi
 
 echo "---"; echo "pass=$pass fail=$fail"
 [ $fail -eq 0 ]

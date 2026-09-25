@@ -138,5 +138,36 @@ else
 fi
 unset FIX_NOW FIX_JOURNAL FIX_CMDLOG
 
+ok()  { pass=$((pass+1)); echo "ok   $1"; }
+bad() { fail=$((fail+1)); echo "FAIL $1"; }
+
+# ── watch: read-only observation of the boot in progress (operator ruling O8) ──
+wrun() {  # wrun <name> -- sets $out $rc
+    export FIX_CMDLOG="$work/wcmd.$1"; : > "$FIX_CMDLOG"
+    out=$(FLAX_BMC_REMOTE_EXEC="$work/stub" FLAX_BOOT_WINDOW=2 FLAX_POLL_INTERVAL=0 \
+          "$work/bin" watch 10.0.0.1 2>/dev/null); rc=$?
+}
+never_requested() { ! grep -q 'RequestedHostTransition' "$FIX_CMDLOG"; }
+
+FIX_STATE_WORD=On FIX_PWROK=hi FIX_CODES="1 2 255" wrun w1
+if [ $rc -eq 0 ] && echo "$out" | grep -q '"outcome":"bios_executing"' && never_requested; then
+    ok "watch: host on with a non-FF code is bios_executing, and no power request is ever sent"
+else bad "watch: host on with a non-FF code is bios_executing, and no power request is ever sent"; fi
+
+FIX_STATE_WORD=On FIX_PWROK=hi FIX_CODES="255" wrun w2
+if [ $rc -eq 0 ] && echo "$out" | grep -q '"outcome":"no_bios_executing"' && never_requested; then
+    ok "watch: rails up, only 0xFF after the window is no_bios_executing"
+else bad "watch: rails up, only 0xFF after the window is no_bios_executing"; fi
+
+FIX_STATE_WORD=On FIX_PWROK=lo FIX_CODES="1 2 3" wrun w3
+if [ $rc -eq 0 ] && echo "$out" | grep -q '"outcome":"power_good_failed"' && never_requested; then
+    ok "watch: stale cycle codes with PWROK lo are not executing (power_good_failed)"
+else bad "watch: stale cycle codes with PWROK lo are not executing (power_good_failed)"; fi
+
+FIX_STATE_WORD=Off wrun w4
+if [ $rc -eq 1 ] && [ "$out" = '{"error":"host_off"}' ] && never_requested; then
+    ok "watch: a host that is off is host_off (no outcome key, no power request)"
+else bad "watch: a host that is off is host_off (no outcome key, no power request)"; fi
+
 echo "passed=$pass failed=$fail"
 [ "$fail" -eq 0 ]

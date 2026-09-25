@@ -13,6 +13,10 @@
 #       -> {"busy":bool,"reason":...,"task_id":...,...}; exit 0 idle, 3 busy
 #   bios-fw-update flash <bmc-ip> <artifact-url> [--port <et25b1>]
 #       -> JSON progress lines, then one {"phase":"verdict",...} record
+#   bios-fw-update journal <bmc-ip> <since-epoch>
+#       -> {"phase":"journal","bios_update":[...],"power_control":[...],
+#           "entity_manager":[...]}; exit 0, or {"error":"ssh_unreachable"} exit 1
+#       R4 (09-23 spec §11): the diagnosis reads these BEFORE any recovery action.
 #
 # Exit codes: 0 the BMC job completed (read the verdict for what that means);
 #             1 failure; 2 usage; 3 INTERLOCK -- nothing was pushed.
@@ -155,6 +159,49 @@ if latest and now - latest[0] < quiet:
 print(json.dumps({"busy": False, "reason": "idle"}))'
 }
 
+# One regex for every journal read: bios-update, power-control and the
+# EntityManager family. Classification into lists happens in python so a stub
+# (which cannot run the remote grep) exercises the same code.
+JOURNAL_RE='bios-update\[|power-control\[|PowerControl|entity-manager\[|EntityManager|fru-device\['
+journal_split() {  # stdin: journal lines -> the three-list JSON object body (no braces)
+    python3 -c '
+import sys, json
+bu, pc, em, inv = [], [], [], []
+in_inv = False
+for l in sys.stdin:
+    l = l.rstrip()
+    if not l or l == "JOURNAL_END":
+        continue
+    if l == "EM_INVENTORY":
+        in_inv = True
+        continue
+    if in_inv:
+        if l.startswith("/xyz/openbmc_project/inventory/system/"):
+            inv.append(l[len("/xyz/openbmc_project/inventory/system/"):])
+        continue
+    if "bios-update[" in l:
+        bu.append(l[-200:])
+    elif "power-control[" in l or "PowerControl" in l:
+        pc.append(l[-200:])
+    elif "entity-manager[" in l or "EntityManager" in l or "fru-device[" in l:
+        em.append(l[-200:])
+print(json.dumps({"bios_update": bu[-40:], "power_control": pc[-40:],
+                  "entity_manager": em[-40:], "em_inventory": inv})[1:-1])'
+}
+journal_fetch() {  # journal_fetch <ip> <since> -> raw lines + JOURNAL_END; rc 1 if unreachable
+    local out
+    out=$(bmc "$1" "journalctl --no-pager -o short-iso --since @$2 2>/dev/null | grep -E '$JOURNAL_RE' | grep -v 'Processing blocks'; echo EM_INVENTORY; busctl tree --list xyz.openbmc_project.EntityManager 2>/dev/null | grep /inventory/system/; echo JOURNAL_END" 2>/dev/null)
+    case "$out" in *JOURNAL_END*) printf '%s\n' "$out"; return 0 ;; esac
+    return 1
+}
+cmd_journal() {
+    local ip="$1" since="$2" raw
+    if ! raw=$(journal_fetch "$ip" "$since"); then
+        printf '{"error":"ssh_unreachable"}\n'; return 1
+    fi
+    printf '{"phase":"journal",%s}\n' "$(printf '%s\n' "$raw" | journal_split)"
+}
+
 # A local lock as well, so two callers on THIS host never race the Redfish check.
 take_lock() {
     local ip="$1" dir="$LOCK_DIR"
@@ -254,12 +301,15 @@ except Exception: print("", 0)')
     done
 
     # The journal, NOW, before it rolls: bios-update's lines plus flashcp's
-    # "diff blocks" (logged under bios-update[<flashcp pid>]).
-    local jl
-    jl=$(bmc "$ip" "journalctl --no-pager -o short-iso --since @${t0} 2>/dev/null | grep -E 'bios-update\\[' | grep -v 'Processing blocks'" 2>/dev/null)
+    # "diff blocks" (logged under bios-update[<flashcp pid>]), plus the
+    # power-control / EntityManager lists R4 needs for diagnosis.
+    local raw jl lists
+    raw=$(journal_fetch "$ip" "$t0") || raw=""
+    jl=$(printf '%s\n' "$raw" | grep -F 'bios-update[')
+    lists=$(printf '%s\n' "$raw" | journal_split)
 
     local verdict
-    verdict=$(printf '%s' "$jl" | PORT="$port" TASK="$task" python3 -c '
+    verdict=$(printf '%s' "$jl" | PORT="$port" TASK="$task" LISTS="$lists" python3 -c '
 import sys, json, os, re
 lines = [l.rstrip() for l in sys.stdin if l.strip()]
 txt = "\n".join(lines)
@@ -277,10 +327,13 @@ elif me:                                   ending = "me_changed_no_cycle"
 elif hs and "Off" not in hs and hs != "unknown": ending = "booted"
 elif has("host did not come up"):          ending = "poweron_failed"
 else:                                      ending = "unknown"
-print(json.dumps({"phase": "verdict", "port": os.environ.get("PORT", ""),
-                  "task_id": os.environ.get("TASK", ""), "ending": ending,
-                  "me_changed": me, "diff_blocks": diff, "host_state_after_poweron": hs,
-                  "errors": err[-3:], "lines": [l[-200:] for l in lines[-40:]]}))')
+d = {"phase": "verdict", "port": os.environ.get("PORT", ""),
+     "task_id": os.environ.get("TASK", ""), "ending": ending,
+     "me_changed": me, "diff_blocks": diff, "host_state_after_poweron": hs,
+     "errors": err[-3:], "lines": [l[-200:] for l in lines[-40:]]}
+d.update(json.loads("{" + os.environ.get("LISTS", "") + "}"))
+d.pop("bios_update", None)
+print(json.dumps(d))')
 
     local ending
     ending=$(printf '%s' "$verdict" | python3 -c 'import sys, json; print(json.load(sys.stdin)["ending"])')
@@ -309,5 +362,6 @@ case "${1:-}" in
     version) [ $# -eq 2 ] || { echo "usage: bios-fw-update version <bmc-ip>" >&2; exit 2; }; cmd_version "$2" ;;
     busy)    [ $# -eq 2 ] || { echo "usage: bios-fw-update busy <bmc-ip>" >&2; exit 2; }; cmd_busy "$2" ;;
     flash)   [ $# -ge 3 ] || { echo "usage: bios-fw-update flash <bmc-ip> <artifact-url> [--port P]" >&2; exit 2; }; shift; cmd_flash "$@" ;;
-    *) echo "usage: bios-fw-update {version|busy|flash} ..." >&2; exit 2 ;;
+    journal) [ $# -eq 3 ] || { echo "usage: bios-fw-update journal <bmc-ip> <since-epoch>" >&2; exit 2; }; cmd_journal "$2" "$3" ;;
+    *) echo "usage: bios-fw-update {version|busy|flash|journal} ..." >&2; exit 2 ;;
 esac
