@@ -421,9 +421,10 @@ fi
 ps_begin poweroff
 ps_done
 ps_finish POWER-OFF "$donemsg"
-# Give the final frame time to reach SOL: without this the power cut beat the
-# repaint and the last thing SOL ever showed was "RUNNING dump" (et24b3).
-sleep 3
+# Flush, don't guess: wait for the final frame to leave the SOL UART, then
+# sync. Without it the power cut beat the repaint and the last thing SOL ever
+# showed was "RUNNING dump" (et24b3). Capped at 5s.
+ps_flush
 if [ $ipmigood -eq 1 ]; then
     echo "using IPMI to power off."
     ipmitool chassis power off

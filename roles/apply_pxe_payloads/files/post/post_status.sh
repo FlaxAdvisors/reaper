@@ -73,3 +73,16 @@ function ps_skip()   { local rc=$?; _ps skip "$@";   return $rc; }   # <stage> <
 function ps_state()  { local rc=$?; _ps state "$@";  return $rc; }   # <STATE> <text>
 function ps_set()    { local rc=$?; _ps set "$@";    return $rc; }   # <key> <value>
 function ps_finish() { local rc=$?; _ps finish "$@"; return $rc; }   # <STATE> <text>
+
+# The final frame must reach SOL before the power cut: wait for the SOL UART
+# to send it (post_status.py flush, capped at 5s), then sync. No serial
+# console -> just sync.
+function ps_flush()
+{
+    local rc=$?
+    if [ "$_ps_on" = 1 ] && [ -n "$_ps_tty" ]; then
+        "$_ps_python" "$_ps_dir/post_status.py" flush "$_ps_tty" >/dev/null 2>&1
+    fi
+    sync >/dev/null 2>&1
+    return $rc
+}

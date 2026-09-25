@@ -16,12 +16,15 @@ Spec: reaper-devel docs/superpowers/specs/2026-09-25-post-sol-status-banner-desi
 """
 import json
 import os
+import re
+import subprocess
 import sys
 import time
 
 JSON_PATH = os.environ.get("POST_STATUS_JSON", "/run/flax/post-status.json")
 ISSUE_PATH = os.environ.get("POST_STATUS_ISSUE", "/run/issue.d/flax-post.issue")
 HOOK_DIR = os.path.dirname(os.path.abspath(__file__))
+SERIAL_INFO = os.environ.get("POST_SERIAL_INFO", "/proc/tty/driver/serial")
 
 STAGES = {
     "inventory": ["boot", "clock", "ipmi", "biosgate", "nicfw", "biosfw",
@@ -36,8 +39,7 @@ HELD = {"REBOOTING", "POWER-OFF", "DONE", "FAILED", "WAITING"}
 MARK = {"pending": "[ ]", "running": "[>]", "done": "[x]",
         "skipped": "[-]", "failed": "[!]"}
 IPMI = {None: "unknown", 0: "none", 1: "ipmi ok", 2: "ipmi (mono lake, no cfg)"}
-WIDTH = 62
-CELL = 13
+WIDTH = 66
 CLOCK = "(redrawn \\d \\t UTC -- refreshes every 20s)"
 
 
@@ -115,16 +117,13 @@ def render(st, issue=False):
     title = " FLAX POST -- %s " % clean(st["action"]).upper()
     pad = max(0, WIDTH - len(title))
     out = ["=" * (pad // 2) + title + "=" * (pad - pad // 2)]
-    row = "  "
-    for s in st["stages"]:
-        # +" ": a name that fills the cell must still leave a gap.
-        cell = ("%s %s " % (MARK.get(s["state"], "[?]"), clean(s["name"]))).ljust(CELL)
-        if len(row) + len(cell) > WIDTH and row.strip():
-            out.append(row.rstrip())
-            row = "  "
-        row += cell
-    if row.strip():
-        out.append(row.rstrip())
+    # A fixed grid: every cell as wide as the longest "[x] name" plus a gap,
+    # so the marks line up in columns on every row (operator, 2026-09-25).
+    cells = ["%s %s" % (MARK.get(s["state"], "[?]"), clean(s["name"])) for s in st["stages"]]
+    width = max(len(c) for c in cells) + 2 if cells else 1
+    per_row = max(1, (WIDTH - 2) // width)
+    for i in range(0, len(cells), per_row):
+        out.append(("  " + "".join(c.ljust(width) for c in cells[i:i + per_row])).rstrip())
     out.append("")
     out.append("  Node:      %s   MAC %s" % (clean(st["host"] or "?"), clean(st["mac"] or "?")))
     out.append("  BMC:       %s" % IPMI.get(st["ipmigood"], clean(st["ipmigood"])))
@@ -193,6 +192,52 @@ def _finish_stage(st, state, detail):
     st["note"] = ""
 
 
+def _tx(n):
+    try:
+        with open(SERIAL_INFO) as f:
+            for line in f:
+                if line.startswith("%s:" % n):
+                    m = re.search(r" tx:(\d+)", line)
+                    return int(m.group(1)) if m else None
+    except OSError:
+        pass
+    return None
+
+
+def flush(tty):
+    """Hold the power-off until the final frame has left the SOL UART.
+
+    Baseline the port's tx counter, trigger the repaint, then wait for tx to
+    move (agetty writing) and hold still for SETTLE (the UART drained). A
+    sleep only guessed: on et24b3 the power cut beat the repaint and the last
+    frame SOL ever showed was "RUNNING dump". Capped at POST_FLUSH_MAX (5s),
+    so a stalled port -- or a logged-in operator, where no getty repaints --
+    never holds the power-off for long."""
+    n = tty[4:] if tty.startswith("ttyS") else ""
+    cap = float(os.environ.get("POST_FLUSH_MAX", "5"))
+    settle, poll = 0.5, 0.1
+    start = time.monotonic()
+    last = _tx(n)
+    if last is None:
+        return 0
+    try:
+        subprocess.run([os.environ.get("POST_AGETTY", "agetty"), "--reload"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    moved, still_since = False, time.monotonic()
+    while time.monotonic() - start < cap:
+        time.sleep(poll)
+        cur = _tx(n)
+        if cur is None:
+            return 0
+        if cur != last:
+            moved, last, still_since = True, cur, time.monotonic()
+        elif moved and time.monotonic() - still_since >= settle:
+            return 0
+    return 0
+
+
 def main(argv):
     if not argv:
         print(__doc__)
@@ -210,6 +255,8 @@ def main(argv):
             if not watch:
                 return 0
             time.sleep(5)
+    if cmd == "flush":
+        return flush(args[0] if args else "")
     if cmd == "init":
         save(_new(args[0], args[1], args[2]))
         return 0
