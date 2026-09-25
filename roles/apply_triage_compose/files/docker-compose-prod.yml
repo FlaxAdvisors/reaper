@@ -115,6 +115,14 @@ services:
       context: .
       dockerfile: services/api/Dockerfile
     command: python -m bmcfw.worker
+    # PID 1 is the python worker, which does NOT reap orphaned children. The
+    # fw bins' rf() passes the netrc as `--netrc-file <(printf ...)`; inside
+    # `r=$(rf ...)` bash execs curl and the procsub child reparents to PID 1,
+    # one <defunct> bmc-fw-update per Redfish call. 2026-09-25 that filled the
+    # container's pids (8601), forks failed, `bmc-fw-update version` returned
+    # "" with rc 0, and 12 Phosphor blades were latched target_mismatch (OEM).
+    # A real init (tini) reaps them. Same pattern as server above.
+    init: true
     restart: always
     network_mode: host
     env_file:
@@ -153,6 +161,8 @@ services:
       context: .
       dockerfile: services/api/Dockerfile
     command: python -m biosfw.worker
+    # Same orphan-reaping need as bmc_fw above (bios-fw-update has the same rf()).
+    init: true
     restart: always
     network_mode: host
     env_file:
