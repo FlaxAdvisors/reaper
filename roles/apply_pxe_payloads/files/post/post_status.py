@@ -157,6 +157,21 @@ def _write(path, text):
         pass            # each surface fails alone; the others still land
 
 
+def _logdir_blob(st, blob):
+    """The logdir copy is what the final rsync carries to
+    /export/nodes/post-<mac>/<stamp>/. The last one written before the rsync
+    is `begin dump`'s, so verbatim it would say RUNNING/dump on every
+    finished run. Once the dump is under way it says DELIVERED instead: the
+    results reached the bang, and the node went on to ident + power off."""
+    if st["stage"] != "dump" or not any(
+            s["name"] == "dump" and s["state"] == "running" for s in st["stages"]):
+        return blob
+    shipped = dict(st, state="DELIVERED",
+                   text="results delivered to the bang at %s; the node then "
+                        "identifies and powers off." % st["ts"])
+    return json.dumps(shipped, indent=None, separators=(",", ":")) + "\n"
+
+
 def save(st):
     now = _now()
     st["ts"] = _iso(now)
@@ -165,7 +180,7 @@ def save(st):
     blob = json.dumps(st, indent=None, separators=(",", ":")) + "\n"
     _write(JSON_PATH, blob)
     if st.get("logdir"):
-        _write(os.path.join(st["logdir"], "post-status.json"), blob)
+        _write(os.path.join(st["logdir"], "post-status.json"), _logdir_blob(st, blob))
     _write(ISSUE_PATH, render(st, issue=True))
 
 
