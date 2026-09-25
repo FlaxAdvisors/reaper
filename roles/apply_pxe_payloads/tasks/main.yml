@@ -126,6 +126,41 @@
   loop: "{{ post_build_binaries }}"
   tags: [post_tgz]
 
+# post_status.sh (the SOL banner) re-uses the mezz-flash station's two serial
+# helpers verbatim -- one copy in the repo, assembled into post.tgz here.
+- name: Copy the SOL console helpers shared with the mezz-flash station into the build dir
+  become: true
+  ansible.builtin.copy:
+    src: "{{ role_path }}/../../scripts/unlock-with-ubuntu/payload/{{ item }}"
+    dest: "{{ post_build_dir }}/{{ item }}"
+    mode: "0755"
+  loop:
+    - serial_console_fixup.sh
+    - serial_watchdog.sh
+  tags: [post_tgz]
+
+# The live ISO has no setserial, and the UART re-probe needs it (Leopard SOL
+# UART comes up uart:unknown on ~half of boots). The bang's (setserial-2.17,
+# libc only) was proven on the ISO on et24b3, 2026-09-25.
+- name: Copy setserial from the bang into the build dir (the live ISO has none)
+  become: true
+  ansible.builtin.copy:
+    src: /usr/bin/setserial
+    dest: "{{ post_build_dir }}/setserial"
+    remote_src: true
+    mode: "0755"
+  tags: [post_tgz]
+
+# post_status.sh reports this as the JSON's `bundle`, so a status can be tied
+# to the post.sh that produced it.
+- name: Stamp the build (post_status reports it as bundle)
+  become: true
+  ansible.builtin.copy:
+    content: "{{ lookup('pipe', 'git -C ' + role_path + ' rev-parse --short HEAD') }}{{ '-dirty' if lookup('pipe', 'git -C ' + role_path + ' status --porcelain') else '' }}@{{ lookup('pipe', 'date -u +%Y%m%dT%H%M%SZ') }}\n"
+    dest: "{{ post_build_dir }}/BUILD"
+    mode: "0644"
+  tags: [post_tgz]
+
 - name: Build {{ apply_pxe_payloads_pxe_root }}/post.tgz
   become: true
   ansible.builtin.command:
