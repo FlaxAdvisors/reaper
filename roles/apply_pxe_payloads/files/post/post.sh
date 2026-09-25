@@ -15,6 +15,11 @@ action=$(sed -n '/postaction=/p' /proc/cmdline |sed -re 's/^.*postaction=(\S+).*
 
 echo "Live ISO boot to do: $action"
 
+# Live status on SOL + /run/flax/post-status.json (post_status.sh). A view,
+# never the job: every ps_* call hands back the $? it was called with.
+. "$(dirname "$0")/post_status.sh"
+ps_init "$action"
+
 # postautomate: launch the free-running qualification agent (Wave 4) in its OWN
 # transient systemd unit, then stop. banghook.service is Type=oneshot with no
 # RemainAfterExit, so its cgroup (and any bare `&`/nohup child) is torn down the
@@ -26,6 +31,7 @@ echo "Live ISO boot to do: $action"
 # polls; logs -> `journalctl -u flax-qual-agent`.
 if [ "$action" == "postautomate" ]; then
     echo "Launching flax qualification agent (postautomate)"
+    ps_begin agent "flax-qual-agent"
     agent_dir="$(cd "$(dirname "$0")" && pwd)"
     systemctl reset-failed flax-qual-agent 2>/dev/null || true
     systemctl stop flax-qual-agent 2>/dev/null || true
@@ -33,13 +39,17 @@ if [ "$action" == "postautomate" ]; then
         --working-directory="$agent_dir" \
         --property="EnvironmentFile=-$agent_dir/flax-qual.env" \
         python3 qual_agent.py
+    ps_finish WAITING "flax-qual-agent running -- progress is on the post UI."
     exit 0
 fi
 
+ps_begin clock "chronyd + hwclock"
 # set the system date via NTP/Chrony
 chronyd -q 'pool pool.ntp.org iburst'
 hwclock --systohc
+ps_done
 
+ps_begin ipmi "dmidecode + openipmi"
 # Get the level of IPMI support the system has (if any)
 ipmigood=0
 manufacturer=$(dmidecode -s system-manufacturer|tr '[:upper:]' '[:lower:]')
@@ -72,17 +82,20 @@ elif [[ $system =~ opensuse ]] ; then
 else
     echo "Not ubuntu or opensuse... skipping IPMI"
 fi
+ps_set ipmigood "$ipmigood"
 
 # use BOOTIF MAC for identity when collecting system data
 mac=$(cat /proc/cmdline|sed -re 's/^.*BOOTIF=01-([^ ]+).*$/\1/' | tr -d '-')
 if [ -z "$mac" ]; then
     mac=$(cat /sys/class/net/*/address | grep -v 00:00:00:00:00:00 | sort -V | head -n1|tr -d ':')
 fi
+ps_set mac "$mac"
 
 stamp=$(date  +"%Y%m%d_%H%M%S")
 macdir=/tmp/post-${mac}
 logdir=${macdir}/$stamp
 [ -d $logdir ] || mkdir -p $logdir
+ps_set logdir "$logdir"
 
 dst="root@bang"
 dstdir="${dst}:/export/nodes/."
@@ -96,11 +109,13 @@ if [ $action == "cfgipmi" ] || [ $action == "inventory" ]; then
         ipmitool chassis identify 180
     fi
 fi
+ps_done "ipmigood=$ipmigood"
 
 # we're ready to exit for BOTH "cfgipmi" and "liveboot" actions
 # to leave the node up for more operations and fun
 if [ $action == "cfgipmi" ] || [ $action == "liveboot" ]; then
     echo "Live boot tasks complete. Hanging out for SSH or perf tests."
+    ps_finish WAITING "live boot tasks done -- up for ssh."
     exit 0
 fi
 
@@ -127,16 +142,32 @@ if [ $action == "inventory" ]; then
     # the next boot to collect inventory with the NEW BIOS already in place.
     # Never fatal: no agent / no answer / unreadable version all fall through.
     if [ -n "$tioga" ]; then
+        ps_begin biosgate "bios_gate_report.sh"
+        ps_state POWER-OFF "biosgate: may power off for a BIOS flash -- not a crash."
         ./bios_gate_report.sh || true
+        ps_done
+    else
+        ps_skip biosgate "not Tioga Pass"
     fi
     if [ -n "$leopard" ] || [ -n "$tioga" ]; then
         # update subset of mellanox nics (per-card PSID->image)
+        ps_begin nicfw "update_mellanox.sh"
+        ps_state REBOOTING "nicfw: may reset or reboot after flashing a NIC -- not a crash."
         ./update_mellanox.sh
         sleep 5
+        ps_done
         if [ -n "$leopard" ] && [ -n "$quanta" ]; then
+            ps_begin biosfw "update_quanta_leopard.sh $biosver"
+            ps_state REBOOTING "biosfw: reboots if it flashes the BIOS -- not a crash."
             ./update_quanta_leopard.sh $biosver
             # this reboots if update was performed
+            ps_done
+        else
+            ps_skip biosfw "not a Quanta Leopard"
         fi
+    else
+        ps_skip nicfw "not Leopard/Tioga Pass"
+        ps_skip biosfw "not a Quanta Leopard"
     fi
 fi
 # continue for inventory and memtest
@@ -144,6 +175,7 @@ htmlnow=""
 dimmdir="/srv/www/htdocs/dimm"
 mtdir="/mnt/EFI/BOOT"
 if [ $action == "memtest" ]; then
+    ps_begin memtest "recover memtest results from USB"
 
     # this is the dest dir for the rsync
     dstdir="${dst}:${dimmdir}/."
@@ -201,7 +233,10 @@ if [ $action == "memtest" ]; then
     #
     [ -d $macdir/states/memtestnext ] || mkdir -p $macdir/states/memtestnext
     touch $macdir/states/memtestnext/yes
+    ps_done
+    ps_begin ident "chassis identify force"
     ipmitool chassis identify force
+    ps_done
 else
 
 # AMI BIOS leopard specific config dump
@@ -209,6 +244,7 @@ else
 
 # amtinventory will do all of the following 
 # get nic info and link up early to allow time for LLDP neighbor info
+ps_begin inventory "nics + lldp (1 of 6)"
 for dev in /sys/class/net/*
 do
     dev=$(basename $dev)
@@ -219,15 +255,19 @@ do
     systemctl start lldpd
 done
 
+ps_note "hostname, blkid, dmesg, dmidecode (2 of 6)"
 hostname > $logdir/hostname.txt
 blkid 2>&1 > $logdir/blkid.txt
 dmesg > $logdir/dmesg.txt
 dmidecode 2>&1 > $logdir/dmidecode.txt
+ps_note "hwinfo (3 of 6)"
 hwinfo --arch --bios --block --bridge --cdrom --cpu --disk --framebuffer --gfxcard --hub --ide --keyboard --memory --mmc-ctrl --monitor --mouse --netcard --network --partition --pci --pcmcia --pcmcia-ctrl --scsi --smp --storage-ctrl --sys --tape --tv --uml --usb --usb-ctrl --vbe --wlan --xen --zip 2>&1 > $logdir/hwinfo.txt
+ps_note "ipmitool fru, sdr (4 of 6)"
 if [ $ipmigood -ge 1 ]; then
     ipmitool fru 2>&1 > $logdir/ipmitool_fru.txt
     ipmitool sdr elist 2>&1 > $logdir/ipmitool_sdr_elist.txt
 fi
+ps_note "ipmitool mc, sel, lan, user, sensor -- sel can take long on a flooded SEL (5 of 6)"
 if [ $ipmigood -eq 1 ]; then
     ipmitool mc info 2>&1 > $logdir/ipmitool_mc_info.txt
     ipmitool sel elist 2>&1 > $logdir/ipmitool_sel_elist.txt
@@ -236,6 +276,7 @@ if [ $ipmigood -eq 1 ]; then
     ipmitool lan print 8 2>&1 > $logdir/ipmitool_lan_print_8.txt
     ipmitool sensor list all 2>&1 > $logdir/ipmitool_sensor_list_all.txt
 fi
+ps_note "lldp, lsblk, lscpu, lspci, lsusb, lsscsi, ip, /proc (6 of 6)"
 lldpcli show neigh 2>&1 > $logdir/lldpcli-show-neigh.txt
 lsblk 2>&1 > $logdir/lsblk.txt
 lscpu 2>&1 > $logdir/lscpu.txt
@@ -267,16 +308,21 @@ cat /proc/scsi/scsi 2>&1 > $logdir/scsi.txt
 # Best-effort on purpose: a DUT that cannot reach the bang must still complete
 # its inventory, so on failure fall back to the copies post.tgz bundles
 # alongside this script -- which is exactly the six tools invoked below.
+ps_done
+ps_begin binrefresh "rsync /opt/flax/bin from the bang"
 mkdir -p /opt/flax/bin
 if ! rsync -a --timeout=20 \
         -e "ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10" \
         ${dst}:/opt/flax/bin/ /opt/flax/bin/ ; then
     echo "post.sh: bin refresh from ${dst} failed -- falling back to the post.tgz bundle"
+    ps_note "bang unreachable -- using the post.tgz copies"
     for b in macinv dimmerr dimmsum lsnet alldisks bootorder ; do
         [ -f "$(dirname "$0")/$b" ] && install -m 0755 "$(dirname "$0")/$b" /opt/flax/bin/
     done
 fi
+ps_done
 
+ps_begin tools "dimmsum (1 of 7)"
 /opt/flax/bin/dimmsum     2>&1 > $logdir/dimmsum.txt
 # dimmsum is DIMM *inventory* (size/locator/mfg/serial/part/speed from
 # dmidecode); dimmerr is DIMM *health* -- per-DIMM EDAC correctable and
@@ -287,18 +333,27 @@ fi
 # Degrades quietly: no EDAC nodes under /sys (module not loaded, or a platform
 # EDAC does not cover) means the glob matches nothing and the file is empty --
 # the same "absent, not healthy" signal an empty smartctl--all.txt carries.
+ps_note "dimmerr (2 of 7)"
 /opt/flax/bin/dimmerr     2>&1 > $logdir/dimmerr.txt
+ps_note "alldisks (3 of 7)"
 /opt/flax/bin/alldisks -v 2>&1 > $logdir/alldisks-v.txt
+ps_note "lsnet (4 of 7)"
 /opt/flax/bin/lsnet       2>&1 > $logdir/lsnet.txt
+ps_note "bootorder (5 of 7)"
 /opt/flax/bin/bootorder   2>&1 > $logdir/bootorder.txt
+ps_note "collect_mellanox (6 of 7)"
 ./collect_mellanox.sh $logdir
 
+ps_note "smartctl (7 of 7)"
 for dev in $(smartctl --scan | cut -d' ' -f1)
 do
     smartctl --all $dev
 done > $logdir/smartctl--all.txt
+ps_done
 
+ps_begin ident "chassis identify 180"
 ipmitool chassis identify 180
+ps_done
 
 fi # end of if memtest else clause (inventory section)
 
@@ -332,7 +387,12 @@ if [ $action == "memtest" ]; then
     fi
 fi
 journalctl -la -u banghook > $logdir/banghook.log
-rsync -SHAXav $macdir $dstdir
+ps_begin dump "rsync to bang:/export/nodes"
+if rsync -SHAXav $macdir $dstdir; then
+    ps_done
+else
+    ps_fail "rsync to the bang failed (rc $?) -- results are only on this node"
+fi
 
 ## + chown -R root:root .ssh
 ## chown: cannot access '.ssh': No such file or directory
@@ -346,6 +406,9 @@ rsync -SHAXav $macdir $dstdir
 ## + '[' 1 -ne 0 ']'
 ## + ipmitool chassis identify 180
 
+ps_begin poweroff
+ps_done
+ps_finish POWER-OFF "$action done -- powering off."
 if [ $ipmigood -eq 1 ]; then
     echo "using IPMI to power off."
     ipmitool chassis power off
