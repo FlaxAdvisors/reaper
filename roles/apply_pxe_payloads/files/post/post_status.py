@@ -113,7 +113,8 @@ def render(st, issue=False):
     out = ["=" * (pad // 2) + title + "=" * (pad - pad // 2)]
     row = "  "
     for s in st["stages"]:
-        cell = ("%s %s" % (MARK.get(s["state"], "[?]"), clean(s["name"]))).ljust(CELL)
+        # +" ": a name that fills the cell must still leave a gap.
+        cell = ("%s %s " % (MARK.get(s["state"], "[?]"), clean(s["name"]))).ljust(CELL)
         if len(row) + len(cell) > WIDTH and row.strip():
             out.append(row.rstrip())
             row = "  "
