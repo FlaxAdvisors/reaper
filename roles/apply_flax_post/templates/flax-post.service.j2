@@ -11,7 +11,8 @@ EnvironmentFile=/etc/flax/flax-post/flax-post.env
 # VIP-gate — bash one-liner (no container spin-up) so the gate adds <100ms.
 ExecStartPre=/bin/bash -c '. /etc/flax/site.env && ip -o -4 addr | grep -qE " $${MGMT_VIP}/"'
 {# Mounts below for post-UI actions (PWR/IDNT/INV/POP): ghost helpers self-load BMC creds,
-   viewer shells ghost powertriage/identtriage/macinv binaries, and reads recon dumps. #}
+   viewer shells ghost powertriage/identtriage binaries. INV/POP read only the run's DB
+   artifacts (macinv runs on the blade), so no /export/nodes mount. #}
 ExecStart=/usr/bin/docker run --rm --init --name flax-post \
     --network host \
     --env-file /etc/flax/flax-post/flax-post.env \
@@ -24,7 +25,6 @@ ExecStart=/usr/bin/docker run --rm --init --name flax-post \
     -v /etc/flax/post-geometry.json:/etc/flax/post-geometry.json:ro \
     -v /etc/flax/credentials-bmc.json:/etc/flax/credentials-bmc.json:ro \
     -v /opt/flax/bin:/opt/flax/bin:ro \
-    -v /export/nodes:/export/nodes:ro \
     -v /opt/flax/node_config:/opt/flax/node_config:ro \
     flax-control:${FLAX_POST_IMAGE_TAG} \
     uvicorn flax_post.app:app --host 0.0.0.0 --port {{ apply_flax_post_web_port }} --proxy-headers

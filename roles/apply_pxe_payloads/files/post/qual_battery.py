@@ -189,7 +189,16 @@ def _smartctl_all(runner):
 # /opt/flax/bin, which the agent's systemd-run unit does NOT put on PATH (its PATH is
 # just /usr/{local/,}{s,}bin) -- so the script prepends it, else `macinv` is
 # command-not-found and the dump is silently garbage. hwinfo here is a fast subset
-# (macinv only reads its Ethernet controllers); the full hwinfo is a separate artifact.
+# for the count form; the full hwinfo is a separate artifact.
+#
+# The same materialized dir then gives macinv's DETAIL form (`-v`, serials and
+# versions per part), uploaded as `macinv-v` for the flax_post INV modal, after a
+# marker line so one run of the script (one hardware collection) yields both. The
+# count form is emitted first and byte-for-byte as before. The detail form's
+# storage/GPU/controller tables read hwinfo Disk entries the subset lacks, so when
+# the caller hands in the full hwinfo capture ($1) it replaces the subset before
+# the -v call -- after the count form, which therefore never changes.
+MACINV_V_MARKER = "===flax-macinv-v==="
 _MACINV_SH = r"""set -e
 export PATH="/opt/flax/bin:$PATH"
 mac=$(sed -rn 's/.*BOOTIF=01-([0-9A-Fa-f-]+).*/\1/p' /proc/cmdline | tr -d - | tr 'A-F' 'a-f')
@@ -206,11 +215,39 @@ lldpcli show neigh                                       > "$d/inv/lldpcli-show-
 for i in /sys/class/net/*; do n=${i##*/}; [ "$n" = lo ] && continue; ethtool -i "$n" > "$d/inv/ethtool-i_$n.txt" 2>&1 || true; done
 ln -sfn inv "$d/latest"
 macinv -p "$d"
-"""
+if [ -n "${1:-}" ] && [ -s "$1" ]; then cp "$1" "$d/inv/hwinfo.txt"; fi
+echo "@MACINV_V_MARKER@"
+macinv -p "$d" -v
+""".replace("@MACINV_V_MARKER@", MACINV_V_MARKER)
 
 
-def _macinv_population(runner):
-    return _cap(runner, ["bash", "-c", _MACINV_SH], 180)
+def _split_macinv(out):
+    """(count form, detail form or None) from the script's output. No marker
+    line (the script stopped before the detail form) -> all of it is the count
+    form, as before, and there is no detail form."""
+    mark = MACINV_V_MARKER + "\n"
+    i = 0 if out.startswith(mark) else out.find("\n" + mark)
+    if i < 0:
+        return out, None
+    if i > 0:
+        i += 1
+    return out[:i], out[i + len(mark):]
+
+
+def _macinv_forms(runner, hwinfo_full=None):
+    """Run _MACINV_SH once: (count form, detail form or None)."""
+    import os, tempfile
+    argv, path = ["bash", "-c", _MACINV_SH], None
+    if hwinfo_full:
+        fd, path = tempfile.mkstemp(prefix="hwinfo-full-")
+        with os.fdopen(fd, "w") as f:
+            f.write(hwinfo_full)
+        argv += ["macinv-sh", path]
+    try:
+        return _split_macinv(_cap(runner, argv, 180))
+    finally:
+        if path:
+            os.unlink(path)
 
 
 def _inventory(runner):
@@ -219,7 +256,10 @@ def _inventory(runner):
         arts[name] = (kind, _cap(runner, argv, 120))
     arts["smartctl-all"] = ("raw", _smartctl_all(runner))
     _cap(runner, ["./collect_mellanox.sh", "."], 120)               # writes mstflint-d_*_query.txt
-    arts["macinv"] = ("digest", _macinv_population(runner))         # population count-form (design §5.6)
+    count, detail = _macinv_forms(runner, (arts.get("hwinfo") or ("raw", ""))[1])
+    arts["macinv"] = ("digest", count)                              # population count-form (design §5.6)
+    if detail is not None:
+        arts["macinv-v"] = ("digest", detail)                       # detail form -> flax_post INV modal
     return {"verdict": "pass", "summary": {"tools": len(arts)}, "artifacts": arts}
 
 

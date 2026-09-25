@@ -172,8 +172,11 @@
         <div v-else-if="modal?.kind==='inv'">
           <p class="pending-note" v-if="invLoading || !inv">loading…</p>
           <p class="pending-note" v-else-if="!inv.present && inv.error">inventory fetch failed ({{inv.error}})</p>
-          <p class="pending-note" v-else-if="!inv.present">inventory not captured (no /export dump for this blade yet)</p>
+          <p class="pending-note" v-else-if="!inv.present && inv.reason==='no run'">no run yet</p>
+          <p class="pending-note" v-else-if="!inv.present">inventory unavailable ({{inv.reason||'?'}})</p>
           <div v-else>
+            <p class="m-sub" :title="'run '+inv.run_id">run <span class="mono">{{(inv.run_id||'').slice(0,8)}}</span> · captured {{inv.captured_at||'?'}}</p>
+            <p class="pending-note" v-if="inv.reason">{{inv.reason}}</p>
             <div v-if="inv.sections.cpu && inv.sections.cpu.length">
               <div class="section-l">CPU</div>
               <table class="inv-tbl"><thead><tr><th>Model</th><th>Serial</th></tr></thead>
@@ -233,14 +236,16 @@
               <table class="inv-tbl"><thead><tr><th>Model</th></tr></thead>
                 <tbody><tr v-for="bc in inv.sections.block_ctlr"><td>{{bc.model}}</td></tr></tbody></table>
             </div>
-            <p class="inv-dir">{{inv.dir}}</p>
           </div>
         </div>
         <div v-else-if="modal?.kind==='pop'">
           <p class="pending-note" v-if="invLoading || !inv">loading…</p>
           <p class="pending-note" v-else-if="!inv.present && inv.error">inventory fetch failed ({{inv.error}})</p>
-          <p class="pending-note" v-else-if="!inv.present">inventory not captured (no /export dump for this blade yet)</p>
+          <p class="pending-note" v-else-if="!inv.present && inv.reason==='no run'">no run yet</p>
+          <p class="pending-note" v-else-if="!inv.present">inventory unavailable ({{inv.reason||'?'}})</p>
           <div v-else>
+            <p class="m-sub" :title="'run '+inv.run_id">run <span class="mono">{{(inv.run_id||'').slice(0,8)}}</span> · captured {{inv.captured_at||'?'}}</p>
+            <p class="pending-note" v-if="inv.reason">{{inv.reason}}</p>
             <div v-if="inv.sections.cpu && inv.sections.cpu.length">
               <div class="section-l">CPU ({{inv.sections.cpu.length}})</div>
               <table class="inv-tbl"><thead><tr><th>Model</th><th>Serial</th></tr></thead>
@@ -266,19 +271,12 @@
                 <tbody><tr v-for="s in inv.sections.storage" :class="groupColor(inv.sections.storage,'model',s.model)">
                   <td>{{s.model}}</td><td>{{s.size}}</td></tr></tbody></table>
             </div>
-            <div class="section-l">verdict <span class="dim">{{inv.pop.source==='run' ? ('this run '+(inv.pop.run_id||'').slice(0,8)+' — the capture the pipeline judged') : ('export dump'+(inv.pop.captured ? ' of '+inv.pop.captured : '')+' — no run yet')}}</span></div>
-            <p class="pending-note" v-if="inv.pop.state==='grey'">no population profile in effect / profile not found</p>
+            <div class="section-l">verdict <span class="dim">{{'this run '+(inv.pop.run_id||'').slice(0,8)+' — the capture the pipeline judged'}}</span></div>
+            <p class="pending-note" v-if="inv.pop.state==='grey'">{{inv.pop.reason||'no population profile in effect / profile not found'}}</p>
             <div v-else>
               <span class="pop-badge" :class="inv.pop.state">{{inv.pop.state}}</span>
               <div class="pop-row" v-for="r in inv.pop.results" :class="{bad:!r.ok}">
                 <span>{{r.rule}}</span><span>{{r.found}}</span><span>{{r.ok?'✓':'✗'}}</span>
-              </div>
-            </div>
-            <div v-if="inv.pop_export && inv.pop_export.state!=='grey' && inv.pop_export.state!==inv.pop.state">
-              <div class="section-l">export dump disagrees <span class="dim">recon boot {{inv.pop_export.captured||'?'}} — the INV tables above come from it</span></div>
-              <span class="pop-badge" :class="inv.pop_export.state">{{inv.pop_export.state}}</span>
-              <div class="pop-row" v-for="r in inv.pop_export.results" :class="{bad:!r.ok}" v-if="!r.ok">
-                <span>{{r.rule}}</span><span>{{r.found}}</span><span>✗</span>
               </div>
             </div>
           </div>

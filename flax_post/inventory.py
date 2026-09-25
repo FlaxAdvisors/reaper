@@ -1,12 +1,18 @@
 # flax_post/inventory.py
 """Per-node hardware inventory (INV modal) + population verdict (POP modal).
 
-Both read the per-node recon dump at /export/nodes/post-<host_mac>/latest/*.txt
-(populated by the PXE recon boot, NOT by flax) via the ghost `macinv` CLI.
-`capture()` shells macinv in two forms: the detail (-v) form -> `parse()` ->
-the INV section tables, and the count form -> `verdict()` -> the POP verdict.
-`verdict()` runs the count-form text against a node_config profile via
-flax_post.population -- see verdict() for why the count form (not verbose).
+Both render from the blade's CURRENT RUN. The post agent materializes ghost
+macinv's input dir live on the node and uploads both macinv forms as this
+run's `inventory` artifacts (roles/apply_pxe_payloads/files/post/qual_battery.py
+_MACINV_SH): the detail form `macinv-v` -> `parse()` -> the INV section tables,
+and the count form `macinv` -> `verdict()` -> the POP verdict. `verdict()` runs
+the count-form text against a node_config profile via flax_post.population --
+see verdict() for why the count form (not verbose).
+
+Nothing here reads triage's per-node PXE recon tree or shells macinv: that tree
+is keyed by the host NIC MAC (the mezz card), which moves between blades, so
+its `latest` can be ANOTHER blade (et28b4 2026-09-25: blade WTH48381JYM1A's
+dump from 09-17 rendered as et28b4's inventory).
 
 Field extraction in parse() is grounded in REAL macinv output captured from
 bang-gouda (tests/fixtures/macinv/*.txt) -- not a guessed format. Sections/
@@ -15,54 +21,12 @@ fields that never appeared in any captured fixture are still implemented
 are flagged as script-derived-only in the task report; every section defaults
 to [] / {} rather than raising, so an absent section never breaks the modal.
 """
-import os
 import re
-import subprocess
 
 from . import population
 from .observe import family_map_live as _fm_live
 from .observe.family_map import match_family
 from .observe.fru import DEFAULT_SERIAL_FIELD, SERIAL_FIELD_BY_FAMILY
-
-NODES_ROOT = os.environ.get("FLAX_POST_NODES_ROOT", "/export/nodes")
-
-
-def node_dir(host_mac: "str | None") -> "str | None":
-    """/export/nodes/post-<mac, no colons, lowercase>/latest if it's a real
-    (possibly symlinked) directory, else None. Falsy host_mac -> None."""
-    if not host_mac:
-        return None
-    mac = host_mac.replace(":", "").lower()
-    path = f"{NODES_ROOT}/post-{mac}/latest"
-    return path if os.path.isdir(path) else None
-
-
-def _default_runner(argv: list, timeout: int) -> str:
-    """Subprocess seam: run argv, return stdout text (stderr appended only if
-    stdout is empty). Timeout/missing binary -> "" (never raises)."""
-    try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-        return r.stdout if r.stdout else (r.stderr or "")
-    except subprocess.TimeoutExpired:
-        return ""
-    except FileNotFoundError:
-        return ""
-
-
-RUNNER = _default_runner
-
-
-def capture(host_mac: "str | None", *, runner=None) -> dict:
-    """Resolve the node dir and shell macinv in both forms: the detail (-v)
-    form feeds parse()/INV, the count form feeds verdict()/POP.
-    {"present": False} if the node dir doesn't exist."""
-    d = node_dir(host_mac)
-    if d is None:
-        return {"present": False}
-    run = runner or RUNNER
-    verbose = run(["macinv", "-p", d, "-v"], 30)
-    count = run(["macinv", "-p", d], 30)
-    return {"present": True, "dir": d, "verbose": verbose, "count": count}
 
 
 # --- parse(): macinv -v detail-form line patterns, one per macinv dumpnode

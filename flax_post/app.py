@@ -1,7 +1,7 @@
 """flax-post — Eindhoven Post Servers viewer (read-only, source='post' devices)."""
 import logging
 import os
-import re
+from datetime import timezone
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -102,71 +102,61 @@ def api_profiles() -> JSONResponse:
     return JSONResponse({"profiles": population.list_profiles()})
 
 
+# The run's inventory artifacts the modal reads: macinv's detail form (INV
+# tables), its count form (POP verdict), and dimmsum (blocked DIMMs).
+_INV_ARTIFACTS = ("macinv-v", "macinv", "dimmsum")
+_NO_FULL_INVENTORY = "no full inventory in this run (re-run the blade)"
+
+
 @app.get("/api/v1/inventory/{port}")
 def api_inventory(port: str, profile: "str | None" = None) -> JSONResponse:
-    """INV tables from the /export recon dump; the POP verdict from THIS RUN's
-    inventory artifact (the same capture the pipeline's population-check
-    judged), falling back to the export dump when the blade has no run.
-    Ruling 2026-09-12 (et24b3): the export dump is from an earlier recon boot
-    and can disagree with the run (11 vs 12 DIMMs); when both exist the
-    export evaluation rides along as `pop_export`, stamped with its capture
-    time, so a disagreement is visible instead of hidden."""
+    """INV tables and the POP verdict from the blade's CURRENT RUN only: the
+    post agent runs ghost `macinv -p` on the node and uploads the detail form
+    (`macinv-v` -> parse()) and the count form (`macinv` -> verdict(), the
+    same text the pipeline's population-check judged). Never triage's
+    /export recon tree: it is keyed by the mezz NIC MAC, which moves between
+    blades (et28b4 2026-09-25 showed another blade's 09-17 dump). A run from
+    before the agent uploaded `macinv-v` gets empty tables and a reason."""
     record = next((s for s in _blade_slots() if s.get("port") == port), None)
     if record is None:
         return JSONResponse({"ok": False, "reason": "unknown port"}, status_code=404)
-    cap = inventory.capture(record.get("host_mac"))
-    run_text = _run_macinv(record)
-    if not cap.get("present") and not run_text:
-        return JSONResponse({"present": False, "port": port})
-    prof = profile or state.read_settings().get("population")
-    sections = inventory.parse(cap["verbose"]) if cap.get("present") else {}
-    out = {"present": True, "port": port, "dir": cap.get("dir"), "sections": sections}
-    # Blocked DIMMs (blocklist): judged on this run's dimmsum artifact when the
-    # blade has a run, else on the export dump's memory rows. Both memory
+    run_id, bmc_mac = record.get("run_id"), record.get("bmc_mac")
+    if not run_id or not bmc_mac:
+        return JSONResponse({"present": False, "port": port, "reason": "no run"})
+    try:
+        rows = state.get_stage_artifacts(bmc_mac, run_id, "inventory", names=_INV_ARTIFACTS) or {}
+    except Exception:
+        log.exception("inventory artifact read failed for %s", port)
+        return JSONResponse({"present": False, "port": port, "reason": "artifact read failed",
+                             "run_id": run_id})
+
+    def text(name):
+        return (rows.get(name) or {}).get("content") or None
+
+    detail = text("macinv-v")
+    sections = inventory.parse(detail or "")
+    times = [r["captured_at"] for r in rows.values() if r.get("captured_at")]
+    out = {"present": True, "port": port, "run_id": run_id,
+           "captured_at": _utc_stamp(max(times)) if times else None, "sections": sections}
+    if not detail:
+        out["reason"] = _NO_FULL_INVENTORY
+    # Blocked DIMMs (blocklist): judged on this run's dimmsum; both memory
     # tables paint the matching rows red and the INV button goes red.
-    run_dimms = _run_artifact(record, "dimmsum")
-    if run_dimms:
-        out["blocked"] = blocklist.check_dimmsum(run_dimms)
+    dimms = text("dimmsum")
+    out["blocked"] = blocklist.check_dimmsum(dimms) if dimms else blocklist.check(sections.get("memory") or [])
+    prof = profile or state.read_settings().get("population")
+    count = text("macinv")
+    if count:
+        out["pop"] = dict(inventory.verdict(count, prof), source="run", run_id=run_id)
     else:
-        out["blocked"] = blocklist.check(sections.get("memory") or [])
-    if run_text:
-        out["pop"] = dict(inventory.verdict(run_text, prof), source="run", run_id=record.get("run_id"))
-        if cap.get("present"):
-            out["pop_export"] = dict(inventory.verdict(cap["count"], prof), source="export",
-                                     captured=_dump_stamp(cap.get("dir")))
-    else:
-        out["pop"] = dict(inventory.verdict(cap["count"], prof), source="export",
-                          captured=_dump_stamp(cap.get("dir")))
+        out["pop"] = {"state": "grey", "profile": prof, "results": [], "missing": [],
+                      "source": "run", "run_id": run_id, "reason": "no population digest in this run"}
     return JSONResponse(out)
 
 
-def _run_macinv(record) -> "str | None":
-    """This run's count-form macinv artifact, or None (no run, no artifact)."""
-    return _run_artifact(record, "macinv")
-
-
-def _run_artifact(record, name) -> "str | None":
-    run_id, bmc_mac = record.get("run_id"), record.get("bmc_mac")
-    if not run_id or not bmc_mac:
-        return None
-    try:
-        return state.get_artifact(bmc_mac, run_id, "inventory", name) or None
-    except Exception:
-        log.exception("%s artifact read failed for %s", name, record.get("port"))
-        return None
-
-
-_DUMP_DIR_RE = re.compile(r"(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})$")
-
-
-def _dump_stamp(path) -> "str | None":
-    """'YYYY-MM-DD HH:MM:SS' from a recon dump dir named <YYYYMMDD_HHMMSS>
-    (the `latest` symlink is resolved first); None when unparseable."""
-    if not path:
-        return None
-    real = os.path.realpath(path) if os.path.islink(path) else path
-    m = _DUMP_DIR_RE.search(os.path.basename(real.rstrip("/")))
-    return "%s-%s-%s %s:%s:%s" % m.groups() if m else None
+def _utc_stamp(t) -> str:
+    """'YYYY-MM-DD HH:MM:SS UTC' for a timestamptz."""
+    return t.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
 @app.get("/api/v1/step")

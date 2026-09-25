@@ -153,6 +153,19 @@ def get_artifact(bmc_mac, run_id, stage, name) -> "str | None":
     return rows[0][0] if rows else None
 
 
+def get_stage_artifacts(bmc_mac, run_id, stage, names=None) -> dict:
+    """{name: {"content", "captured_at"}} for one stage of a node's run, in one
+    query; `names` limits it to those artifacts."""
+    sql = ("SELECT name, content, captured_at FROM post_artifact "
+           "WHERE bmc_mac = %s AND run_id = %s AND stage = %s")
+    params = [bmc_mac, run_id, stage]
+    if names is not None:
+        sql += " AND name = ANY(%s)"; params.append(list(names))
+    with get_pool().connection() as conn:
+        rows = conn.execute(sql, tuple(params)).fetchall()
+    return {n: {"content": c, "captured_at": t} for n, c, t in rows}
+
+
 def run_owner(run_id) -> "tuple | None":
     """(bmc_mac, serial) of the blade whose artifacts carry `run_id`, or None.
     The slot row's latch names a run but not its blade; the occupant check

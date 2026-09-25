@@ -8,6 +8,9 @@ from qual_server import make_handler
 # canned tool output so the real DEFAULT_STAGES run deterministically, no hardware
 def _fake_runner(argv, timeout):
     j = " ".join(argv)
+    # the macinv script first: its text also names dmidecode/hwinfo/lspci
+    if argv[:2] == ["bash", "-c"] and "macinv -p" in j:
+        return 0, "12 Memory Size: 64 GB\n===flax-macinv-v===\nMemory: 64 GB, DIMM A0\n"
     if "lsblk -ndo" in j: return 0, "nvme0n1\n"                  # one UNMOUNTED dev -> fio runs
     if "sdr" in j: return 0, "Fan1 | ok\nTemp | ok\n"
     if "sel elist" in j: return 0, "1 | ts | Fan #1 | Lower Critical\n"
@@ -47,7 +50,9 @@ def test_full_battery_contract_shapes():
         inv = _g(base + "/stage/inventory")
         assert set(("name", "status", "verdict", "started", "ended", "summary", "artifacts")) <= set(inv)
         names = {a["name"] for a in inv["artifacts"]}
-        assert {"dmidecode", "hwinfo", "macinv"} <= names
+        assert {"dmidecode", "hwinfo", "macinv", "macinv-v"} <= names
+        assert b.artifact("inventory", "macinv") == "12 Memory Size: 64 GB\n"
+        assert b.artifact("inventory", "macinv-v") == "Memory: 64 GB, DIMM A0\n"
         for a in inv["artifacts"]:
             assert set(("name", "kind", "bytes")) <= set(a) and a["kind"] in ("raw", "digest")
     finally:

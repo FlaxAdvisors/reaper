@@ -63,7 +63,7 @@ function App() {
     // inventory (INV/POP): fetched on-demand for the SELECTED blade, not
     // precomputed per tile. invPort/invProfile track what `inv` was fetched
     // for, so loadInv() can no-op when neither the port nor the profile
-    // changed (macinv is expensive -- never refetch from the 15s poll).
+    // changed (never refetch the run's inventory from the 15s poll).
     inv: null, invPort: null, invProfile: '', invLoading: false, actionMsg: null,
     artifacts: null, artLoading: false,
     // the step modal's evidence block (/api/v1/step): status, headline, rows, notes
@@ -74,8 +74,8 @@ function App() {
       document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && this.modal) this.closeModal(); });
       this.profiles = await fetchProfiles(); await this.refresh(); setInterval(() => this.refresh(), REFRESH_MS);
     },
-    // 15s poll of /api/v1/blades. Deliberately does NOT touch `inv` — macinv
-    // is expensive, so the cached inventory for `sel.port` just stays put;
+    // 15s poll of /api/v1/blades. Deliberately does NOT touch `inv` — the
+    // artifact read is not free, so the cached inventory for `sel.port` stays put;
     // loadInv() is the only path that (re)fetches it.
     async refresh() {
       try {
