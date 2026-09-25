@@ -217,3 +217,10 @@ services:
       # et26b3 dropped 2026-09-24 -- see bmc_fw above.
       # Globs are allowed here (et5b*); spelled out to match bmc_fw's line.
       - BIOS_FW_DISABLE_PORTS=et5b1,et5b2,et5b3,et5b4,et9b1,et9b2,et9b3,et9b4,et27b1,et27b2,et27b3,et27b4
+      # Spec 2026-09-24 §3.4 / 09-23 §5.4 staging (O6: every new power path gets
+      # one-port bring-up with an operator go). Empty = every port, - = none.
+      - BIOS_FW_BOOTCHECK_PORTS=-
+      - BIOS_FW_RECOVER_PORTS=-
+      - BIOS_FW_RECOVER_CYCLE=true
+      - BIOS_FW_SETTLE_S=420
+      - BIOS_FW_GATE_ABSENT_S=420
