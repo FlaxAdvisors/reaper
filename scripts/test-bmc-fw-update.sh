@@ -111,8 +111,8 @@ v=$(FLAX_REDFISH_EXEC="$work/rf" FIX_CMDLOG="$work/cmd.v" FIX_VERN="$work/vern.v
 
 # ── the credential never reaches argv ────────────────────────────────────────
 grep -l 'test-dummy' "$work"/cmd.* >/dev/null 2>&1 && { rc=x; bad "credential in a call's args" x; } || ok "credential absent from every recorded call"
-refs=$(grep -n 'SSHPASS' "$work/bin" | grep -vE '^\s*[0-9]+:\s*#' | grep -vE 'export SSHPASS=|printf .machine %s login %s password %s')
-[ -z "$refs" ] && ok "SSHPASS used only via export and the netrc printf" || { rc=x; out="$refs"; bad "SSHPASS use" x; }
+refs=$(grep -n 'SSHPASS' "$work/bin" | grep -vE '^\s*[0-9]+:\s*#' | grep -vE 'export SSHPASS=|login \$RF_USER password \$SSHPASS"')
+[ -z "$refs" ] && ok "SSHPASS used only via export and the netrc heredoc" || { rc=x; out="$refs"; bad "SSHPASS use" x; }
 
 
 # ── the lock directory: sudo re-exec, never a fallback dir (2026-09-24) ─────

@@ -161,8 +161,8 @@ FIX_FETCH_FAIL=1 run nofetch
 # ── e: the credential never reaches argv ─────────────────────────────────────
 if grep -n 'test-dummy' "$work"/cmd.* >/dev/null 2>&1; then rc=x; bad "credential appeared in a Redfish call's arguments"
 else ok "credential absent from every recorded call"; fi
-refs=$(grep -n 'SSHPASS' "$work/bin" | grep -vE '^\s*[0-9]+:\s*#' | grep -vE 'export SSHPASS=|printf .machine %s login %s password %s|"\$SSHPASS"\)' )
-[ -z "$refs" ] && ok "SSHPASS used only via export, netrc printf and sshpass -e" || { rc=x; out="$refs"; bad "unexpected SSHPASS use"; }
+refs=$(grep -n 'SSHPASS' "$work/bin" | grep -vE '^\s*[0-9]+:\s*#' | grep -vE 'export SSHPASS=|login \$RF_USER password \$SSHPASS"|"\$SSHPASS"\)' )
+[ -z "$refs" ] && ok "SSHPASS used only via export, the netrc heredoc and sshpass -e" || { rc=x; out="$refs"; bad "unexpected SSHPASS use"; }
 
 
 # ── the lock directory: sudo re-exec, never a fallback dir (2026-09-24) ─────

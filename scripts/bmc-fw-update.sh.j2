@@ -14,9 +14,9 @@
 #
 # RENDERED FROM THE SITE VAULT by roles/apply_bmc_scripts. RULE ZERO: the BMC
 # root credential comes from the vaulted credentials-bmc.json (root entry) and
-# reaches curl through a netrc on a process substitution -- never argv, never
-# output. (Ghost's version carried a literal default credential and passed it
-# with -u.)
+# reaches curl through a netrc fed on stdin -- never argv, never output, and
+# no process-substitution child left for PID 1 to reap. (Ghost's version
+# carried a literal default credential and passed it with -u.)
 #
 # Observed behaviour this is built around (ghost, validated et10b1 2026-06-23):
 #   * The BMC self-reboots to ACTIVATE after the image write -- Redfish is down
@@ -56,9 +56,14 @@ rf() {   # rf <METHOD> <ip> <path> [curl args...] -> body, then HTTP=<code>
         "$FLAX_REDFISH_EXEC" "$method" "$path" "$@"
         return $?
     fi
-    curl -sk --netrc-file <(printf 'machine %s login %s password %s\n' "$ip" "$RF_USER" "$SSHPASS") \
+    # No caller passes a request body on stdin (the flash upload reads the
+    # artifact from a tempfile path via --data-binary "@$art"), so the netrc
+    # can safely ride curl's own stdin -- no process substitution, no child
+    # process for PID 1 to reap.
+    curl -sk --netrc-file /dev/stdin \
         --connect-timeout 6 --max-time "${RF_MAX_TIME:-15}" -X "$method" \
-        -w '\nHTTP=%{http_code}' "https://${ip}${path}" "$@"
+        -w '\nHTTP=%{http_code}' "https://${ip}${path}" "$@" \
+        <<<"machine $ip login $RF_USER password $SSHPASS"
 }
 fetch() {
     if [ -n "${FLAX_FETCH_EXEC:-}" ]; then "$FLAX_FETCH_EXEC" "$1" "$2"; return $?; fi

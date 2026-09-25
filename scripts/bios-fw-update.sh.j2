@@ -4,7 +4,8 @@
 #
 # RENDERED FROM THE SITE VAULT by roles/apply_bmc_scripts. RULE ZERO: the value
 # below is the BMC root credential from the vaulted credentials-bmc.json (root
-# entry). It is used for Redfish (via a netrc on a process substitution) and for
+# entry). It is used for Redfish (via a netrc fed to curl on stdin -- no
+# process-substitution child, so nothing is left for PID 1 to reap) and for
 # the BMC root shell (sshpass -e). It never appears in argv, ps or output.
 #
 #   bios-fw-update version <bmc-ip>
@@ -63,9 +64,13 @@ rf() {
         "$FLAX_REDFISH_EXEC" "$method" "$path" "$@"
         return $?
     fi
-    curl -sk --netrc-file <(printf 'machine %s login %s password %s\n' "$ip" "$RF_USER" "$SSHPASS") \
+    # No caller passes a request body on stdin (uploads use -F @file / a
+    # tempfile path), so the netrc can safely ride curl's own stdin -- no
+    # process substitution, no child process for PID 1 to reap.
+    curl -sk --netrc-file /dev/stdin \
         --connect-timeout 6 --max-time "${RF_MAX_TIME:-15}" -X "$method" \
-        -w '\nHTTP=%{http_code}' "https://${ip}${path}" "$@"
+        -w '\nHTTP=%{http_code}' "https://${ip}${path}" "$@" \
+        <<<"machine $ip login $RF_USER password $SSHPASS"
 }
 
 bmc() {   # bmc <ip> <remote command>

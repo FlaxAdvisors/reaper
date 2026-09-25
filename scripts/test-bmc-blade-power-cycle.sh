@@ -515,10 +515,10 @@ else
     echo "FAIL - production up-wait cap is not 480s"; fail=$((fail+1))
 fi
 if grep -n 'SSHPASS' "$here/bmc-blade-power-cycle.sh.j2" | grep -vE '^[0-9]+:\s*#' \
-     | grep -vE 'export SSHPASS=|printf .machine %s login %s password %s|sshpass -e' | grep -q .; then
-    echo "FAIL - SSHPASS used outside export / netrc printf / sshpass -e"; fail=$((fail+1))
+     | grep -vE 'export SSHPASS=|login \$RF_USER password \$SSHPASS"|sshpass -e' | grep -q .; then
+    echo "FAIL - SSHPASS used outside export / netrc heredoc / sshpass -e"; fail=$((fail+1))
 else
-    echo "ok   - SSHPASS used only via export, the netrc printf and sshpass -e"; pass=$((pass+1))
+    echo "ok   - SSHPASS used only via export, the netrc heredoc and sshpass -e"; pass=$((pass+1))
 fi
 
 # ------------------------------------------------------------- structural ---

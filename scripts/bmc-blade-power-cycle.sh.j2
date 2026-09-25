@@ -138,17 +138,21 @@ T_START=$(date +%s)
 say() { printf 'bmc-blade-power-cycle: [+%ss] %s\n' "$(( $(date +%s) - T_START ))" "$*" >&2; }
 
 # Redfish, for the interlock and --power-on. The credential reaches curl via a
-# netrc on a process substitution -- never argv. FLAX_REDFISH_EXEC is the test
-# hook (same shape as bios-fw-update's).
+# netrc fed on stdin -- never argv, and no process-substitution child left for
+# PID 1 to reap. FLAX_REDFISH_EXEC is the test hook (same shape as
+# bios-fw-update's).
 rf() {   # rf <METHOD> <ip> <path> [curl args...] -> body, then HTTP=<code>
     local method="$1" ip="$2" path="$3"; shift 3
     if [ -n "${FLAX_REDFISH_EXEC:-}" ]; then
         "$FLAX_REDFISH_EXEC" "$method" "$path" "$@"
         return $?
     fi
-    curl -sk --netrc-file <(printf 'machine %s login %s password %s\n' "$ip" "$RF_USER" "$SSHPASS") \
+    # No caller passes a request body on stdin (the Reset action's body is a
+    # literal -d string), so the netrc can safely ride curl's own stdin.
+    curl -sk --netrc-file /dev/stdin \
         --connect-timeout 6 --max-time 15 -X "$method" \
-        -w '\nHTTP=%{http_code}' "https://${ip}${path}" "$@"
+        -w '\nHTTP=%{http_code}' "https://${ip}${path}" "$@" \
+        <<<"machine $ip login $RF_USER password $SSHPASS"
 }
 rf_body() { sed '$d'; }
 rf_code() { tail -n 1 | sed -n 's/^HTTP=//p'; }
