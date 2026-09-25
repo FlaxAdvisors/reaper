@@ -14,7 +14,6 @@ agetty (util-linux 2.40) only reads /etc/issue.d when /etc/issue exists
 A view, never the job: post_status.sh swallows every failure of this script.
 Spec: reaper-devel docs/superpowers/specs/2026-09-25-post-sol-status-banner-design.md
 """
-import calendar
 import json
 import os
 import sys
@@ -47,12 +46,16 @@ def _now():
     return float(t) if t else time.time()
 
 
+def _mono():
+    """Elapsed time runs on the boot clock: ps_init runs BEFORE post.sh's
+    chronyd -q steps the wall clock, and a blade RTC can be off by hours or
+    years. Tests pin it with POST_STATUS_MONO (or POST_STATUS_NOW)."""
+    t = os.environ.get("POST_STATUS_MONO") or os.environ.get("POST_STATUS_NOW")
+    return float(t) if t else time.clock_gettime(time.CLOCK_BOOTTIME)
+
+
 def _iso(t):
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
-
-
-def _epoch(s):
-    return calendar.timegm(time.strptime(s, "%Y-%m-%dT%H:%M:%SZ"))
 
 
 def _hms(secs):
@@ -85,7 +88,8 @@ def _new(action, host, bundle):
     t = _iso(_now())
     st = {"ts": t, "state": "RUNNING", "text": "", "post": True, "action": action,
           "bundle": bundle, "host": host, "mac": "", "ipmigood": None,
-          "started": t, "elapsed_s": 0, "stage": "", "note": "", "logdir": "",
+          "started": t, "started_mono": _mono(), "elapsed_s": 0,
+          "stage": "", "note": "", "logdir": "",
           "stages": [{"name": n, "state": "pending", "started": "", "ended": "",
                       "detail": ""}
                      for n in STAGES.get(action, STAGES["inventory"])]}
@@ -126,11 +130,11 @@ def render(st, issue=False):
     out.append("  BMC:       %s" % IPMI.get(st["ipmigood"], clean(st["ipmigood"])))
     stage = clean(st["stage"]) + (" -- " + clean(st["note"]) if st["note"] else "")
     out.append("  Stage:     %s" % (stage or "-"))
-    now = _now()
-    elapsed = "  Elapsed:   %s" % _hms(now - _epoch(st["started"]))
+    mono = _mono()
+    elapsed = "  Elapsed:   %s" % _hms(mono - st.get("started_mono", mono))
     run = _running(st)
-    if run and run[0]["started"]:
-        elapsed += "  (stage %s)" % _hms(now - _epoch(run[0]["started"]))
+    if run and "started_mono" in run[0]:
+        elapsed += "  (stage %s)" % _hms(mono - run[0]["started_mono"])
     out.append(elapsed)
     out.append("  Bundle:    %s" % clean(st["bundle"]))
     out.append("  Logged in? %s/poststate -w" % HOOK_DIR)
@@ -156,7 +160,7 @@ def _write(path, text):
 def save(st):
     now = _now()
     st["ts"] = _iso(now)
-    st["elapsed_s"] = int(now - _epoch(st["started"]))
+    st["elapsed_s"] = max(0, int(_mono() - st.get("started_mono", _mono())))
     st["text"] = _auto_text(st)
     blob = json.dumps(st, indent=None, separators=(",", ":")) + "\n"
     _write(JSON_PATH, blob)
@@ -203,7 +207,7 @@ def main(argv):
             if s["name"] != args[0]:
                 s.update(state="done", ended=t)
         s = _stage(st, args[0])
-        s.update(state="running", started=t, ended="")
+        s.update(state="running", started=t, ended="", started_mono=_mono())
         st["stage"] = args[0]
         st["note"] = args[1] if len(args) > 1 else ""
         st["state"] = "RUNNING"
