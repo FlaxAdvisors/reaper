@@ -22,7 +22,12 @@ ExecStartPre=/bin/bash -c 'umask 027 && envsubst < /etc/flax/kea/kea-dhcp4.conf.
 # /etc/kea/kea-ctrl-agent.conf that we don't provide). We don't need the
 # REST control agent for Plan 5; skipping it via direct entrypoint
 # sidesteps the missing-config error.
-ExecStart=/usr/bin/docker run --rm --name kea-dhcp4 \
+# --init: tini as PID 1 reaps orphaned children (see flax-observe.service.j2).
+# kea-dhcp4 is PID 1 here (--entrypoint overrides supervisord below). This
+# repo's conf has no hooks-libraries/run_script wired in today (lease/hosts
+# storage is direct-to-Postgres, no forking hook), but --init is cheap
+# defense in depth against any future hook that does fork.
+ExecStart=/usr/bin/docker run --rm --init --name kea-dhcp4 \
     --network host \
     --cap-add NET_ADMIN --cap-add NET_RAW --cap-add NET_BIND_SERVICE \
     -v /etc/flax/kea/kea-dhcp4.conf:/etc/kea/kea-dhcp4.conf:ro \

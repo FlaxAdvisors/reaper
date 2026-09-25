@@ -9,6 +9,10 @@ services:
     image: postgres:16
     network_mode: host
     restart: unless-stopped
+    # Deliberately NO init: true here, unlike flax-control/nginx below. The
+    # postmaster already reaps its own backend children; adding a service
+    # key here would make the next `compose up` recreate the container --
+    # for postgres that means the database, i.e. a VIP/HA event. Don't.
     environment:
       POSTGRES_DB: flax
       POSTGRES_USER: postgres
@@ -40,6 +44,9 @@ services:
     pull_policy: never
     network_mode: host
     restart: unless-stopped
+    # tini as PID 1 reaps orphaned children; defense in depth like the other
+    # flax containers (see bmc_fw's comment in apply_triage_compose).
+    init: true
     depends_on:
       postgres:
         condition: service_healthy
@@ -92,6 +99,9 @@ services:
     image: nginx:1.27-alpine
     network_mode: host
     restart: unless-stopped
+    # tini as PID 1 reaps orphaned children; defense in depth like the other
+    # flax containers (see bmc_fw's comment in apply_triage_compose).
+    init: true
     depends_on:
       - flax-control
     volumes:

@@ -5,11 +5,18 @@
 # Rendered per-bang via ansible.builtin.template — inventory_hostname,
 # bang_tailscale_ip, and the alertmanager cluster-peer list are
 # substituted at deploy time.
+#
+# init: true on every service below (2026-09-25): none of these upstream
+# entrypoints (prometheus, alertmanager, grafana-server, blackbox/snmp/
+# smartctl exporters) is a PID-1 reaper, same orphan-accumulation risk as
+# bmc_fw/bios_fw/server/api in triage's compose file. Defense in depth --
+# no leak has been observed here, but tini as PID 1 costs nothing.
 
 services:
   prometheus:
     image: prom/prometheus:v2.55.1
     restart: always
+    init: true
     network_mode: host
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
@@ -26,6 +33,7 @@ services:
   alertmanager:
     image: prom/alertmanager:v0.27.0
     restart: always
+    init: true
     network_mode: host
     command:
       - "--config.file=/etc/alertmanager/alertmanager.yml"
@@ -41,6 +49,7 @@ services:
   grafana:
     image: grafana/grafana:11.3.0
     restart: always
+    init: true
     network_mode: host
     environment:
       - GF_SERVER_HTTP_PORT=3000
@@ -54,6 +63,7 @@ services:
   blackbox:
     image: prom/blackbox-exporter:v0.25.0
     restart: always
+    init: true
     network_mode: host
     cap_add:
       - NET_RAW    # ICMP probes require raw sockets
@@ -66,6 +76,7 @@ services:
   snmp_exporter:
     image: prom/snmp-exporter:v0.26.0
     restart: always
+    init: true
     network_mode: host
     command:
       - "--config.file=/etc/snmp_exporter/snmp.yml"
@@ -76,6 +87,7 @@ services:
   smartctl_exporter:
     image: quay.io/prometheuscommunity/smartctl-exporter:v0.13.0
     restart: always
+    init: true
     network_mode: host
     privileged: true   # required to read SMART attributes
     command:

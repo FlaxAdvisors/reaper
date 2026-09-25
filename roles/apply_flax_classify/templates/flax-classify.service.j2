@@ -13,7 +13,8 @@ EnvironmentFile=/etc/flax/flax-classify/flax-classify.env
 # strictly MASTER-only).
 ExecStartPre=/bin/bash -c '. /etc/flax/site.env && ip -o -4 addr | grep -qE " $${MGMT_VIP}/"'
 
-ExecStart=/usr/bin/docker run --rm --name flax-classify \
+# --init: tini as PID 1 reaps orphaned children (see flax-observe.service.j2).
+ExecStart=/usr/bin/docker run --rm --init --name flax-classify \
     --network host \
     --env-file /etc/flax/flax-classify/flax-classify.env \
     -v /etc/flax/vlans.json:/etc/flax/vlans.json:ro \

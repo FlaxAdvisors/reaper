@@ -27,6 +27,9 @@ services:
       context: .
       dockerfile: services/api/Dockerfile
     command: gunicorn --bind 0.0.0.0:5555 -w 3 manage:app
+    # Same orphan-reaping need as bmc_fw/bios_fw/server above -- gunicorn's
+    # master is PID 1 here and does not reap grandchildren on its own.
+    init: true
     restart: always
     network_mode: host
     env_file:
