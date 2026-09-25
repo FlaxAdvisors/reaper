@@ -17,7 +17,8 @@
 #     clock line makes every reload repaint), and the station's stall
 #     watchdog every 30s on that tty.
 #   - an EXIT trap: a run that ends without ps_finish shows FAILED, unless it
-#     is REBOOTING / POWER-OFF / WAITING, which post_status.py leaves alone.
+#     is REBOOTING / POWER-OFF / WAITING (left alone), or the system itself is
+#     shutting down (a flash's queued reboot) -- then REBOOTING.
 
 _ps_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 _ps_python="${POST_STATUS_PYTHON:-python3}"
@@ -52,7 +53,10 @@ function ps_init()          # ps_init <action>
     fi
     bundle=$(head -1 "$_ps_dir/BUILD" 2>/dev/null)
     _ps init "$1" "$(hostname 2>/dev/null)" "${bundle:-unknown}"
-    trap '_ps exit $?' EXIT
+    # The system state rides along: a flash that queues `shutdown -r now` and
+    # returns lets post.sh start the next stage before systemd's SIGTERM
+    # lands -- "stopping" says that is a reboot, not a crash.
+    trap '_ps exit $? "$(systemctl is-system-running 2>/dev/null)"' EXIT
     return $rc
 }
 

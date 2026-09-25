@@ -236,10 +236,18 @@ def main(argv):
         if st["state"] in HELD:
             return 0
         rc = args[0] if args else "?"
+        system = args[1] if len(args) > 1 else ""
         cur = st["stage"] or "?"
-        _finish_stage(st, "failed", "post.sh exited rc %s" % rc)
-        st["state"] = "FAILED"
-        st["text"] = "post.sh exited (rc %s) during %s -- see banghook journal." % (rc, cur)
+        if system == "stopping":
+            # A flash script queued `shutdown -r now` and returned; post.sh
+            # got into a later stage before systemd's SIGTERM arrived.
+            st["state"] = "REBOOTING"
+            st["text"] = "system shutting down during %s -- not a crash." % cur
+        else:
+            # rc can read 0 when bash dies waiting on a child; name the stage.
+            _finish_stage(st, "failed", "post.sh exited rc %s" % rc)
+            st["state"] = "FAILED"
+            st["text"] = "post.sh stopped (rc %s) during %s -- see banghook journal." % (rc, cur)
     else:
         print("unknown command: %s" % cmd, file=sys.stderr)
         return 2
