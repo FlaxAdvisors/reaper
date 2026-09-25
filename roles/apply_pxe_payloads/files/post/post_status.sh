@@ -39,7 +39,12 @@ function ps_init()          # ps_init <action>
     local rc=$? bundle
     _ps_tty=$(tr ' ' '\n' < "${POST_CONSOLE_ACTIVE:-/sys/class/tty/console/active}" 2>/dev/null \
                 | grep '^ttyS[0-9]' | tail -1)
-    if [ -n "$_ps_tty" ]; then
+    # A status file already in /run (tmpfs) means an earlier post.sh in THIS
+    # boot -- e.g. staylive, then `post.sh postautomate` over ssh inside
+    # host_qual's 30s launch budget. It already re-probed the UART and its
+    # timers are still running (a second systemd-run of the same unit name
+    # would only fail), so skip straight to writing.
+    if [ -n "$_ps_tty" ] && [ ! -e "${POST_STATUS_JSON:-/run/flax/post-status.json}" ]; then
         if [ -f "$_ps_dir/serial_console_fixup.sh" ]; then
             PATH="$_ps_dir:$PATH" bash "$_ps_dir/serial_console_fixup.sh" 2>&1 \
                 | sed 's/^/post_status: /'
