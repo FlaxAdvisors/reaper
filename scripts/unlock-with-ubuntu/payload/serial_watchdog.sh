@@ -22,7 +22,9 @@ state="${MEZZ_WD_STATE:-/run/flax/mezz-flash-wd}"
 now="${MEZZ_WD_NOW:-$(date +%s)}"
 cooldown="${MEZZ_WD_COOLDOWN:-300}"
 
-tty=$(tr ' ' '\n' < "$active" 2>/dev/null | grep '^ttyS[0-9]' | tail -1)
+# An explicit tty wins (post passes the one it found); otherwise the console.
+tty="${1:-}"
+[ -n "$tty" ] || tty=$(tr ' ' '\n' < "$active" 2>/dev/null | grep '^ttyS[0-9]' | tail -1)
 [ -n "$tty" ] || exit 0
 n=${tty#ttyS}
 tx=$(grep "^$n:" "$info" 2>/dev/null | sed -nE 's/.* tx:([0-9]+).*/\1/p')
