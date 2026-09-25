@@ -8,7 +8,7 @@ seam so tests never shell out. Stdlib only; imports under Python 3.6.
 """
 import subprocess
 
-AGENT_VER = "1"
+AGENT_VER = "2"
 
 HWINFO_FLAGS = ("--arch --bios --block --bridge --cdrom --cpu --disk --framebuffer "
                 "--gfxcard --hub --ide --keyboard --memory --mmc-ctrl --monitor --mouse "
