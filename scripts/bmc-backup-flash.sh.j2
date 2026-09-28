@@ -13,18 +13,25 @@
 #   version <bmc-ip>             -> {"backup_version":...,"active_version":...}
 #   write   <bmc-ip> <tar-url>   -> progress records, then {"ok":true}
 #   verify  <bmc-ip> <expected>  -> exit 0 iff the chip reads <expected>
-#   netreset <bmc-ip> --port <p> [--iface <if>]
+#   netreset <bmc-ip> --port <p> [--iface <if>] [--force]
 #                                -> FactoryReset of the BMC network file +
 #                                   a verified reboot (spec 2026-09-27 §6.1);
 #                                   one JSON verdict line
 #                                   {"netreset":"clean"|"not_clean"|"error"|"refused",...}
 #       netreset exit codes: 0 clean; 1 error; 2 usage; 3 not clean (file or
 #       pin regenerated, or addr_assign_type != 0); 4 interlock refusal
-#       (per-BMC lock held, or a Redfish job live / ended < 60 s ago);
-#       70 orphaned child; 143 signalled. Only netreset takes the per-BMC
-#       lock and runs as PARENT + CHILD (Part 1 bin structure, bottom of this
-#       file); version/write/verify run in the top-level process as before.
-#       netreset has NO host-power refusal and never calls flax-forget-port.
+#       (per-BMC lock held, a Redfish job live / ended < 60 s ago, or the
+#       host is not confirmed on -- see below); 70 orphaned child; 143
+#       signalled. Only netreset takes the per-BMC lock and runs as PARENT +
+#       CHILD (Part 1 bin structure, bottom of this file); version/write/
+#       verify run in the top-level process as before.
+#       netreset REQUIRES the host to be on (Persistent_MAC_on_BMC.md: "these
+#       BMCs can come back DARK on the network after a reset; never do this
+#       with the host off" -- an on host is the KCS/IPMI safety net if the
+#       reset leaves the BMC unreachable; CLEANUP.md #8, et8b3 2026-09-28,
+#       needed a physical reseat). Refuses (reason host_off/
+#       host_power_unknown) unless called with --force. Never calls
+#       flax-forget-port.
 #
 # Error codes emitted as {"error":"<code>"} (or inline as an "error" field on
 # a version record): chip_absent, read_failed, reader_canary_failed,
@@ -443,22 +450,25 @@ cmd_verify() {
 }
 
 # ── netreset (spec 2026-09-27 §6.1; Part 3 Task 2) ───────────────────────────
-NR_USAGE="usage: bmc-backup-flash netreset <bmc-ip> --port <port> [--iface <iface>]"
+NR_USAGE="usage: bmc-backup-flash netreset <bmc-ip> --port <port> [--iface <iface>] [--force]"
 
-# nr_parse <bmc-ip> [--port P] [--iface I] -> sets nr_ip/nr_port/nr_iface;
-# rc 2 on anything malformed. Used by BOTH the PARENT (before it touches the
-# lock dir, so a usage error never takes a lock or sudo) and the CHILD. The
-# LAST --port wins, as in arg_port, so claim, marker and body name one port.
-# The address must be dotted IPv4: it names the lock file and its second
-# octet names the default link-local interface.
+# nr_parse <bmc-ip> [--port P] [--iface I] [--force] -> sets
+# nr_ip/nr_port/nr_iface/nr_force; rc 2 on anything malformed. Used by BOTH
+# the PARENT (before it touches the lock dir, so a usage error never takes a
+# lock or sudo) and the CHILD. The LAST --port wins, as in arg_port, so
+# claim, marker and body name one port. The address must be dotted IPv4: it
+# names the lock file and its second octet names the default link-local
+# interface. --force (CLEANUP.md #8) bypasses ONLY the host-power refusal
+# below -- every other refusal/error path in this bin is unaffected.
 nr_parse() {
-    nr_ip="${1:-}"; nr_port=""; nr_iface=""
+    nr_ip="${1:-}"; nr_port=""; nr_iface=""; nr_force=""
     [ $# -gt 0 ] && shift
     [[ "$nr_ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] || return 2
     while [ $# -gt 0 ]; do
         case "$1" in
             --port)  [ $# -ge 2 ] || return 2; nr_port="$2"; shift 2 ;;
             --iface) [ $# -ge 2 ] || return 2; nr_iface="$2"; shift 2 ;;
+            --force) nr_force=1; shift ;;
             *) return 2 ;;
         esac
     done
@@ -494,10 +504,29 @@ bmc_bounded() {   # bmc_bounded <secs> <target> <cmd>
 mac_ok() { [[ "${1:-}" =~ ^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$ ]]; }
 
 # One ssh: boot_id, addr_assign_type, current MAC + permaddr (iproute2 prints
-# permaddr only when it differs from the current MAC), and the network file's
-# [Link] pin (section-aware, same awk as FIRST_READ).
-STATE_READ='echo BOOT=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null); echo ASSIGN=$(cat /sys/class/net/eth0/addr_assign_type 2>/dev/null); ip link show eth0 | awk '"'"'/link\/ether/{print "MAC=" $2; for(i=1;i<=NF;i++) if($i=="permaddr") print "PERM=" $(i+1)}'"'"'; f='"$NET_FILE"'; if [ -f "$f" ]; then echo NF=present; awk '"'"'/^\[/{s=$0} s=="[Link]" && /^MACAddress=/{sub(/^MACAddress=/,""); print "NP=" $0; exit}'"'"' "$f"; else echo NF=absent; fi'
+# permaddr only when it differs from the current MAC), the network file's
+# [Link] pin (section-aware, same awk as FIRST_READ), and (CLEANUP.md #8) the
+# chassis power state -- folded into this SAME bounded call, no extra round
+# trip, so the pre-state read that already runs before FactoryReset also
+# answers the host-off refusal below.
+STATE_READ='echo BOOT=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null); echo ASSIGN=$(cat /sys/class/net/eth0/addr_assign_type 2>/dev/null); ip link show eth0 | awk '"'"'/link\/ether/{print "MAC=" $2; for(i=1;i<=NF;i++) if($i=="permaddr") print "PERM=" $(i+1)}'"'"'; f='"$NET_FILE"'; if [ -f "$f" ]; then echo NF=present; awk '"'"'/^\[/{s=$0} s=="[Link]" && /^MACAddress=/{sub(/^MACAddress=/,""); print "NP=" $0; exit}'"'"' "$f"; else echo NF=absent; fi; echo PWR=$(busctl get-property xyz.openbmc_project.State.Chassis /xyz/openbmc_project/state/chassis0 xyz.openbmc_project.State.Chassis CurrentPowerState 2>/dev/null)'
 kv() { printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -n 1; }
+
+# hostpwr_of <STATE_READ output> -> on|off|unknown, from the PWR= line's
+# busctl get-property output ('s "xyz.openbmc_project.State.Chassis.
+# PowerState.On"'). Strip the quotes busctl wraps the value in, then match
+# the suffix (CLEANUP.md #8: anything not affirmatively "on" -- Off, a
+# missing PWR= line, an unreachable/unparseable busctl call -- is treated as
+# not-on, since the refusal below exists precisely because we cannot afford
+# to guess wrong about the host being on).
+hostpwr_of() {
+    local v; v=$(printf '%s' "$(kv "$1" PWR)" | tr -d '"')
+    case "$v" in
+        *.On)  echo on ;;
+        *.Off) echo off ;;
+        *)     echo unknown ;;
+    esac
+}
 
 nr_verdict() {  # nr_verdict <outcome> <reason>
     printf '{"netreset":"%s","reason":"%s","pre_mac":"%s","native_mac":"%s","pre_pin":"%s","post_mac":"%s","post_pin":"%s","post_assign":"%s","target":"%s"}\n' \
@@ -507,7 +536,7 @@ nr_verdict() {  # nr_verdict <outcome> <reason>
 
 cmd_netreset() {   # CHILD only: the PARENT holds the lock and the claim
     nr_parse "$@" || { echo "$NR_USAGE" >&2; exit 2; }
-    local ip="$nr_ip" port="$nr_port" iface="$nr_iface" b brc pre pre_boot ll deadline post s nb t
+    local ip="$nr_ip" port="$nr_port" iface="$nr_iface" force="$nr_force" b brc pre pre_boot ll deadline post s nb t hostpwr
     [ -n "$iface" ] || iface="${FLAX_LL_PARENT:-eth1}.$(printf '%s' "$ip" | cut -d. -f2)"
 
     b=$(net_busy_check "$ip"); brc=$?
@@ -529,7 +558,24 @@ cmd_netreset() {   # CHILD only: the PARENT holds the lock and the claim
     # Without the native MAC the BMC could not be followed to its link-local
     # after the reset -- do not reset what we could not then verify.
     mac_ok "$native" || { echo "error: cannot read the MAC of eth0 on $ip; not resetting" >&2; nr_verdict error mac_unreadable; exit 1; }
-    echo "netreset $ip ($port): file=$(kv "$pre" NF) pin=$pre_pin mac=$pre_mac native=$native" >&2
+    hostpwr=$(hostpwr_of "$pre")
+    echo "netreset $ip ($port): file=$(kv "$pre" NF) pin=$pre_pin mac=$pre_mac native=$native hostpwr=$hostpwr" >&2
+
+    # CLEANUP.md #8 / runbook Persistent_MAC_on_BMC.md: host power is the KCS
+    # safety net -- if the reset leaves the BMC dark on the network (et8b3,
+    # 2026-09-28), a host that is ON can still reach it over KCS/IPMI from
+    # the OS; a host that is OFF cannot, and only a physical reseat recovers
+    # it. Refuse unless the caller overrides with --force. Runs after the
+    # lock + busy check (a busy node is still reported busy first) and
+    # BEFORE FactoryReset -- nothing destructive has happened yet.
+    if [ "$hostpwr" != on ] && [ -z "$force" ]; then
+        echo "refusing: host is $hostpwr on $ip -- no KCS safety net if the BMC comes back dark; power the host on first or pass --force" >&2
+        case "$hostpwr" in
+            off) nr_verdict refused host_off ;;
+            *)   nr_verdict refused host_power_unknown ;;
+        esac
+        exit 4
+    fi
 
     bmc_bounded "${NETRESET_RESET_TIMEOUT_S:-30}" "$ip" 'busctl call xyz.openbmc_project.Network /xyz/openbmc_project/network xyz.openbmc_project.Common.FactoryReset Reset' >/dev/null 2>&1 \
         || { echo "error: FactoryReset call failed on $ip" >&2; nr_verdict error factoryreset_failed; exit 1; }

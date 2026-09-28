@@ -160,7 +160,8 @@ cmd=$(printf '%s' "$cmd" | sed \
     -e "s#/proc/sys/kernel/random/boot_id#$d/boot#g" \
     -e "s#/sys/class/net/eth0/addr_assign_type#$d/assign#g" \
     -e "s#/etc/systemd/network/00-bmc-eth0.network#$d/netfile#g" \
-    -e "s#ip link show eth0#cat $d/iplink#g")
+    -e "s#ip link show eth0#cat $d/iplink#g" \
+    -e "s#busctl get-property xyz.openbmc_project.State.Chassis /xyz/openbmc_project/state/chassis0 xyz.openbmc_project.State.Chassis CurrentPowerState#cat $d/power#g")
 eval "$cmd"
 STUB
 chmod +x "$work/nrstub"
@@ -182,8 +183,14 @@ nr_setup() {  # nr_setup <pinned-mac> <perm-mac>
     rm -rf "$work/nr"; mkdir -p "$work/nr/lock" "$work/nr/manual" "$work/nr/reboot"
     echo old-boot > "$work/nr/boot"; echo 1 > "$work/nr/assign"; echo "$1" > "$work/nr/mac"; echo "$2" > "$work/nr/perm"
     printf '[Match]\nName=eth0\n[Link]\nMACAddress=%s\n' "$1" > "$work/nr/netfile"
+    # CLEANUP.md #8: default the host-power fixture to On so every existing
+    # case above (written before the refusal existed) keeps passing; the
+    # host-off/unknown cases below override this per-run.
+    printf 's "xyz.openbmc_project.State.Chassis.PowerState.On"\n' > "$work/nr/power"
     : > "$work/nr/log"
 }
+nr_pwr_off()     { printf 's "xyz.openbmc_project.State.Chassis.PowerState.Off"\n' > "$work/nr/power"; }
+nr_pwr_unknown() { rm -f "$work/nr/power"; }
 # the test seams (every path under $work). An ARRAY, not only a function: a
 # backgrounded function is a subshell, so its $! would not be the bin's pid.
 NR_SEAMS=(NR_DIR="$work/nr" FLAX_BMC_REMOTE_EXEC="$work/nrstub" FLAX_REDFISH_EXEC="$work/nrrf"
@@ -217,6 +224,27 @@ chk "reboot marker written BEFORE the reboot" log_has marker_before_reboot
 chk "claim released on exit"                  test ! -e "$work/nr/manual/et8b1"
 chk "lock free after the run"                 lock_free
 chk "never calls flax-forget-port"            eval '! log_has forget && ! err_has forget'
+
+# ── host power gate (CLEANUP.md #8 / Persistent_MAC_on_BMC.md) ──────────────
+# et8b3, 2026-09-28: netreset's FactoryReset + reboot on a host-off blade left
+# the BMC dark until a physical reseat -- a host that is ON is the KCS/IPMI
+# safety net if the reset leaves the BMC unreachable on the network. Runs
+# after the lock + busy check above, before anything destructive.
+nr_setup $PIN $PERM; nr_run
+chk "host on (default fixture): proceeds unchanged, clean" eval 'rc_is 0 && out_has "\"netreset\":\"clean\""'
+
+nr_setup $PIN $PERM; nr_pwr_off; nr_run
+chk "host off: rc 4, reason host_off"         eval 'rc_is 4 && out_has "\"netreset\":\"refused\",\"reason\":\"host_off\""'
+chk "host off: readable refusal on stderr"    err_has "refusing: host is off on 172.17.8.101 -- no KCS safety net"
+chk "host off: nothing reset, no marker"      eval '! log_has FactoryReset && ! log_has "reboot -f" && [ ! -e "$work/nr/reboot/et8b1" ]'
+
+nr_setup $PIN $PERM; nr_pwr_unknown; nr_run
+chk "host power unreadable: rc 4, reason host_power_unknown" eval 'rc_is 4 && out_has "\"netreset\":\"refused\",\"reason\":\"host_power_unknown\""'
+chk "host power unreadable: nothing reset, no marker" eval '! log_has FactoryReset && [ ! -e "$work/nr/reboot/et8b1" ]'
+
+nr_setup $PIN $PERM; nr_pwr_off; nr_run --force
+chk "host off + --force: proceeds, clean"     eval 'rc_is 0 && out_has "\"netreset\":\"clean\""'
+chk "host off + --force: FactoryReset sent"   log_has FactoryReset
 
 nr_setup $PIN $PERM; NR_LL_ONLY=1 nr_run
 chk "native-MAC LL follow: clean via $LL"     eval 'rc_is 0 && out_has "\"target\":\"$LL\""'
