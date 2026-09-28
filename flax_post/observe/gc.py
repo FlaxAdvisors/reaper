@@ -3,6 +3,14 @@
 Pure `plan_state_gc` decides; `gc_post_state` applies. An anti-flap latch
 (`vars.gc_gone_since`) holds a candidate POST_STATE_GC_GRACE_SECS before delete,
 cleared if the blade/reservation returns. post_node is never touched.
+
+Link-down fast path (2026-09-28): a candidate whose port the switch reports
+`nolink` is deleted on this pass, no latch. The debounce was already paid by
+flax-classify's Rule 3 (linkdown_evict_secs), which is what released the
+reservation -- a second grace here made a pulled blade's tile take ~10 min to
+clear, and operators wait on that clear before slotting the next blade. The
+latch still governs the link-up case (BMC MAC aged out of the FDB), where it
+is the only debounce there is.
 """
 import collections
 import datetime
@@ -53,7 +61,9 @@ def plan_state_gc(states, reserved_ports, switch_facts, now, grace_secs):
         bmc_present = bool(bmc) and _norm(bmc) in fdb
         candidate = (not reserved) and (not flashing) and (not bmc_present)
         since = rec.get("gc_gone_since")
-        if candidate:
+        if candidate and fact.get("link") == "nolink":
+            deletes.append(port)      # Rule 3 already debounced the link loss
+        elif candidate:
             if not since:
                 latch_writes[port] = now.isoformat()
             else:
