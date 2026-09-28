@@ -25,13 +25,16 @@
 # the ADI manufacturer-specific block): behaviour over five runs is the
 # entire basis for trusting it (design S2, S8 open question 1).
 #
-#   cycle <bmc-ip>              -> {"cycled":true,"down_s":<n>,"up_s":<n>}
+#   cycle <bmc-ip>              -> {"cycled":true,"down_s":<n>,"up_s":<n>,"ip":"<ip>"}
 #   cycle <bmc-ip> --power-on   -> same, plus "power_on":"on|failed|rejected"
 #                                  (one Redfish On after the BMC is back)
 #   ... [--port <et6b1>]        (any order after <bmc-ip>) holds the manual
 #                                  claim /run/flax/bmc-fw-manual/<port> for the
 #                                  run and touches /run/flax/bmc-reboot/<port>
 #                                  once the 12V write is sent (2026-09-27)
+#                                  AND follows the blade to its CURRENT IP after
+#                                  the cut (flax feed, see wait_up; 2026-09-28)
+#   every success record also carries "ip":"<ip the BMC answered at>"
 #
 # Progress lines ("bmc-blade-power-cycle: [+Ns] ...") go to STDERR; stdout
 # carries only the one JSON record callers parse.
@@ -291,7 +294,7 @@ say() { printf 'bmc-blade-power-cycle: [+%ss] %s\n' "$(( $(date +%s) - T_START )
 rf() {   # rf <METHOD> <ip> <path> [curl args...] -> body, then HTTP=<code>
     local method="$1" ip="$2" path="$3"; shift 3
     if [ -n "${FLAX_REDFISH_EXEC:-}" ]; then
-        "$FLAX_REDFISH_EXEC" "$method" "$path" "$@" 9>&-
+        FLAX_RF_IP="$ip" "$FLAX_REDFISH_EXEC" "$method" "$path" "$@" 9>&-
         return $?
     fi
     # No caller passes a request body on stdin (the Reset action's body is a
@@ -390,13 +393,47 @@ wait_down() {  # $1 = ip; 0 once DOWN_CONFIRM_N CONSECUTIVE probes fail, 1 on th
     done
 }
 
-wait_up() {  # $1 = ip; 0 once the BMC answers again, 1 on the BLADE_CYCLE_TIMEOUT cap
-    local ip="$1" deadline=$(( $(now_s) + BLADE_CYCLE_TIMEOUT )) next=$(( $(now_s) + PROGRESS_EVERY ))
+# FOLLOW THE BLADE (2026-09-28, part1 Task 4). After a 12V cut a BMC can come
+# back on a DHCP POOL address first and only regain its reserved IP minutes
+# later (2026-09-27: 172.17.0.50/.52, reserved IP back at +404/+483 s), so
+# polling only the IP we started with reported never_returned for a healthy
+# BMC. With --port, each up-wait poll also asks the flax feed for the port's
+# CURRENT ip and probes both. WHICHEVER answers is only a CANDIDATE: the
+# post-cycle MAC/OS identity check against the pre-cycle baseline stays the
+# gate, so a different blade at the new IP is identity_changed -- never a
+# power-on. The feed is advisory: garbage, "unknown", a non-IP string, a
+# failed or slow call (curl -m 5) all yield "" and the poll falls back to the
+# original IP alone.
+FEED_URL="${FLAX_FEED_URL:-http://localhost:8000/api/v1/port}"
+feed_ip() {   # feed_ip <port> -> the port's current BMC ip from the flax feed, or empty
+    local j
+    if [ -n "${FLAX_FEED_EXEC:-}" ]; then j=$("$FLAX_FEED_EXEC" "$1" 2>/dev/null 9>&-)
+    else j=$(curl -s -m 5 "$FEED_URL/$1" 2>/dev/null 9>&-); fi
+    printf '%s' "$j" | python3 -c 'import json, sys, ipaddress
+try:
+    d = json.load(sys.stdin)
+    ip = d.get("ip") if isinstance(d, dict) else None
+    print(ipaddress.ip_address(ip.strip()) if isinstance(ip, str) else "")
+except Exception:
+    print("")' 2>/dev/null 9>&-
+}
+
+CUR_IP=""
+wait_up() {  # wait_up <ip> [port]; 0 with CUR_IP set once the BMC answers, 1 on the BLADE_CYCLE_TIMEOUT cap
+    local ip="$1" port="${2:-}" deadline=$(( $(now_s) + BLADE_CYCLE_TIMEOUT )) next=$(( $(now_s) + PROGRESS_EVERY ))
+    local cand nip="" c
     while :; do
-        alive "$ip" && return 0
+        cand="$ip"
+        if [ -n "$port" ]; then
+            nip=$(feed_ip "$port")
+            [ -n "$nip" ] && [ "$nip" != "$ip" ] && cand="$ip $nip"
+        fi
+        for c in $cand; do
+            if alive "$c"; then CUR_IP="$c"; return 0; fi
+        done
         [ "$(now_s)" -lt "$deadline" ] || return 1
         if [ "$(now_s)" -ge "$next" ]; then
-            say "BMC still not answering ssh at $ip (cap ${BLADE_CYCLE_TIMEOUT}s)"
+            say "BMC still not answering ssh at ${cand// / or } (cap ${BLADE_CYCLE_TIMEOUT}s)"
             next=$(( $(now_s) + PROGRESS_EVERY ))
         fi
         sleep "$POLL_INTERVAL"
@@ -535,9 +572,12 @@ cmd_cycle() {
     say "BMC down at ${down_s}s; waiting for it to return (cap ${BLADE_CYCLE_TIMEOUT}s)"
 
     # 6. Wait for RETURN, capped at BLADE_CYCLE_TIMEOUT (D4).
-    wait_up "$IP" || { say "BMC did not answer ssh at $IP within ${BLADE_CYCLE_TIMEOUT}s"; json_err never_returned; }
+    # Task 4: with --port, also probe the port's current IP from the feed;
+    # CUR_IP is whichever answered, and everything below talks to it.
+    wait_up "$IP" "${PORT:-}" || { say "BMC did not answer ssh at $IP within ${BLADE_CYCLE_TIMEOUT}s"; json_err never_returned; }
     up_s=$(( $(now_s) - t0 ))
-    say "BMC answering again at ${up_s}s"
+    if [ "$CUR_IP" = "$IP" ]; then say "BMC answering again at ${up_s}s"
+    else say "BMC answering again at ${up_s}s at $CUR_IP (moved from $IP; port ${PORT} per the flax feed) -- identity decides"; fi
 
     # THE SECOND independent guard against a false cycled:true (review
     # finding 2026-09-03; see MIN_DOWN_S above): even a DEBOUNCED "down" can
@@ -555,7 +595,9 @@ cmd_cycle() {
     # above: an empty mac1 means the identity READ failed (identity_unavailable),
     # not that a different machine answered (identity_changed) -- alive()
     # already proved a shell is there.
-    post=$(identity "$IP")
+    # Task 4: this is THE gate for a followed IP too -- a different blade at
+    # the feed's new IP fails here and is never powered on.
+    post=$(identity "$CUR_IP")
     mac1=$(printf '%s\n' "$post" | sed -n 's/^MAC=//p')
     os1=$(printf '%s\n' "$post"  | sed -n 's/^OS=//p')
     [ -n "$mac1" ] || json_err identity_unavailable
@@ -566,7 +608,7 @@ cmd_cycle() {
     # 7. Verify power control. A read that fails here means the BMC answers
     # (identity matched) but is not yet serving power-state queries -- up,
     # but degraded.
-    state=$(bmc "$IP" 'obmcutil state 2>/dev/null | sed -n "s/.*CurrentPowerState *: *//p"' 2>/dev/null | tr -d '\r')
+    state=$(bmc "$CUR_IP" 'obmcutil state 2>/dev/null | sed -n "s/.*CurrentPowerState *: *//p"' 2>/dev/null | tr -d '\r')
     [ -n "$state" ] || json_err bmc_degraded
     say "same machine back (identity matches), power state '$state'"
 
@@ -574,12 +616,12 @@ cmd_cycle() {
     # so the record stays cycled:true whatever the power-on does.
     if [ "${POWER_ON_AFTER:-no}" = yes ]; then
         say "powering on (Redfish ResetType On), watching PowerState for ${POWER_ON_WAIT}s"
-        pon=$(power_on "$IP")
+        pon=$(power_on "$CUR_IP")
         say "power-on: $pon"
-        printf '{"cycled":true,"down_s":%s,"up_s":%s,"power_on":"%s"}\n' "$down_s" "$up_s" "$pon"
+        printf '{"cycled":true,"down_s":%s,"up_s":%s,"ip":"%s","power_on":"%s"}\n' "$down_s" "$up_s" "$CUR_IP" "$pon"
         return
     fi
-    printf '{"cycled":true,"down_s":%s,"up_s":%s}\n' "$down_s" "$up_s"
+    printf '{"cycled":true,"down_s":%s,"up_s":%s,"ip":"%s"}\n' "$down_s" "$up_s" "$CUR_IP"
 }
 
 USAGE="usage: bmc-blade-power-cycle cycle <bmc-ip> [--power-on] [--port <port>]"

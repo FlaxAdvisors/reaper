@@ -53,6 +53,14 @@ cat > "$work/stub" <<'STUB'
 #!/bin/bash
 cmd="$2"
 [ -n "${FIX_CMDLOG:-}" ] && printf '%s\n' "$cmd" >> "$FIX_CMDLOG"
+# Task 4: FIX_IPLOG records EVERY call's target IP (before the move check
+# below, so probes of a dead/bogus IP are logged too).
+[ -n "${FIX_IPLOG:-}" ] && printf '%s %s\n' "$1" "$(printf '%s' "$cmd" | head -n 1)" >> "$FIX_IPLOG"
+# Task 4 (2026-09-28): the BMC MOVES. Once the 12V write has been sent
+# (FIX_POST_CUT exists), the BMC answers ONLY at FIX_ANSWER_IP -- every call
+# to any other IP is a dead ssh (exit 255, no output). Before the cut it
+# answers at the IP it was called with, as always.
+if [ -n "${FIX_ANSWER_IP:-}" ] && [ -n "${FIX_POST_CUT:-}" ] && [ -e "$FIX_POST_CUT" ] && [ "$1" != "$FIX_ANSWER_IP" ]; then exit 255; fi
 case "$cmd" in
   *'MAC=%s'*)
       # identity() round trip: first call is the S4.1 step-2 baseline; every
@@ -106,6 +114,8 @@ case "$cmd" in
       # fire-and-forget write; nothing to answer, exit code discarded.
       # Task 3: record the claim/marker state AT the moment the write is
       # sent; optionally let "another run" overwrite the manual claim.
+      # Task 4: FIX_POST_CUT marks the moment the BMC leaves its old IP.
+      [ -n "${FIX_POST_CUT:-}" ] && touch "$FIX_POST_CUT"
       if [ -n "${FIX_CLAIMLOG:-}" ]; then
           [ -e "$FLAX_MANUAL_CLAIM_DIR/et6b1" ] && echo "claim_seen_during_run $(cat "$FLAX_MANUAL_CLAIM_DIR/et6b1")" >> "$FIX_CLAIMLOG"
           [ -e "$FLAX_REBOOT_DIR/et6b1" ] && [ "$(stat -c %Y "$FLAX_REBOOT_DIR/et6b1")" -ge "${FIX_T0:-0}" ] && echo "marker_before_write" >> "$FIX_CLAIMLOG"
@@ -135,6 +145,9 @@ cat > "$work/rf" <<'RFSTUB'
 #!/bin/bash
 method="$1"; path="$2"; shift 2
 [ -n "${FIX_CMDLOG:-}" ] && printf 'RF %s %s %s\n' "$method" "$path" "$*" >> "$FIX_CMDLOG"
+[ -n "${FIX_RFIPLOG:-}" ] && printf '%s %s %s\n' "${FLAX_RF_IP:-}" "$method" "$path" >> "$FIX_RFIPLOG"
+# Task 4: after the cut a moved BMC's Redfish answers only at FIX_ANSWER_IP.
+if [ -n "${FIX_ANSWER_IP:-}" ] && [ -n "${FIX_POST_CUT:-}" ] && [ -e "$FIX_POST_CUT" ] && [ "${FLAX_RF_IP:-}" != "$FIX_ANSWER_IP" ]; then printf '\nHTTP=000'; exit 7; fi
 case "$method $path" in
   "GET /redfish/v1/TaskService/Tasks")
       if [ -n "${FIX_OLD_TASK:-}" ]; then m='{"Members":[{"@odata.id":"/redfish/v1/TaskService/Tasks/1"}]}'; else m='{"Members":[]}'; fi
@@ -598,6 +611,85 @@ for bad_args in "--port" "--port --power-on" "--port ../x" "--bogus" "--power-on
     else t3bad "cycle <ip> $bad_args not a usage error" p_usage; fi
 done
 
+# ------------------------- Task 4: --port follows the blade to its current IP -
+# The flax feed stub: called as `$FLAX_FEED_EXEC <port>`; FIX_FEED_MODE picks
+# a normal answer (FIX_FEED_IP / FIX_FEED_CHASSIS), garbage, "unknown", an
+# empty/failed call, or a non-IP string. Every call is logged with its port.
+cat > "$work/feed" <<'EOF'
+#!/bin/bash
+[ -n "${FIX_FEEDLOG:-}" ] && printf '%s\n' "$1" >> "$FIX_FEEDLOG"
+case "${FIX_FEED_MODE:-ok}" in
+  ok)      printf '{"ip":"%s","chassis":"%s"}\n' "${FIX_FEED_IP:-10.0.0.9}" "${FIX_FEED_CHASSIS:-SNTEST1}" ;;
+  garbage) printf 'not json {{{\n' ;;
+  unknown) printf '{"ip":"unknown","chassis":"unknown"}\n' ;;
+  noip)    printf '{"chassis":"SNTEST1"}\n' ;;
+  notip)   printf '{"ip":"10.0.0.9; touch /tmp/pwn","chassis":"SNTEST1"}\n' ;;
+  list)    printf '["10.0.0.50"]\n' ;;
+  fail)    exit 22 ;;
+esac
+EOF
+chmod +x "$work/feed"
+MAC2=aa:bb:cc:dd:ee:02
+# run_move <name> <args> [FIX_*=val...] -- run_port with the feed wired in and
+# per-case cut/feed/ip logs.
+run_move() {
+    local name="$1" args="$2"; shift 2
+    rm -f "$work/cut.$name"; : > "$work/feedlog.$name"; : > "$work/iplog.$name"; : > "$work/rfip.$name"
+    run_port "$name" "$args" FLAX_FEED_EXEC="$work/feed" FIX_POST_CUT="$work/cut.$name" \
+        FIX_FEEDLOG="$work/feedlog.$name" FIX_IPLOG="$work/iplog.$name" FIX_RFIPLOG="$work/rfip.$name" "$@"
+}
+rm -rf "$work/manual" "$work/reboot"
+
+# 1. The BMC comes back on a NEW IP (DHCP churn, 2026-09-27 +404/+483 s):
+#    followed by --port, the record names the new IP, and identity, power
+#    state and the power-on all went to it.
+run_move m_follow "--power-on --port et6b1" FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3 \
+    FIX_POWERSTATE=Off FIX_RF_POWER=On FIX_ANSWER_IP=10.0.0.50 FIX_FEED_IP=10.0.0.50
+[[ "$LAST_OUT" == *'"cycled":true'* ]] && t3ok "follows the blade to a new IP by port -> cycled:true" || t3bad "follow: not cycled" m_follow
+[[ "$LAST_OUT" == *'"ip":"10.0.0.50"'* ]] && t3ok "record names the new IP" || t3bad "follow: no \"ip\":\"10.0.0.50\" in record" m_follow
+[[ "$LAST_OUT" == *'"power_on":"on"'* ]] && grep -q '^10\.0\.0\.50 POST .*ComputerSystem.Reset' "$work/rfip.m_follow" \
+    && t3ok "power-on sent to the new IP" || t3bad "follow: power-on not at the new IP ($(cat "$work/rfip.m_follow"))" m_follow
+grep -q '^10\.0\.0\.50 .*MAC=' "$work/iplog.m_follow" && grep -q '^10\.0\.0\.50 .*obmcutil' "$work/iplog.m_follow" \
+    && t3ok "post-cycle identity + power state read at the new IP" || t3bad "follow: identity/state not at the new IP" m_follow
+grep -qx et6b1 "$work/feedlog.m_follow" && t3ok "the feed is asked for the port given by --port" || t3bad "follow: feed not asked for et6b1 ($(sort -u "$work/feedlog.m_follow"))" m_follow
+
+# 2. A DIFFERENT blade answers at the feed's new IP: identity is still the
+#    gate -> identity_changed, and NO power-on is ever sent.
+run_move m_swap "--power-on --port et6b1" FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3 \
+    FIX_ANSWER_IP=10.0.0.50 FIX_FEED_IP=10.0.0.50 FIX_MAC2="$MAC2" FIX_FEED_CHASSIS=SNOTHER
+[[ "$LAST_OUT" == *'"error":"identity_changed"'* ]] && t3ok "a different blade at the new IP is refused (identity_changed)" || t3bad "swap: not identity_changed" m_swap
+assert_no_cycled_key "$LAST_OUT" "identity_changed at the new IP carries no cycled key"
+grep -q 'ComputerSystem.Reset' "$work/cmd.m_swap" && t3bad "powered on a different blade" m_swap || t3ok "no power-on on identity_changed"
+
+# 3. Same move WITHOUT --port: the old fixed-IP behaviour, feed never asked.
+run_move m_noport "--power-on" FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3 \
+    FIX_ANSWER_IP=10.0.0.50 FIX_FEED_IP=10.0.0.50
+[[ "$LAST_OUT" == *'"error":"never_returned"'* ]] && t3ok "no --port: old fixed-IP behaviour unchanged (never_returned)" || t3bad "noport: not never_returned" m_noport
+[ ! -s "$work/feedlog.m_noport" ] && t3ok "no --port: the feed is never asked" || t3bad "noport: feed asked ($(cat "$work/feedlog.m_noport"))" m_noport
+grep -q 'ComputerSystem.Reset' "$work/cmd.m_noport" && t3bad "noport: power-on sent after never_returned" m_noport || t3ok "no --port: no power-on after never_returned"
+
+# 4. No move, --port given: the record names the original IP.
+run_move m_stay "--port et6b1" FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3 FIX_FEED_IP=10.0.0.9
+[[ "$LAST_OUT" == *'"cycled":true'*'"ip":"10.0.0.9"'* ]] && t3ok "--port, BMC back on its own IP -> ip is the original" || t3bad "stay: record wrong" m_stay
+# and without --port the record still carries the (only) IP
+run_move m_stay2 "" FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3
+[[ "$LAST_OUT" == *'"cycled":true'*'"ip":"10.0.0.9"'* ]] && t3ok "no --port -> ip is the original" || t3bad "stay2: record wrong" m_stay2
+
+# 5. A broken feed never breaks the wait: garbage / "unknown" / no ip / a
+#    non-IP string / a JSON list / a failing call all fall back to the
+#    ORIGINAL IP only. With the BMC back at its own IP -> cycled on it; with
+#    the BMC moved -> never_returned (the non-IP string is never probed).
+for mode in garbage unknown noip notip list fail; do
+    run_move "m_bad_$mode" "--port et6b1" FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3 FIX_FEED_MODE="$mode"
+    [[ "$LAST_OUT" == *'"cycled":true'*'"ip":"10.0.0.9"'* ]] && grep -qx et6b1 "$work/feedlog.m_bad_$mode" \
+        && t3ok "feed $mode: wait falls back to the original IP (cycled at 10.0.0.9)" || t3bad "feed $mode broke the wait" "m_bad_$mode"
+    run_move "m_badmv_$mode" "--port et6b1" FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3 FIX_FEED_MODE="$mode" \
+        FIX_ANSWER_IP=10.0.0.50
+    if [[ "$LAST_OUT" == *'"error":"never_returned"'* ]] && ! grep -qv '^10\.0\.0\.9 ' "$work/iplog.m_badmv_$mode"; then
+        t3ok "feed $mode + moved BMC: never_returned, only the original IP probed"
+    else t3bad "feed $mode + moved BMC ($(cut -d' ' -f1 "$work/iplog.m_badmv_$mode" | sort -u | tr '\n' ' '))" "m_badmv_$mode"; fi
+done
+
 if grep -q 'BLADE_CYCLE_TIMEOUT="${BLADE_CYCLE_TIMEOUT:-480}"' "$here/bmc-blade-power-cycle.sh.j2"; then
     echo "ok   - production up-wait cap is 480s"; pass=$((pass+1))
 else
@@ -812,6 +904,9 @@ cat > "$work/rf.hang6" <<'EOF'
 #!/bin/bash
 method="$1"; path="$2"; shift 2
 [ -n "${FIX_CMDLOG:-}" ] && printf 'RF %s %s %s\n' "$method" "$path" "$*" >> "$FIX_CMDLOG"
+[ -n "${FIX_RFIPLOG:-}" ] && printf '%s %s %s\n' "${FLAX_RF_IP:-}" "$method" "$path" >> "$FIX_RFIPLOG"
+# Task 4: after the cut a moved BMC's Redfish answers only at FIX_ANSWER_IP.
+if [ -n "${FIX_ANSWER_IP:-}" ] && [ -n "${FIX_POST_CUT:-}" ] && [ -e "$FIX_POST_CUT" ] && [ "${FLAX_RF_IP:-}" != "$FIX_ANSWER_IP" ]; then printf '\nHTTP=000'; exit 7; fi
 case "$method $path" in
   "GET /redfish/v1/TaskService/Tasks")
       sleep 3.752
