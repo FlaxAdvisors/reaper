@@ -49,6 +49,24 @@
 # that contract is simply that it never loops the write itself.
 set -u
 
+# Kill every descendant of $1 (depth-first), then $1's direct children last.
+# Command substitutions and pipelines run in subshells that a plain `kill $$`
+# does not reach; a killed bin must never leave an ssh or journal read behind
+# holding the per-BMC lock (et6b4 2026-09-27: >1 h).
+kill_tree() {
+    local p c
+    for c in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$c"; done
+    [ "$1" != "$$" ] && kill -TERM "$1" 2>/dev/null
+    return 0
+}
+on_signal() {
+    trap - TERM INT HUP
+    kill_tree "$$"
+    exec 9>&- 2>/dev/null
+    exit 143
+}
+trap on_signal TERM INT HUP
+
 # I7: NO surrounding quotes -- ansible's `quote` filter emits its own,
 # correctly, for any value. Hand-wrapping in single quotes breaks (or worse:
 # runs shell) the moment a vaulted password contains a single quote of its

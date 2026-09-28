@@ -230,5 +230,42 @@ if [ $rc -eq 0 ] && echo "$v" | python3 -c 'import sys,json; d=json.load(sys.std
     ok "flash verdict carries power_control / entity_manager; verdict lines stay bios-update only"
 else bad "flash verdict carries power_control / entity_manager; verdict lines stay bios-update only"; fi
 
+# ── F5/F6: bounded verdict read, no orphaned children (2026-09-27, et6b4) ────
+
+# --- F5: a hung verdict read is bounded, and the flash still reports ---
+cat > "$work/ssh.hang" <<'EOF'
+#!/bin/bash
+case "$2" in
+  *journalctl*) sleep 30 ;;              # the et6b4 hang: journal/busctl never returns
+  *) exec "$REAL_SSH_STUB" "$@" ;;
+esac
+EOF
+chmod +x "$work/ssh.hang"
+printf 'Completed 100\n' > "$work/seq.ok"
+export FIX_CMDLOG="$work/cmd.hang" FIX_SEQN="$work/seqn.hang" FIX_BOOTN="$work/bootn.hang"
+: > "$FIX_CMDLOG"; rm -f "$FIX_SEQN" "$FIX_BOOTN"
+t0=$(date +%s)
+out=$(REAL_SSH_STUB="$work/ssh" FLAX_REDFISH_EXEC="$work/rf" FLAX_BMC_REMOTE_EXEC="$work/ssh.hang" FLAX_FETCH_EXEC="$work/fetch" \
+      BIOS_FW_UPDATE_POLL_S=0 BIOS_FW_UPDATE_CUT_POLL_S=0 BIOS_FW_UPDATE_CUT_WAIT_S=2 \
+      BIOS_FW_UPDATE_LOCK_DIR="$work" BIOS_FW_UPDATE_JOURNAL_FETCH_S=2 \
+      FIX_SEQ="$work/seq.ok" \
+      "$work/bin" flash 10.0.0.1 http://share/TPC_P26F.tar --port et25b1 2>"$work/err.hang")
+rc=$?
+dt=$(( $(date +%s) - t0 ))
+[ "$dt" -lt 20 ] && echo "$out" | grep -q '"phase": "verdict"' && echo "$out" | grep -q '"ending": "unknown"' \
+  && ok "hung journal read is cut at JOURNAL_FETCH_S and the verdict is still printed" || bad "hung verdict read ($dt s)"
+
+# --- F6: SIGTERM mid-ssh leaves no child and frees the lock ---
+cat > "$work/ssh.sleep" <<'EOF'
+#!/bin/bash
+sleep 60
+EOF
+chmod +x "$work/ssh.sleep"
+( FLAX_BMC_REMOTE_EXEC="$work/ssh.sleep" BIOS_FW_UPDATE_LOCK_DIR="$work" \
+    bash "$work/bin" journal 10.0.0.1 1 >/dev/null 2>&1 ) & bpid=$!
+sleep 1; kill -TERM "$bpid"; wait "$bpid" 2>/dev/null
+sleep 1
+if pgrep -f "$work/ssh.sleep" >/dev/null; then bad "orphaned ssh child after SIGTERM"; else ok "SIGTERM kills the whole tree"; fi
+
 echo "---"; echo "pass=$pass fail=$fail"
 [ $fail -eq 0 ]

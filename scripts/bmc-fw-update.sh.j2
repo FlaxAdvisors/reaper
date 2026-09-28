@@ -31,6 +31,24 @@
 # NOTE: NOT `set -e` -- the poll loop must survive the activation drop.
 set -uo pipefail
 
+# Kill every descendant of $1 (depth-first), then $1's direct children last.
+# Command substitutions and pipelines run in subshells that a plain `kill $$`
+# does not reach; a killed bin must never leave an ssh or journal read behind
+# holding the per-BMC lock (et6b4 2026-09-27: >1 h).
+kill_tree() {
+    local p c
+    for c in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$c"; done
+    [ "$1" != "$$" ] && kill -TERM "$1" 2>/dev/null
+    return 0
+}
+on_signal() {
+    trap - TERM INT HUP
+    kill_tree "$$"
+    exec 9>&- 2>/dev/null
+    exit 143
+}
+trap on_signal TERM INT HUP
+
 export SSHPASS={{ bmc_root_password | quote }}
 RF_USER=root
 

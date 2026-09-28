@@ -43,6 +43,24 @@
 # bootcheck-move-design.md.
 set -uo pipefail
 
+# Kill every descendant of $1 (depth-first), then $1's direct children last.
+# Command substitutions and pipelines run in subshells that a plain `kill $$`
+# does not reach; a killed bin must never leave an ssh or journal read behind
+# holding the per-BMC lock (et6b4 2026-09-27: >1 h).
+kill_tree() {
+    local p c
+    for c in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$c"; done
+    [ "$1" != "$$" ] && kill -TERM "$1" 2>/dev/null
+    return 0
+}
+on_signal() {
+    trap - TERM INT HUP
+    kill_tree "$$"
+    exec 9>&- 2>/dev/null
+    exit 143
+}
+trap on_signal TERM INT HUP
+
 export SSHPASS={{ bmc_root_password | quote }}
 RF_USER=root
 
@@ -53,7 +71,9 @@ POLL_FAIL_MAX="${BIOS_FW_UPDATE_POLL_FAIL_MAX:-12}"
 CUT_WAIT_S="${BIOS_FW_UPDATE_CUT_WAIT_S:-75}"    # 20 s timer + margin
 CUT_POLL_S="${BIOS_FW_UPDATE_CUT_POLL_S:-5}"
 LOCK_DIR="${BIOS_FW_UPDATE_LOCK_DIR:-/run/flax}"
+JOURNAL_FETCH_S="${BIOS_FW_UPDATE_JOURNAL_FETCH_S:-120}"  # F5: bound the post-flash journal/busctl read
 SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10 -o HostKeyAlgorithms=+ssh-rsa"
+export SSH_OPTS   # journal_fetch's `bash -c` child (a fresh shell) needs this
 
 # ── transport (each has a test hook; production leaves the hooks unset) ──────
 
@@ -80,6 +100,7 @@ bmc() {   # bmc <ip> <remote command>
     fi
     sshpass -e ssh -n -T $SSH_OPTS "root@$1" "$2"
 }
+export -f bmc   # journal_fetch's `bash -c` child (a fresh shell) needs this
 
 fetch() {  # fetch <url> <out>
     if [ -n "${FLAX_FETCH_EXEC:-}" ]; then
@@ -193,11 +214,16 @@ for l in sys.stdin:
 print(json.dumps({"bios_update": bu[-40:], "power_control": pc[-40:],
                   "entity_manager": em[-40:], "em_inventory": inv})[1:-1])'
 }
-journal_fetch() {  # journal_fetch <ip> <since> -> raw lines + JOURNAL_END; rc 1 if unreachable
+journal_fetch() {  # journal_fetch <ip> <since> -> raw lines + JOURNAL_END; rc 1 if unreachable/timed out
+    # F5 (et6b4 2026-09-27): this ssh has hung >1h holding the per-BMC lock.
+    # `timeout` wraps the WHOLE command substitution (a subshell), not just
+    # `bmc` itself, in a fresh `bash -c` so the outer trap's kill_tree still
+    # finds and kills it even if `timeout`'s own TERM->child forwarding were
+    # ever bypassed. --kill-after=5 escalates to KILL if TERM is ignored.
     local out
-    out=$(bmc "$1" "journalctl --no-pager -o short-iso --since @$2 2>/dev/null | grep -E '$JOURNAL_RE' | grep -v 'Processing blocks'; echo EM_INVENTORY; busctl tree --list xyz.openbmc_project.EntityManager 2>/dev/null | grep /inventory/system/; echo JOURNAL_END" 2>/dev/null)
-    case "$out" in *JOURNAL_END*) printf '%s\n' "$out"; return 0 ;; esac
-    return 1
+    out=$(timeout --kill-after=5 "$JOURNAL_FETCH_S" bash -c 'bmc "$@"' _ "$1" "journalctl --no-pager -o short-iso --since @$2 2>/dev/null | grep -E '$JOURNAL_RE' | grep -v 'Processing blocks'; echo EM_INVENTORY; busctl tree --list xyz.openbmc_project.EntityManager 2>/dev/null | grep /inventory/system/; echo JOURNAL_END") || true
+    printf '%s\n' "$out"
+    printf '%s\n' "$out" | grep -q '^JOURNAL_END$'
 }
 cmd_journal() {
     local ip="$1" since="$2" raw

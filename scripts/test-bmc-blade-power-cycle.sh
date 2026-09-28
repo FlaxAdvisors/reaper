@@ -571,5 +571,26 @@ else
 fi
 chmod 755 "$rodir"
 
+# ── F6: SIGTERM mid-ssh leaves no child and frees the lock (2026-09-27, et6b4) ──
+cat > "$work/stub.hang" <<'EOF'
+#!/bin/bash
+sleep 60
+EOF
+chmod +x "$work/stub.hang"
+( FLAX_BMC_REMOTE_EXEC="$work/stub.hang" FLAX_CYCLE_LOCK_DIR="$work" FLAX_REDFISH_EXEC="$work/rf" \
+    bash "$work/bin" cycle 10.0.0.9 >/dev/null 2>&1 ) & bpid=$!
+sleep 1; kill -TERM "$bpid"; wait "$bpid" 2>/dev/null
+sleep 1
+if pgrep -f "$work/stub.hang" >/dev/null; then
+    echo "FAIL - orphaned identity-probe child after SIGTERM"; fail=$((fail+1))
+else
+    echo "ok   - SIGTERM kills the whole tree (no orphaned identity-probe child)"; pass=$((pass+1))
+fi
+if flock -n "$work/fw-update-10.0.0.9.lock" true; then
+    echo "ok   - per-BMC lock is free after SIGTERM"; pass=$((pass+1))
+else
+    echo "FAIL - per-BMC lock still held after SIGTERM"; fail=$((fail+1))
+fi
+
 echo; echo "passed: $pass  failed: $fail"
 [ "$fail" -eq 0 ]
