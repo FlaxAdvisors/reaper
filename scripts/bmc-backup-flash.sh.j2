@@ -249,6 +249,8 @@ code_of() { tail -n 1 | sed -n 's/^HTTP=//p'; }
 # live-proven EndTime parsing kept verbatim) with one change: a live job is
 # reported as "job_running <id> <state> <pct>" so the refusal can name it.
 # Prints "idle" (rc 0) or job_running.../quiet_window.../tasks_unreadable (rc 3).
+# BY DESIGN any Redfish failure (tasks_unreadable: Redfish down, 401, ...) refuses
+# with exit 4 -- a BMC answering ssh but not Redfish cannot be reset (bmc_fw faults it after 5 refusals).
 net_busy_check() {
     local ip="$1" coll ids docs="[" first=1 id t
     coll=$(rf GET "$ip" /redfish/v1/TaskService/Tasks)
@@ -468,6 +470,22 @@ ll_of() {
     printf 'fe80::%x:%x:%x:%x' $(( ((0x$1 ^ 2) << 8) | 0x$2 )) $(( (0x$3 << 8) | 0xff )) \
         $(( (0xfe << 8) | 0x$4 )) $(( (0x$5 << 8) | 0x$6 ))
 }
+# Bounded remote call, netreset only (version/write/verify keep plain bmc()).
+# `reboot -f` drops the BMC without FIN/RST, so an ssh waiting for the exit
+# status would otherwise sit until kernel TCP keepalive (~2 h) -- with the
+# parent's heartbeat holding the per-BMC lock + claim and the boot-wait
+# deadline never starting. ServerAlive* (as bmc-blade-power-cycle) bounds the
+# ssh path; the outer `timeout` bounds the FLAX_BMC_REMOTE_EXEC seam too, and
+# (GNU timeout signals its whole process group) any grandchild with it.
+NR_SSH_ALIVE="-o ServerAliveInterval=2 -o ServerAliveCountMax=1"
+bmc_bounded() {   # bmc_bounded <secs> <target> <cmd>
+    local secs="$1"; shift
+    if [ -n "${FLAX_BMC_REMOTE_EXEC:-}" ]; then
+        timeout -k 2 "$secs" "$FLAX_BMC_REMOTE_EXEC" "$1" "$2" 9>&-
+        return $?
+    fi
+    timeout -k 2 "$secs" sshpass -e ssh -n -T $SSH_OPTS $NR_SSH_ALIVE "root@$1" "$2" 9>&-
+}
 mac_ok() { [[ "${1:-}" =~ ^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$ ]]; }
 
 # One ssh: boot_id, addr_assign_type, current MAC + permaddr (iproute2 prints
@@ -512,7 +530,7 @@ cmd_netreset() {   # CHILD only: the PARENT holds the lock and the claim
         || { echo "error: $NET_FILE still present after FactoryReset on $ip" >&2; nr_verdict error file_not_removed; exit 1; }
 
     mark_reboot "$port"                     # BEFORE the reboot (Part 1 interface)
-    bmc "$ip" 'sync; reboot -f' >/dev/null 2>&1 || true   # the session dies with the BMC
+    bmc_bounded "${NETRESET_REBOOT_TIMEOUT_S:-20}" "$ip" 'sync; reboot -f' >/dev/null 2>&1 || true   # the session dies with the BMC
 
     # Verified = a boot_id different from the pre-reset one, read from the
     # native MAC's link-local or (each poll) the old IPv4, whichever answers.
@@ -522,7 +540,7 @@ cmd_netreset() {   # CHILD only: the PARENT holds the lock and the claim
     while [ "$(date +%s)" -lt "$deadline" ]; do
         sleep "${NETRESET_POLL_S:-5}"
         for t in "$ll" "$ip"; do
-            s=$(bmc "$t" "$STATE_READ" 2>/dev/null)
+            s=$(bmc_bounded "${NETRESET_READ_TIMEOUT_S:-25}" "$t" "$STATE_READ" 2>/dev/null)
             nb=$(kv "$s" BOOT)
             if [ -n "$nb" ] && [ "$nb" != "$pre_boot" ]; then post="$s"; target="$t"; break 2; fi
         done

@@ -120,10 +120,16 @@ case "$cmd" in
   *"reboot -f"*)
       # ordering proof: was the reboot marker already there when the reboot went out?
       [ -e "$FLAX_REBOOT_DIR/et8b1" ] && echo marker_before_reboot >> "$d/log"
-      [ -f "$d/wedge" ] || echo new-boot > "$d/boot_next"; exit 255 ;;
+      [ -f "$d/wedge" ] || echo new-boot > "$d/boot_next"
+      # NR_REBOOT_HANG: the BMC is gone but the ssh never returns (no FIN/RST)
+      [ -n "${NR_REBOOT_HANG:-}" ] && sleep "$NR_REBOOT_HANG"; exit 255 ;;
 esac
 # the state read. NR_HANG: the FIRST read hangs (signal tests), then answers.
 if [ -n "${NR_HANG:-}" ] && [ ! -e "$d/hung" ]; then touch "$d/hung"; sleep "$NR_HANG"; fi
+# NR_POLL_HANG: the FIRST post-reboot link-local read hangs, never answers
+if [ -f "$d/boot_next" ] && [ -n "${NR_POLL_HANG:-}" ] && [ ! -e "$d/pollhung" ] && case "$t" in fe80::*) true;; *) false;; esac; then
+  touch "$d/pollhung"; sleep "$NR_POLL_HANG"; exit 255
+fi
 if [ -f "$d/boot_next" ]; then
   # after the reboot: NR_LL_ONLY -> the old IPv4 is gone; NR_IP_ONLY -> no LL
   case "$t" in
@@ -248,6 +254,25 @@ nr_env "$work/bin" netreset 172.17.8.101 --port ../x > /dev/null 2>&1; echo $? >
 chk "--port ../x: usage rc 2"                 rc_is 2
 nr_env "$work/bin" netreset 'x/../../y' --port et8b1 > /dev/null 2>&1; echo $? > "$work/nr/rc"
 chk "non-IPv4 address: usage rc 2, nothing sent" eval 'rc_is 2 && [ ! -s "$work/nr/log" ]'
+
+# --- fix round 1: a `reboot -f` ssh that never returns (the BMC drops
+#     without FIN/RST) and a post-reboot read that never answers must both be
+#     bounded, or the boot-wait deadline never starts. Outer `timeout 40` so an
+#     unbounded bin FAILS here instead of hanging the suite. ---
+nr_setup $PIN $PERM
+t0=$(date +%s)
+nr_env NR_REBOOT_HANG=600.117 NETRESET_REBOOT_TIMEOUT_S=2 timeout 40 "$work/bin" netreset 172.17.8.101 --port et8b1 > "$work/nr/out" 2> "$work/nr/err"
+echo $? > "$work/nr/rc"; dt=$(( $(date +%s) - t0 ))
+chk "hung reboot ssh: bounded, reaches the post-state read, clean (${dt}s)" eval 'rc_is 0 && out_has "\"netreset\":\"clean\"" && [ "$dt" -le 15 ]'
+chk "hung reboot ssh: no leftover hang"       eval '! pgrep -f "sleep 600\.117" >/dev/null'
+pkill -9 -f 'sleep 600\.117' 2>/dev/null
+nr_setup $PIN $PERM
+t0=$(date +%s)
+nr_env NR_POLL_HANG=600.223 NETRESET_READ_TIMEOUT_S=2 timeout 40 "$work/bin" netreset 172.17.8.101 --port et8b1 > "$work/nr/out" 2> "$work/nr/err"
+echo $? > "$work/nr/rc"; dt=$(( $(date +%s) - t0 ))
+chk "hung post-reboot read: bounded, falls through to the old IPv4 (${dt}s)" eval 'rc_is 0 && out_has "\"target\":\"172.17.8.101\"" && [ "$dt" -le 15 ]'
+chk "hung post-reboot read: no leftover hang" eval '! pgrep -f "sleep 600\.223" >/dev/null'
+pkill -9 -f 'sleep 600\.223' 2>/dev/null
 
 # --- TERM to the PARENT while the first state read hangs: exits promptly
 #     (143), lock free, claim removed, no survivor, nothing reset. ---
