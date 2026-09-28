@@ -108,6 +108,18 @@ run_case "backup_version record unchanged by the net fields" "flax-onetree-1.1.1
 # command string is executed against them (boot_id, addr_assign_type, the
 # network file and `ip link show eth0` rewritten to fixtures) -- the same
 # honesty rule as the version reader above.
+# final-review fix: a pin with '"' and '\' must not break the version record
+printf '[Match]\nName=eth0\n[Link]\nMACAddress=98:03"9b\\a8\r\n' > "$work/netfile"; touch -d @1790000000 "$work/netfile"
+printf 'VERSION_ID=flax-onetree-1.1.2\n' > "$work/osrel"; mk_chip flax-onetree-1.1.2 "$work/m0"; mk_chip flax-onetree-1.1.2 "$work/m5"
+vout=$(FLAX_BMC_REMOTE_EXEC="$work/stub" FIX_MTD0="$work/m0" FIX_MTD5="$work/m5" FIX_OSREL="$work/osrel" \
+       FIX_PROCMTD="$work/procmtd" FIX_NETFILE="$work/netfile" "$work/bin" version 10.0.0.1 2>/dev/null)
+if printf '%s' "$vout" | python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); assert d["backup_version"]=="flax-onetree-1.1.2", d' 2>/dev/null; then
+    printf '  PASS  %s\n' "pin with a quote + backslash + CR: version record is valid JSON, backup_version kept"; pass=$((pass+1))
+else
+    printf '  FAIL  %s\n        got: %s\n' "pin with a quote + backslash + CR: valid JSON" "$vout"; fail=$((fail+1))
+fi
+net_absent
+
 echo "bmc-backup-flash netreset"
 cat > "$work/nrstub" <<'STUB'
 #!/bin/bash
@@ -115,7 +127,8 @@ cat > "$work/nrstub" <<'STUB'
 t="$1"; cmd="$2"; d="$NR_DIR"
 echo "$t :: $cmd" >> "$d/log"
 case "$cmd" in
-  *FactoryReset*) [ -f "$d/factoryreset_fails" ] && exit 1; rm -f "$d/netfile"; exit 0 ;;
+  *FactoryReset*) [ -f "$d/factoryreset_fails" ] && exit 1
+                  [ -n "${NR_RESET_HANG:-}" ] && { sleep "$NR_RESET_HANG"; exit 0; }; rm -f "$d/netfile"; exit 0 ;;
   "[ ! -f "*) [ ! -f "$d/netfile" ]; exit $? ;;
   *"reboot -f"*)
       # ordering proof: was the reboot marker already there when the reboot went out?
@@ -254,6 +267,18 @@ nr_env "$work/bin" netreset 172.17.8.101 --port ../x > /dev/null 2>&1; echo $? >
 chk "--port ../x: usage rc 2"                 rc_is 2
 nr_env "$work/bin" netreset 'x/../../y' --port et8b1 > /dev/null 2>&1; echo $? > "$work/nr/rc"
 chk "non-IPv4 address: usage rc 2, nothing sent" eval 'rc_is 2 && [ ! -s "$work/nr/log" ]'
+
+# --- final-review fix: a FactoryReset busctl that never returns is bounded
+#     and takes the factoryreset_failed path: no reboot, lock + claim freed. ---
+nr_setup $PIN $PERM
+t0=$(date +%s)
+nr_env NR_RESET_HANG=600.331 NETRESET_RESET_TIMEOUT_S=2 timeout 40 "$work/bin" netreset 172.17.8.101 --port et8b1 > "$work/nr/out" 2> "$work/nr/err"
+echo $? > "$work/nr/rc"; dt=$(( $(date +%s) - t0 ))
+chk "hung FactoryReset: rc 1 factoryreset_failed within the bound (${dt}s)" eval 'rc_is 1 && out_has factoryreset_failed && [ "$dt" -le 10 ]'
+chk "hung FactoryReset: NO reboot sent, no marker" eval '! log_has "reboot -f" && [ ! -e "$work/nr/reboot/et8b1" ]'
+chk "hung FactoryReset: lock + claim released" eval 'lock_free && [ ! -e "$work/nr/manual/et8b1" ]'
+chk "hung FactoryReset: no leftover hang"      eval '! pgrep -f "sleep 600\.331" >/dev/null'
+pkill -9 -f 'sleep 600\.331' 2>/dev/null
 
 # --- fix round 1: a `reboot -f` ssh that never returns (the BMC drops
 #     without FIN/RST) and a post-reboot read that never answers must both be

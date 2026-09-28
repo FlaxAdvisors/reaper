@@ -317,6 +317,11 @@ need_lock_dir() {
 # it is not fully trusted; sshd re-parses the command with the remote shell.
 _sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
+# JSON-safe a value read off the BMC (the [Link] pin, MACs, ...): drop '"',
+# '\' and every control character (CR/LF included) -- one stray byte would
+# break the whole record, and a broken version record loses backup_version.
+_js() { printf '%s' "${1:-}" | tr -d '"\\[:cntrl:]'; }
+
 read_chip() { bmc "$1" "$(printf "$READ_FMT" "$2")" 2>/dev/null; }
 
 # CONTRACT with bmcfw.worker: the worker IGNORES this bin's exit code and takes
@@ -330,7 +335,7 @@ cmd_version() {
     active_os=$(printf '%s\n' "$first" | sed -n 's/^V=//p' | tr -d '"\\')
     [ -n "$active_os" ] || json_err ssh_unreachable
     nf=$(printf '%s\n' "$first" | sed -n 's/^NF=//p'); [ -n "$nf" ] || nf=absent
-    np=$(printf '%s\n' "$first" | sed -n 's/^NP=//p' | head -n 1); [ -n "$np" ] || np=none
+    np=$(_js "$(printf '%s\n' "$first" | sed -n 's/^NP=//p' | head -n 1)"); [ -n "$np" ] || np=none
     nm=$(printf '%s\n' "$first" | sed -n 's/^NM=//p'); case "$nm" in ''|*[!0-9]*) nm=null;; esac
     NETJ=$(printf ',"net_file":"%s","net_pin":"%s","net_mtime":%s' "$nf" "$np" "$nm")
 
@@ -493,7 +498,6 @@ mac_ok() { [[ "${1:-}" =~ ^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$ ]]; }
 # [Link] pin (section-aware, same awk as FIRST_READ).
 STATE_READ='echo BOOT=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null); echo ASSIGN=$(cat /sys/class/net/eth0/addr_assign_type 2>/dev/null); ip link show eth0 | awk '"'"'/link\/ether/{print "MAC=" $2; for(i=1;i<=NF;i++) if($i=="permaddr") print "PERM=" $(i+1)}'"'"'; f='"$NET_FILE"'; if [ -f "$f" ]; then echo NF=present; awk '"'"'/^\[/{s=$0} s=="[Link]" && /^MACAddress=/{sub(/^MACAddress=/,""); print "NP=" $0; exit}'"'"' "$f"; else echo NF=absent; fi'
 kv() { printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -n 1; }
-_js() { printf '%s' "${1:-}" | tr -d '"\\\n'; }   # values read off the BMC: no JSON breakage
 
 nr_verdict() {  # nr_verdict <outcome> <reason>
     printf '{"netreset":"%s","reason":"%s","pre_mac":"%s","native_mac":"%s","pre_pin":"%s","post_mac":"%s","post_pin":"%s","post_assign":"%s","target":"%s"}\n' \
@@ -515,7 +519,10 @@ cmd_netreset() {   # CHILD only: the PARENT holds the lock and the claim
         nr_verdict refused "$b"; exit 4
     fi
 
-    pre=$(bmc "$ip" "$STATE_READ" 2>/dev/null)
+    # Every remote call below is bounded (bmc_bounded): a hung ssh here would
+    # hold the per-BMC lock + claim indefinitely. A timeout takes the step's
+    # own error path.
+    pre=$(bmc_bounded "${NETRESET_READ_TIMEOUT_S:-25}" "$ip" "$STATE_READ" 2>/dev/null)
     pre_boot=$(kv "$pre" BOOT); pre_mac=$(kv "$pre" MAC); pre_pin=$(kv "$pre" NP); [ -n "$pre_pin" ] || pre_pin=none
     native=$(kv "$pre" PERM); [ -n "$native" ] || native="$pre_mac"
     [ -n "$pre_boot" ] || { echo "error: cannot read boot_id on $ip; not resetting (reboot could not be verified)" >&2; nr_verdict error boot_id_unreadable; exit 1; }
@@ -524,9 +531,9 @@ cmd_netreset() {   # CHILD only: the PARENT holds the lock and the claim
     mac_ok "$native" || { echo "error: cannot read the MAC of eth0 on $ip; not resetting" >&2; nr_verdict error mac_unreadable; exit 1; }
     echo "netreset $ip ($port): file=$(kv "$pre" NF) pin=$pre_pin mac=$pre_mac native=$native" >&2
 
-    bmc "$ip" 'busctl call xyz.openbmc_project.Network /xyz/openbmc_project/network xyz.openbmc_project.Common.FactoryReset Reset' >/dev/null 2>&1 \
+    bmc_bounded "${NETRESET_RESET_TIMEOUT_S:-30}" "$ip" 'busctl call xyz.openbmc_project.Network /xyz/openbmc_project/network xyz.openbmc_project.Common.FactoryReset Reset' >/dev/null 2>&1 \
         || { echo "error: FactoryReset call failed on $ip" >&2; nr_verdict error factoryreset_failed; exit 1; }
-    bmc "$ip" "[ ! -f $NET_FILE ]" 2>/dev/null \
+    bmc_bounded "${NETRESET_READ_TIMEOUT_S:-25}" "$ip" "[ ! -f $NET_FILE ]" 2>/dev/null \
         || { echo "error: $NET_FILE still present after FactoryReset on $ip" >&2; nr_verdict error file_not_removed; exit 1; }
 
     mark_reboot "$port"                     # BEFORE the reboot (Part 1 interface)
