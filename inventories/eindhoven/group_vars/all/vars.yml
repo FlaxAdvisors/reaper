@@ -42,10 +42,10 @@ console_onefast:  "console=ttyS1,115200n8"
 # `console:` references one of the four presets above. For wedge VLANs the
 # value is currently unused (Arista EOS install via ONIE doesn't take a kernel
 # console arg from us) but is kept populated so the data shape stays uniform.
-# pool_guard: BMC pool exclusion on vids 16/17 (Part 3 E) -- ships false; flip only on the operator's go after a no-pool BMC recovery is proven (spec §11.5).
+# pool_guard: BMC pool exclusion on vids 16/17 (Part 3 E) -- ON since 2026-09-28 (operator go after Part 2 hold, classify hold and link-up boot grace were seen live on et8b3)
 vlans:
-  - { vid: 16, family: leopard,      phase: triage, parent: eth1, cidr: 172.16.0.0/16, gateway_vip: 172.16.0.10, console: "{{ console_zerofast }}", pool_guard: false }
-  - { vid: 17, family: tiogapass,    phase: triage, parent: eth1, cidr: 172.17.0.0/16, gateway_vip: 172.17.0.10, console: "{{ console_zerofast }}", pool_guard: false }
+  - { vid: 16, family: leopard,      phase: triage, parent: eth1, cidr: 172.16.0.0/16, gateway_vip: 172.16.0.10, console: "{{ console_zerofast }}", pool_guard: true }
+  - { vid: 17, family: tiogapass,    phase: triage, parent: eth1, cidr: 172.17.0.0/16, gateway_vip: 172.17.0.10, console: "{{ console_zerofast }}", pool_guard: true }
   - { vid: 18, family: wedge100s,    phase: triage, parent: eth1, cidr: 172.18.0.0/16, gateway_vip: 172.18.0.10, console: "{{ console_zeroslow }}" }
   - { vid: 19, family: wedge400,     phase: triage, parent: eth1, cidr: 172.19.0.0/16, gateway_vip: 172.19.0.10, console: "{{ console_zeroslow }}" }
   - { vid: 20, family: yv3,          phase: triage, parent: eth1, cidr: 172.20.0.0/16, gateway_vip: 172.20.0.10, console: "{{ console_zerofast }}" }
