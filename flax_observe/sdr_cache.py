@@ -28,6 +28,16 @@ Fix round 1 (2026-09-28, review findings against spec §3.1):
   present) as an invalid/corrupt meta file, forcing a fresh build attempt.
 - E: the HSC-row matcher is shared with `bmc_probe._parse_watts_from_ipmi_output`
   via `bmc_probe._is_hsc_power_row` instead of being duplicated here.
+
+Fix round 2 (2026-09-28, re-review): item B's CalledProcessError handling
+only covered the PRIMARY cached read -- `_gated_build`'s fallback reads
+(used while a failed rebuild is rate-limited by item C) called `_exec`
+directly, so the same `sensor reading`-of-a-stale-name failure reached the
+outer `except Exception` and returned `("unknown", None)`, losing a power
+reading that had actually succeeded, every gated cycle, for up to
+`rebuild_min_secs` per failed rebuild attempt. Fixed by extracting
+`_exec_power_watts`, the one shared CalledProcessError/parse-power helper
+every read (primary AND both gated fallbacks) now goes through.
 """
 import json
 import os
@@ -128,6 +138,37 @@ def _reading(text, name):
     return None
 
 
+def _exec_power_watts(runner, ip, login, lines, cipher, sdr_cache, name):
+    """Run one `power status` [+ `sensor reading "<name>"`] exec session,
+    tolerant of `subprocess.CalledProcessError` -- `_default_ipmi_runner`
+    runs with `check=True`, so a non-zero rc (e.g. `sensor reading` of a
+    name the live SDR repository no longer has) raises rather than
+    returning cleanly, even though `power status` in the same session may
+    have already succeeded (fix round 1 item B / fix round 2: the same
+    handling now covers every caller, primary AND gated, via this one
+    helper -- not a copy in each).
+
+    Returns (power, watts, ok): `ok` is False iff the call raised, in which
+    case `power` is parsed from the exception's `e.output` (bytes -> utf-8
+    with errors="replace", None -> "", str left as-is) and `watts` is
+    always None (an exception's output is never trusted for the full
+    sensor-reading text). `ok` is True for a clean return, with `watts`
+    from `_reading` when `name` is given.
+    """
+    try:
+        text = _exec(runner, ip, login, lines, cipher=cipher, sdr_cache=sdr_cache)
+    except subprocess.CalledProcessError as e:
+        out = e.output
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", errors="replace")
+        elif out is None:
+            out = ""
+        return _parse_power_from_ipmi_output(out), None, False
+    pwr = _parse_power_from_ipmi_output(text)
+    watts = _reading(text, name) if name else None
+    return pwr, watts, True
+
+
 def _record_attempt(meta_path, prior_meta, t):
     """Write `attempted = t`, keeping any existing name/built from
     `prior_meta` (which may be None -- no meta yet, or an invalid one)."""
@@ -178,18 +219,26 @@ def _gated_build(ip, login, cache, meta_path, cipher, runner, t, meta, rebuild_m
     that's already failing to answer (fix round 1 item C): a still-usable
     cache (meta known + cache file present) is read normally; lacking one,
     a single `power status`-only session (no sdr walk) answers the cycle.
+
+    Neither fallback ever calls `_stale`/`_build` -- a gated cycle answers
+    with what it has this cycle, it never itself triggers another build
+    attempt. Both fallback reads go through `_exec_power_watts` (fix round
+    2): without it, a `subprocess.CalledProcessError` from the cached read
+    (e.g. `sensor reading` failing while `power status` in the same session
+    had already succeeded) reached the outer `except Exception` and lost
+    the power reading too, every gated cycle, for up to `rebuild_min_secs`
+    per failed rebuild attempt.
     """
     last_attempt = _last_attempt(meta_path)
     if last_attempt is not None and t - last_attempt < rebuild_min_secs:
         if meta is not None and os.path.exists(cache):
             name = meta.get("name")
             lines = ["power status"] + (['sensor reading "%s"' % name] if name else [])
-            text = _exec(runner, ip, login, lines, cipher=cipher, sdr_cache=cache)
-            pwr = _parse_power_from_ipmi_output(text)
-            watts = _reading(text, name) if name else None
-            return pwr, watts
-        text = _exec(runner, ip, login, ["power status"], cipher=cipher)
-        return _parse_power_from_ipmi_output(text), None
+            pwr, watts, ok = _exec_power_watts(runner, ip, login, lines, cipher, cache, name)
+            return pwr, (watts if ok else None)
+        pwr, _watts, _ok = _exec_power_watts(runner, ip, login, ["power status"], cipher,
+                                             None, None)
+        return pwr, None
     return _build(ip, login, cache, meta_path, cipher, runner, t, meta)
 
 
@@ -225,21 +274,12 @@ def power_and_watts(ip, login, bmc_mac, port, *, cipher=None, runner=None,
                                 rebuild_min_secs)
         name = meta.get("name")
         lines = ["power status"] + (['sensor reading "%s"' % name] if name else [])
-        try:
-            text = _exec(runner, ip, login, lines, cipher=cipher, sdr_cache=cache)
-        except subprocess.CalledProcessError as e:
-            out = e.output
-            if isinstance(out, bytes):
-                out = out.decode("utf-8", errors="replace")
-            elif out is None:
-                out = ""
-            pwr = _parse_power_from_ipmi_output(out)
+        pwr, watts, ok = _exec_power_watts(runner, ip, login, lines, cipher, cache, name)
+        if not ok:
             if pwr == "unknown":
                 return "unknown", None
             return _stale(ip, login, cache, meta_path, cipher, runner, t, meta,
                           rebuild_min_secs, pwr)
-        pwr = _parse_power_from_ipmi_output(text)
-        watts = _reading(text, name) if name else None
         if name and watts is None and pwr != "unknown":
             return _stale(ip, login, cache, meta_path, cipher, runner, t, meta,
                           rebuild_min_secs, pwr)
