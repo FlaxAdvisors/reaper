@@ -191,6 +191,12 @@ def _smartctl_all(runner):
 # command-not-found and the dump is silently garbage. hwinfo here is a fast subset
 # for the count form; the full hwinfo is a separate artifact.
 #
+# The agent's cwd (the extracted post.tgz, which bundles the bang's current macinv)
+# goes AHEAD of /opt/flax/bin: the live ISO bakes its own /opt/flax/bin/macinv
+# (Feb 2025, prints every FRU device as "Board Mfg:", no "Addon FRU:"), and it
+# shadowed the bundled copy on every node until 2026-09-28. /opt/flax/bin stays on
+# PATH for macinv's helpers (macformat), which post.tgz does not bundle.
+#
 # The same materialized dir then gives macinv's DETAIL form (`-v`, serials and
 # versions per part), uploaded as `macinv-v` for the flax_post INV modal, after a
 # marker line so one run of the script (one hardware collection) yields both. The
@@ -200,7 +206,7 @@ def _smartctl_all(runner):
 # the -v call -- after the count form, which therefore never changes.
 MACINV_V_MARKER = "===flax-macinv-v==="
 _MACINV_SH = r"""set -e
-export PATH="/opt/flax/bin:$PATH"
+export PATH="$PWD:/opt/flax/bin:$PATH"
 mac=$(sed -rn 's/.*BOOTIF=01-([0-9A-Fa-f-]+).*/\1/p' /proc/cmdline | tr -d - | tr 'A-F' 'a-f')
 [ -n "$mac" ] || mac=000000000000
 d=$(mktemp -d)/post-$mac; mkdir -p "$d/inv"

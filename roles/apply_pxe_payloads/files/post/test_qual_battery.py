@@ -28,7 +28,7 @@ def test_macinv_forms_builds_layout_and_runs_macinv_p():
     assert seen[0][0] == "bash" and seen[0][1] == "-c"
     sh = seen[0][2]
     assert "macinv -p " in sh and "macinv -p ." not in sh   # a real dir, not cwd
-    assert 'export PATH="/opt/flax/bin:$PATH"' in sh         # systemd-run PATH omits it -> else macinv NOT-FOUND
+    assert 'export PATH="$PWD:/opt/flax/bin:$PATH"' in sh    # bundled macinv first; systemd-run PATH omits /opt/flax/bin
     assert 'ln -sfn inv "$d/latest"' in sh                   # the 'latest' symlink macinv needs
     for f in ("dmidecode.txt", "hwinfo.txt", "lspci-vvv.txt", "ipmitool_fru.txt",
               "ipmitool_lan_print_1.txt", "ipmitool_lan_print_8.txt",
@@ -59,6 +59,25 @@ def test_macinv_forms_detail_form_gets_the_full_hwinfo_capture():
     sh = seen[0][2]
     i_cp = sh.index('cp "$1" "$d/inv/hwinfo.txt"')
     assert sh.index('macinv -p "$d"\n') < i_cp < sh.index('macinv -p "$d" -v')
+
+
+def test_macinv_script_runs_the_bundled_macinv_before_the_isos(tmp_path):
+    # The live ISO bakes its own /opt/flax/bin/macinv (Feb 2025, every FRU as
+    # "Board Mfg:"); post.tgz bundles the current one into the agent's cwd.
+    # The bundled copy must win, else the population profile judges the ISO's
+    # format (2026-09-28: no node ever printed "Addon FRU:"). Real bash: a stale
+    # macinv earlier on the inherited PATH stands in for the ISO's copy.
+    import subprocess
+    agent, stale = tmp_path / "agent", tmp_path / "stale"
+    for d, tag in ((agent, "BUNDLED"), (stale, "STALE")):
+        d.mkdir()
+        (d / "macinv").write_text("#!/bin/sh\necho %s\n" % tag)
+        (d / "macinv").chmod(0o755)
+    env = dict(os.environ, PATH="%s:%s" % (stale, os.environ["PATH"]))
+    out = subprocess.run(["bash", "-c", qual_battery._MACINV_SH], cwd=agent, env=env,
+                         capture_output=True, text=True, timeout=60).stdout
+    assert out.splitlines()[0] == "BUNDLED", out
+    assert "STALE" not in out, out
 
 
 def test_macinv_forms_without_the_marker_keeps_the_count_and_has_no_detail():
