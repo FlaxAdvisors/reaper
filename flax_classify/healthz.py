@@ -15,13 +15,14 @@ class HealthState:
         self._stale_secs = stale_secs
 
     def record_cycle_done(self, *, written: int, deleted: int, skipped: int,
-                          written_desired: int = 0, purged: int = 0):
+                          written_desired: int = 0, purged: int = 0,
+                          held: int = 0):
         with self._lock:
             self._last_cycle_ts = time.monotonic()
             self._last_cycle = {"written": written, "deleted": deleted,
                                 "skipped": skipped,
                                 "written_desired": written_desired,
-                                "purged": purged}
+                                "purged": purged, "held": held}
 
     def snapshot(self) -> dict:
         with self._lock:
