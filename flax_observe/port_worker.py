@@ -254,6 +254,11 @@ class PortWorker(threading.Thread):
         self.port_state["bmc_mac"] = presolved.get("bmc_mac")
         self.port_state["chassis_sn"] = presolved.get("chassis_sn")
         self.port_state["product_name"] = presolved.get("product_name")
+        # Identity-hold anchors (spec 2026-09-27 §4). A row written before
+        # they existed has no bmc_mac_latched: its bmc_mac is the anchor.
+        self.port_state["bmc_mac_latched"] = presolved.get(
+            "bmc_mac_latched", presolved.get("bmc_mac"))
+        self.port_state["bmc_mac_held_since"] = presolved.get("bmc_mac_held_since")
         lss = presolved.get("link_session_since")
         if lss:
             self.port_state["link_session_since"] = lss
@@ -359,6 +364,10 @@ class PortWorker(threading.Thread):
         # migration). triage_compat reads only specific keys, so this is inert
         # to the UI.
         resolved["link_session_since"] = self.port_state.get("link_session_since")
+        # Identity-hold anchors: persisted so a restart resumes a hold at its
+        # original start instead of extending it.
+        resolved["bmc_mac_latched"] = self.port_state.get("bmc_mac_latched")
+        resolved["bmc_mac_held_since"] = self.port_state.get("bmc_mac_held_since")
         # bmc_kind_cached is the probe-result dict {kind, creds_used, ...};
         # persist only the kind string (never creds_used) under the clean key.
         resolved["bmc_kind"] = (self.port_state.get("bmc_kind_cached") or {}).get("kind")

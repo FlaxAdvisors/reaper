@@ -276,6 +276,9 @@ def main(argv: list[str] | None = None) -> int:
                    vlan_parents=vlan_parents,
                    macmath_by_vid=macmath_by_vid,
                    redfish_credentials=redfish_credentials)
+    # Identity hold's dup/clone rule: a MAC the switch MAC table shows on two
+    # ports is never probed or adopted (spec 2026-09-27 §4).
+    env.mac_ports = cache.ports_with_mac
     # Task 4b: sole shared handle onto /etc/flax/bmc_vendor.json, so ghost's
     # host-side bins can read bmc_vendor without an HTTP dependency on the
     # control API. make_env() itself must never touch /etc/flax (tests build

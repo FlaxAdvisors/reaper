@@ -64,6 +64,18 @@ class SwitchFactsCache:
             return {port: fact for (sw, port), fact in self._by_port.items()
                     if sw == switch}
 
+    def ports_with_mac(self, mac) -> set:
+        """{(switch, arista_port)} whose FDB currently lists `mac`
+        (case-insensitive). Observe's identity hold uses it to refuse a MAC
+        the switch MAC table shows on two ports (dup/clone rule)."""
+        if not mac:
+            return set()
+        want = mac.strip().lower()
+        with self._lock:
+            return {key for key, fact in self._by_port.items()
+                    if want in {str(m).strip().lower()
+                                for m in (fact.get("macs") or [])}}
+
     def last_refresh_age(self) -> float | None:
         """Seconds since last refresh, or None if never refreshed."""
         import time
