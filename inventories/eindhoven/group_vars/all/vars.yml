@@ -42,9 +42,10 @@ console_onefast:  "console=ttyS1,115200n8"
 # `console:` references one of the four presets above. For wedge VLANs the
 # value is currently unused (Arista EOS install via ONIE doesn't take a kernel
 # console arg from us) but is kept populated so the data shape stays uniform.
+# pool_guard: BMC pool exclusion on vids 16/17 (Part 3 E) -- ships false; flip only on the operator's go after a no-pool BMC recovery is proven (spec §11.5).
 vlans:
-  - { vid: 16, family: leopard,      phase: triage, parent: eth1, cidr: 172.16.0.0/16, gateway_vip: 172.16.0.10, console: "{{ console_zerofast }}" }
-  - { vid: 17, family: tiogapass,    phase: triage, parent: eth1, cidr: 172.17.0.0/16, gateway_vip: 172.17.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 16, family: leopard,      phase: triage, parent: eth1, cidr: 172.16.0.0/16, gateway_vip: 172.16.0.10, console: "{{ console_zerofast }}", pool_guard: false }
+  - { vid: 17, family: tiogapass,    phase: triage, parent: eth1, cidr: 172.17.0.0/16, gateway_vip: 172.17.0.10, console: "{{ console_zerofast }}", pool_guard: false }
   - { vid: 18, family: wedge100s,    phase: triage, parent: eth1, cidr: 172.18.0.0/16, gateway_vip: 172.18.0.10, console: "{{ console_zeroslow }}" }
   - { vid: 19, family: wedge400,     phase: triage, parent: eth1, cidr: 172.19.0.0/16, gateway_vip: 172.19.0.10, console: "{{ console_zeroslow }}" }
   - { vid: 20, family: yv3,          phase: triage, parent: eth1, cidr: 172.20.0.0/16, gateway_vip: 172.20.0.10, console: "{{ console_zerofast }}" }
@@ -282,6 +283,19 @@ apply_flax_post_bios_fw_mode: "detect"
 # with the BMC agent in detect the edam rack stays at
 # flax-onetree-1.0.9-202607032146 against target flax-onetree-1.1.1.
 apply_flax_post_fw_mode: "detect"
+
+# BMC firmware manifest: live file hand-managed until 2026-09-28; this is its
+# content + the Part 3 option (post_flash_net_reset).
+bmc_fw_platforms:
+  tiogapass-openbmc:
+    match:
+      product_name: ["(?i)tioga", "(?i)tp[-_ ]?", "(?i)wiwynn.*tp", "(?i)quanta.*tioga"]
+      bmc_kind: openbmc
+    target_version: "flax-onetree-1.1.2"
+    check: { method: redfish-firmware-inventory, id: bmc_active }
+    flash: { method: redfish-update-multipart, artifact: "SXC-Lab_OCP-Updates/OpenBMC/flax-onetree-1.1.2.tar" }
+    auto: true
+    post_flash_net_reset: true   # Part 3 D: clear 00-bmc-eth0.network after a flash (gated by BMC_FW_NETRESET_PORTS)
 
 # Role registry (spine migration phase 1) universe for the post role,
 # rendered into /etc/flax/roles.d/post.json by apply_lease_agent. Values

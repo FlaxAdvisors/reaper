@@ -29,3 +29,4 @@ apply_bmc_scripts_files:
 # above (see the "Deploy plain (non-templated) operator scripts" task).
 apply_bmc_scripts_plain:
   - { src: bios_gate, dest: bios_gate }
+  - { src: kea-bmc-denials.sh, dest: kea-bmc-denials }
