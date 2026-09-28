@@ -499,14 +499,19 @@ def bmc_power_status_openbmc(ip, creds_pair):
 # Chassis serial probes
 # ---------------------------------------------------------------------------
 
-def chassis_serial_traditional(ip, creds_pair, family_map=None):
+def chassis_serial_traditional(ip, creds_pair, family_map=None, cipher=None):
     """LAN `ipmitool fru print 0` -> (serial, state).
 
     The ship serial from FRU ID 0 only (fru.read_baseboard: the family picks
     Product or Chassis Serial). state: ok | no_serial | absent, or "error"
-    when the BMC does not answer. Never another FRU device's serial."""
+    when the BMC does not answer. Never another FRU device's serial.
+
+    cipher: the vendor-paired suite (one call per read, bmc_vendor.ipmi_login);
+    None keeps the runner's 3-then-auto."""
+    runner = _default_ipmi_runner if cipher is None else (
+        lambda h, u, p, a: _default_ipmi_runner(h, u, p, a, cipher=cipher))
     try:
-        out = _lan_fru0(ip, creds_pair[0], creds_pair[1], _default_ipmi_runner)
+        out = _lan_fru0(ip, creds_pair[0], creds_pair[1], runner)
     except Exception:
         return (None, "error")
     bb = _baseboard(out, family_map)
@@ -530,7 +535,7 @@ def chassis_serial_openbmc(ip, creds_pair, family_map=None):
 # Combined power + SDR probe (one RMCP+ session)
 # ---------------------------------------------------------------------------
 
-def bmc_power_and_sdr_traditional(ip, creds_pair):
+def bmc_power_and_sdr_traditional(ip, creds_pair, bmc_mac=None, port=None, cipher=None):
     """One-shot replacement for `bmc_power_status_traditional` +
     `bmc_input_power_traditional`. Both commands run in a SINGLE RMCP+
     session via `ipmitool ... exec FILE` — ipmitool keeps the same
@@ -545,7 +550,14 @@ def bmc_power_and_sdr_traditional(ip, creds_pair):
     watts is 'NNN W' or None. Watts are read regardless of on/off: a
     powered-off host still draws standby power through the HSC, and the UI
     shows that real reading while the on/off status conveys the power state.
-    """
+
+    With bmc_mac (observe always has one for a resolved BMC) the read goes
+    through sdr_cache: power + ONE cached HSC sensor, not a full sdr walk
+    (spec 2026-09-28-observe-bmc-load §3.1)."""
+    if bmc_mac:
+        from . import sdr_cache
+        return sdr_cache.power_and_watts(ip, creds_pair, bmc_mac, port, cipher=cipher)
+
     pwr = "unknown"
     watts = None
     tmp = tempfile.NamedTemporaryFile(
