@@ -219,8 +219,11 @@ def _parse_power_from_ipmi_output(text):
     return "unknown"
 
 
-def _parse_watts_from_ipmi_output(text):
-    """'NNN W' from the HSC input-power line of an `ipmitool sdr` dump.
+def _is_hsc_power_row(name, value):
+    """True if an SDR row's NAME + VALUE columns identify the HSC input-power
+    watts row (shared with flax_observe.sdr_cache._hsc_name, spec
+    2026-09-28-observe-bmc-load §3.1 fix round 1 item E -- one matcher, not
+    two copies that could drift).
 
     The sensor label varies by BMC firmware: the original boards expose
     'HSC Input Power', while Wiwynn OEM FW truncates the 16-char sensor-ID
@@ -229,13 +232,18 @@ def _parse_watts_from_ipmi_output(text):
     AND a Watts-valued reading, so the HSC current/voltage/temperature rows
     (same 'HSC' stem) are never mistaken for input power.
     """
+    return "hsc" in name.lower() and "power" in name.lower() and "Watts" in value
+
+
+def _parse_watts_from_ipmi_output(text):
+    """'NNN W' from the HSC input-power line of an `ipmitool sdr` dump."""
     for line in text.splitlines():
         parts = line.split("|")
         if len(parts) < 2:
             continue
-        name = parts[0].lower()
+        name = parts[0]
         value = parts[1].strip()
-        if "hsc" in name and "power" in name and "Watts" in value:
+        if _is_hsc_power_row(name, value):
             return value.replace(" Watts", " W")
     return None
 
