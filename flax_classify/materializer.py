@@ -388,16 +388,24 @@ def apply_actions(pool, actions: list, *, enforced_roles: frozenset,
     applied = 0
     apply_errors = 0
     skipped_operator_note = 0
-    results = []
-    for owner_role, action, mac, detail in actions:
+    # Deletes first (stable otherwise): a confirmed BMC MAC flip plans a
+    # delete of the old mac and an upsert of the new one for the SAME ipv4,
+    # and actions arrive sorted by mac, so the upsert could run first and
+    # collide on kea's per-subnet address uniqueness. results stays
+    # index-aligned with actions (run_cycle zips the two into plan rows).
+    results = [None] * len(actions)
+    order = sorted(range(len(actions)),
+                   key=lambda i: 0 if actions[i][1] == "delete" else 1)
+    for idx in order:
+        owner_role, action, mac, detail = actions[idx]
         result = {"applied": False, "apply_error": None,
                   "skipped_operator_note": False, "breaker": False}
         if owner_role not in enforced_roles:
-            results.append(result)
+            results[idx] = result
             continue
         if owner_role in breaker_set:
             result["breaker"] = True
-            results.append(result)
+            results[idx] = result
             continue
         try:
             if action == "upsert":
@@ -449,7 +457,7 @@ def apply_actions(pool, actions: list, *, enforced_roles: frozenset,
             result["applied"] = False
             result["apply_error"] = str(e)[:200]
             apply_errors += 1
-        results.append(result)
+        results[idx] = result
 
     return {"applied": applied, "apply_errors": apply_errors,
             "skipped_operator_note": skipped_operator_note,

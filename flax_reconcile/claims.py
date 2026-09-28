@@ -64,3 +64,20 @@ def bmc_reboot_recent(port, now, grace_secs, reboot_dir=BMC_REBOOT_DIR):
     if not port:
         return False
     return _younger_than(os.path.join(reboot_dir, port), now, grace_secs)
+
+
+def boot_signal_recent(sig, now, grace_secs):
+    """Which observe boot signal puts this port in boot grace, or None.
+
+    sig = db.read_boot_signals(...)[(switch, port)]: epoch seconds of the
+    port's last link-up and of observe's last `bmcmac found` (either None).
+    A BMC that just came up (or was just re-found) is still booting -- a
+    switch_flap would flush the FDB and restart the reservation loop
+    (spec 2026-09-27 §5)."""
+    if not sig:
+        return None
+    for key, name in (("link_up", "link_up"), ("bmc_found", "bmcmac_found")):
+        t = sig.get(key)
+        if t is not None and now - t < grace_secs:
+            return name
+    return None

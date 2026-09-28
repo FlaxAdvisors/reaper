@@ -52,6 +52,7 @@ import time as _time_mod
 
 from flax_observe import ll as ll_mod
 from flax_observe import bmc_vendor as _bmc_vendor
+from flax_observe import identity_hold as _idh
 
 log = logging.getLogger("flax-observe.state_machine")
 
@@ -275,6 +276,11 @@ def _forget_identity(port_state, emit_event):
     port_state["bmc_ip"] = None
     port_state["nic_ip"] = None
     port_state["nic_macs"] = []
+    # Identity-hold anchors (spec 2026-09-27 §4): a forgotten identity has no
+    # latched BMC mac and no hold running.
+    port_state["bmc_mac_latched"] = None
+    port_state["bmc_mac_held_since"] = None
+    port_state["identity_probe"] = None
     # Reachability vars are no longer trustworthy once identity is forgotten.
     for v in ("bmcmac", "bmcip", "bmcping", "bmcipmi", "bmcpower", "multibmc",
               "nodeip", "nodeping", "nodepxe", "nodessh"):
@@ -725,6 +731,11 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
     # the inventory boundary only advances on a committed down (above), so clear
     # the pending-down marker and seed the boundary on the first-ever link-up.
     port_state.pop("link_down_since", None)
+    # Captured before the boundary is (maybe) seeded below: True only for a
+    # session that was ALREADY running when this cycle started (a hydrated
+    # row or a later cycle of this run) -- never a first-ever link-up, where
+    # chassis_sn is always None (a fresh port_state, or one just forgotten).
+    _session_already_running = port_state.get("link_session_since") is not None
     if port_state.get("link_session_since") is None:
         port_state["link_session_since"] = port_state["vars"]["linkstate"]["since"]
 
@@ -875,20 +886,96 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
 
     verdict = confirm_roles(primary, list(classified.nics), evidence)
 
-    port_state["bmc_mac"] = verdict.bmc_mac
-    port_state["nic_mac"] = verdict.nic_mac
-    port_state["nic_macs"] = list(classified.nics)
-    port_state["role_source"] = verdict.source
-    _set_var(port_state, "bmcmac",
-             "found" if verdict.bmc_mac else "notfound", emit_event)
+    # --- identity hold + serial confirmation (spec 2026-09-27 §4) ----------
+    # bmc_mac_latched is the BMC mac the latched chassis_sn belongs to. It is
+    # never popped (only _forget_identity clears it), so a MAC change is
+    # judged against it, not against bmc_kind_cached (which the no-probe-host
+    # branch pops -- the latent bug in the reservation report §7.4).
+    prior_latched = port_state.get("bmc_mac_latched")
+    prior_sn = port_state.get("chassis_sn")
+    new_mac = verdict.bmc_mac
+    held_since = port_state.get("bmc_mac_held_since")
+    hold_age = _secs_since(held_since) if held_since else 0.0
+    _mac_ports = getattr(env, "mac_ports", None)
+    seen_elsewhere = bool(
+        new_mac and new_mac != prior_latched and _mac_ports
+        and len(_mac_ports(new_mac)) > 1)
+    serial_of_new = None
+    if (prior_latched and prior_sn and new_mac and new_mac != prior_latched
+            and not seen_elsewhere):
+        _cso = getattr(env, "chassis_serial_openbmc", None)
+        _cst = getattr(env, "chassis_serial_traditional", None)
+        if _cso is None:
+            from flax_observe.bmc_probe import chassis_serial_openbmc as _cso
+        if _cst is None:
+            from flax_observe.bmc_probe import chassis_serial_traditional as _cst
+
+        def _reader(mac):
+            return _idh.read_serial_for_mac(
+                mac,
+                reach=lambda m: reach_for_mac(
+                    m, access_vid, vlan_parents, _ping6, _resolve_ip,
+                    ll_ping_timeout, ping4=_ping4),
+                cached_probe=bmc_probe_by_mac.get(mac),
+                probe_kind=lambda target: _probe_bmc_kind(
+                    target, credentials, bmc_creds, redfish_creds=redfish_creds),
+                serial_via_ssh=_serial_via_ssh,
+                serial_openbmc=_cso,
+                serial_traditional=_cst,
+                serial_read=_serial_read,
+                bmc_creds=bmc_creds,
+                confirmed_kinds=CONFIRMED_BMC_KINDS)
+
+        serial_of_new = _idh.memo_serial(port_state, new_mac, _reader,
+                                         now_iso=_ts_now(),
+                                         secs_since=_secs_since)
+    outcome = _idh.decide(
+        latched_mac=prior_latched, chassis_sn=prior_sn, new_mac=new_mac,
+        hold_age=hold_age, seen_elsewhere=seen_elsewhere,
+        serial_of_new=serial_of_new,
+        hold_secs=getattr(env, "identity_hold_secs", _idh.HOLD_SECS))
+    held = outcome == _idh.HELD
+
+    if outcome == _idh.SWAPPED:
+        emit_event({"kind": "bmc_identity_swapped", "switch": switch,
+                    "port": port, "old": prior_latched, "new": new_mac,
+                    "old_serial": prior_sn, "new_serial": serial_of_new})
+        _forget_identity(port_state, emit_event)
+    elif outcome == _idh.FLIPPED:
+        emit_event({"kind": "bmc_mac_flipped", "switch": switch, "port": port,
+                    "old": prior_latched, "new": new_mac,
+                    "serial": serial_of_new})
+
+    if held:
+        # Keep the latched identity (bmc_mac / nic_mac / nic_macs stay as the
+        # previous cycle left them); only the provenance says "held" so the
+        # post lane's _COMMS_CONFIRMED never treats it as comms-confirmed.
+        if not held_since:
+            port_state["bmc_mac_held_since"] = _ts_now()
+        port_state["bmc_mac"] = prior_latched
+        port_state["role_source"] = "held"
+        _set_var(port_state, "bmcmac", "held", emit_event)
+    else:
+        port_state["bmc_mac"] = verdict.bmc_mac
+        port_state["nic_mac"] = verdict.nic_mac
+        port_state["nic_macs"] = list(classified.nics)
+        port_state["role_source"] = verdict.source
+        _set_var(port_state, "bmcmac",
+                 "found" if verdict.bmc_mac else "notfound", emit_event)
+        if verdict.bmc_mac:
+            port_state["bmc_mac_latched"] = verdict.bmc_mac
+        if outcome != _idh.EXPIRED:
+            port_state["bmc_mac_held_since"] = None
+        if verdict.bmc_mac and outcome != _idh.EXPIRED:
+            port_state["identity_probe"] = None
     _set_var(port_state, "multibmc",
              "found" if verdict.multi_bmc else "clear", emit_event)
 
     # Cache coherence: the final bmc_mac was just probed in the gather, so
-    # prime bmc_kind_cached with its probe result. The downstream block's
-    # needs_reprobe check then sees a fresh cache keyed to this MAC (and, for
-    # a confirmed/promoted BMC, kind is openbmc/traditional) -> no re-probe.
-    if verdict.bmc_mac and verdict.bmc_mac in bmc_probe_by_mac:
+    # prime bmc_kind_cached with its probe result (never while held: the
+    # gather probed an unconfirmed mac, the cache belongs to the held one).
+    if (not held and verdict.bmc_mac
+            and verdict.bmc_mac in bmc_probe_by_mac):
         _probe = bmc_probe_by_mac[verdict.bmc_mac]
         port_state["bmc_kind_cached"] = {
             "kind": _probe.get("kind"),
@@ -901,15 +988,23 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
             "for_mac": verdict.bmc_mac,
         }
 
-    # Preserve the ORIGINAL semantics of the downstream `mac_changed` check:
-    # "this cycle's bmc_mac differs from the PRIOR cycle's cached for_mac".
-    # The cache was just re-keyed to the current bmc_mac above, so the
-    # downstream `cache.get('for_mac') != bmc_mac` would always be False and
-    # silently kill chassis-swap handling. Compute the true value here from
-    # _prior_cache (captured before the overwrite) and carry it downstream.
-    role_mac_changed = (
-        bool(_prior_cache) and _prior_cache.get("for_mac") != verdict.bmc_mac
-    )
+    # "A different chassis's BMC is on this port" -- drives the downstream
+    # re-probe and the chassis_sn clear. Judged against the latched anchor
+    # (R4). A confirmed flip is the SAME chassis (keep the serial); a port
+    # hydrated from a pre-anchor row with a serial but no anchor re-reads.
+    # A "no anchor + a latched serial" row (R4) is only a pre-Part-2 legacy
+    # row -- one where the old code's `if not probe_host:` branch (still
+    # present below) had already forced chassissn back to "unknown" the
+    # cycle bmc_mac went missing. A live, already-confirmed chassissn=found
+    # (e.g. a same-chassis power-on reset re-resolving its bmc_mac for the
+    # first time this run) is NOT that case and must not force a re-read.
+    _legacy_unanchored_sn = (
+        prior_latched is None and bool(prior_sn) and _session_already_running
+        and port_state["vars"]["chassissn"]["value"] != "found")
+    role_mac_changed = bool(new_mac) and outcome not in (
+        _idh.FLIPPED, _idh.HELD) and (
+        (prior_latched is not None and new_mac != prior_latched)
+        or _legacy_unanchored_sn)
 
     if port_state["bmc_mac"]:
         bmcip = _resolve_ip(port_state["bmc_mac"])
@@ -998,7 +1093,18 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
     if _chassis_serial_openbmc is None:
         from flax_observe.bmc_probe import chassis_serial_openbmc as _chassis_serial_openbmc
 
-    if not probe_host:
+    if held:
+        # R6: the BMC is booting / not visible; its reservation IP answers
+        # nothing. No kind/power/serial probe. Keep the kind cache,
+        # product_name and the latched serial (same chassis).
+        port_state["bmc_power"] = "?"
+        port_state["bmcpower_stale_since"] = None
+        _set_var(port_state, "bmcipmi", "unknown", emit_event)
+        _set_var(port_state, "bmcpower", "unknown", emit_event)
+        _set_var(port_state, "chassissn",
+                 "found" if port_state.get("chassis_sn") else "notfound",
+                 emit_event)
+    elif not probe_host:
         port_state.pop("bmc_kind_cached", None)
         # Cleared (not latched like chassis_sn) when the BMC IP is unknown:
         # see the no-latch rationale where product_name is surfaced below.

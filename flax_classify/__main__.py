@@ -25,6 +25,7 @@ from .post_reserve import (observed_by_port, read_post_racks, read_post_slots,
                            run_post_reservations)
 from .healthz import HealthState, serve as serve_healthz
 from .listen import Debouncer, listen_loop
+from .triage_hold import TriageHold
 from .vlan_policy import (load_fp_to_vid, load_phase_geometry, load_no_steer,
                           load_bmc_only_families, fp_to_vid_from_roles)
 
@@ -234,6 +235,10 @@ def main(argv=None):
                    help="Coalesce LISTEN pings into one cycle per window")
     p.add_argument("--healthz-port", type=int, default=10991)
     p.add_argument("--healthz-stale-secs", type=float, default=60.0)
+    p.add_argument("--triage-hold-secs", type=float, default=900.0,
+                   help="keep a triage reservation whose mac left the targets "
+                        "while observe still has the port's chassis serial "
+                        "latched, for this long (spec 2026-09-27 §3)")
     p.add_argument("--vlans", default="/etc/flax/vlans.json",
                    help="Path to vlans.json (family+phase -> vid mapping)")
     p.add_argument("--geometry", default="/etc/flax/geometry.json",
@@ -361,6 +366,10 @@ def main(argv=None):
     # documented fallback. GREATEST in write_ack keeps the row monotonic.
     gen_counter = [0]
 
+    # One hold per process: its "last real target" memory must survive
+    # across cycles (a restart re-seeds every existing row as just seen).
+    triage_hold = TriageHold(hold_secs=args.triage_hold_secs)
+
     def _do_cycle():
         gen_counter[0] += 1
         try:
@@ -370,10 +379,11 @@ def main(argv=None):
                                     no_steer=no_steer,
                                     bmc_only=bmc_only,
                                     resolve=resolve,
-                                    dns_hosts_path=args.triage_dns_hosts)
-            log.info("cycle written=%d deleted=%d skipped=%d written_desired=%d",
-                     summary["written"], summary["deleted"], summary["skipped"],
-                     summary.get("written_desired", 0))
+                                    dns_hosts_path=args.triage_dns_hosts,
+                                    hold=triage_hold)
+            log.info("cycle written=%d deleted=%d held=%d skipped=%d written_desired=%d",
+                     summary["written"], summary["deleted"], summary.get("held", 0),
+                     summary["skipped"], summary.get("written_desired", 0))
             health.record_cycle_done(**summary)
             _ack_cycle(pool, gen_counter[0], summary)
         except Exception as e:

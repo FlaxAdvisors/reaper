@@ -64,6 +64,25 @@ class SwitchFactsCache:
             return {port: fact for (sw, port), fact in self._by_port.items()
                     if sw == switch}
 
+    def ports_with_mac(self, mac) -> set:
+        """{(switch, arista_port)} of ACCESS ports whose FDB currently lists
+        `mac` (case-insensitive). Observe's identity hold uses it to refuse
+        a MAC the switch MAC table shows on two ports (dup/clone rule).
+
+        Only ports with fact["mask"] == "access" count — same filter
+        enroll.py's steerable-port scan uses. A trunk/uplink/peer-link
+        legitimately relays every MAC behind it, so a BMC MAC another
+        switch learns there is not "seen elsewhere"; counting it would
+        make a real MAC flip never serial-confirm and sit on a pool lease."""
+        if not mac:
+            return set()
+        want = mac.strip().lower()
+        with self._lock:
+            return {key for key, fact in self._by_port.items()
+                    if fact.get("mask") == "access"
+                    and want in {str(m).strip().lower()
+                                for m in (fact.get("macs") or [])}}
+
     def last_refresh_age(self) -> float | None:
         """Seconds since last refresh, or None if never refreshed."""
         import time

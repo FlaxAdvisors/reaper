@@ -9,6 +9,7 @@ The _MAC_SQL template uses a regular Python string (not an f-string) and doubled
 backslashes so the rendered SQL contains E'\\1:\\2:...' -- the PostgreSQL E-string
 escape for backreferences.  Py3.11-safe: no backslashes inside f-string braces.
 """
+import datetime
 import logging
 
 from psycopg_pool import ConnectionPool
@@ -223,6 +224,38 @@ def read_installing_ports(pool: ConnectionPool) -> set:
         log.warning("read_installing_ports failed; treating no port as "
                     "installing: %s", e)
         return set()
+
+
+def _iso_epoch(ts):
+    if not ts:
+        return None
+    try:
+        return datetime.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=datetime.timezone.utc).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def read_boot_signals(pool: ConnectionPool) -> dict:
+    """{(switch, internal_port): {"link_up": epoch|None, "bmc_found": epoch|None}}
+    from observe_state.vars: linkstate.since while linkstate is `link`, and
+    bmcmac.since while bmcmac is `found` (NOT `held`). Keys stay in observe's
+    internal port form (et6b1) -- cycle.py looks them up with the claim port.
+
+    Best-effort like read_installing_ports: any error -> {} (no grace from
+    these triggers; the reboot-marker trigger is unaffected)."""
+    sql = ("SELECT switch, port, vars->'linkstate'->>'value', "
+           "vars->'linkstate'->>'since', vars->'bmcmac'->>'value', "
+           "vars->'bmcmac'->>'since' FROM observe_state")
+    try:
+        with pool.connection() as conn:
+            rows = conn.execute(sql).fetchall()
+    except Exception as e:
+        log.warning("read_boot_signals failed; no observe boot grace: %s", e)
+        return {}
+    return {(s, p): {"link_up": _iso_epoch(ls) if lv == "link" else None,
+                     "bmc_found": _iso_epoch(bs) if bv == "found" else None}
+            for s, p, lv, ls, bv, bs in rows}
 
 
 def db_now(pool: ConnectionPool):

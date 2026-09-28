@@ -254,6 +254,11 @@ class PortWorker(threading.Thread):
         self.port_state["bmc_mac"] = presolved.get("bmc_mac")
         self.port_state["chassis_sn"] = presolved.get("chassis_sn")
         self.port_state["product_name"] = presolved.get("product_name")
+        # Identity-hold anchors (spec 2026-09-27 §4). A row written before
+        # they existed has no bmc_mac_latched: its bmc_mac is the anchor.
+        self.port_state["bmc_mac_latched"] = presolved.get(
+            "bmc_mac_latched", presolved.get("bmc_mac"))
+        self.port_state["bmc_mac_held_since"] = presolved.get("bmc_mac_held_since")
         lss = presolved.get("link_session_since")
         if lss:
             self.port_state["link_session_since"] = lss
@@ -294,22 +299,18 @@ class PortWorker(threading.Thread):
             fact["linkstate"] = fact["link"]
         switch_facts = {(self.switch, self.port): fact}
 
-        # Upstream forget-port signal (e.g. BMC-FW MAC change): forget the whole
-        # identity for this port this cycle, superseding the normal probe. The
-        # reader consumes (unlinks) the sentinel. Re-classification re-acquires
-        # any MAC still on the port next cycle. The dir is overridable via the
-        # env for tests; production uses the FORGET_PORT_DIR default.
+        # Upstream forget-port sentinel (flax-forget-port, called by the BMC
+        # flash bin): since the identity hold (spec 2026-09-27 §4) a BMC MAC
+        # change is confirmed by chassis serial in port_worker_one_iter, so
+        # the sentinel no longer forgets anything. Consume it and log it; the
+        # normal iteration runs this cycle.
         _fp_dir = getattr(self.env, "forget_port_dir", None)
         if _forget_port_requested(self.port, forget_port_dir=_fp_dir):
-            forget_events: list[dict] = []
-            _forget_identity(self.port_state, forget_events.append)
-            self._persist()
-            for ev in forget_events:
-                emit_audit_event(kind=ev.get("kind", "transition"),
-                                 switch=self.switch, port=self.port,
-                                 mac=ev.get("mac"), payload=ev)
-            self.last_error = None
-            return
+            emit_audit_event(kind="forget_port_ignored", switch=self.switch,
+                             port=self.port, mac=self.port_state.get("bmc_mac"),
+                             payload={"kind": "forget_port_ignored",
+                                      "switch": self.switch, "port": self.port,
+                                      "bmc_mac": self.port_state.get("bmc_mac")})
 
         # Collect transition events emitted during the iter
         events: list[dict] = []
@@ -359,6 +360,10 @@ class PortWorker(threading.Thread):
         # migration). triage_compat reads only specific keys, so this is inert
         # to the UI.
         resolved["link_session_since"] = self.port_state.get("link_session_since")
+        # Identity-hold anchors: persisted so a restart resumes a hold at its
+        # original start instead of extending it.
+        resolved["bmc_mac_latched"] = self.port_state.get("bmc_mac_latched")
+        resolved["bmc_mac_held_since"] = self.port_state.get("bmc_mac_held_since")
         # bmc_kind_cached is the probe-result dict {kind, creds_used, ...};
         # persist only the kind string (never creds_used) under the clean key.
         resolved["bmc_kind"] = (self.port_state.get("bmc_kind_cached") or {}).get("kind")

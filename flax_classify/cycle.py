@@ -8,7 +8,7 @@ import logging
 
 from .db import read_observe_rows, read_switch_facts, read_devices
 from .desired_port import upsert_desired_port
-from .desired_reservations import upsert_desired, sweep_desired_not_in
+from .desired_reservations import upsert_desired, sweep_desired_not_in, read_desired
 from .kea_hosts import read_aliases_for_macs
 from .feeder import derive_targets, _internal_to_arista
 from .formula import classify_one
@@ -20,7 +20,8 @@ log = logging.getLogger("flax-classify.cycle")
 
 def run_one_cycle(pool, *, fp_to_vid=None, geom_tokens=None,
                   no_steer=None, bmc_only=None, resolve=None,
-                  dns_hosts_path="/etc/dnsmasq.hosts/flax-triage-devices") -> dict:
+                  dns_hosts_path="/etc/dnsmasq.hosts/flax-triage-devices",
+                  hold=None) -> dict:
     """Read observe_state + switch_facts, classify, write desired rows, sweep
     stale ones. Returns counts: {written, deleted, skipped, written_desired,
     purged}.
@@ -34,6 +35,13 @@ def run_one_cycle(pool, *, fp_to_vid=None, geom_tokens=None,
     (flax_classify.role_registry, wired up in __main__). Passed straight
     through to derive_targets; None (default) preserves the legacy
     geom_tokens/phase_for path byte-identically.
+
+    hold: optional flax_classify.triage_hold.TriageHold (one per process,
+    wired in __main__). When given, the sweep keep-set is present_macs plus
+    the rows the hold keeps (spec 2026-09-27 §3); when the desired snapshot
+    cannot be read the sweep is SKIPPED this cycle (a targets-only sweep is
+    exactly the reservation loss the hold exists to stop). None = legacy
+    targets-only keep-set.
 
     Post-3b demolition: this cycle writes desired_reservations ONLY -- it
     never touches kea.hosts / kea.ipv6_reservations directly anymore. The
@@ -173,6 +181,7 @@ def run_one_cycle(pool, *, fp_to_vid=None, geom_tokens=None,
     # deploy-order safety) is logged and swallowed so it can never break the
     # DNS/aliases tail of the cycle.
     deleted = 0
+    held = set()
     try:
         for kw in desired_targets:
             upsert_desired(
@@ -180,8 +189,22 @@ def run_one_cycle(pool, *, fp_to_vid=None, geom_tokens=None,
                 hostname=kw["hostname"], ipv4=kw["ipv4_address"],
                 ipv6=kw["ipv6_address"], vid=kw["vid"], switch=kw["switch"],
                 port=kw["port"])
-        deleted = sweep_desired_not_in(pool, owner_role="triage",
-                                       keep_macs=present_macs)
+        sweep_ok = True
+        if hold is not None:
+            try:
+                held = hold.held_macs(desired_rows=read_desired(pool),
+                                      observe_rows=observe,
+                                      target_macs=present_macs)
+            except Exception:
+                log.exception("triage hold: desired snapshot unreadable; "
+                              "skipping the sweep this cycle")
+                sweep_ok = False
+        if held:
+            log.info("triage hold: keeping %d reservation(s) with no target "
+                     "this cycle: %s", len(held), ",".join(sorted(held)))
+        if sweep_ok:
+            deleted = sweep_desired_not_in(pool, owner_role="triage",
+                                           keep_macs=present_macs | held)
     except Exception:
         log.exception("desired_reservations write failed this cycle")
 
@@ -210,4 +233,5 @@ def run_one_cycle(pool, *, fp_to_vid=None, geom_tokens=None,
         log.warning("write_hosts_file failed (%s): %s", dns_hosts_path, e)
 
     return {"written": written, "deleted": deleted, "skipped": skipped,
-            "written_desired": written_desired, "purged": purged}
+            "written_desired": written_desired, "purged": purged,
+            "held": len(held)}

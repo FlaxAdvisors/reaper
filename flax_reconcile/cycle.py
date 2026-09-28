@@ -191,6 +191,9 @@ class Reconciler:
                              kind=loc.get("kind")):
                 enq += 1
         kicked = 0
+        # Observe's boot signals for the grace window (spec 2026-09-27 §5):
+        # last link-up and last `bmcmac found` per (switch, internal port).
+        boot_signals = db.read_boot_signals(pool)
         while True:
             req = queue.claim_next(pool)
             if req is None:
@@ -240,17 +243,26 @@ class Reconciler:
                             cooldown_secs=self.cfg["kick_cooldown_secs"],
                             max_attempts=self.cfg["max_attempts"])
                 continue
-            # Boot grace: a fw bin marked a reboot of this port's BMC less than
+            # Boot grace: a fw bin marked a reboot of this port's BMC, or
+            # observe saw the port come up / re-found its BMC, less than
             # boot_grace_secs ago, so the BMC is still booting. The
             # non-disruptive bmc_ll rung may run, but no switch_flap (it would
             # only flush the FDB and restart the reservation loop). A failed
             # ladder follows the normal defer path, so once the window has
             # passed a BMC truly stuck on a pool lease is flapped as before.
-            in_grace = req["kind"] == "bmc" and claims_mod.bmc_reboot_recent(
-                claim_port, wall_now, self.cfg["boot_grace_secs"],
-                reboot_dir=claims_mod.BMC_REBOOT_DIR)
+            grace_reason = None
+            if req["kind"] == "bmc":
+                if claims_mod.bmc_reboot_recent(
+                        claim_port, wall_now, self.cfg["boot_grace_secs"],
+                        reboot_dir=claims_mod.BMC_REBOOT_DIR):
+                    grace_reason = "reboot_marker"
+                else:
+                    grace_reason = claims_mod.boot_signal_recent(
+                        boot_signals.get((req["switch"], claim_port)),
+                        wall_now, self.cfg["boot_grace_secs"])
+            in_grace = grace_reason is not None
             if in_grace:
-                log.info("boot grace %s: bmc_ll only", claim_port)
+                log.info("boot grace %s (%s): bmc_ll only", claim_port, grace_reason)
             # AUTO convergence kick: release the device's STALE Kea lease (a
             # pool/conflict lease whose address differs from its reservation)
             # BEFORE the flap, so the re-DHCP the flap triggers lands on the
