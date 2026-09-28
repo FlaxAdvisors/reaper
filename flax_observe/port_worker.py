@@ -299,22 +299,18 @@ class PortWorker(threading.Thread):
             fact["linkstate"] = fact["link"]
         switch_facts = {(self.switch, self.port): fact}
 
-        # Upstream forget-port signal (e.g. BMC-FW MAC change): forget the whole
-        # identity for this port this cycle, superseding the normal probe. The
-        # reader consumes (unlinks) the sentinel. Re-classification re-acquires
-        # any MAC still on the port next cycle. The dir is overridable via the
-        # env for tests; production uses the FORGET_PORT_DIR default.
+        # Upstream forget-port sentinel (flax-forget-port, called by the BMC
+        # flash bin): since the identity hold (spec 2026-09-27 §4) a BMC MAC
+        # change is confirmed by chassis serial in port_worker_one_iter, so
+        # the sentinel no longer forgets anything. Consume it and log it; the
+        # normal iteration runs this cycle.
         _fp_dir = getattr(self.env, "forget_port_dir", None)
         if _forget_port_requested(self.port, forget_port_dir=_fp_dir):
-            forget_events: list[dict] = []
-            _forget_identity(self.port_state, forget_events.append)
-            self._persist()
-            for ev in forget_events:
-                emit_audit_event(kind=ev.get("kind", "transition"),
-                                 switch=self.switch, port=self.port,
-                                 mac=ev.get("mac"), payload=ev)
-            self.last_error = None
-            return
+            emit_audit_event(kind="forget_port_ignored", switch=self.switch,
+                             port=self.port, mac=self.port_state.get("bmc_mac"),
+                             payload={"kind": "forget_port_ignored",
+                                      "switch": self.switch, "port": self.port,
+                                      "bmc_mac": self.port_state.get("bmc_mac")})
 
         # Collect transition events emitted during the iter
         events: list[dict] = []
