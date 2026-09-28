@@ -32,6 +32,10 @@ set -u
 here=$(cd "$(dirname "$0")" && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0; fail=0
+# Task 3 (2026-09-27): every invocation in this suite keeps the manual claim,
+# the reboot marker and bmc_fw's own claim dir under $work. Nothing here may
+# touch /run/flax.
+export FLAX_MANUAL_CLAIM_DIR="$work/manual" FLAX_REBOOT_DIR="$work/reboot" FLAX_CLAIM_DIR="$work/active"
 
 # Render the Jinja template with a dummy credential -- never a real one.
 sed 's/{{ bmc_root_password | quote }}/'"'"'test-dummy'"'"'/' \
@@ -99,7 +103,14 @@ case "$cmd" in
           printf ' gpio-613 (CPU1_THERMTRIP_LATCH|host-error-monitor  ) in  %s IRQ ACTIVE LOW\n' "${FIX_THERM1:-hi}"
       fi ;;
   *'i2cset'*)
-      : ;;  # fire-and-forget write; nothing to answer, exit code discarded
+      # fire-and-forget write; nothing to answer, exit code discarded.
+      # Task 3: record the claim/marker state AT the moment the write is
+      # sent; optionally let "another run" overwrite the manual claim.
+      if [ -n "${FIX_CLAIMLOG:-}" ]; then
+          [ -e "$FLAX_MANUAL_CLAIM_DIR/et6b1" ] && echo "claim_seen_during_run $(cat "$FLAX_MANUAL_CLAIM_DIR/et6b1")" >> "$FIX_CLAIMLOG"
+          [ -e "$FLAX_REBOOT_DIR/et6b1" ] && [ "$(stat -c %Y "$FLAX_REBOOT_DIR/et6b1")" -ge "${FIX_T0:-0}" ] && echo "marker_before_write" >> "$FIX_CLAIMLOG"
+          [ -n "${FIX_CLAIM_STEAL:-}" ] && printf '%s\n' "$FIX_CLAIM_STEAL" > "$FLAX_MANUAL_CLAIM_DIR/et6b1"
+      fi ;;
   *'echo alive'*)
       n=0
       [ -f "$FIX_ALIVECOUNTER" ] && n=$(cat "$FIX_ALIVECOUNTER")
@@ -509,6 +520,70 @@ run_power_on "--power-on where power-good never asserts: still cycled:true, powe
 run_power_on "--power-on rejected by the BMC reports power_on:rejected" \
       '"power_on":"rejected"' FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3 FIX_RESET_CODE=500
 
+# ------------------------------------ Task 3: --port, claim, reboot marker ---
+# run_port <name> <extra-args-string> [FIX_*=val...] -- `cycle 10.0.0.9 <args>`
+run_port() {
+    local name="$1" args="$2"; shift 2
+    export FIX_CLAIMLOG="$work/log.$name"; : > "$FIX_CLAIMLOG"
+    : > "$work/cmd.$name"
+    LAST_OUT=$(env FLAX_POLL_INTERVAL=0 FLAX_DOWN_WAIT=2 BLADE_CYCLE_TIMEOUT=2 \
+          FLAX_DOWN_CONFIRM_N=2 FLAX_MIN_DOWN_S=0 FLAX_REDFISH_EXEC="$work/rf" \
+          FLAX_CYCLE_LOCK_DIR="$work" FLAX_POWER_ON_WAIT=1 FIX_T0="$(date +%s)" \
+          FLAX_BMC_REMOTE_EXEC="$work/stub" FIX_IDCOUNTER="$work/idc.$name" \
+          FIX_ALIVECOUNTER="$work/al.$name" FIX_CMDLOG="$work/cmd.$name" "$@" \
+          "$work/bin" cycle 10.0.0.9 $args 2>"$work/err.$name"); LAST_RC=$?
+}
+t3ok()  { echo "ok   - $1"; pass=$((pass+1)); }
+t3bad() { echo "FAIL - $1"; echo "       rc=$LAST_RC out=$LAST_OUT err=$(tail -n 2 "$work/err.$2" 2>/dev/null)"; fail=$((fail+1)); }
+mt() { stat -c %Y "$1" 2>/dev/null; }
+host_now=${HOSTNAME:-$(cat /proc/sys/kernel/hostname)}
+
+rm -rf "$work/manual" "$work/reboot" "$work/active"
+run_port p_happy "--power-on --port et6b1" FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3 FIX_RF_POWER=On
+[[ "$LAST_OUT" == *'"cycled":true'*'"power_on":"on"'* ]] && t3ok "cycle <ip> --power-on --port et6b1 -> cycled + power_on" || t3bad "--port happy path" p_happy
+grep -Eq "^claim_seen_during_run [0-9]+@${host_now}\$" "$work/log.p_happy" && t3ok "manual claim held when the 12V write is sent, content <pid>@<host>" || t3bad "claim not held at the write ($(cat "$work/log.p_happy"))" p_happy
+! grep -q marker_before_write "$work/log.p_happy" && [ -e "$work/reboot/et6b1" ] && t3ok "reboot marker written after (not before) the 12V write" || t3bad "marker placement" p_happy
+[ ! -e "$work/manual/et6b1" ] && t3ok "owned claim removed on exit" || t3bad "owned claim left behind" p_happy
+[ ! -e "$work/active/et6b1" ] && t3ok "a bin never creates a bmc-fw-active claim" || t3bad "bin wrote into bmc-fw-active" p_happy
+
+rm -rf "$work/manual" "$work/reboot"
+run_port p_order "--port et6b1 --power-on" FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3 FIX_RF_POWER=On
+[[ "$LAST_OUT" == *'"power_on":"on"'* ]] && [ -e "$work/reboot/et6b1" ] && t3ok "--port before --power-on: both honoured" || t3bad "--port/--power-on order" p_order
+
+rm -rf "$work/manual" "$work/reboot"
+run_port p_noport "" FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3
+[[ "$LAST_OUT" == *'"cycled":true'* ]] && [ -z "$(ls -A "$work/manual" 2>/dev/null)" ] && [ -z "$(ls -A "$work/reboot" 2>/dev/null)" ] \
+  && t3ok "no --port -> cycles, no claim, no marker" || t3bad "no --port wrote a claim/marker" p_noport
+
+rm -rf "$work/manual" "$work/reboot"
+run_port p_therm "--port et6b1" FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_THERM0=lo
+[[ "$LAST_OUT" == *thermtrip_latched* ]] && [ ! -e "$work/reboot/et6b1" ] && [ ! -e "$work/manual/et6b1" ] \
+  && t3ok "thermtrip refusal (no write) -> no marker, claim removed" || t3bad "marker/claim on thermtrip refusal" p_therm
+
+rm -rf "$work/manual" "$work/reboot" "$work/active"; mkdir -p "$work/active"
+printf 'bmc_fw\n' > "$work/active/et6b1"; touch -d '@1790000000' "$work/active/et6b1"
+run_port p_foreign "--port et6b1" FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3
+[ "$(cat "$work/active/et6b1" 2>/dev/null)" = bmc_fw ] && [ "$(mt "$work/active/et6b1")" = 1790000000 ] \
+  && t3ok "pre-existing bmc-fw-active claim untouched (content + mtime)" || t3bad "bmc_fw's claim was touched" p_foreign
+
+rm -rf "$work/manual" "$work/reboot"
+run_port p_stolen "--port et6b1" FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3 FIX_CLAIM_STEAL=4242@otherhost
+[ "$(cat "$work/manual/et6b1" 2>/dev/null)" = "4242@otherhost" ] && t3ok "manual claim holding another run's token is not removed" || t3bad "removed another run's manual claim" p_stolen
+
+rm -rf "$work/manual" "$work/reboot"; mkdir -p "$work/reboot"; : > "$work/reboot/et6b1"; touch -d '@1790000000' "$work/reboot/et6b1"
+t_before=$(date +%s)
+run_port p_refresh "--port et6b1" FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3
+[ "$(mt "$work/reboot/et6b1")" -ge "$t_before" ] && t3ok "existing reboot marker's mtime refreshed by the write" || t3bad "marker mtime not refreshed" p_refresh
+
+for bad_args in "--port" "--port --power-on" "--port ../x" "--bogus" "--power-on --power-off"; do
+    rm -rf "$work/manual" "$work/reboot"
+    run_port p_usage "$bad_args" FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3
+    if [ "$LAST_RC" = 2 ] && grep -q 'usage: bmc-blade-power-cycle cycle <bmc-ip> \[--power-on\] \[--port <port>\]' "$work/err.p_usage" \
+       && ! grep -q i2cset "$work/cmd.p_usage" && [ -z "$(ls -A "$work/manual" 2>/dev/null)" ]; then
+        t3ok "cycle <ip> $bad_args -> usage, exit 2, nothing sent, no claim"
+    else t3bad "cycle <ip> $bad_args not a usage error" p_usage; fi
+done
+
 if grep -q 'BLADE_CYCLE_TIMEOUT="${BLADE_CYCLE_TIMEOUT:-480}"' "$here/bmc-blade-power-cycle.sh.j2"; then
     echo "ok   - production up-wait cap is 480s"; pass=$((pass+1))
 else
@@ -877,6 +952,54 @@ else
     echo "ok   - closed stdout: parent exits promptly (${dt}s), no spin"; pass=$((pass+1))
 fi
 wait "$bpid" 2>/dev/null
+
+# ── Task 3: the manual claim lives and dies with the PARENT (lock holder) ────
+# Hung in the busy_check Redfish read (BEFORE the write): claim held with the
+# PARENT's token, heartbeat moves its mtime; TERM removes it; SIGKILL leaves
+# it with its last-heartbeat mtime, never touched again.
+cat > "$work/rf.hangclaim" <<'EOF'
+#!/bin/bash
+case "$1 $2" in
+  "GET /redfish/v1/TaskService/Tasks") exec sleep "$HANG_DUR" ;;
+  *) printf '\nHTTP=404' ;;
+esac
+EOF
+chmod +x "$work/rf.hangclaim"
+claim_signal_test_cycle() {  # <TERM|KILL> <sleep-duration>
+    local sig="$1" dur="$2" fp; fp=$(echo "$dur" | sed 's/\./\\./g')
+    rm -rf "$work/manual" "$work/reboot"; rm -f "$lockfile6"
+    local cmdlog="$work/cmd.claim$sig"; : > "$cmdlog"
+    local t_start; t_start=$(date +%s)
+    ( HANG_DUR="$dur" FLAX_BMC_REMOTE_EXEC="$work/stub.ok6" FLAX_REDFISH_EXEC="$work/rf.hangclaim" FLAX_CYCLE_LOCK_DIR="$work" \
+      FLAX_CLAIM_HEARTBEAT_S=1 FIX_CMDLOG="$cmdlog" \
+      "$work/bin" cycle 10.0.0.9 --power-on --port et6b1 >/dev/null 2>"$work/err.claim$sig" ) &
+    local bp=$! i
+    for i in $(seq 1 100); do pgrep -f "sleep $fp" >/dev/null 2>&1 && break; sleep 0.1; done
+    local tok; tok=$(cat "$work/manual/et6b1" 2>/dev/null)
+    LAST_RC=x; LAST_OUT=""
+    [ "$tok" = "$bp@$host_now" ] && t3ok "claim-$sig: claim held during the run with the PARENT's token" || t3bad "claim-$sig: claim='$tok' want '$bp@$host_now'" "claim$sig"
+    local m1 m2; m1=$(mt "$work/manual/et6b1"); sleep 2.5; m2=$(mt "$work/manual/et6b1")
+    [ -n "$m1" ] && [ -n "$m2" ] && [ "$m2" -gt "$m1" ] && t3ok "claim-$sig: heartbeat advances the claim's mtime ($m1 -> $m2)" || t3bad "claim-$sig: heartbeat did not advance ($m1 -> $m2)" "claim$sig"
+    local ticker; ticker=$(for c in $(pgrep -P "$bp"); do grep -q USR1 "/proc/$c/cmdline" 2>/dev/null && echo "$c"; done)
+    local t_kill; t_kill=$(date +%s)
+    kill -s "$sig" "$bp"
+    for i in $(seq 1 40); do kill -0 "$bp" 2>/dev/null || break; sleep 0.1; done
+    wait "$bp" 2>/dev/null; local wrc=$?
+    if [ "$sig" = TERM ]; then
+        [ "$wrc" -eq 143 ] && [ ! -e "$work/manual/et6b1" ] && t3ok "claim-TERM: parent exits 143 and removes its claim" || t3bad "claim-TERM: rc=$wrc claim=$(cat "$work/manual/et6b1" 2>/dev/null)" claimTERM
+    else
+        local m3 m4; m3=$(mt "$work/manual/et6b1"); sleep 2.5; m4=$(mt "$work/manual/et6b1")
+        [ "$(cat "$work/manual/et6b1" 2>/dev/null)" = "$bp@$host_now" ] && [ -n "$m3" ] && [ "$m3" -ge "$t_start" ] && [ "$m3" -le "$t_kill" ] \
+            && t3ok "claim-KILL: claim left with the parent's token, mtime = last heartbeat before the kill" || t3bad "claim-KILL: claim/mtime wrong (m3=$m3 start=$t_start kill=$t_kill)" claimKILL
+        [ "$m4" = "$m3" ] && t3ok "claim-KILL: mtime stops advancing once the parent is dead" || t3bad "claim-KILL: mtime still advancing ($m3 -> $m4)" claimKILL
+    fi
+    local left=""; for c in $ticker; do kill -0 "$c" 2>/dev/null && left="$left $c"; done
+    [ -n "$ticker" ] && [ -z "$left" ] && t3ok "claim-$sig: heartbeat ticker existed and is gone with the parent" || { t3bad "claim-$sig: ticker='$ticker' survived='$left'" "claim$sig"; kill -9 $left 2>/dev/null; }
+    ! grep -q i2cset "$cmdlog" && [ ! -e "$work/reboot/et6b1" ] && t3ok "claim-$sig: no write, no marker" || t3bad "claim-$sig: write/marker after $sig" "claim$sig"
+    pkill -9 -f "sleep $fp" 2>/dev/null
+}
+claim_signal_test_cycle TERM 76.137
+claim_signal_test_cycle KILL 77.241
 
 echo; echo "passed: $pass  failed: $fail"
 [ "$fail" -eq 0 ]

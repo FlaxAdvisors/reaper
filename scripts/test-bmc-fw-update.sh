@@ -15,6 +15,10 @@ set -u
 here=$(cd "$(dirname "$0")" && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0; fail=0
+# Task 3 (2026-09-27): every invocation in this suite -- including the ones
+# that do not go through run() -- keeps the manual claim, the reboot marker
+# and bmc_fw's own claim dir under $work. Nothing here may touch /run/flax.
+export FLAX_MANUAL_CLAIM_DIR="$work/manual" FLAX_REBOOT_DIR="$work/reboot" FLAX_CLAIM_DIR="$work/active"
 
 sed 's/{{ bmc_root_password | quote }}/'"'"'test-dummy'"'"'/' \
     "$here/bmc-fw-update.sh.j2" > "$work/bin"
@@ -31,6 +35,14 @@ case "$method $path" in
   "GET /redfish/v1/TaskService/Tasks/1") printf '%s\nHTTP=200' "$FIX_OLD_TASK" ;;
   "GET /redfish/v1/TaskService/Tasks/9")
       n=$(cat "$FIX_SEQN" 2>/dev/null || echo 0); n=$((n + 1)); echo $n > "$FIX_SEQN"
+      # Task 3: at the FIRST task poll (mid-run, before the write commits),
+      # record what the claim/marker dirs look like, and optionally let
+      # "another run" overwrite the manual claim (FIX_CLAIM_STEAL).
+      if [ "$n" = 1 ] && [ -n "${FIX_CLAIMLOG:-}" ]; then
+          [ -e "$FLAX_MANUAL_CLAIM_DIR/et10b1" ] && echo "claim_seen_during_run $(cat "$FLAX_MANUAL_CLAIM_DIR/et10b1")" >> "$FIX_CLAIMLOG"
+          [ -e "$FLAX_REBOOT_DIR/et10b1" ] && [ "$(stat -c %Y "$FLAX_REBOOT_DIR/et10b1")" -ge "${FIX_T0:-0}" ] && echo "marker_before_commit" >> "$FIX_CLAIMLOG"
+          [ -n "${FIX_CLAIM_STEAL:-}" ] && printf '%s\n' "$FIX_CLAIM_STEAL" > "$FLAX_MANUAL_CLAIM_DIR/et10b1"
+      fi
       line=$(sed -n "${n}p" "$FIX_SEQ"); [ -n "$line" ] || line=$(tail -n 1 "$FIX_SEQ")
       set -- $line
       if [ "$1" = "DOWN" ]; then printf '\nHTTP=000'
@@ -49,15 +61,18 @@ printf '#!/bin/bash\nexit 0\n' > "$work/ping"
 printf '#!/bin/bash\necho "$1" >> "$FIX_FORGOT"\n' > "$work/forget"
 chmod +x "$work/rf" "$work/fetch" "$work/ping" "$work/forget"
 
-run() {
-    export FIX_CMDLOG="$work/cmd.$1" FIX_SEQN="$work/seqn.$1" FIX_VERN="$work/vern.$1" FIX_FORGOT="$work/forgot.$1"
-    : > "$FIX_CMDLOG"; : > "$FIX_FORGOT"; rm -f "$FIX_SEQN" "$FIX_VERN"
+run() {  # run <name> [extra flash args...]
+    local name="$1"; shift
+    export FIX_CMDLOG="$work/cmd.$name" FIX_SEQN="$work/seqn.$name" FIX_VERN="$work/vern.$name" FIX_FORGOT="$work/forgot.$name"
+    export FIX_CLAIMLOG="$work/log.$name" FIX_T0; FIX_T0=$(date +%s)
+    : > "$FIX_CMDLOG"; : > "$FIX_FORGOT"; : > "$FIX_CLAIMLOG"; rm -f "$FIX_SEQN" "$FIX_VERN"
     out=$(FLAX_REDFISH_EXEC="$work/rf" FLAX_FETCH_EXEC="$work/fetch" FLAX_PING_EXEC="$work/ping" \
           FLAX_FORGET_BIN="$work/forget" BMC_FW_POLL_SECS=0 BMC_FW_ACT_POLL_SECS=0 \
           BMC_FW_ACTIVATION_WAIT="${ACTW:-5}" BMC_FW_UPDATE_LOCK_DIR="$work" \
-          "$work/bin" flash 10.0.0.2 http://share/flax-onetree-1.1.2.tar --port et10b1 2>"$work/err.$1")
+          "$work/bin" flash 10.0.0.2 http://share/flax-onetree-1.1.2.tar --port et10b1 "$@" 2>"$work/err.$name")
     rc=$?
 }
+run_same() { local name="$1"; shift; run "$name" --same "$@"; }
 ok()  { pass=$((pass + 1)); echo "ok   $1"; }
 bad() { fail=$((fail + 1)); echo "FAIL $1"; echo "     rc=$rc out=$(echo "$out" | tail -n 3) err=$(tail -n 2 "$work/err.$2" 2>/dev/null)"; }
 posted()  { grep -q '^POST /redfish/v1/UpdateService/update' "$FIX_CMDLOG"; }
@@ -104,6 +119,80 @@ exec 9>&-
 
 FIX_FETCH_FAIL=1 run nofetch
 [ $rc -eq 1 ] && ! posted && ok "fetch failure -> exit 1, no push" || bad "fetch" nofetch
+
+# ── Task 3: manual runs hold a bin-owned claim; reboot marker; --same ───────
+# The claim is /run/flax/bmc-fw-manual/<port> (FLAX_MANUAL_CLAIM_DIR), holding
+# "<parent pid>@<host>"; its mtime is the claim time. bmc_fw's own claim dir
+# (bmc-fw-active, FLAX_CLAIM_DIR) must never be touched by a bin.
+mt() { stat -c %Y "$1" 2>/dev/null; }
+host_now=${HOSTNAME:-$(cat /proc/sys/kernel/hostname)}
+
+rm -rf "$work/manual" "$work/reboot" "$work/active"
+FIX_SEQ="$work/seq.ok" run claim_owned
+[ $rc -eq 0 ] && ok "claim_owned run succeeds" || bad "claim_owned rc" claim_owned
+[ ! -e "$work/manual/et10b1" ] && ok "owned claim removed on exit" || bad "owned claim left behind" claim_owned
+grep -Eq "^claim_seen_during_run [0-9]+@${host_now}\$" "$work/log.claim_owned" && ok "claim present while running, content <pid>@<host>" || bad "claim not held during run ($(cat "$work/log.claim_owned"))" claim_owned
+[ -e "$work/reboot/et10b1" ] && ok "reboot marker written on commit" || bad "no reboot marker" claim_owned
+! grep -q marker_before_commit "$work/log.claim_owned" && ok "reboot marker NOT written before the write committed" || bad "marker written before commit" claim_owned
+[ ! -e "$work/active/et10b1" ] && ok "a bin never creates a bmc-fw-active claim" || bad "bin wrote into bmc-fw-active" claim_owned
+
+# a pre-existing bmc-fw-active claim (bmc_fw's own) is untouched by the run
+rm -rf "$work/manual" "$work/reboot" "$work/active"; mkdir -p "$work/active"
+printf 'bmc_fw\n' > "$work/active/et10b1"; touch -d '@1790000000' "$work/active/et10b1"
+FIX_SEQ="$work/seq.ok" run claim_foreign
+[ -e "$work/active/et10b1" ] && [ "$(cat "$work/active/et10b1")" = bmc_fw ] && [ "$(mt "$work/active/et10b1")" = 1790000000 ] \
+  && ok "pre-existing bmc-fw-active claim untouched (content + mtime)" || bad "bmc_fw's claim was touched" claim_foreign
+
+# a manual claim another run wrote mid-run (two IPs -> one port) is not ours to remove
+rm -rf "$work/manual" "$work/reboot"
+FIX_SEQ="$work/seq.ok" FIX_CLAIM_STEAL="4242@otherhost" run claim_stolen
+[ "$(cat "$work/manual/et10b1" 2>/dev/null)" = "4242@otherhost" ] && ok "manual claim holding another run's token is not removed" || bad "removed another run's manual claim" claim_stolen
+
+# a stale manual claim (a SIGKILLed earlier run) is taken over, then removed
+rm -rf "$work/manual" "$work/reboot"; mkdir -p "$work/manual"
+printf '999999@deadhost\n' > "$work/manual/et10b1"; touch -d '@1790000000' "$work/manual/et10b1"
+FIX_SEQ="$work/seq.ok" run claim_stale
+grep -Eq "^claim_seen_during_run [0-9]+@${host_now}\$" "$work/log.claim_stale" && [ ! -e "$work/manual/et10b1" ] \
+  && ok "stale manual claim taken over (fresh token) and removed on exit" || bad "stale claim handling ($(cat "$work/log.claim_stale"))" claim_stale
+
+# the marker's mtime is refreshed by each reboot we cause
+rm -rf "$work/manual" "$work/reboot"; mkdir -p "$work/reboot"; : > "$work/reboot/et10b1"; touch -d '@1790000000' "$work/reboot/et10b1"
+t_before=$(date +%s)
+FIX_SEQ="$work/seq.ok" run marker_refresh
+[ "$(mt "$work/reboot/et10b1")" -ge "$t_before" ] && ok "existing reboot marker's mtime refreshed at commit" || bad "marker mtime not refreshed ($(mt "$work/reboot/et10b1"))" marker_refresh
+
+# no write committed -> no marker; the claim still goes away
+rm -rf "$work/manual" "$work/reboot"
+FIX_SEQ="$work/seq.exc" run marker_exc
+[ ! -e "$work/reboot/et10b1" ] && [ ! -e "$work/manual/et10b1" ] && ok "task Exception -> no reboot marker, claim removed" || bad "marker/claim on Exception" marker_exc
+rm -rf "$work/manual" "$work/reboot"
+FIX_TASKS_CODE=503 run marker_busy
+[ $rc -eq 3 ] && [ ! -e "$work/reboot/et10b1" ] && [ ! -e "$work/manual/et10b1" ] && ok "interlock busy -> no marker, claim removed" || bad "marker/claim on interlock" marker_busy
+
+# --same skips flax-forget-port (the marker is still written: the BMC still reboots)
+rm -rf "$work/manual" "$work/reboot"
+FIX_SEQ="$work/seq.ok" FIX_POST=flax-onetree-1.1.1 ACTW=1 run_same same_noforget
+[ -e "$work/cmd.same_noforget" ] && posted && [ ! -s "$work/forgot.same_noforget" ] && ok "--same: write committed, no forget-port" || bad "--same called forget-port" same_noforget
+[ -e "$work/reboot/et10b1" ] && ok "--same: reboot marker still written" || bad "--same: no marker" same_noforget
+FIX_SEQ="$work/seq.ok" run upgrade_forgets --downgrade
+grep -qx et10b1 "$work/forgot.upgrade_forgets" && ok "without --same (even with --downgrade): forget-port still called" || bad "forget-port skipped without --same" upgrade_forgets
+
+# no --port -> no claim, no marker
+rm -rf "$work/manual" "$work/reboot"
+: > "$work/cmd.noport"
+out=$(FIX_CMDLOG="$work/cmd.noport" FIX_SEQ="$work/seq.ok" FIX_SEQN="$work/seqn.noport" FIX_VERN="$work/vern.noport" FIX_FORGOT="$work/forgot.noport" \
+      FLAX_REDFISH_EXEC="$work/rf" FLAX_FETCH_EXEC="$work/fetch" FLAX_PING_EXEC="$work/ping" FLAX_FORGET_BIN="$work/forget" \
+      BMC_FW_POLL_SECS=0 BMC_FW_ACT_POLL_SECS=0 BMC_FW_ACTIVATION_WAIT=5 BMC_FW_UPDATE_LOCK_DIR="$work" \
+      "$work/bin" flash 10.0.0.2 http://share/flax-onetree-1.1.2.tar 2>"$work/err.noport"); rc=$?
+[ $rc -eq 0 ] && [ -z "$(ls -A "$work/manual" 2>/dev/null)" ] && [ -z "$(ls -A "$work/reboot" 2>/dev/null)" ] && ok "no --port -> no claim, no marker" || bad "no --port wrote a claim/marker" noport
+
+# a trailing --port with no value must not wedge the arg loop
+rm -rf "$work/manual" "$work/reboot"
+FIX_SEQ="$work/seq.ok" FIX_CMDLOG="$work/cmd.dangle" FIX_SEQN="$work/seqn.dangle" FIX_VERN="$work/vern.dangle" FIX_FORGOT="$work/forgot.dangle" \
+  FLAX_REDFISH_EXEC="$work/rf" FLAX_FETCH_EXEC="$work/fetch" FLAX_PING_EXEC="$work/ping" FLAX_FORGET_BIN="$work/forget" \
+  BMC_FW_POLL_SECS=0 BMC_FW_ACT_POLL_SECS=0 BMC_FW_ACTIVATION_WAIT=5 BMC_FW_UPDATE_LOCK_DIR="$work" \
+  timeout 20 "$work/bin" flash 10.0.0.2 http://share/flax-onetree-1.1.2.tar --port >/dev/null 2>&1; rc=$?
+[ $rc -ne 124 ] && [ -z "$(ls -A "$work/manual" 2>/dev/null)" ] && ok "trailing --port with no value: terminates (rc=$rc), no claim" || bad "trailing --port wedged or claimed" dangle
 
 # ── version subcommand ───────────────────────────────────────────────────────
 v=$(FLAX_REDFISH_EXEC="$work/rf" FIX_CMDLOG="$work/cmd.v" FIX_VERN="$work/vern.v" "$work/bin" version 10.0.0.2)
@@ -264,6 +353,53 @@ else
     ok "closed stdout: parent exits promptly (${dt}s), no spin"
 fi
 wait "$bpid" 2>/dev/null
+
+# ── Task 3: the manual claim lives and dies with the PARENT (lock holder) ────
+# TERM to the parent -> claim removed. SIGKILL to the parent -> nothing can
+# remove it; it stays with the parent's token and its mtime = the claim time,
+# so reconcile's 2700 s bound expires it. The token is the PARENT's pid (the
+# pid callers see), which is what proves the parent -- not the child --
+# created it.
+claim_signal_test_bmcfw() {  # <TERM|KILL> <sleep-duration>
+    local sig="$1" dur="$2" fp; fp=$(echo "$dur" | sed 's/\./\\./g')
+    rm -rf "$work/manual" "$work/reboot"
+    local t_start; t_start=$(date +%s)
+    ( HANG_DUR="$dur" FLAX_REDFISH_EXEC="$work/rf.hang" FLAX_FETCH_EXEC="$work/fetch" FLAX_PING_EXEC="$work/ping" \
+      FLAX_FORGET_BIN="$work/forget" BMC_FW_UPDATE_LOCK_DIR="$work" FLAX_CLAIM_HEARTBEAT_S=1 \
+      "$work/bin" flash 10.0.0.2 http://share/flax-onetree-1.1.2.tar --port et10b1 >/dev/null 2>"$work/err.claim$sig" ) &
+    local bp=$! i
+    for i in $(seq 1 100); do pgrep -f "sleep $fp" >/dev/null 2>&1 && break; sleep 0.1; done
+    local tok_during; tok_during=$(cat "$work/manual/et10b1" 2>/dev/null)
+    [ "$tok_during" = "$bp@$host_now" ] && ok "claim-$sig: claim held during the run with the PARENT's token" \
+        || { rc=x; bad "claim-$sig: claim during run = '$tok_during', want '$bp@$host_now'" "claim$sig"; }
+    # heartbeat: FLAX_CLAIM_HEARTBEAT_S=1, so over 2.5 s the mtime must move
+    local m1 m2; m1=$(mt "$work/manual/et10b1"); sleep 2.5; m2=$(mt "$work/manual/et10b1")
+    [ -n "$m1" ] && [ -n "$m2" ] && [ "$m2" -gt "$m1" ] && ok "claim-$sig: heartbeat advances the claim's mtime while the parent lives ($m1 -> $m2)" \
+        || { rc=x; bad "claim-$sig: heartbeat did not advance mtime ($m1 -> $m2)" "claim$sig"; }
+    local ticker; ticker=$(for c in $(pgrep -P "$bp"); do grep -q USR1 "/proc/$c/cmdline" 2>/dev/null && echo "$c"; done)
+    [ -n "$ticker" ] && ok "claim-$sig: heartbeat ticker running under the parent" || { rc=x; bad "claim-$sig: no ticker found" "claim$sig"; }
+    local t_kill; t_kill=$(date +%s)
+    kill -s "$sig" "$bp"
+    for i in $(seq 1 40); do kill -0 "$bp" 2>/dev/null || break; sleep 0.1; done
+    wait "$bp" 2>/dev/null; local wrc=$?
+    if [ "$sig" = TERM ]; then
+        [ "$wrc" -eq 143 ] && [ ! -e "$work/manual/et10b1" ] && ok "claim-TERM: parent exits 143 and removes its claim" \
+            || { rc=x; bad "claim-TERM: rc=$wrc claim=$(cat "$work/manual/et10b1" 2>/dev/null)" claimTERM; }
+    else
+        local m3 m4; m3=$(mt "$work/manual/et10b1"); sleep 2.5; m4=$(mt "$work/manual/et10b1")
+        [ "$(cat "$work/manual/et10b1" 2>/dev/null)" = "$bp@$host_now" ] && [ -n "$m3" ] && [ "$m3" -ge "$t_start" ] && [ "$m3" -le "$t_kill" ] \
+            && ok "claim-KILL: claim left behind with the parent's token, mtime = last heartbeat before the kill" \
+            || { rc=x; bad "claim-KILL: claim=$(cat "$work/manual/et10b1" 2>/dev/null) mtime=$m3 start=$t_start kill=$t_kill" claimKILL; }
+        [ "$m4" = "$m3" ] && ok "claim-KILL: mtime stops advancing once the parent is dead (goes stale)" \
+            || { rc=x; bad "claim-KILL: mtime still advancing after SIGKILL ($m3 -> $m4)" claimKILL; }
+    fi
+    local left=""; for c in $ticker; do kill -0 "$c" 2>/dev/null && left="$left $c"; done
+    [ -z "$left" ] && ok "claim-$sig: heartbeat ticker gone with the parent" || { rc=x; bad "claim-$sig: ticker survived:$left" "claim$sig"; kill -9 $left 2>/dev/null; }
+    [ ! -e "$work/reboot/et10b1" ] && ok "claim-$sig: no reboot marker (nothing was written)" || { rc=x; bad "claim-$sig: marker written" "claim$sig"; }
+    pkill -9 -f "sleep $fp" 2>/dev/null
+}
+claim_signal_test_bmcfw TERM 84.137
+claim_signal_test_bmcfw KILL 85.241
 
 echo "---"; echo "pass=$pass fail=$fail"
 [ $fail -eq 0 ]

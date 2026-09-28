@@ -28,6 +28,10 @@
 #   cycle <bmc-ip>              -> {"cycled":true,"down_s":<n>,"up_s":<n>}
 #   cycle <bmc-ip> --power-on   -> same, plus "power_on":"on|failed|rejected"
 #                                  (one Redfish On after the BMC is back)
+#   ... [--port <et6b1>]        (any order after <bmc-ip>) holds the manual
+#                                  claim /run/flax/bmc-fw-manual/<port> for the
+#                                  run and touches /run/flax/bmc-reboot/<port>
+#                                  once the 12V write is sent (2026-09-27)
 #
 # Progress lines ("bmc-blade-power-cycle: [+Ns] ...") go to STDERR; stdout
 # carries only the one JSON record callers parse.
@@ -94,7 +98,85 @@ on_signal() {
     # applies uniformly).
     local w
     for w in $(seq 1 20); do kill -0 "$CHILD" 2>/dev/null || break; sleep 0.1; done
+    hb_stop
+    claim_release   # Task 3: the manual claim goes with the lock
     exit 143
+}
+
+# ── manual-run claim + BMC reboot marker (2026-09-27, part1 Task 3) ──────────
+# CLAIM. Reconcile defers every action on a port while a fw bin runs on it.
+# A bin's claim is /run/flax/bmc-fw-manual/<port> -- NOT bmc-fw-active/<port>,
+# which is bmc_fw's own (days-long) claim and which no bin ever touches. The
+# PARENT (the lock holder) writes it right after taking the per-BMC lock and
+# removes it on normal exit and on TERM/INT/HUP, so it lives and dies with
+# the lock. It is a HEARTBEAT: the PARENT re-touches it every HEARTBEAT_S
+# (60 s) from its wait loop while it lives, and reconcile honours it only
+# while now - mtime < 180 s -- so a flash of any length stays protected, and
+# a SIGKILLed bin's claim (which nothing can remove) goes stale within 3 min
+# because nothing is left to touch it. Content is "<parent pid>@<host>"; on exit a bin removes the
+# file only if it still holds its OWN token (two IPs mapping to one port can
+# race; the per-BMC lock serialises runs per IP only). A stale claim from a
+# dead run is simply overwritten.
+# (Every external command here closes fd 9: the PARENT holds the lock.)
+# REBOOT MARKER. /run/flax/bmc-reboot/<port>, touched by whichever process
+# sends a reboot-causing action; its mtime is the reboot time, from which
+# reconcile gives the port a boot-grace window (no switch_flap mid-boot).
+MANUAL_CLAIM_DIR="${FLAX_MANUAL_CLAIM_DIR:-/run/flax/bmc-fw-manual}"
+REBOOT_DIR="${FLAX_REBOOT_DIR:-/run/flax/bmc-reboot}"
+HEARTBEAT_S="${FLAX_CLAIM_HEARTBEAT_S:-60}"
+CLAIM_FILE=""; CLAIM_TOKEN=""; HB_PID=""
+# A port becomes a file name: accept only the internal port form's alphabet.
+port_ok() { [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; }
+arg_port() {   # arg_port <argv...> -> the value following --port, if any
+    while [ $# -gt 0 ]; do
+        [ "$1" = --port ] && { printf '%s' "${2:-}"; return 0; }
+        shift
+    done
+}
+claim_take() {   # claim_take <port> -- PARENT only, after take_lock
+    [ -n "${1:-}" ] || return 0
+    port_ok "$1" || { echo "claim: ignoring malformed port '$1'" >&2; return 0; }
+    mkdir -p "$MANUAL_CLAIM_DIR" 2>/dev/null 9>&- || { echo "claim: cannot create $MANUAL_CLAIM_DIR; running unclaimed" >&2; return 0; }
+    CLAIM_TOKEN="$$@${HOSTNAME:-$(cat /proc/sys/kernel/hostname 2>/dev/null)}"
+    if printf '%s\n' "$CLAIM_TOKEN" > "$MANUAL_CLAIM_DIR/$1" 2>/dev/null; then
+        CLAIM_FILE="$MANUAL_CLAIM_DIR/$1"
+    else
+        echo "claim: cannot write $MANUAL_CLAIM_DIR/$1; running unclaimed" >&2
+    fi
+    return 0
+}
+claim_release() {   # PARENT only; removes the claim only if it is still ours
+    [ -n "$CLAIM_FILE" ] || return 0
+    [ "$(cat "$CLAIM_FILE" 2>/dev/null 9>&-)" = "$CLAIM_TOKEN" ] && rm -f "$CLAIM_FILE" 9>&-
+    CLAIM_FILE=""
+    return 0
+}
+claim_heartbeat() {   # PARENT, from its wait loop: move the claim's mtime
+    [ -n "$CLAIM_FILE" ] || return 0
+    if [ -e "$CLAIM_FILE" ]; then touch -c "$CLAIM_FILE" 2>/dev/null 9>&-
+    else printf '%s\n' "$CLAIM_TOKEN" > "$CLAIM_FILE" 2>/dev/null; fi   # re-claim if another run's exit removed it
+    return 0
+}
+# The ticker that wakes the PARENT's `wait` every HEARTBEAT_S: a separate
+# process that sends this PARENT a (trapped, no-op) USR1. The PARENT does the
+# touching itself, so once the PARENT is gone nothing touches the claim. The
+# ticker dies with the PARENT (--pdeathsig KILL; its own $PPID check closes
+# the fork-to-prctl window exactly as the CHILD's marker check does), and
+# never holds fd 9 or the caller's stdout/stderr.
+hb_start() {   # PARENT only, after the CHILD is spawned
+    [ -n "$CLAIM_FILE" ] || return 0
+    trap ':' USR1   # before the ticker exists: an untrapped USR1 would kill us
+    FLAX_HB_PARENT=$$ setpriv --pdeathsig KILL bash -c \
+        'p=$FLAX_HB_PARENT; [ "$PPID" = "$p" ] || exit 0
+         while sleep "$1"; do kill -USR1 "$p" 2>/dev/null || exit 0; done' _ "$HEARTBEAT_S" \
+        </dev/null >/dev/null 2>&1 9>&- &
+    HB_PID=$!
+}
+hb_stop() { [ -n "$HB_PID" ] && kill "$HB_PID" 2>/dev/null; HB_PID=""; return 0; }
+mark_reboot() {   # mark_reboot <port> -- touch, so an existing marker's mtime moves too
+    port_ok "${1:-}" || return 0
+    mkdir -p "$REBOOT_DIR" 2>/dev/null 9>&- && touch "$REBOOT_DIR/$1" 2>/dev/null 9>&-
+    return 0
 }
 
 # I7: NO surrounding quotes -- ansible's `quote` filter emits its own,
@@ -423,6 +505,9 @@ cmd_cycle() {
     # output is ever inspected here. A CLEAN RETURN IS NOT SUCCESS; see
     # wait_down immediately below, which is what actually decides that.
     bmc "$IP" 'i2cset -f -y 7 0x45 0xd9 c' >/dev/null 2>&1 || :
+    # Task 3: the BMC is rebooting (or, on no_effect, was told to) -- the
+    # marker's mtime starts reconcile's boot-grace window for --port.
+    mark_reboot "${PORT:-}"
 
     # 5. Wait for DOWN (debounced -- see DOWN_CONFIRM_N above), capped at
     # DOWN_WAIT. If the BMC never stops answering, the write did not do what
@@ -481,16 +566,21 @@ cmd_cycle() {
     printf '{"cycled":true,"down_s":%s,"up_s":%s}\n' "$down_s" "$up_s"
 }
 
-USAGE="usage: bmc-blade-power-cycle cycle <bmc-ip> [--power-on]"
+USAGE="usage: bmc-blade-power-cycle cycle <bmc-ip> [--power-on] [--port <port>]"
 main() {
     case "${1:-}" in
         cycle)
-            case "$#:${3:-}" in
-                2:) ;;
-                3:--power-on) POWER_ON_AFTER=yes ;;
+            # Task 3 (2026-09-27): --power-on and --port <port> in any order
+            # after <ip>. --port names the internal switch port (e.g. et6b1)
+            # for the manual claim and the reboot marker.
+            shift; IP="${1:-}"; shift || true; PORT=""
+            while [ $# -gt 0 ]; do case "$1" in
+                --power-on) POWER_ON_AFTER=yes; shift ;;
+                --port) port_ok "${2:-}" || { echo "$USAGE" >&2; exit 2; }; PORT="$2"; shift 2 ;;
                 *) echo "$USAGE" >&2; exit 2 ;;
-            esac
-            cmd_cycle "$2" ;;
+            esac; done
+            [ -n "$IP" ] || { echo "$USAGE" >&2; exit 2; }
+            cmd_cycle "$IP" ;;
         *) echo "$USAGE" >&2; exit 2 ;;
     esac
 }
@@ -524,6 +614,10 @@ if [ "${1:-}" = cycle ]; then
         printf '{"error":"interlock_busy","reason":"local_lock"}\n'
         exit 3
     fi
+    # Task 3: the manual claim, taken only once the lock is ours. Until
+    # on_signal is armed below, a TERM/INT/HUP still removes it.
+    trap 'claim_release; exit 143' TERM INT HUP
+    claim_take "$(arg_port "$@")"
 fi
 # Re-exec the whole body as a CHILD that never sees fd 9 (2026-09-27 fix
 # round 2, N2): a command-substitution subshell inherits an open fd across
@@ -540,6 +634,7 @@ fi
 FLAX_BIN_CHILD=$$ setpriv --pdeathsig KILL "$(readlink -f -- "$0")" "$@" 9>&- &
 CHILD=$!
 trap on_signal TERM INT HUP
+hb_start   # Task 3: claim heartbeat (no-op without a claim)
 # Only re-wait while the child is actually still alive (2026-09-27 fix
 # round 2, N1): bash keeps the SAVED exit status of an already-reaped pid,
 # so `wait "$CHILD"` after the child is gone returns that same status
@@ -548,8 +643,16 @@ trap on_signal TERM INT HUP
 # signal THIS process received. `kill -0` distinguishes "wait was itself
 # interrupted, child still alive, wait again" from "the child is actually
 # dead", so this exits promptly either way.
+# Task 3: the heartbeat ticker's USR1 also interrupts `wait` -- same
+# "child still alive -> wait again" path, touching the claim on the way.
+# After the loop, one more `wait` reads the child's REAL status (a USR1 that
+# lands just as the child exits would otherwise leave rc=138).
 while :; do
     wait "$CHILD"; rc=$?
     kill -0 "$CHILD" 2>/dev/null || break
+    claim_heartbeat
 done
+hb_stop
+wait "$CHILD"; rc=$?
+claim_release
 exit "$rc"
