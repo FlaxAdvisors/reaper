@@ -60,6 +60,22 @@ cmd="$2"
 # (FIX_POST_CUT exists), the BMC answers ONLY at FIX_ANSWER_IP -- every call
 # to any other IP is a dead ssh (exit 255, no output). Before the cut it
 # answers at the IP it was called with, as always.
+# Task 4 fix round 1: a DIFFERENT, live BMC (FIX_OTHER_MAC, same OS) at
+# FIX_OTHER_IP. FIX_OTHER_POSTCUT=yes: only once the cut file exists (the
+# original IP re-assigned to another blade). FIX_OTHER_UP_AFTER=N: it answers
+# only from its N-th call on (own counter), so a wait-for-down still sees it
+# drop first.
+if [ -n "${FIX_OTHER_IP:-}" ] && [ "$1" = "$FIX_OTHER_IP" ] \
+   && { [ "${FIX_OTHER_POSTCUT:-}" != yes ] || [ -e "${FIX_POST_CUT:-/nonexistent}" ]; }; then
+    oc="$FIX_POST_CUT.othercount"; on=0; [ -f "$oc" ] && on=$(cat "$oc"); on=$((on + 1)); printf '%s' "$on" > "$oc"
+    [ "$on" -ge "${FIX_OTHER_UP_AFTER:-0}" ] || exit 255
+    case "$cmd" in
+      *'MAC=%s'*) printf 'MAC=%s\nOS=%s\n' "$FIX_OTHER_MAC" "${FIX_OS-}" ;;
+      *'echo alive'*) printf 'alive' ;;
+      *'CurrentPowerState'*) printf 'On' ;;
+    esac
+    exit 0
+fi
 if [ -n "${FIX_ANSWER_IP:-}" ] && [ -n "${FIX_POST_CUT:-}" ] && [ -e "$FIX_POST_CUT" ] && [ "$1" != "$FIX_ANSWER_IP" ]; then exit 255; fi
 case "$cmd" in
   *'MAC=%s'*)
@@ -619,7 +635,8 @@ cat > "$work/feed" <<'EOF'
 #!/bin/bash
 [ -n "${FIX_FEEDLOG:-}" ] && printf '%s\n' "$1" >> "$FIX_FEEDLOG"
 case "${FIX_FEED_MODE:-ok}" in
-  ok)      printf '{"ip":"%s","chassis":"%s"}\n' "${FIX_FEED_IP:-10.0.0.9}" "${FIX_FEED_CHASSIS:-SNTEST1}" ;;
+  ok)      printf '{"ip":"%s","chassis":"%s","mac":"%s"}\n' "${FIX_FEED_IP:-10.0.0.9}" "${FIX_FEED_CHASSIS:-SNTEST1}" "${FIX_FEED_MAC-aa:bb:cc:dd:ee:01}" ;;
+  nomac)   printf '{"ip":"%s","chassis":"SNTEST1"}\n' "${FIX_FEED_IP:-10.0.0.9}" ;;
   garbage) printf 'not json {{{\n' ;;
   unknown) printf '{"ip":"unknown","chassis":"unknown"}\n' ;;
   noip)    printf '{"chassis":"SNTEST1"}\n' ;;
@@ -653,13 +670,64 @@ grep -q '^10\.0\.0\.50 .*MAC=' "$work/iplog.m_follow" && grep -q '^10\.0\.0\.50 
     && t3ok "post-cycle identity + power state read at the new IP" || t3bad "follow: identity/state not at the new IP" m_follow
 grep -qx et6b1 "$work/feedlog.m_follow" && t3ok "the feed is asked for the port given by --port" || t3bad "follow: feed not asked for et6b1 ($(sort -u "$work/feedlog.m_follow"))" m_follow
 
-# 2. A DIFFERENT blade answers at the feed's new IP: identity is still the
-#    gate -> identity_changed, and NO power-on is ever sent.
+# 2. A DIFFERENT blade answers at the feed's new IP although the feed row
+#    claims our MAC (stale/lying feed): fix round 1 treats it as "not back
+#    yet" -- keep polling to the cap -> never_returned, NO power-on ever.
 run_move m_swap "--power-on --port et6b1" FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3 \
     FIX_ANSWER_IP=10.0.0.50 FIX_FEED_IP=10.0.0.50 FIX_MAC2="$MAC2" FIX_FEED_CHASSIS=SNOTHER
-[[ "$LAST_OUT" == *'"error":"identity_changed"'* ]] && t3ok "a different blade at the new IP is refused (identity_changed)" || t3bad "swap: not identity_changed" m_swap
-assert_no_cycled_key "$LAST_OUT" "identity_changed at the new IP carries no cycled key"
-grep -q 'ComputerSystem.Reset' "$work/cmd.m_swap" && t3bad "powered on a different blade" m_swap || t3ok "no power-on on identity_changed"
+[[ "$LAST_OUT" == *'"error":"never_returned"'* ]] && t3ok "a different blade at the feed IP (feed mac matches) is not accepted: never_returned" || t3bad "swap: not never_returned" m_swap
+assert_no_cycled_key "$LAST_OUT" "different blade at the feed IP: no cycled key"
+grep -q 'ComputerSystem.Reset' "$work/cmd.m_swap" && t3bad "powered on a different blade" m_swap || t3ok "no power-on of a different blade at the feed IP"
+grep -q "not our blade at 10.0.0.50" "$work/err.m_swap" && t3ok "stderr says the feed IP answered as another blade" || t3bad "swap: no 'not our blade' progress line" m_swap
+grep -q 'did not answer .*10\.0\.0\.9.*10\.0\.0\.50\|did not answer .*10\.0\.0\.50.*10\.0\.0\.9' "$work/err.m_swap" \
+    && t3ok "never_returned line names both probed IPs (M1)" || t3bad "swap: never_returned line names one IP" m_swap
+
+# 2b. Feed row's mac is NOT ours: its IP is never even probed (part 1).
+#     Our blade really is at .50, so ignoring the row -> never_returned.
+for fm in "$MAC2" unknown ""; do
+    run_move m_fmac "--port et6b1" FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3 \
+        FIX_ANSWER_IP=10.0.0.50 FIX_FEED_IP=10.0.0.50 FIX_FEED_MAC="$fm"
+    [[ "$LAST_OUT" == *'"error":"never_returned"'* ]] && ! grep -q '^10\.0\.0\.50 ' "$work/iplog.m_fmac" \
+        && t3ok "feed mac '$fm' != ours: feed IP never probed" || t3bad "feed mac '$fm': feed IP used" m_fmac
+done
+run_move m_fnomac "--port et6b1" FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3 \
+    FIX_ANSWER_IP=10.0.0.50 FIX_FEED_IP=10.0.0.50 FIX_FEED_MODE=nomac
+[[ "$LAST_OUT" == *'"error":"never_returned"'* ]] && ! grep -q '^10\.0\.0\.50 ' "$work/iplog.m_fnomac" \
+    && t3ok "feed row without mac: feed IP never probed" || t3bad "feed row without mac used" m_fnomac
+# case/format-normalised: upper-case, dash-separated feed mac still matches
+run_move m_fupper "--port et6b1" FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3 \
+    FIX_ANSWER_IP=10.0.0.50 FIX_FEED_IP=10.0.0.50 FIX_FEED_MAC=AA-BB-CC-DD-EE-01
+[[ "$LAST_OUT" == *'"cycled":true'*'"ip":"10.0.0.50"'* ]] && t3ok "feed mac compared case/format-normalised (AA-BB-.. matches)" || t3bad "upper-case feed mac rejected" m_fupper
+
+# E6 / E6b (review I1): the feed points at a DIFFERENT, always-alive BMC
+# (post blade outside triage geometry, stale pool IP); our blade returns at
+# its ORIGINAL IP. Must be cycled + power_on:on, never no_effect.
+#   E6*-own: the feed row carries the other BMC's mac  -> part 1 skips it
+#   E6*-lie: the feed row claims OUR mac               -> part 2 keeps polling
+for fm in own lie; do
+    [ $fm = own ] && fmac="$MAC2" || fmac="$MAC1"
+    # FIX_UP_AFTER=5: our blade is still down on the first up-wait poll, so
+    # the foreign BMC at the feed IP is the one that answers first.
+    run_move "m_e6b_$fm" "--power-on --port et6b1" FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=5 \
+        FIX_RF_POWER=On FIX_OTHER_IP=10.0.0.77 FIX_OTHER_MAC="$MAC2" FIX_FEED_IP=10.0.0.77 FIX_FEED_MAC="$fmac"
+    [[ "$LAST_OUT" == *'"cycled":true'*'"ip":"10.0.0.9"'*'"power_on":"on"'* ]] && ! grep -q '^10\.0\.0\.77 POST' "$work/rfip.m_e6b_$fm" \
+        && t3ok "E6b ($fm feed mac): foreign live BMC at the feed IP -> cycled at 10.0.0.9, power_on:on, never powered .77" \
+        || t3bad "E6b ($fm feed mac)" "m_e6b_$fm"
+    run_move "m_e6_$fm" "--power-on --port et6b1" FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=7 \
+        FIX_RF_POWER=On FIX_OTHER_IP=10.0.0.77 FIX_OTHER_MAC="$MAC2" FIX_FEED_IP=10.0.0.77 FIX_FEED_MAC="$fmac" \
+        FLAX_POLL_INTERVAL=0.3 FLAX_DOWN_WAIT=5 BLADE_CYCLE_TIMEOUT=5 FLAX_MIN_DOWN_S=1
+    [[ "$LAST_OUT" == *'"cycled":true'*'"ip":"10.0.0.9"'*'"power_on":"on"'* ]] && ! grep -q '^10\.0\.0\.77 POST' "$work/rfip.m_e6_$fm" \
+        && t3ok "E6 ($fm feed mac, MIN_DOWN_S=1): not no_effect -> cycled + power_on:on" || t3bad "E6 ($fm feed mac)" "m_e6_$fm"
+done
+
+# E1b (review M3): the ORIGINAL IP comes back as a DIFFERENT blade while ours
+# sits at the feed IP. A mismatch at the original IP stays identity_changed
+# (as before), no power-on anywhere.
+run_move m_e1b "--power-on --port et6b1" FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3 \
+    FIX_ANSWER_IP=10.0.0.50 FIX_FEED_IP=10.0.0.50 \
+    FIX_OTHER_IP=10.0.0.9 FIX_OTHER_MAC="$MAC2" FIX_OTHER_POSTCUT=yes FIX_OTHER_UP_AFTER=3
+[[ "$LAST_OUT" == *'"error":"identity_changed"'* ]] && ! grep -q 'ComputerSystem.Reset' "$work/cmd.m_e1b" \
+    && t3ok "E1b: original IP re-assigned to another blade -> identity_changed, no power-on" || t3bad "E1b" m_e1b
 
 # 3. Same move WITHOUT --port: the old fixed-IP behaviour, feed never asked.
 run_move m_noport "--power-on" FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3 \

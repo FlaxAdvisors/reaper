@@ -215,6 +215,9 @@ SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLeve
 # reserved address until ~5 min (it takes a DHCP pool address first; bmc_fw
 # logged 172.17.0.x addresses right after cycles). 300s sat right on that
 # edge. A caller's own subprocess timeout must exceed this.
+# With --port (Task 4) one up-wait poll can take ~31 s worst case (feed curl
+# -m 5 + two ssh probes at ConnectTimeout 10 + ServerAlive 2, + the sleep), so
+# the cap can overshoot by that much: a caller's timeout must allow for it.
 BLADE_CYCLE_TIMEOUT="${BLADE_CYCLE_TIMEOUT:-480}"
 # Progress lines go to STDERR only (callers parse stdout JSON), one every
 # PROGRESS_EVERY seconds while waiting.
@@ -398,38 +401,65 @@ wait_down() {  # $1 = ip; 0 once DOWN_CONFIRM_N CONSECUTIVE probes fail, 1 on th
 # later (2026-09-27: 172.17.0.50/.52, reserved IP back at +404/+483 s), so
 # polling only the IP we started with reported never_returned for a healthy
 # BMC. With --port, each up-wait poll also asks the flax feed for the port's
-# CURRENT ip and probes both. WHICHEVER answers is only a CANDIDATE: the
-# post-cycle MAC/OS identity check against the pre-cycle baseline stays the
-# gate, so a different blade at the new IP is identity_changed -- never a
-# power-on. The feed is advisory: garbage, "unknown", a non-IP string, a
-# failed or slow call (curl -m 5) all yield "" and the poll falls back to the
-# original IP alone.
+# CURRENT ip and probes both. The feed is advisory: garbage, "unknown", a
+# non-IP string, a failed or slow call (curl -m 5) all yield "" and the poll
+# falls back to the original IP alone.
+# Fix round 1 (review I1, 2026-09-28): the feed is scoped to the triage
+# geometry and can be stale, so its IP may belong to a DIFFERENT live BMC (a
+# post blade given --port, a pool IP since re-leased). Accepting that on
+# `alive` alone turned a real cut into no_effect / identity_changed and left
+# the blade off. So, two filters:
+#  (1) the feed IP is used only when the feed row's `mac` equals our
+#      pre-cycle MAC (case- and separator-normalised); missing/unknown -> skip;
+#  (2) a feed IP that answers but whose MAC/OS is not our baseline is "not
+#      back yet": keep polling to the cap (it is never returned, never
+#      powered on).
+# A mismatch at the ORIGINAL IP is still identity_changed, as before; the
+# post-cycle identity check in cmd_cycle stays the final gate either way.
 FEED_URL="${FLAX_FEED_URL:-http://localhost:8000/api/v1/port}"
-feed_ip() {   # feed_ip <port> -> the port's current BMC ip from the flax feed, or empty
+feed_ip() {   # feed_ip <port> <mac0> -> the port's current BMC ip, only if the feed row's mac is mac0; else empty
     local j
     if [ -n "${FLAX_FEED_EXEC:-}" ]; then j=$("$FLAX_FEED_EXEC" "$1" 2>/dev/null 9>&-)
     else j=$(curl -s -m 5 "$FEED_URL/$1" 2>/dev/null 9>&-); fi
-    printf '%s' "$j" | python3 -c 'import json, sys, ipaddress
+    printf '%s' "$j" | WANT_MAC="${2:-}" python3 -c 'import json, sys, os, ipaddress
+norm = lambda m: m.strip().lower().replace("-", ":") if isinstance(m, str) else ""
 try:
     d = json.load(sys.stdin)
     ip = d.get("ip") if isinstance(d, dict) else None
-    print(ipaddress.ip_address(ip.strip()) if isinstance(ip, str) else "")
+    want = norm(os.environ.get("WANT_MAC"))
+    ok = want and norm(d.get("mac")) == want
+    print(ipaddress.ip_address(ip.strip()) if ok and isinstance(ip, str) else "")
 except Exception:
     print("")' 2>/dev/null 9>&-
 }
 
-CUR_IP=""
+same_blade() {   # same_blade <ip>: its MAC/OS equal the pre-cycle baseline (mac0/os0)
+    local id m o
+    id=$(identity "$1")
+    m=$(printf '%s\n' "$id" | sed -n 's/^MAC=//p'); o=$(printf '%s\n' "$id" | sed -n 's/^OS=//p')
+    [ -n "$m" ] && [ "$m" = "$mac0" ] && [ "$o" = "$os0" ]
+}
+
+CUR_IP=""; TRIED_IPS=""
 wait_up() {  # wait_up <ip> [port]; 0 with CUR_IP set once the BMC answers, 1 on the BLADE_CYCLE_TIMEOUT cap
     local ip="$1" port="${2:-}" deadline=$(( $(now_s) + BLADE_CYCLE_TIMEOUT )) next=$(( $(now_s) + PROGRESS_EVERY ))
-    local cand nip="" c
+    local cand nip="" c warned=" "
+    TRIED_IPS="$ip"
     while :; do
         cand="$ip"
         if [ -n "$port" ]; then
-            nip=$(feed_ip "$port")
+            nip=$(feed_ip "$port" "$mac0")
             [ -n "$nip" ] && [ "$nip" != "$ip" ] && cand="$ip $nip"
         fi
         for c in $cand; do
-            if alive "$c"; then CUR_IP="$c"; return 0; fi
+            case " $TRIED_IPS " in *" $c "*) ;; *) TRIED_IPS="$TRIED_IPS $c" ;; esac
+            alive "$c" || continue
+            # (2) a FEED ip must prove it is our blade before it counts as "up"
+            if [ "$c" != "$ip" ] && ! same_blade "$c"; then
+                case "$warned" in *" $c "*) ;; *) say "feed IP $c answers but is not our blade at $c (identity != baseline); still waiting"; warned="$warned$c " ;; esac
+                continue
+            fi
+            CUR_IP="$c"; return 0
         done
         [ "$(now_s)" -lt "$deadline" ] || return 1
         if [ "$(now_s)" -ge "$next" ]; then
@@ -442,6 +472,9 @@ wait_up() {  # wait_up <ip> [port]; 0 with CUR_IP set once the BMC answers, 1 on
 
 # --power-on: one Redfish On, then watch PowerState for POWER_ON_WAIT seconds.
 # Prints on | failed | rejected. Never retried.
+# (Task 4 review M4: the watch polls the IP the BMC answered at; a BMC that
+# regains its reserved IP inside this window -- after answering on a pool
+# IP -- reads as "failed" although the On was accepted.)
 POWER_ON_WAIT="${FLAX_POWER_ON_WAIT:-60}"
 power_on() {
     local ip="$1" r st deadline
@@ -574,7 +607,7 @@ cmd_cycle() {
     # 6. Wait for RETURN, capped at BLADE_CYCLE_TIMEOUT (D4).
     # Task 4: with --port, also probe the port's current IP from the feed;
     # CUR_IP is whichever answered, and everything below talks to it.
-    wait_up "$IP" "${PORT:-}" || { say "BMC did not answer ssh at $IP within ${BLADE_CYCLE_TIMEOUT}s"; json_err never_returned; }
+    wait_up "$IP" "${PORT:-}" || { say "BMC did not answer ssh at ${TRIED_IPS// / or } within ${BLADE_CYCLE_TIMEOUT}s"; json_err never_returned; }
     up_s=$(( $(now_s) - t0 ))
     if [ "$CUR_IP" = "$IP" ]; then say "BMC answering again at ${up_s}s"
     else say "BMC answering again at ${up_s}s at $CUR_IP (moved from $IP; port ${PORT} per the flax feed) -- identity decides"; fi
