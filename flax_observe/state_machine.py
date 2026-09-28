@@ -1221,11 +1221,16 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
         if transport == "ssh":
             pwr = _bmc_power_status_openbmc(probe_host, creds_used)
         if transport == "ipmi":
+            _cipher = _bmc_vendor.caps_for(vendor).ipmi_cipher
+            _paired = _bmc_vendor.ipmi_login(_cipher, bmc_creds)
+            _login = _paired or creds_used
+            _use_cipher = _cipher if _paired else None
             _has_ssh = _bmc_vendor.caps_for(vendor).ssh == _bmc_vendor.FULL
             # Phosphor keeps its (now one short) IPMI session while SOL is
             # live; only link-local-only reach (no IPv4) moves it to ssh.
             if _has_ssh and not bmc_ip:
                 pwr = _bmc_power_status_openbmc(probe_host, creds_used)
+            # ami_legacy: a 4-8 slot RMCP+ session table -- a competing session evicts the live SOL, so skip.
             elif not _has_ssh and _sol_active(_internal_port(port)):
                 emit_event({
                     "kind": "sol_active_skip",
@@ -1239,7 +1244,9 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
             else:
                 # Mitigation 3: one RMCP+ session for both `power status`
                 # and `sdr` via ipmitool's `exec` script form.
-                pwr, watts = _bmc_power_and_sdr_traditional(bmc_ip, creds_used)
+                pwr, watts = _bmc_power_and_sdr_traditional(
+                    bmc_ip, _login, bmc_mac=port_state.get("bmc_mac"),
+                    port=_internal_port(port), cipher=_use_cipher)
                 # SDR-stall fallback (et7b2, 2026-09-18): on some phosphor
                 # BMCs the combined exec hangs in `sdr` past the runner
                 # timeout while plain power status answers in ~5s. A vendor
@@ -1262,14 +1269,22 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
                     sn = None  # latch keeps the existing value below
                 else:
                     sn, sn_state = _serial_read(
-                        _chassis_serial_traditional(bmc_ip, creds_used))
+                        _chassis_serial_traditional(bmc_ip, _login, cipher=_use_cipher))
                     if sn_state in ("ok", "no_serial"):
                         port_state["chassis_sn_verified"] = True
         # Serial over ssh runs AFTER the IPMI block, and also on a SOL-active
-        # skip: ssh does not touch the BMC's RMCP+ session table.
-        if transport is not None and serial_via_ssh:
+        # skip: ssh does not touch the BMC's RMCP+ session table. Once
+        # latched AND re-verified this process (mirrors the traditional-branch
+        # latch above), skip the refetch -- saves one ssh session per poll.
+        # Hardware swap clears chassis_sn above (mac_changed branch), and
+        # _forget_identity clears chassis_sn_verified, forcing a re-read.
+        _ssh_sn_latched = (port_state.get("chassis_sn") and not mac_changed
+                           and port_state.get("chassis_sn_verified"))
+        if transport is not None and serial_via_ssh and not _ssh_sn_latched:
             sn, sn_state = _serial_read(
                 _chassis_serial_openbmc(probe_host, creds_used))
+            if sn_state in ("ok", "no_serial"):
+                port_state["chassis_sn_verified"] = True
             # The ssh FRU 0 read decides the fallback: ok or no_serial means
             # the board answered FRU 0 and a missing field is final. Only
             # absent (some Tioga Pass BMCs answer "Device not present" on the
@@ -1281,6 +1296,7 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
                         bmc_ip, (c["bmcuser"], c["bmcpass"])))
                     if lan_state in ("ok", "no_serial"):
                         sn, sn_state = lan_sn, lan_state
+                        port_state["chassis_sn_verified"] = True
                         break
 
         # Latch decision: while the BMC is identified (chassis_sn latched)
