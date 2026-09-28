@@ -165,20 +165,6 @@ def configure_pairing(creds):
     return False
 
 
-def _login_order(ip, creds):
-    """Paired logins first -- root (-C 17), then USERID (-C 3) -- the BMC's
-    last working one ahead of both; the rest of the file after. Reordering by
-    the memo only applies while pairing is on (fix round 1 minor #3)."""
-    creds = list(creds or [])
-    rank = {"root": 0, "USERID": 1} if _PAIRING else {}
-    ordered = sorted(creds, key=lambda c: rank.get(c.get("bmcuser"), 2))
-    w = _WORKING.get(ip)
-    if _PAIRING and w:
-        wu = w.get("bmcuser")
-        ordered.sort(key=lambda c: 0 if c.get("bmcuser") == wu else 1)
-    return ordered
-
-
 def _attempts(ip, creds):
     """Ordered (cred, cipher) attempts for one probe of `ip` (spec §3.5):
 
@@ -740,7 +726,15 @@ def _process_blade_power(d, creds, ipmi_runner, ping, set_state, switch=SWITCH, 
     bmc_ip = d.get("lease_ip") or d.get("reservation_ip")
     bmc_pinged = bool(bmc_ip and ping(bmc_ip))
     rc = make_redfish(bmc_ip) if (make_redfish and bmc_ip) else None
-    power = probe_power(bmc_ip, creds, ipmi_runner, redfish_client=rc) if bmc_ip else None
+    # A dark BMC (no ping answer) can't answer IPMI either -- skip probe_power
+    # entirely rather than spend its paired attempts (2 ipmitool calls) on a
+    # read that can never come back (finding 5, spec 2026-09-28-observe-bmc-
+    # load §3.5: pairing already doubled probe_power's cost on a live BMC;
+    # this keeps that cost off the common dark-BMC case). Pinged BMCs are
+    # unaffected -- probe_power (incl. its Redfish fallback) runs exactly as
+    # before.
+    power = (probe_power(bmc_ip, creds, ipmi_runner, redfish_client=rc)
+             if (bmc_ip and bmc_pinged) else None)
     cleared = clear_fields_for(prior_row, d.get("mac"), power)
     if cleared:
         log.info("ipmi: %s reset %s (human power-on)", port, ",".join(sorted(cleared)))

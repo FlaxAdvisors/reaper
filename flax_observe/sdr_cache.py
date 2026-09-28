@@ -213,7 +213,8 @@ def _build(ip, login, cache, meta_path, cipher, runner, t, prior_meta):
     return _parse_power_from_ipmi_output(full), _parse_watts_from_ipmi_output(full)
 
 
-def _gated_build(ip, login, cache, meta_path, cipher, runner, t, meta, rebuild_min_secs):
+def _gated_build(ip, login, cache, meta_path, cipher, runner, t, meta, rebuild_min_secs,
+                 marker_stale=False):
     """Build the cache -- unless a build was already attempted within
     `rebuild_min_secs`, in which case fall back instead of hammering a BMC
     that's already failing to answer (fix round 1 item C): a still-usable
@@ -228,10 +229,16 @@ def _gated_build(ip, login, cache, meta_path, cipher, runner, t, meta, rebuild_m
     had already succeeded) reached the outer `except Exception` and lost
     the power reading too, every gated cycle, for up to `rebuild_min_secs`
     per failed rebuild attempt.
+
+    `marker_stale` (fix wave finding 3): true iff the reboot marker is newer
+    than the live cache's `built` -- a flash may have renumbered the SDR, so
+    even though a rebuild is rate-limited, the PRE-flash cache/name must not
+    be trusted for reads either; fall back to the power-status-only read
+    exactly like the no-cache-yet case, for as long as the gate holds.
     """
     last_attempt = _last_attempt(meta_path)
     if last_attempt is not None and t - last_attempt < rebuild_min_secs:
-        if meta is not None and os.path.exists(cache):
+        if meta is not None and os.path.exists(cache) and not marker_stale:
             name = meta.get("name")
             lines = ["power status"] + (['sensor reading "%s"' % name] if name else [])
             pwr, watts, ok = _exec_power_watts(runner, ip, login, lines, cipher, cache, name)
@@ -246,11 +253,22 @@ def _stale(ip, login, cache, meta_path, cipher, runner, t, meta, rebuild_min_sec
     """The cached read gave no usable watts reading (parsed 'na', or a
     CalledProcessError with no reading for `name`). Rebuild if the attempt
     rate limit allows; otherwise just answer with this cycle's power --
-    no extra runner call (fix round 1 items B and C)."""
+    no extra runner call (fix round 1 items B and C).
+
+    Fix wave finding 2: the rebuild call to `_build` was unwrapped, so a
+    dump/full-walk failure during THIS rebuild attempt propagated straight
+    through to `power_and_watts`'s outer `except Exception` and discarded
+    `pwr` -- a power reading this cycle's cached read had already parsed
+    successfully -- turning it into ("unknown", None). A failed rebuild
+    must never cost the power reading the cycle already has.
+    """
     last_attempt = _last_attempt(meta_path)
     if last_attempt is not None and t - last_attempt < rebuild_min_secs:
         return pwr, None
-    return _build(ip, login, cache, meta_path, cipher, runner, t, meta)
+    try:
+        return _build(ip, login, cache, meta_path, cipher, runner, t, meta)
+    except Exception:
+        return pwr, None
 
 
 def power_and_watts(ip, login, bmc_mac, port, *, cipher=None, runner=None,
@@ -266,12 +284,14 @@ def power_and_watts(ip, login, bmc_mac, port, *, cipher=None, runner=None,
         meta = _load_meta(meta_path)
         t = now()
         marker = _mtime(os.path.join(reboot_dir, port)) if port else None
+        marker_stale = (meta is not None and marker is not None
+                        and marker > meta["built"])
         valid = (meta is not None and os.path.exists(cache)
                  and t - meta["built"] < max_age_secs
-                 and not (marker is not None and marker > meta["built"]))
+                 and not marker_stale)
         if not valid:
             return _gated_build(ip, login, cache, meta_path, cipher, runner, t, meta,
-                                rebuild_min_secs)
+                                rebuild_min_secs, marker_stale=marker_stale)
         name = meta.get("name")
         lines = ["power status"] + (['sensor reading "%s"' % name] if name else [])
         pwr, watts, ok = _exec_power_watts(runner, ip, login, lines, cipher, cache, name)

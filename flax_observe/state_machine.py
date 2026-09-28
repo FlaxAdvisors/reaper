@@ -1223,8 +1223,18 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
         if transport == "ipmi":
             _cipher = _bmc_vendor.caps_for(vendor).ipmi_cipher
             _paired = _bmc_vendor.ipmi_login(_cipher, bmc_creds)
-            _login = _paired or creds_used
-            _use_cipher = _cipher if _paired else None
+            # The paired login is only safe to SUBSTITUTE for the kind
+            # probe's proven-working login when it's either the only login
+            # we have (creds_used falsy) or it agrees on user with what the
+            # probe proved works -- a BMC whose working login is admin/oper,
+            # or whose USERID/root password differs, must not be silently
+            # overridden, or its power reads go "unknown" every cycle.
+            if _paired and (not creds_used or creds_used[0] == _paired[0]):
+                _login = _paired
+                _use_cipher = _cipher
+            else:
+                _login = creds_used
+                _use_cipher = None
             _has_ssh = _bmc_vendor.caps_for(vendor).ssh == _bmc_vendor.FULL
             # Phosphor keeps its (now one short) IPMI session while SOL is
             # live; only link-local-only reach (no IPv4) moves it to ssh.
