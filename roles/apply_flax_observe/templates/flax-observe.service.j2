@@ -36,6 +36,7 @@ ExecStart=/usr/bin/docker run --rm --init --name flax-observe \
     -v /var/log/nginx:/var/log/nginx:ro \
     -v /export/nodes:/export/nodes:ro \
     -v /run/flax:/run/flax \
+    -v /etc/flax/soltriage:/etc/flax/soltriage:ro \
     flax-control:${FLAX_OBSERVE_IMAGE_TAG} \
     python -m flax_observe \
         --geometry /etc/flax/geometry.json \
