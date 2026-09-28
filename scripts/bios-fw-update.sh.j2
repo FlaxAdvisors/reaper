@@ -49,15 +49,6 @@ set -uo pipefail
 # substitutions and pipelines run in subshells that a plain `kill $$` does
 # not reach; a killed bin must never leave an ssh or journal read behind
 # holding the per-BMC lock (et6b4 2026-09-27: >1 h).
-#
-# 2026-09-27 fix round 1: bash defers a trap on a FOREGROUND command until
-# that command exits -- a trap does NOT interrupt a blocking wait4() for a
-# child running in the foreground (measured: SIGTERM to a bin hung in a
-# foreground `bmc`/`$(...)` is ignored for the full length of the hang, up
-# to the et6b4 1 h). A trap DOES interrupt the `wait` builtin waiting on a
-# BACKGROUND job. So the entire body now runs as a background job
-# (`main "$@" & wait "$MAIN"` below) purely so this trap can fire promptly;
-# kill_tree is what actually reaches the hung remote call once it does.
 kill_tree() {
     local c
     [ "$1" != "$$" ] && kill -STOP "$1" 2>/dev/null
@@ -65,16 +56,28 @@ kill_tree() {
     [ "$1" != "$$" ] && { kill -TERM "$1" 2>/dev/null; kill -CONT "$1" 2>/dev/null; }
     return 0
 }
+# 2026-09-27 fix round 2 (Review Focus 2, N1/N2): this bin now runs as TWO
+# processes. The PARENT (the pid callers see, at the very bottom of this
+# file) parses argv, runs need_lock_dir, and -- for `flash`, the only
+# subcommand that locks -- takes the per-BMC flock on fd 9 ITSELF, then
+# re-execs its own body as a CHILD (`FLAX_BIN_CHILD=1 setpriv --pdeathsig
+# KILL "$0" "$@" 9>&-`) that never sees fd 9 and never takes the lock
+# again. `on_signal` (PARENT only) freezes and kills the CHILD's whole
+# subtree; `--pdeathsig KILL` makes the kernel SIGKILL the child the
+# instant the PARENT dies for ANY reason, including a SIGKILL to the
+# PARENT itself, which no trap can catch. Round 1's `main "$@" & wait`
+# looked similar but forked a SUBSHELL of the SAME process (not a real
+# child), so SIGKILL of the bin pid left that subshell alive, holding the
+# lock, running to completion -- for bmc-blade-power-cycle that meant a
+# 12 V cut was still sent after the caller had already given up (N2). This
+# design ties the lock's fate to the PARENT process's own survival: fd 9
+# is only ever open in the PARENT, so it closes the instant the PARENT
+# exits, however that happens.
 on_signal() {
     trap - TERM INT HUP
-    kill_tree "$$"
-    # cmd_flash's artifact tmp file lives in $ART (set below, before the
-    # fork, precisely so this trap -- running in the ORIGINAL process, not
-    # the backgrounded one that actually ran cmd_flash -- can still find it.
-    [ -n "${ART:-}" ] && rm -f "$ART" 2>/dev/null
+    kill_tree "$CHILD"
     exit 143
 }
-trap on_signal TERM INT HUP
 
 export SSHPASS={{ bmc_root_password | quote }}
 RF_USER=root
@@ -239,7 +242,7 @@ journal_fetch() {  # journal_fetch <ip> <since> -> raw lines + JOURNAL_END; rc 1
     # `timeout` wraps the WHOLE command substitution (a subshell), not just
     # `bmc` itself, in a fresh `bash -c` so it still finds and kills a
     # hung read within JOURNAL_FETCH_S even outside a SIGTERM to the bin
-    # (which is instead handled by kill_tree via `main "$@" & wait`, below).
+    # (which is instead handled by the PARENT's kill_tree, since fix round 2).
     # 9>&- so this whole chain never inherits the per-BMC lock fd (fix
     # round 1, same reasoning as rf()/bmc()). --kill-after=5 escalates to
     # KILL if a grandchild ignores TERM once `bash -c` itself has already
@@ -331,27 +334,28 @@ cmd_flash() {
     local port=""
     while [ $# -gt 0 ]; do case "$1" in --port) port="$2"; shift 2;; *) shift;; esac; done
 
-    if ! take_lock "$ip"; then
-        emit interlock 0 "" Busy local_lock
-        echo "another bios/bmc fw update for $ip is running on this host" >&2; return 3
-    fi
+    # NOTE (2026-09-27 fix round 2): the per-BMC local lock (fd 9) is taken
+    # by the PARENT process, before this CHILD was ever forked -- see the
+    # bottom of this file. This function never calls take_lock() itself
+    # and never touches fd 9; by the time it runs, the lock has already
+    # been held for the whole life of the child. Only the BMC's own
+    # Redfish busy_check remains to be checked here.
     local b
     b=$(busy_check "$ip"); local brc=$?
     printf '%s\n' "$b" | sed 's/^{/{"phase":"interlock",/'
     [ $brc -eq 0 ] || return 3
 
-    # $ART is created at the top level, BEFORE the `main "$@" & wait` fork
-    # (2026-09-27 fix round 1), precisely so `on_signal` -- which runs in
-    # that original, un-forked process -- can still find and remove it if
-    # a signal arrives while this function (running in the forked
-    # background job) is in the middle of using it. The RETURN trap below
-    # still covers the normal (non-signal) exit path, same as before --
-    # it self-disarms FIRST (`trap - RETURN`) because a RETURN trap is NOT
-    # scoped to this function: left armed, it fires AGAIN when `main()`
-    # (now the caller, since fix round 1 wraps the dispatch in that
-    # function) itself returns, by which point $art no longer exists and
-    # `set -u` kills the bin (reproduced with a minimal repro before this
-    # fix; every existing "flash" test case was failing on it).
+    # $ART is created HERE, after the interlock passes (fix round 2, N3):
+    # earlier rounds created it unconditionally for every `flash` call, so
+    # an interlock-busy (rc 3) or bad-usage (rc 2) exit leaked a tmp file
+    # every time. ART is a GLOBAL (no `local`) so the child-mode signal
+    # trap at the bottom of this file -- installed before `main` is called,
+    # so it is active for this whole function -- can also remove it if a
+    # signal reaches this process directly (as part of the PARENT's
+    # kill_tree walk). A SIGKILL of this child can still leak it in /tmp;
+    # nothing catches SIGKILL, and that residual is accepted (noted in the
+    # fix report) rather than solved by a bigger redesign.
+    ART="$(mktemp "${TMPDIR:-/tmp}/bios-fw-XXXXXX.tar")"
     local art="$ART"
     trap 'trap - RETURN; rm -f "$art"' RETURN
     if ! fetch "$url" "$art" || [ ! -s "$art" ]; then
@@ -476,14 +480,51 @@ main() {
     esac
 }
 
+if [ "${FLAX_BIN_CHILD:-}" = 1 ]; then
+    # ── CHILD (2026-09-27 fix round 2) ──────────────────────────────────
+    # The PARENT already holds the per-BMC lock and owns all TERM/INT/HUP
+    # handling via kill_tree; this process must not compete with it (no
+    # `trap on_signal ...` here). It DOES need its own minimal handler so a
+    # signal reaching it directly (as part of the PARENT's kill_tree walk)
+    # still removes $ART before it dies -- kill_tree only sends the
+    # signal, it has no idea $ART exists.
+    trap 'rm -f "${ART:-}" 2>/dev/null; exit 143' TERM INT HUP
+    main "$@"
+    exit $?
+fi
+
+# ── PARENT (the pid callers see) ────────────────────────────────────────
 [ "${1:-}" = flash ] && need_lock_dir "$@"
-ART=""
-[ "${1:-}" = flash ] && ART="$(mktemp "${TMPDIR:-/tmp}/bios-fw-XXXXXX.tar")"
-# 2026-09-27 fix round 1 (Review Focus 2): run the dispatch in the
-# background and block in `wait`, which -- unlike waiting on a foreground
-# command -- IS interrupted promptly by a trapped signal. See kill_tree's
-# comment above for why this is necessary at all.
-main "$@" & MAIN=$!
-wait "$MAIN"; rc=$?
-while [ "$rc" -gt 128 ]; do wait "$MAIN" 2>/dev/null; rc=$?; done
+if [ "${1:-}" = flash ]; then
+    ip="${2:-}"
+    if ! take_lock "$ip"; then
+        emit interlock 0 "" Busy local_lock
+        echo "another bios/bmc fw update for $ip is running on this host" >&2
+        exit 3
+    fi
+fi
+# Re-exec the whole body as a CHILD that never sees fd 9 (2026-09-27 fix
+# round 2, N2): a command-substitution subshell inherits an open fd across
+# a fork, so nothing short of a SEPARATE process with fd 9 closed at its
+# own exec keeps the lock's fate tied to THIS process alone.
+# `--pdeathsig KILL` (util-linux setpriv) makes the kernel SIGKILL the
+# child the instant this PARENT dies for ANY reason -- including a SIGKILL
+# to this process, which no trap can catch -- so a killed bin can never go
+# on to finish a push after its caller has given up on it.
+FLAX_BIN_CHILD=1 setpriv --pdeathsig KILL "$0" "$@" 9>&- &
+CHILD=$!
+trap on_signal TERM INT HUP
+# Only re-wait while the child is actually still alive (2026-09-27 fix
+# round 2, N1): bash keeps the SAVED exit status of an already-reaped pid,
+# so `wait "$CHILD"` after the child is gone returns that same status
+# forever -- a naive `while [ "$rc" -gt 128 ]` loop (round 1) spun at 100%
+# CPU whenever the child ended above 128 for a reason unrelated to a
+# signal THIS process received (the child killed directly, or SIGPIPE from
+# a closed stdout). `kill -0` distinguishes "wait was itself interrupted,
+# child still alive, wait again" from "the child is actually dead", so
+# this exits promptly either way.
+while :; do
+    wait "$CHILD"; rc=$?
+    kill -0 "$CHILD" 2>/dev/null || break
+done
 exit "$rc"

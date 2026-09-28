@@ -55,15 +55,6 @@ set -u
 # substitutions and pipelines run in subshells that a plain `kill $$` does
 # not reach; a killed bin must never leave an ssh or journal read behind
 # holding the per-BMC lock (et6b4 2026-09-27: >1 h).
-#
-# 2026-09-27 fix round 1: bash defers a trap on a FOREGROUND command until
-# that command exits -- a trap does NOT interrupt a blocking wait4() for a
-# child running in the foreground (measured: a hung i2cset ssh after the
-# interlock ignored SIGTERM for the full BLADE_CYCLE_TIMEOUT). A trap DOES
-# interrupt the `wait` builtin waiting on a BACKGROUND job. So the entire
-# body now runs as a background job (`main "$@" & wait "$MAIN"` below)
-# purely so this trap can fire promptly; kill_tree is what actually reaches
-# the hung remote call once it does.
 kill_tree() {
     local c
     [ "$1" != "$$" ] && kill -STOP "$1" 2>/dev/null
@@ -71,12 +62,33 @@ kill_tree() {
     [ "$1" != "$$" ] && { kill -TERM "$1" 2>/dev/null; kill -CONT "$1" 2>/dev/null; }
     return 0
 }
+# 2026-09-27 fix round 2 (Review Focus 2, N1/N2): this bin now runs as TWO
+# processes. The PARENT (the pid callers see, at the very bottom of this
+# file) parses argv, runs need_lock_dir, and -- for `cycle`, the only
+# subcommand that locks -- takes the per-BMC flock on fd 9 ITSELF, then
+# re-execs its own body as a CHILD (`FLAX_BIN_CHILD=1 setpriv --pdeathsig
+# KILL "$0" "$@" 9>&-`) that never sees fd 9 and never takes the lock
+# again. `on_signal` (PARENT only) freezes and kills the CHILD's whole
+# subtree; `--pdeathsig KILL` makes the kernel SIGKILL the child the
+# instant the PARENT dies for ANY reason, including a SIGKILL to the
+# PARENT itself, which no trap can catch. Round 1's `main "$@" & wait`
+# looked similar but forked a SUBSHELL of the SAME process (not a real
+# child), so SIGKILL of the bin pid left that subshell alive, holding the
+# lock, and it went on to send the 12 V cut ANYWAY after the caller had
+# already given up (N2 -- the worst possible regression for this bin: the
+# old, pre-round-1 bin never sent a cut on a SIGKILL). This design ties the
+# lock's fate to the PARENT process's own survival: fd 9 is only ever open
+# in the PARENT, so it closes the instant the PARENT exits, however that
+# happens -- and every command SUBSTITUTION the child itself forks
+# (identity(), the gpio read, busy_check) dies an orphan on the SAME
+# SIGKILL, unable to hand its result back to a child that no longer
+# exists, so the i2cset write (which lives further down the SAME
+# function, never inside a substitution) is never reached.
 on_signal() {
     trap - TERM INT HUP
-    kill_tree "$$"
+    kill_tree "$CHILD"
     exit 143
 }
-trap on_signal TERM INT HUP
 
 # I7: NO surrounding quotes -- ansible's `quote` filter emits its own,
 # correctly, for any value. Hand-wrapping in single quotes breaks (or worse:
@@ -385,13 +397,12 @@ cmd_cycle() {
     case "$c1" in hi) ;; *) json_err thermtrip_unknown ;; esac
     say "preflight ok (mac $mac0, $os0); thermtrip latches clear"
 
-    # 3b. THE INTERLOCK (2026-09-24). Last check before the cut: the local
-    # lock first (another fw update / cycle for this BMC on this host), then
-    # the BMC's own job list. Exit 3, write never sent.
-    if ! take_lock "$IP"; then
-        say "interlock: another fw update or cycle for $IP holds the local lock"
-        printf '{"error":"interlock_busy","reason":"local_lock"}\n'; exit 3
-    fi
+    # 3b. THE INTERLOCK (2026-09-24). Last check before the cut: the BMC's
+    # own job list. Exit 3, write never sent. (2026-09-27 fix round 2: the
+    # LOCAL lock -- another fw update / cycle for this BMC on this host --
+    # is now taken by the PARENT process before this CHILD was ever
+    # forked; see the bottom of this file. This function never calls
+    # take_lock() itself.)
     why=$(busy_check "$IP"); brc=$?
     if [ $brc -ne 0 ]; then
         say "interlock: $why -- not cutting power"
@@ -477,11 +488,45 @@ main() {
     esac
 }
 
+if [ "${FLAX_BIN_CHILD:-}" = 1 ]; then
+    # ── CHILD (2026-09-27 fix round 2) ──────────────────────────────────
+    # The PARENT already holds the per-BMC lock and owns all TERM/INT/HUP
+    # handling via kill_tree; this process must not compete with it.
+    main "$@"
+    exit $?
+fi
+
+# ── PARENT (the pid callers see) ────────────────────────────────────────
 [ "${1:-}" = cycle ] && need_lock_dir "$@"
-# 2026-09-27 fix round 1 (Review Focus 2): run the dispatch in the
-# background and block in `wait`, which -- unlike waiting on a foreground
-# command -- IS interrupted promptly by a trapped signal.
-main "$@" & MAIN=$!
-wait "$MAIN"; rc=$?
-while [ "$rc" -gt 128 ]; do wait "$MAIN" 2>/dev/null; rc=$?; done
+if [ "${1:-}" = cycle ]; then
+    IP_FOR_LOCK="${2:-}"
+    if ! take_lock "$IP_FOR_LOCK"; then
+        say "interlock: another fw update or cycle for $IP_FOR_LOCK holds the local lock"
+        printf '{"error":"interlock_busy","reason":"local_lock"}\n'
+        exit 3
+    fi
+fi
+# Re-exec the whole body as a CHILD that never sees fd 9 (2026-09-27 fix
+# round 2, N2): a command-substitution subshell inherits an open fd across
+# a fork, so nothing short of a SEPARATE process with fd 9 closed at its
+# own exec keeps the lock's fate tied to THIS process alone.
+# `--pdeathsig KILL` (util-linux setpriv) makes the kernel SIGKILL the
+# child the instant this PARENT dies for ANY reason -- including a SIGKILL
+# to this process, which no trap can catch -- so a killed bin can never go
+# on to cut 12 V power after its caller has given up on it.
+FLAX_BIN_CHILD=1 setpriv --pdeathsig KILL "$0" "$@" 9>&- &
+CHILD=$!
+trap on_signal TERM INT HUP
+# Only re-wait while the child is actually still alive (2026-09-27 fix
+# round 2, N1): bash keeps the SAVED exit status of an already-reaped pid,
+# so `wait "$CHILD"` after the child is gone returns that same status
+# forever -- a naive `while [ "$rc" -gt 128 ]` loop (round 1) spun at 100%
+# CPU whenever the child ended above 128 for a reason unrelated to a
+# signal THIS process received. `kill -0` distinguishes "wait was itself
+# interrupted, child still alive, wait again" from "the child is actually
+# dead", so this exits promptly either way.
+while :; do
+    wait "$CHILD"; rc=$?
+    kill -0 "$CHILD" 2>/dev/null || break
+done
 exit "$rc"

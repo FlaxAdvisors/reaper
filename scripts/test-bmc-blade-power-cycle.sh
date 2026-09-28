@@ -571,15 +571,35 @@ else
 fi
 chmod 755 "$rodir"
 
-# ── F6 (fix round 1, 2026-09-27): SIGTERM/SIGKILL while hung on the i2cset
-#     write AFTER the interlock (take_lock already succeeded) leaves no
-#     child and frees the lock. Round 1's F6 hung on the very FIRST remote
-#     call (the preflight identity probe), BEFORE take_lock -- so the lock
-#     was never actually held and `wait` blocked until the 60s stub exited
-#     on its own; a mutation that no-ops kill_tree still passed it (see the
-#     fix report). This hangs the ACTUAL i2cset write, with a distinctive
-#     sleep duration (not used anywhere else in this suite) as the pgrep
-#     fingerprint, so kill_tree/the async wait is what's under test.
+# ── F6 (fix round 2, 2026-09-27): the bin now runs as a PARENT (holds
+#     fd 9, the pid callers see) that re-execs its body as a CHILD
+#     (FLAX_BIN_CHILD=1, via `setpriv --pdeathsig KILL`) which never sees
+#     fd 9. Round 1's F6 SIGKILL half killed the WHOLE process tree, so it
+#     could never observe that round 1's CHILD (a subshell of the SAME
+#     process, not a real child) survived a SIGKILL of just the bin's own
+#     pid, kept the lock, and went on to send the 12 V cut anyway after the
+#     caller had already given up (N2 -- the worst possible regression for
+#     this bin: the pre-round-1 bin never sent a cut on a SIGKILL). These
+#     SIGKILL the TOP-LEVEL PID ONLY.
+lockfile6="$work/fw-update-10.0.0.9.lock"
+
+cat > "$work/stub.ok6" <<'EOF'
+#!/bin/bash
+cmd="$2"
+[ -n "${FIX_CMDLOG:-}" ] && printf '%s\n' "$cmd" >> "$FIX_CMDLOG"
+case "$cmd" in
+  *'MAC=%s'*) printf 'MAC=%s\nOS=%s\n' 'aa:bb:cc:dd:ee:09' 'flax-onetree-1.1.1' ;;
+  *'/sys/kernel/debug/gpio'*)
+      printf ' gpio-612 (CPU0_THERMTRIP_LATCH|host-error-monitor  ) in  hi IRQ ACTIVE LOW\n'
+      printf ' gpio-613 (CPU1_THERMTRIP_LATCH|host-error-monitor  ) in  hi IRQ ACTIVE LOW\n' ;;
+  *'i2cset'*) : ;;
+  *) : ;;
+esac
+EOF
+chmod +x "$work/stub.ok6"
+
+# --- SIGTERM case (unchanged behaviour from round 1, re-verified here):
+#     hang on the i2cset write itself, AFTER the interlock. ---
 cat > "$work/stub.hangafter" <<'EOF'
 #!/bin/bash
 cmd="$2"
@@ -593,10 +613,7 @@ case "$cmd" in
 esac
 EOF
 chmod +x "$work/stub.hangafter"
-lockfile6="$work/fw-update-10.0.0.9.lock"
-collect_tree6() { local p; echo "$1"; for p in $(pgrep -P "$1" 2>/dev/null); do collect_tree6 "$p"; done; }
 
-# --- SIGTERM case ---
 rm -f "$lockfile6"
 ( HANG_DUR=71.418 FLAX_BMC_REMOTE_EXEC="$work/stub.hangafter" FLAX_CYCLE_LOCK_DIR="$work" FLAX_REDFISH_EXEC="$work/rf" \
     bash "$work/bin" cycle 10.0.0.9 >/dev/null 2>&1 ) & bpid=$!
@@ -618,41 +635,168 @@ else
     echo "FAIL - per-BMC lock still held after SIGTERM (post-interlock hang)"; fail=$((fail+1))
 fi
 
-# --- SIGKILL case: on_signal never runs (uncatchable), so the ONLY
-#     defence is that fd 9 was never inherited by a descendant. ---
-rm -f "$lockfile6"
-( HANG_DUR=72.529 FLAX_BMC_REMOTE_EXEC="$work/stub.hangafter" FLAX_CYCLE_LOCK_DIR="$work" FLAX_REDFISH_EXEC="$work/rf" \
-    bash "$work/bin" cycle 10.0.0.9 >/dev/null 2>&1 ) & bpid=$!
-for i in $(seq 1 100); do pgrep -f 'sleep 72\.529' >/dev/null 2>&1 && break; sleep 0.1; done
-pgrep -f 'sleep 72\.529' >/dev/null 2>&1 || { echo "FAIL - F6 SIGKILL setup: the hang never started"; fail=$((fail+1)); }
-tree_pids6=$(collect_tree6 "$bpid" | sort -un)
-holders6=""
-for p in $tree_pids6; do
-    [ -e "/proc/$p/fd/9" ] || continue
-    tgt=$(readlink "/proc/$p/fd/9" 2>/dev/null)
-    [ "$tgt" = "$lockfile6" ] && holders6="$holders6 $p"
+# --- SIGKILL of the TOP-LEVEL PID ONLY (N2), TWO scenarios: hung on the
+#     gpio (thermtrip) read, and hung on the interlock's own busy_check
+#     Redfish read. Neither is inside a command wrapped with a lock this
+#     bin still holds directly -- the PARENT holds fd 9 for the WHOLE life
+#     of the child now (fix round 2), so both must show: the child gone
+#     fast, the lock free immediately, and -- the actual N2 regression
+#     check -- no i2cset EVER appearing in the stub cmdlog, checked again
+#     after a delay to catch a cut sent by a surviving orphan. ---
+sigkill_cycle_test() {  # sigkill_cycle_test <name> <bmc_remote_exec> <redfish_exec> <fingerprint>
+    local name="$1" bmc_exec="$2" rf_exec="$3" fp; fp=$(echo "$4" | sed 's/\./\\./g')
+    rm -f "$lockfile6"
+    local cmdlog="$work/cmd.sk6.$name"; : > "$cmdlog"
+    ( FLAX_BMC_REMOTE_EXEC="$bmc_exec" FLAX_REDFISH_EXEC="$rf_exec" FLAX_CYCLE_LOCK_DIR="$work" \
+      FIX_CMDLOG="$cmdlog" \
+      "$work/bin" cycle 10.0.0.9 >/dev/null 2>"$work/err.sk6.$name" ) &
+    local bp=$! found=0 i
+    for i in $(seq 1 100); do pgrep -f "sleep $fp" >/dev/null 2>&1 && { found=1; break; }; sleep 0.1; done
+    if [ "$found" != 1 ]; then
+        echo "FAIL - sigkill-cycle-$name: the hang never started"; fail=$((fail+1)); kill -9 "$bp" 2>/dev/null; return
+    fi
+    local childp=""
+    for i in $(seq 1 50); do childp=$(pgrep -P "$bp" 2>/dev/null | head -1); [ -n "$childp" ] && break; sleep 0.1; done
+    local t0; t0=$(date +%s)
+    kill -9 "$bp"
+    local child_gone=0
+    for i in $(seq 1 20); do
+        [ -n "$childp" ] && { kill -0 "$childp" 2>/dev/null || { child_gone=1; break; }; }
+        [ -z "$childp" ] && { child_gone=1; break; }
+        sleep 0.1
+    done
+    local dt=$(( $(date +%s) - t0 ))
+    if [ "$child_gone" = 1 ] && [ "$dt" -le 3 ]; then
+        echo "ok   - sigkill-cycle-$name: the child is gone within ${dt}s (--pdeathsig KILL)"; pass=$((pass+1))
+    else
+        echo "FAIL - sigkill-cycle-$name: child $childp still alive after ${dt}s"; fail=$((fail+1))
+    fi
+    if flock -n "$lockfile6" true; then
+        echo "ok   - sigkill-cycle-$name: lock free immediately"; pass=$((pass+1))
+    else
+        echo "FAIL - sigkill-cycle-$name: lock still held"; fail=$((fail+1))
+    fi
+    if grep -q 'i2cset' "$cmdlog" 2>/dev/null; then
+        echo "FAIL - sigkill-cycle-$name: i2cset sent immediately after SIGKILL (N2!)"; fail=$((fail+1))
+    else
+        echo "ok   - sigkill-cycle-$name: no i2cset sent immediately after SIGKILL"; pass=$((pass+1))
+    fi
+    sleep 7.5   # ruling: "within ~8s after the kill" -- catch a cut sent by a delayed orphan
+    if grep -q 'i2cset' "$cmdlog" 2>/dev/null; then
+        echo "FAIL - sigkill-cycle-$name: i2cset appeared within 8s (N2!)"; fail=$((fail+1))
+    else
+        echo "ok   - sigkill-cycle-$name: still no i2cset after 8s"; pass=$((pass+1))
+    fi
+    pkill -9 -f "sleep $fp" 2>/dev/null
+}
+
+cat > "$work/stub.gpiohang6" <<'EOF'
+#!/bin/bash
+cmd="$2"
+[ -n "${FIX_CMDLOG:-}" ] && printf '%s\n' "$cmd" >> "$FIX_CMDLOG"
+case "$cmd" in
+  *'MAC=%s'*) printf 'MAC=%s\nOS=%s\n' 'aa:bb:cc:dd:ee:09' 'flax-onetree-1.1.1' ;;
+  *'/sys/kernel/debug/gpio'*) exec sleep 73.641 ;;
+  *'i2cset'*) : ;;
+  *) : ;;
+esac
+EOF
+chmod +x "$work/stub.gpiohang6"
+sigkill_cycle_test "gpio-hang" "$work/stub.gpiohang6" "$work/rf" "73.641"
+
+cat > "$work/rf.hang6" <<'EOF'
+#!/bin/bash
+method="$1"; path="$2"; shift 2
+[ -n "${FIX_CMDLOG:-}" ] && printf 'RF %s %s %s\n' "$method" "$path" "$*" >> "$FIX_CMDLOG"
+case "$method $path" in
+  "GET /redfish/v1/TaskService/Tasks") exec sleep 74.752 ;;
+  *) printf '\nHTTP=404' ;;
+esac
+EOF
+chmod +x "$work/rf.hang6"
+sigkill_cycle_test "busy-check-hang" "$work/stub.ok6" "$work/rf.hang6" "74.752"
+
+# --- N1: TERM (then KILL) sent to the CHILD directly, bypassing the
+#     parent entirely (e.g. OOM, pkill, a supervisor that targets the
+#     child). Round 1's `while [ "$rc" -gt 128 ]` loop spun at 100% CPU
+#     forever here, because bash keeps returning the SAME saved exit
+#     status for an already-reaped pid; `kill -0` on the child is what
+#     actually tells "wait was interrupted, child still alive" apart from
+#     "the child is truly gone" (fix round 2, N1). This bin's CHILD
+#     branch installs no TERM/INT/HUP trap of its own (nothing here needs
+#     cleanup the way bios-fw-update's $ART does), so -- unlike that bin --
+#     a direct TERM hits DEFAULT disposition and terminates immediately
+#     even while deep in a hung remote call; both cases can safely reuse
+#     a long fixture hang. Each case is bounded by its own poll loop, not
+#     a blocking `wait`, so a reintroduced spin fails this test instead of
+#     hanging the suite. ---
+kill_child_test6() {  # kill_child_test6 <signal-name> <sleep-duration> <fingerprint>
+    local sig="$1" dur="$2" fp; fp=$(echo "$3" | sed 's/\./\\./g')
+    cat > "$work/stub.kc6.$sig" <<EOF
+#!/bin/bash
+cmd="\$2"
+case "\$cmd" in
+  *'MAC=%s'*) printf 'MAC=%s\nOS=%s\n' 'aa:bb:cc:dd:ee:09' 'flax-onetree-1.1.1' ;;
+  *'/sys/kernel/debug/gpio'*) exec sleep $dur ;;
+  *'i2cset'*) : ;;
+  *) : ;;
+esac
+EOF
+    chmod +x "$work/stub.kc6.$sig"
+    ( FLAX_BMC_REMOTE_EXEC="$work/stub.kc6.$sig" FLAX_CYCLE_LOCK_DIR="$work" FLAX_REDFISH_EXEC="$work/rf" \
+        bash "$work/bin" cycle 10.0.0.9 >/dev/null 2>&1 ) &
+    local bp=$! i childp=""
+    for i in $(seq 1 100); do pgrep -f "sleep $fp" >/dev/null 2>&1 && break; sleep 0.1; done
+    for i in $(seq 1 50); do childp=$(pgrep -P "$bp" 2>/dev/null | head -1); [ -n "$childp" ] && break; sleep 0.1; done
+    if [ -z "$childp" ]; then echo "FAIL - kill-child6-$sig: could not find the child pid"; fail=$((fail+1)); kill -9 "$bp" 2>/dev/null; return; fi
+    kill -s "$sig" "$childp"
+    local t0 dt still_alive=1
+    t0=$(date +%s)
+    for i in $(seq 1 40); do
+        kill -0 "$bp" 2>/dev/null || { still_alive=0; break; }
+        sleep 0.1
+    done
+    dt=$(( $(date +%s) - t0 ))
+    if [ "$still_alive" = 1 ]; then
+        echo "FAIL - kill-child6-$sig: parent still alive after ${dt}s (N1 spin?)"; fail=$((fail+1))
+        kill -9 "$bp" "$childp" 2>/dev/null
+    else
+        wait "$bp" 2>/dev/null; local wrc=$?
+        if [ "$wrc" -ne 0 ]; then
+            echo "ok   - kill-child6-$sig: parent exits within ${dt}s, non-zero status ($wrc)"; pass=$((pass+1))
+        else
+            echo "FAIL - kill-child6-$sig: parent exited with status 0 (unexpected)"; fail=$((fail+1))
+        fi
+    fi
+    pkill -9 -f "sleep $fp" 2>/dev/null
+}
+kill_child_test6 TERM 75.863 "75.863"
+kill_child_test6 KILL 76.974 "76.974"
+
+# --- N1: a downstream reader closing stdout early must not spin the
+#     parent (the CHILD dies of SIGPIPE). Process substitution keeps $!
+#     tracking the bin's own pid. A normal, fast, successful cycle (the
+#     suite's own happy-path fixture) so this resolves quickly either way. ---
+FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3 FIX_POWERSTATE=Off \
+  FLAX_BMC_REMOTE_EXEC="$work/stub" FLAX_REDFISH_EXEC="$work/rf" FLAX_CYCLE_LOCK_DIR="$work" \
+  FLAX_POLL_INTERVAL=0 FLAX_DOWN_CONFIRM_N=2 FLAX_MIN_DOWN_S=0 \
+  FIX_IDCOUNTER="$work/idc.closedout" FIX_ALIVECOUNTER="$work/alc.closedout" \
+  "$work/bin" cycle 10.0.0.9 > >(head -c1 >/dev/null) 2>/dev/null &
+bpid=$!
+t0=$(date +%s)
+still_alive=1
+for i in $(seq 1 40); do
+    kill -0 "$bpid" 2>/dev/null || { still_alive=0; break; }
+    sleep 0.1
 done
-nholders6=$(printf '%s\n' "$holders6" | wc -w)
-if [ "$nholders6" -le 1 ]; then
-    echo "ok   - at most one process (the lock-taking job) holds fd 9 before SIGKILL, not every descendant ($nholders6)"; pass=$((pass+1))
+dt=$(( $(date +%s) - t0 ))
+if [ "$still_alive" = 1 ]; then
+    echo "FAIL - closed stdout: parent still alive after ${dt}s (N1 spin?)"; fail=$((fail+1))
+    kill -9 "$bpid" 2>/dev/null
 else
-    echo "FAIL - fd 9 was duplicated onto $nholders6 descendants before any signal:$holders6"; fail=$((fail+1))
+    echo "ok   - closed stdout: parent exits promptly (${dt}s), no spin"; pass=$((pass+1))
 fi
-kill -9 $tree_pids6 2>/dev/null
 wait "$bpid" 2>/dev/null
-sleep 0.3
-survivors6=""
-for p in $tree_pids6; do kill -0 "$p" 2>/dev/null && survivors6="$survivors6 $p"; done
-if [ -z "$survivors6" ]; then
-    echo "ok   - SIGKILL leaves no survivor from the pre-kill process set"; pass=$((pass+1))
-else
-    echo "FAIL - SIGKILL survivors:$survivors6"; fail=$((fail+1))
-fi
-if flock -n "$lockfile6" true; then
-    echo "ok   - per-BMC lock is free after SIGKILL"; pass=$((pass+1))
-else
-    echo "FAIL - per-BMC lock still held after SIGKILL"; fail=$((fail+1))
-fi
 
 echo; echo "passed: $pass  failed: $fail"
 [ "$fail" -eq 0 ]
