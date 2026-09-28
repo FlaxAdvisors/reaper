@@ -42,6 +42,7 @@ case "$method $path" in
           [ -e "$FLAX_MANUAL_CLAIM_DIR/et10b1" ] && echo "claim_seen_during_run $(cat "$FLAX_MANUAL_CLAIM_DIR/et10b1")" >> "$FIX_CLAIMLOG"
           [ -e "$FLAX_REBOOT_DIR/et10b1" ] && [ "$(stat -c %Y "$FLAX_REBOOT_DIR/et10b1")" -ge "${FIX_T0:-0}" ] && echo "marker_before_commit" >> "$FIX_CLAIMLOG"
           [ -n "${FIX_CLAIM_STEAL:-}" ] && printf '%s\n' "$FIX_CLAIM_STEAL" > "$FLAX_MANUAL_CLAIM_DIR/et10b1"
+          echo "claims_during_run $(ls -A "$FLAX_MANUAL_CLAIM_DIR" 2>/dev/null | tr '\n' ' ')" >> "$FIX_CLAIMLOG"
       fi
       line=$(sed -n "${n}p" "$FIX_SEQ"); [ -n "$line" ] || line=$(tail -n 1 "$FIX_SEQ")
       set -- $line
@@ -185,6 +186,28 @@ out=$(FIX_CMDLOG="$work/cmd.noport" FIX_SEQ="$work/seq.ok" FIX_SEQN="$work/seqn.
       BMC_FW_POLL_SECS=0 BMC_FW_ACT_POLL_SECS=0 BMC_FW_ACTIVATION_WAIT=5 BMC_FW_UPDATE_LOCK_DIR="$work" \
       "$work/bin" flash 10.0.0.2 http://share/flax-onetree-1.1.2.tar 2>"$work/err.noport"); rc=$?
 [ $rc -eq 0 ] && [ -z "$(ls -A "$work/manual" 2>/dev/null)" ] && [ -z "$(ls -A "$work/reboot" 2>/dev/null)" ] && ok "no --port -> no claim, no marker" || bad "no --port wrote a claim/marker" noport
+
+# fix round 1, M1: a repeated --port -> claim, marker and forget all on the LAST one
+rm -rf "$work/manual" "$work/reboot"
+FIX_SEQ="$work/seq.ok" run m1_repeat --port et0b0       # argv: --port et10b1 --port et0b0
+grep -qx 'claims_during_run et0b0 ' "$work/log.m1_repeat" && [ "$(ls -A "$work/reboot" 2>/dev/null)" = et0b0 ] && grep -qx et0b0 "$work/forgot.m1_repeat" \
+  && ok "repeated --port: claim, marker and forget-port all on the last port" || bad "repeated --port split ($(cat "$work/log.m1_repeat"); reboot=$(ls -A "$work/reboot" 2>/dev/null))" m1_repeat
+
+# fix round 1, M2: a --port followed by a flag, or a malformed value, is no port
+rm -rf "$work/manual" "$work/reboot"
+FIX_SEQ="$work/seq.ok" FIX_POST=flax-onetree-1.1.1 ACTW=1 run m2_flag --port --same   # last --port has no value
+[ ! -s "$work/forgot.m2_flag" ] && [ -z "$(ls -A "$work/manual" "$work/reboot" 2>/dev/null)" ] \
+  && ok "--port --same: --same not swallowed, no forget-port, no claim/marker" || bad "--port --same swallowed ($(cat "$work/forgot.m2_flag"))" m2_flag
+rm -rf "$work/manual" "$work/reboot"
+FIX_SEQ="$work/seq.ok" run m2_bad --port ../x
+[ ! -s "$work/forgot.m2_bad" ] && [ -z "$(ls -A "$work/manual" "$work/reboot" 2>/dev/null)" ] && [ ! -e "$work/x" ] \
+  && ok "--port ../x: dropped -- no forget-port, no claim/marker file" || bad "--port ../x used ($(cat "$work/forgot.m2_bad"))" m2_bad
+
+# fix round 1, M3: a normal exit leaves no heartbeat `sleep` behind
+FIX_SEQ="$work/seq.ok" FLAX_CLAIM_HEARTBEAT_S=37.514 run m3_sleep
+sleep 0.3
+[ $rc -eq 0 ] && ! pgrep -f 'sleep 37\.514' >/dev/null && ok "normal exit: no orphaned heartbeat sleep" \
+  || { bad "heartbeat sleep survived a normal exit: $(pgrep -af 'sleep 37\.514')" m3_sleep; pkill -f 'sleep 37\.514'; }
 
 # a trailing --port with no value must not wedge the arg loop
 rm -rf "$work/manual" "$work/reboot"

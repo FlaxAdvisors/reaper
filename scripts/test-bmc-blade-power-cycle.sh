@@ -542,7 +542,7 @@ rm -rf "$work/manual" "$work/reboot" "$work/active"
 run_port p_happy "--power-on --port et6b1" FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3 FIX_RF_POWER=On
 [[ "$LAST_OUT" == *'"cycled":true'*'"power_on":"on"'* ]] && t3ok "cycle <ip> --power-on --port et6b1 -> cycled + power_on" || t3bad "--port happy path" p_happy
 grep -Eq "^claim_seen_during_run [0-9]+@${host_now}\$" "$work/log.p_happy" && t3ok "manual claim held when the 12V write is sent, content <pid>@<host>" || t3bad "claim not held at the write ($(cat "$work/log.p_happy"))" p_happy
-! grep -q marker_before_write "$work/log.p_happy" && [ -e "$work/reboot/et6b1" ] && t3ok "reboot marker written after (not before) the 12V write" || t3bad "marker placement" p_happy
+grep -q marker_before_write "$work/log.p_happy" && [ -e "$work/reboot/et6b1" ] && t3ok "reboot marker written BEFORE the 12V write (fix round 1 ruling)" || t3bad "marker placement: not present when the write was sent" p_happy
 [ ! -e "$work/manual/et6b1" ] && t3ok "owned claim removed on exit" || t3bad "owned claim left behind" p_happy
 [ ! -e "$work/active/et6b1" ] && t3ok "a bin never creates a bmc-fw-active claim" || t3bad "bin wrote into bmc-fw-active" p_happy
 
@@ -574,6 +574,20 @@ rm -rf "$work/manual" "$work/reboot"; mkdir -p "$work/reboot"; : > "$work/reboot
 t_before=$(date +%s)
 run_port p_refresh "--port et6b1" FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3
 [ "$(mt "$work/reboot/et6b1")" -ge "$t_before" ] && t3ok "existing reboot marker's mtime refreshed by the write" || t3bad "marker mtime not refreshed" p_refresh
+
+# fix round 1, M1: a repeated --port -- claim and marker name the SAME (last) port
+rm -rf "$work/manual" "$work/reboot"
+run_port p_repeat "--port et9b9 --power-on --port et6b1" FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3
+grep -q '^claim_seen_during_run ' "$work/log.p_repeat" && [ -e "$work/reboot/et6b1" ] \
+   && [ "$(ls -A "$work/reboot")" = et6b1 ] && [ ! -e "$work/manual/et9b9" ] \
+   && t3ok "repeated --port: claim and marker both on the LAST port" || t3bad "repeated --port split claim/marker ($(cat "$work/log.p_repeat"); reboot=$(ls -A "$work/reboot" 2>/dev/null))" p_repeat
+
+# fix round 1, M3: a normal exit leaves no heartbeat `sleep` behind
+rm -rf "$work/manual" "$work/reboot"
+run_port p_hbsleep "--port et6b1" FIX_MAC="$MAC1" FIX_OS="$OS1" FIX_DOWN_AFTER=1 FIX_UP_AFTER=3 FLAX_CLAIM_HEARTBEAT_S=37.513
+sleep 0.3
+if [[ "$LAST_OUT" == *'"cycled":true'* ]] && ! pgrep -f 'sleep 37\.513' >/dev/null; then t3ok "normal exit: no orphaned heartbeat sleep"
+else t3bad "heartbeat sleep survived a normal exit: $(pgrep -af 'sleep 37\.513')" p_hbsleep; pkill -f 'sleep 37\.513'; fi
 
 for bad_args in "--port" "--port --power-on" "--port ../x" "--bogus" "--power-on --power-off"; do
     rm -rf "$work/manual" "$work/reboot"

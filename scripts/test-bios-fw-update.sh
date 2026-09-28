@@ -46,6 +46,7 @@ case "$method $path" in
           [ -e "$FLAX_MANUAL_CLAIM_DIR/et25b1" ] && echo "claim_seen_during_run $(cat "$FLAX_MANUAL_CLAIM_DIR/et25b1")" >> "$FIX_CLAIMLOG"
           [ -e "$FLAX_REBOOT_DIR/et25b1" ] && [ "$(stat -c %Y "$FLAX_REBOOT_DIR/et25b1")" -ge "${FIX_T0:-0}" ] && echo "marker_before_completed" >> "$FIX_CLAIMLOG"
           [ -n "${FIX_CLAIM_STEAL:-}" ] && printf '%s\n' "$FIX_CLAIM_STEAL" > "$FLAX_MANUAL_CLAIM_DIR/et25b1"
+          echo "claims_during_run $(ls -A "$FLAX_MANUAL_CLAIM_DIR" 2>/dev/null | tr '\n' ' ')" >> "$FIX_CLAIMLOG"
       fi
       line=$(sed -n "${n}p" "$FIX_SEQ"); [ -n "$line" ] || line=$(tail -n 1 "$FIX_SEQ")
       set -- $line
@@ -86,7 +87,7 @@ run() {  # run <name> -- sets $out $rc; fixtures come from the environment
     out=$(FLAX_REDFISH_EXEC="$work/rf" FLAX_BMC_REMOTE_EXEC="$work/ssh" FLAX_FETCH_EXEC="$work/fetch" \
           BIOS_FW_UPDATE_POLL_S=0 BIOS_FW_UPDATE_CUT_POLL_S=0 BIOS_FW_UPDATE_CUT_WAIT_S=2 \
           BIOS_FW_UPDATE_LOCK_DIR="$work" \
-          "$work/bin" flash 10.0.0.1 http://share/TPC_P26F.tar --port et25b1 2>"$work/err.$1")
+          "$work/bin" flash 10.0.0.1 http://share/TPC_P26F.tar --port et25b1 ${RUN_EXTRA:-} 2>"$work/err.$1")
     rc=$?
 }
 ok()   { pass=$((pass + 1)); echo "ok   $1"; }
@@ -207,6 +208,26 @@ FIX_SEQ="$work/seq.exc3" run marker_exc
 rm -rf "$work/manual" "$work/reboot"
 FIX_TASKS_CODE=500 run marker_busy
 [ $rc -eq 3 ] && [ ! -e "$work/reboot/et25b1" ] && [ ! -e "$work/manual/et25b1" ] && ok "interlock busy -> no marker, claim removed" || { rc=x; bad "marker/claim on interlock"; }
+
+# fix round 1, M1: a repeated --port -> claim and marker on the LAST one
+rm -rf "$work/manual" "$work/reboot"
+FIX_SEQ="$work/seq.slow" RUN_EXTRA="--port et0b0" run m1_repeat
+grep -qx 'claims_during_run et0b0 ' "$work/log.m1_repeat" && [ "$(ls -A "$work/reboot" 2>/dev/null)" = et0b0 ] \
+  && ok "repeated --port: claim and marker both on the last port" || { rc=x; bad "repeated --port split ($(cat "$work/log.m1_repeat"); reboot=$(ls -A "$work/reboot" 2>/dev/null))"; }
+
+# fix round 1, M2: a --port followed by a flag, or a malformed value, is no port
+for extra in "--port --x" "--port ../x"; do
+    rm -rf "$work/manual" "$work/reboot"
+    FIX_SEQ="$work/seq.slow" RUN_EXTRA="$extra" run m2
+    [ -z "$(ls -A "$work/manual" "$work/reboot" 2>/dev/null)" ] && [ ! -e "$work/x" ] && echo "$out" | grep -q '"port": ""' \
+      && ok "trailing '$extra': no port -> no claim/marker file, verdict port empty" || { rc=x; bad "'$extra' named a claim/marker ($(ls -A "$work/manual" "$work/reboot" 2>/dev/null))"; }
+done
+
+# fix round 1, M3: a normal exit leaves no heartbeat `sleep` behind
+FIX_SEQ="$work/seq.done" FLAX_CLAIM_HEARTBEAT_S=37.515 run m3_sleep
+sleep 0.3
+[ $rc -eq 0 ] && ! pgrep -f 'sleep 37\.515' >/dev/null && ok "normal exit: no orphaned heartbeat sleep" \
+  || { rc=x; bad "heartbeat sleep survived a normal exit: $(pgrep -af 'sleep 37\.515')"; pkill -f 'sleep 37\.515'; }
 
 # a trailing --port with no value must not wedge the arg loop
 rm -rf "$work/manual" "$work/reboot"

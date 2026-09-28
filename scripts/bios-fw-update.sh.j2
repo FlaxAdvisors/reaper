@@ -116,11 +116,18 @@ HEARTBEAT_S="${FLAX_CLAIM_HEARTBEAT_S:-60}"
 CLAIM_FILE=""; CLAIM_TOKEN=""; HB_PID=""
 # A port becomes a file name: accept only the internal port form's alphabet.
 port_ok() { [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; }
-arg_port() {   # arg_port <argv...> -> the value following --port, if any
+# arg_port <argv...> -> the value of the LAST --port (the child's parser
+# also keeps the last, so claim and marker always name the same port); a
+# following token that starts with "--" is a flag, not a value -> "".
+arg_port() {
+    local v=""
     while [ $# -gt 0 ]; do
-        [ "$1" = --port ] && { printf '%s' "${2:-}"; return 0; }
+        if [ "$1" = --port ]; then
+            case "${2:-}" in --*|"") v="" ;; *) v="$2"; shift ;; esac
+        fi
         shift
     done
+    printf '%s' "$v"
 }
 claim_take() {   # claim_take <port> -- PARENT only, after take_lock
     [ -n "${1:-}" ] || return 0
@@ -155,13 +162,20 @@ claim_heartbeat() {   # PARENT, from its wait loop: move the claim's mtime
 hb_start() {   # PARENT only, after the CHILD is spawned
     [ -n "$CLAIM_FILE" ] || return 0
     trap ':' USR1   # before the ticker exists: an untrapped USR1 would kill us
+    # The sleep runs in the BACKGROUND under a TERM trap that kills it, so
+    # hb_stop never leaves an orphaned `sleep` (re-parented to PID 1 -- a
+    # zombie under a non-reaping init; cf. the 2026-09-25 pids-max incident).
     FLAX_HB_PARENT=$$ setpriv --pdeathsig KILL bash -c \
-        'p=$FLAX_HB_PARENT; [ "$PPID" = "$p" ] || exit 0
-         while sleep "$1"; do kill -USR1 "$p" 2>/dev/null || exit 0; done' _ "$HEARTBEAT_S" \
+        'p=$FLAX_HB_PARENT; [ "$PPID" = "$p" ] || exit 0; s=""
+         trap '"'"'[ -n "$s" ] && kill "$s" 2>/dev/null; exit 0'"'"' TERM
+         while :; do sleep "$1" & s=$!; wait "$s" || exit 0; s=""; kill -USR1 "$p" 2>/dev/null || exit 0; done' _ "$HEARTBEAT_S" \
         </dev/null >/dev/null 2>&1 9>&- &
     HB_PID=$!
 }
-hb_stop() { [ -n "$HB_PID" ] && kill "$HB_PID" 2>/dev/null; HB_PID=""; return 0; }
+hb_stop() {   # belt and braces: the ticker's own sleep first, then the ticker
+    [ -n "$HB_PID" ] && { pkill -P "$HB_PID" 2>/dev/null 9>&-; kill "$HB_PID" 2>/dev/null; }
+    HB_PID=""; return 0
+}
 mark_reboot() {   # mark_reboot <port> -- touch, so an existing marker's mtime moves too
     port_ok "${1:-}" || return 0
     mkdir -p "$REBOOT_DIR" 2>/dev/null 9>&- && touch "$REBOOT_DIR/$1" 2>/dev/null 9>&-
@@ -421,7 +435,10 @@ boot_id() { bmc "$1" 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null | tr -d '
 cmd_flash() {
     local ip="${1:?bmc ip required}" url="${2:?artifact url required}"; shift 2 || true
     local port=""
-    while [ $# -gt 0 ]; do case "$1" in --port) port="${2:-}"; shift; [ $# -gt 0 ] && shift;; *) shift;; esac; done
+    while [ $# -gt 0 ]; do case "$1" in --port) case "${2:-}" in --*|"") port="";; *) port="$2"; shift;; esac; shift;; *) shift;; esac; done
+    # Task 3 fix M2: a value that is not a port (e.g. "../x") is dropped --
+    # never a claim/marker file name, never a flax-forget-port argument.
+    port_ok "$port" || port=""
 
     # NOTE (2026-09-27 fix round 2): the per-BMC local lock (fd 9) is taken
     # by the PARENT process, before this CHILD was ever forked -- see the
