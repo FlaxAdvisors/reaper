@@ -212,9 +212,31 @@ def _taxonomy_stale(cache):
     return (cache or {}).get("taxonomy_version") != _bmc_vendor.TAXONOMY_VERSION
 
 
+# A kind probed within this long of the BMC appearing is provisional: a booting
+# OpenBMC answers IPMI before ssh and reads as traditional/ami_legacy (et8b3,
+# 2026-09-28). It is re-probed once it settles; the result replaces the cache.
+EARLY_PROBE_SECS = 300
+
+
+def _probe_is_early(port_state, probed_at):
+    """True when `probed_at` is < EARLY_PROBE_SECS after the BMC was last
+    found (bmcmac.since), else after the link session began."""
+    bmcmac = port_state["vars"]["bmcmac"]
+    anchor = (bmcmac.get("since") if bmcmac.get("value") == "found"
+              else port_state.get("link_session_since"))
+    if not anchor or not probed_at:
+        return False
+    return _secs_since(anchor) - _secs_since(probed_at) < EARLY_PROBE_SECS
+
+
+def _early_reprobe_due(cache):
+    return (bool(cache.get("early"))
+            and _secs_since(cache.get("probed_at")) >= EARLY_PROBE_SECS)
+
+
 def _reprobe_due(cache):
     return (_product_name_retry_due(cache) or _kind_retry_due(cache)
-            or _taxonomy_stale(cache))
+            or _taxonomy_stale(cache) or _early_reprobe_due(cache))
 
 
 def _reprobe_kwargs(cache):
@@ -837,7 +859,8 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
                      "product_name": _prior_cache.get("product_name"),
                      "creds_used": _prior_cache.get("creds_used"),
                      "redfish_version": _prior_cache.get("redfish_version"),
-                     "probed_at": _prior_cache.get("probed_at")}
+                     "probed_at": _prior_cache.get("probed_at"),
+                     "early": bool(_prior_cache.get("early"))}
             bmc_probe_by_mac[mac] = probe
             return probe["kind"]
         target, _is_ll = reach_for_mac(
@@ -985,6 +1008,9 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
             "product_name": _probe.get("product_name"),
             "redfish_version": _probe.get("redfish_version"),
             "probed_at": _probe.get("probed_at"),
+            # A reused cache keeps its flag; a fresh probe is judged now.
+            "early": (_probe["early"] if "early" in _probe else
+                      _probe_is_early(port_state, _probe.get("probed_at"))),
             "for_mac": verdict.bmc_mac,
         }
 
@@ -1156,6 +1182,7 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
                      "redfish_version": probe.get("redfish_version"),
                      "probed_at": _ts_now(),
                      "for_mac": bmc_mac}
+            cache["early"] = _probe_is_early(port_state, cache["probed_at"])
             port_state["bmc_kind_cached"] = cache
             port_state["bmc_power"] = "0 W"
             if mac_changed:
