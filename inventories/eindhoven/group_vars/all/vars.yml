@@ -284,6 +284,19 @@ apply_flax_post_bios_fw_mode: "detect"
 # flax-onetree-1.0.9-202607032146 against target flax-onetree-1.1.1.
 apply_flax_post_fw_mode: "detect"
 
+# BMC firmware manifest: live file hand-managed until 2026-09-28; this is its
+# content + the Part 3 option (post_flash_net_reset).
+bmc_fw_platforms:
+  tiogapass-openbmc:
+    match:
+      product_name: ["(?i)tioga", "(?i)tp[-_ ]?", "(?i)wiwynn.*tp", "(?i)quanta.*tioga"]
+      bmc_kind: openbmc
+    target_version: "flax-onetree-1.1.2"
+    check: { method: redfish-firmware-inventory, id: bmc_active }
+    flash: { method: redfish-update-multipart, artifact: "SXC-Lab_OCP-Updates/OpenBMC/flax-onetree-1.1.2.tar" }
+    auto: true
+    post_flash_net_reset: true   # Part 3 D: clear 00-bmc-eth0.network after a flash (gated by BMC_FW_NETRESET_PORTS)
+
 # Role registry (spine migration phase 1) universe for the post role,
 # rendered into /etc/flax/roles.d/post.json by apply_lease_agent. Values
 # match the flax_role_post_* template defaults -- pinned explicitly here so
