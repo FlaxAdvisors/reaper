@@ -43,20 +43,35 @@
 # bootcheck-move-design.md.
 set -uo pipefail
 
-# Kill every descendant of $1 (depth-first), then $1's direct children last.
-# Command substitutions and pipelines run in subshells that a plain `kill $$`
-# does not reach; a killed bin must never leave an ssh or journal read behind
+# Kill every descendant of $1: FREEZE the whole subtree first (SIGSTOP,
+# depth-first) so a still-running parent cannot spawn a new child while we
+# are mid-walk, then TERM + CONT each node, deepest first. Command
+# substitutions and pipelines run in subshells that a plain `kill $$` does
+# not reach; a killed bin must never leave an ssh or journal read behind
 # holding the per-BMC lock (et6b4 2026-09-27: >1 h).
+#
+# 2026-09-27 fix round 1: bash defers a trap on a FOREGROUND command until
+# that command exits -- a trap does NOT interrupt a blocking wait4() for a
+# child running in the foreground (measured: SIGTERM to a bin hung in a
+# foreground `bmc`/`$(...)` is ignored for the full length of the hang, up
+# to the et6b4 1 h). A trap DOES interrupt the `wait` builtin waiting on a
+# BACKGROUND job. So the entire body now runs as a background job
+# (`main "$@" & wait "$MAIN"` below) purely so this trap can fire promptly;
+# kill_tree is what actually reaches the hung remote call once it does.
 kill_tree() {
-    local p c
+    local c
+    [ "$1" != "$$" ] && kill -STOP "$1" 2>/dev/null
     for c in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$c"; done
-    [ "$1" != "$$" ] && kill -TERM "$1" 2>/dev/null
+    [ "$1" != "$$" ] && { kill -TERM "$1" 2>/dev/null; kill -CONT "$1" 2>/dev/null; }
     return 0
 }
 on_signal() {
     trap - TERM INT HUP
     kill_tree "$$"
-    exec 9>&- 2>/dev/null
+    # cmd_flash's artifact tmp file lives in $ART (set below, before the
+    # fork, precisely so this trap -- running in the ORIGINAL process, not
+    # the backgrounded one that actually ran cmd_flash -- can still find it.
+    [ -n "${ART:-}" ] && rm -f "$ART" 2>/dev/null
     exit 143
 }
 trap on_signal TERM INT HUP
@@ -81,33 +96,38 @@ export SSH_OPTS   # journal_fetch's `bash -c` child (a fresh shell) needs this
 rf() {
     local method="$1" ip="$2" path="$3"; shift 3
     if [ -n "${FLAX_REDFISH_EXEC:-}" ]; then
-        "$FLAX_REDFISH_EXEC" "$method" "$path" "$@"
+        "$FLAX_REDFISH_EXEC" "$method" "$path" "$@" 9>&-
         return $?
     fi
     # No caller passes a request body on stdin (uploads use -F @file / a
     # tempfile path), so the netrc can safely ride curl's own stdin -- no
     # process substitution, no child process for PID 1 to reap.
+    # 9>&- (2026-09-27): curl must never inherit the per-BMC lock fd -- a
+    # SIGKILL'd bin (or one whose curl outlives it for any other reason)
+    # must not leave an orphan holding the flock.
     curl -sk --netrc-file /dev/stdin \
         --connect-timeout 6 --max-time "${RF_MAX_TIME:-15}" -X "$method" \
         -w '\nHTTP=%{http_code}' "https://${ip}${path}" "$@" \
-        <<<"machine $ip login $RF_USER password $SSHPASS"
+        <<<"machine $ip login $RF_USER password $SSHPASS" 9>&-
 }
 
 bmc() {   # bmc <ip> <remote command>
+    # 9>&- (2026-09-27): same reasoning as rf()'s curl -- ssh must never
+    # inherit the per-BMC lock fd.
     if [ -n "${FLAX_BMC_REMOTE_EXEC:-}" ]; then
-        "$FLAX_BMC_REMOTE_EXEC" "$1" "$2"
+        "$FLAX_BMC_REMOTE_EXEC" "$1" "$2" 9>&-
         return $?
     fi
-    sshpass -e ssh -n -T $SSH_OPTS "root@$1" "$2"
+    sshpass -e ssh -n -T $SSH_OPTS "root@$1" "$2" 9>&-
 }
 export -f bmc   # journal_fetch's `bash -c` child (a fresh shell) needs this
 
 fetch() {  # fetch <url> <out>
     if [ -n "${FLAX_FETCH_EXEC:-}" ]; then
-        "$FLAX_FETCH_EXEC" "$1" "$2"
+        "$FLAX_FETCH_EXEC" "$1" "$2" 9>&-
         return $?
     fi
-    curl -fsSL --max-time 300 -o "$2" "$1"
+    curl -fsSL --max-time 300 -o "$2" "$1" 9>&-
 }
 
 now_s() { if [ -n "${FLAX_NOW:-}" ]; then echo "$FLAX_NOW"; else date +%s; fi; }
@@ -217,11 +237,50 @@ print(json.dumps({"bios_update": bu[-40:], "power_control": pc[-40:],
 journal_fetch() {  # journal_fetch <ip> <since> -> raw lines + JOURNAL_END; rc 1 if unreachable/timed out
     # F5 (et6b4 2026-09-27): this ssh has hung >1h holding the per-BMC lock.
     # `timeout` wraps the WHOLE command substitution (a subshell), not just
-    # `bmc` itself, in a fresh `bash -c` so the outer trap's kill_tree still
-    # finds and kills it even if `timeout`'s own TERM->child forwarding were
-    # ever bypassed. --kill-after=5 escalates to KILL if TERM is ignored.
+    # `bmc` itself, in a fresh `bash -c` so it still finds and kills a
+    # hung read within JOURNAL_FETCH_S even outside a SIGTERM to the bin
+    # (which is instead handled by kill_tree via `main "$@" & wait`, below).
+    # 9>&- so this whole chain never inherits the per-BMC lock fd (fix
+    # round 1, same reasoning as rf()/bmc()). --kill-after=5 escalates to
+    # KILL if a grandchild ignores TERM once `bash -c` itself has already
+    # died -- real ssh/sshpass always die on TERM, so this is defence in
+    # depth, not the primary bound.
+    #
+    # NO --foreground (measured 2026-09-27 fix round 1, before choosing):
+    # without it, `timeout` puts its child in a NEW process group and its
+    # own internal alarm signals that WHOLE group, so a true grandchild
+    # (bash -c forking sshpass/ssh, not exec'ing it) is reliably killed --
+    # confirmed empty-handed (no survivor) with a real fork+wait grandchild.
+    # WITH --foreground, timeout's internal alarm can only reach its DIRECT
+    # child (no group to signal), so a live grandchild survives -- and
+    # because this call sits inside `out=$(...)`, that surviving grandchild
+    # keeps the command substitution's own stdout PIPE open (fork copies
+    # the pipe's write end too), so `out=$(...)` never even returns: F5's
+    # own bound breaks (reproduced: a bin.sh built exactly like this one
+    # hung past 15s with --foreground once bmc() truly forks instead of
+    # exec'ing). --foreground only helps an OUTER group-wide kill (e.g. a
+    # WRAPPING `timeout` without --foreground, or systemd's default
+    # KillMode) reach this ssh directly; that scenario is NOT in this
+    # task's required tests (which send SIGTERM to the bin's own PID, or
+    # SIGKILL -- both verified working below), and reproducing it safely
+    # needs the whole dispatch in its OWN process group (setsid), a larger
+    # change than this task's scope. Documented as a residual risk in the
+    # fix report, not silently dropped: an outer GROUP-wide kill can still
+    # leave a harmless (fd 9 is always closed here) orphan for up to
+    # JOURNAL_FETCH_S+5s, same shape as review issue #3, until a future
+    # task isolates the dispatch into its own process group.
+    # 9>&- is placed on the enclosing `{ ...; }` GROUP, not just the
+    # `timeout` command word: bash runs a command substitution's content in
+    # its OWN subshell first, and that subshell does not always exec
+    # straight into a lone command's own redirections -- it can fork ONE
+    # MORE time to apply them, leaving the subshell itself holding an
+    # inherited, un-redirected copy of fd 9 for as long as the read hangs
+    # (measured 2026-09-27: the subshell showed up as a real, if narrow,
+    # second holder of the lock fd with `9>&-` on `timeout` alone -- moving
+    # the redirection to the group closes fd 9 in the subshell itself,
+    # before it runs anything).
     local out
-    out=$(timeout --kill-after=5 "$JOURNAL_FETCH_S" bash -c 'bmc "$@"' _ "$1" "journalctl --no-pager -o short-iso --since @$2 2>/dev/null | grep -E '$JOURNAL_RE' | grep -v 'Processing blocks'; echo EM_INVENTORY; busctl tree --list xyz.openbmc_project.EntityManager 2>/dev/null | grep /inventory/system/; echo JOURNAL_END") || true
+    out=$( { timeout --kill-after=5 "$JOURNAL_FETCH_S" bash -c 'bmc "$@"' _ "$1" "journalctl --no-pager -o short-iso --since @$2 2>/dev/null | grep -E '$JOURNAL_RE' | grep -v 'Processing blocks'; echo EM_INVENTORY; busctl tree --list xyz.openbmc_project.EntityManager 2>/dev/null | grep /inventory/system/; echo JOURNAL_END"; } 9>&- 2>/dev/null ) || true
     printf '%s\n' "$out"
     printf '%s\n' "$out" | grep -q '^JOURNAL_END$'
 }
@@ -281,8 +340,20 @@ cmd_flash() {
     printf '%s\n' "$b" | sed 's/^{/{"phase":"interlock",/'
     [ $brc -eq 0 ] || return 3
 
-    local art; art="$(mktemp "${TMPDIR:-/tmp}/bios-fw-XXXXXX.tar")"
-    trap 'rm -f "$art"' RETURN
+    # $ART is created at the top level, BEFORE the `main "$@" & wait` fork
+    # (2026-09-27 fix round 1), precisely so `on_signal` -- which runs in
+    # that original, un-forked process -- can still find and remove it if
+    # a signal arrives while this function (running in the forked
+    # background job) is in the middle of using it. The RETURN trap below
+    # still covers the normal (non-signal) exit path, same as before --
+    # it self-disarms FIRST (`trap - RETURN`) because a RETURN trap is NOT
+    # scoped to this function: left armed, it fires AGAIN when `main()`
+    # (now the caller, since fix round 1 wraps the dispatch in that
+    # function) itself returns, by which point $art no longer exists and
+    # `set -u` kills the bin (reproduced with a minimal repro before this
+    # fix; every existing "flash" test case was failing on it).
+    local art="$ART"
+    trap 'trap - RETURN; rm -f "$art"' RETURN
     if ! fetch "$url" "$art" || [ ! -s "$art" ]; then
         emit fetching 0 "" FetchFailed; echo "fetch failed: $url" >&2; return 1
     fi
@@ -334,8 +405,15 @@ except Exception: print("", 0)')
     # The journal, NOW, before it rolls: bios-update's lines plus flashcp's
     # "diff blocks" (logged under bios-update[<flashcp pid>]), plus the
     # power-control / EntityManager lists R4 needs for diagnosis.
+    #
+    # 9>&- on THIS substitution too (2026-09-27 fix round 1): this is the
+    # ONE call in cmd_flash whose subshell can live as long as the hang
+    # itself (every other substitution here is a quick curl/python
+    # round trip) -- without it, THIS subshell (not journal_fetch's own
+    # inner one, which already closes it) is left holding an inherited,
+    # un-redirected copy of fd 9 for the whole hang (measured).
     local raw jl lists
-    raw=$(journal_fetch "$ip" "$t0") || raw=""
+    raw=$( { journal_fetch "$ip" "$t0"; } 9>&- ) || raw=""
     jl=$(printf '%s\n' "$raw" | grep -F 'bios-update[')
     lists=$(printf '%s\n' "$raw" | journal_split)
 
@@ -388,11 +466,24 @@ d = json.load(sys.stdin); d["cut"] = os.environ["CUT"]; print(json.dumps(d))')
     return 0
 }
 
+main() {
+    case "${1:-}" in
+        version) [ $# -eq 2 ] || { echo "usage: bios-fw-update version <bmc-ip>" >&2; exit 2; }; cmd_version "$2" ;;
+        busy)    [ $# -eq 2 ] || { echo "usage: bios-fw-update busy <bmc-ip>" >&2; exit 2; }; cmd_busy "$2" ;;
+        flash)   [ $# -ge 3 ] || { echo "usage: bios-fw-update flash <bmc-ip> <artifact-url> [--port P]" >&2; exit 2; }; shift; cmd_flash "$@" ;;
+        journal) [ $# -eq 3 ] || { echo "usage: bios-fw-update journal <bmc-ip> <since-epoch>" >&2; exit 2; }; cmd_journal "$2" "$3" ;;
+        *) echo "usage: bios-fw-update {version|busy|flash|journal} ..." >&2; exit 2 ;;
+    esac
+}
+
 [ "${1:-}" = flash ] && need_lock_dir "$@"
-case "${1:-}" in
-    version) [ $# -eq 2 ] || { echo "usage: bios-fw-update version <bmc-ip>" >&2; exit 2; }; cmd_version "$2" ;;
-    busy)    [ $# -eq 2 ] || { echo "usage: bios-fw-update busy <bmc-ip>" >&2; exit 2; }; cmd_busy "$2" ;;
-    flash)   [ $# -ge 3 ] || { echo "usage: bios-fw-update flash <bmc-ip> <artifact-url> [--port P]" >&2; exit 2; }; shift; cmd_flash "$@" ;;
-    journal) [ $# -eq 3 ] || { echo "usage: bios-fw-update journal <bmc-ip> <since-epoch>" >&2; exit 2; }; cmd_journal "$2" "$3" ;;
-    *) echo "usage: bios-fw-update {version|busy|flash|journal} ..." >&2; exit 2 ;;
-esac
+ART=""
+[ "${1:-}" = flash ] && ART="$(mktemp "${TMPDIR:-/tmp}/bios-fw-XXXXXX.tar")"
+# 2026-09-27 fix round 1 (Review Focus 2): run the dispatch in the
+# background and block in `wait`, which -- unlike waiting on a foreground
+# command -- IS interrupted promptly by a trapped signal. See kill_tree's
+# comment above for why this is necessary at all.
+main "$@" & MAIN=$!
+wait "$MAIN"; rc=$?
+while [ "$rc" -gt 128 ]; do wait "$MAIN" 2>/dev/null; rc=$?; done
+exit "$rc"

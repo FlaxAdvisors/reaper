@@ -49,20 +49,31 @@
 # that contract is simply that it never loops the write itself.
 set -u
 
-# Kill every descendant of $1 (depth-first), then $1's direct children last.
-# Command substitutions and pipelines run in subshells that a plain `kill $$`
-# does not reach; a killed bin must never leave an ssh or journal read behind
+# Kill every descendant of $1: FREEZE the whole subtree first (SIGSTOP,
+# depth-first) so a still-running parent cannot spawn a new child while we
+# are mid-walk, then TERM + CONT each node, deepest first. Command
+# substitutions and pipelines run in subshells that a plain `kill $$` does
+# not reach; a killed bin must never leave an ssh or journal read behind
 # holding the per-BMC lock (et6b4 2026-09-27: >1 h).
+#
+# 2026-09-27 fix round 1: bash defers a trap on a FOREGROUND command until
+# that command exits -- a trap does NOT interrupt a blocking wait4() for a
+# child running in the foreground (measured: a hung i2cset ssh after the
+# interlock ignored SIGTERM for the full BLADE_CYCLE_TIMEOUT). A trap DOES
+# interrupt the `wait` builtin waiting on a BACKGROUND job. So the entire
+# body now runs as a background job (`main "$@" & wait "$MAIN"` below)
+# purely so this trap can fire promptly; kill_tree is what actually reaches
+# the hung remote call once it does.
 kill_tree() {
-    local p c
+    local c
+    [ "$1" != "$$" ] && kill -STOP "$1" 2>/dev/null
     for c in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$c"; done
-    [ "$1" != "$$" ] && kill -TERM "$1" 2>/dev/null
+    [ "$1" != "$$" ] && { kill -TERM "$1" 2>/dev/null; kill -CONT "$1" 2>/dev/null; }
     return 0
 }
 on_signal() {
     trap - TERM INT HUP
     kill_tree "$$"
-    exec 9>&- 2>/dev/null
     exit 143
 }
 trap on_signal TERM INT HUP
@@ -143,11 +154,14 @@ MIN_DOWN_S="${FLAX_MIN_DOWN_S:-20}"
 # real BMC; production always leaves it unset and goes over ssh. Same shape
 # as bmc-bios-chip-probe.sh.j2 / bmc-backup-flash.sh.j2's identical hook.
 bmc() {
+    # 9>&- (2026-09-27): ssh must never inherit the per-BMC lock fd -- a
+    # SIGKILL'd bin (or one whose ssh outlives it for any other reason)
+    # must not leave an orphan holding the flock.
     if [ -n "${FLAX_BMC_REMOTE_EXEC:-}" ]; then
-        "$FLAX_BMC_REMOTE_EXEC" "$1" "$2"
+        "$FLAX_BMC_REMOTE_EXEC" "$1" "$2" 9>&-
         return $?
     fi
-    sshpass -e ssh -n -T $SSH_OPTS "root@$1" "$2"
+    sshpass -e ssh -n -T $SSH_OPTS "root@$1" "$2" 9>&-
 }
 
 json_err() { printf '{"error":"%s"}\n' "$1"; exit 1; }
@@ -162,15 +176,16 @@ say() { printf 'bmc-blade-power-cycle: [+%ss] %s\n' "$(( $(date +%s) - T_START )
 rf() {   # rf <METHOD> <ip> <path> [curl args...] -> body, then HTTP=<code>
     local method="$1" ip="$2" path="$3"; shift 3
     if [ -n "${FLAX_REDFISH_EXEC:-}" ]; then
-        "$FLAX_REDFISH_EXEC" "$method" "$path" "$@"
+        "$FLAX_REDFISH_EXEC" "$method" "$path" "$@" 9>&-
         return $?
     fi
     # No caller passes a request body on stdin (the Reset action's body is a
     # literal -d string), so the netrc can safely ride curl's own stdin.
+    # 9>&- (2026-09-27): curl must never inherit the per-BMC lock fd either.
     curl -sk --netrc-file /dev/stdin \
         --connect-timeout 6 --max-time 15 -X "$method" \
         -w '\nHTTP=%{http_code}' "https://${ip}${path}" "$@" \
-        <<<"machine $ip login $RF_USER password $SSHPASS"
+        <<<"machine $ip login $RF_USER password $SSHPASS" 9>&-
 }
 rf_body() { sed '$d'; }
 rf_code() { tail -n 1 | sed -n 's/^HTTP=//p'; }
@@ -449,14 +464,24 @@ cmd_cycle() {
 }
 
 USAGE="usage: bmc-blade-power-cycle cycle <bmc-ip> [--power-on]"
+main() {
+    case "${1:-}" in
+        cycle)
+            case "$#:${3:-}" in
+                2:) ;;
+                3:--power-on) POWER_ON_AFTER=yes ;;
+                *) echo "$USAGE" >&2; exit 2 ;;
+            esac
+            cmd_cycle "$2" ;;
+        *) echo "$USAGE" >&2; exit 2 ;;
+    esac
+}
+
 [ "${1:-}" = cycle ] && need_lock_dir "$@"
-case "${1:-}" in
-    cycle)
-        case "$#:${3:-}" in
-            2:) ;;
-            3:--power-on) POWER_ON_AFTER=yes ;;
-            *) echo "$USAGE" >&2; exit 2 ;;
-        esac
-        cmd_cycle "$2" ;;
-    *) echo "$USAGE" >&2; exit 2 ;;
-esac
+# 2026-09-27 fix round 1 (Review Focus 2): run the dispatch in the
+# background and block in `wait`, which -- unlike waiting on a foreground
+# command -- IS interrupted promptly by a trapped signal.
+main "$@" & MAIN=$!
+wait "$MAIN"; rc=$?
+while [ "$rc" -gt 128 ]; do wait "$MAIN" 2>/dev/null; rc=$?; done
+exit "$rc"

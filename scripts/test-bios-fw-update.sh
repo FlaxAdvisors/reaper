@@ -255,17 +255,102 @@ dt=$(( $(date +%s) - t0 ))
 [ "$dt" -lt 20 ] && echo "$out" | grep -q '"phase": "verdict"' && echo "$out" | grep -q '"ending": "unknown"' \
   && ok "hung journal read is cut at JOURNAL_FETCH_S and the verdict is still printed" || bad "hung verdict read ($dt s)"
 
-# --- F6: SIGTERM mid-ssh leaves no child and frees the lock ---
-cat > "$work/ssh.sleep" <<'EOF'
+# --- F6 (fix round 1, 2026-09-27): SIGTERM/SIGKILL while hung AFTER
+#     take_lock (inside journal_fetch, post-flash) leaves no child and
+#     frees the lock. Round 1's F6 hung BEFORE any lock was ever taken (the
+#     `journal` subcommand never calls take_lock) and only proved the
+#     natural 60s exit once the stub finished on its own -- a mutation
+#     that no-ops kill_tree still passed it (see the fix report). These
+#     hang the ACTUAL post-flash journal read with JOURNAL_FETCH_S set well
+#     beyond the signal below, so kill_tree/the async wait -- not the inner
+#     `timeout` -- is what is under test. A distinctive sleep duration
+#     (not appearing anywhere else in this suite) is the pgrep fingerprint.
+hang_after_lock_setup() {  # hang_after_lock_setup <sleep-duration> <stub-filename>
+    local dur="$1" stubname="$2"
+    cat > "$work/$stubname" <<EOF
 #!/bin/bash
-sleep 60
+case "\$2" in
+  *journalctl*) exec sleep $dur ;;
+  *) exec "\$REAL_SSH_STUB" "\$@" ;;
+esac
 EOF
-chmod +x "$work/ssh.sleep"
-( FLAX_BMC_REMOTE_EXEC="$work/ssh.sleep" BIOS_FW_UPDATE_LOCK_DIR="$work" \
-    bash "$work/bin" journal 10.0.0.1 1 >/dev/null 2>&1 ) & bpid=$!
-sleep 1; kill -TERM "$bpid"; wait "$bpid" 2>/dev/null
-sleep 1
-if pgrep -f "$work/ssh.sleep" >/dev/null; then bad "orphaned ssh child after SIGTERM"; else ok "SIGTERM kills the whole tree"; fi
+    chmod +x "$work/$stubname"
+}
+collect_tree() {  # collect_tree <pid> -> that pid and every descendant, one per line
+    local p
+    echo "$1"
+    for p in $(pgrep -P "$1" 2>/dev/null); do collect_tree "$p"; done
+}
+
+# --- SIGTERM case ---
+hang_after_lock_setup 61.409 ssh.hangterm
+printf 'Completed 100\n' > "$work/seq.hangterm"
+lockfile_term="$work/fw-update-10.0.0.1.lock"; rm -f "$lockfile_term"
+( REAL_SSH_STUB="$work/ssh" FLAX_REDFISH_EXEC="$work/rf" FLAX_BMC_REMOTE_EXEC="$work/ssh.hangterm" FLAX_FETCH_EXEC="$work/fetch" \
+    BIOS_FW_UPDATE_POLL_S=0 BIOS_FW_UPDATE_CUT_POLL_S=0 BIOS_FW_UPDATE_CUT_WAIT_S=2 \
+    BIOS_FW_UPDATE_LOCK_DIR="$work" BIOS_FW_UPDATE_JOURNAL_FETCH_S=30 \
+    FIX_CMDLOG="$work/cmd.hangterm" FIX_SEQN="$work/seqn.hangterm" FIX_BOOTN="$work/bootn.hangterm" FIX_SEQ="$work/seq.hangterm" \
+    bash "$work/bin" flash 10.0.0.1 http://share/TPC_P26F.tar --port et25b1 >/dev/null 2>"$work/err.hangterm" ) &
+bpid=$!
+for i in $(seq 1 100); do pgrep -f 'sleep 61\.409' >/dev/null 2>&1 && break; sleep 0.1; done
+pgrep -f 'sleep 61\.409' >/dev/null 2>&1 || { rc=x; bad "F6 SIGTERM setup: the hang never started"; }
+t0=$(date +%s)
+kill -TERM "$bpid"
+wait "$bpid" 2>/dev/null
+dt=$(( $(date +%s) - t0 ))
+survivor=$(pgrep -f 'sleep 61\.409' 2>/dev/null)
+if [ "$dt" -le 5 ] && [ -z "$survivor" ]; then
+    ok "SIGTERM while hung in journal_fetch AFTER take_lock exits fast (${dt}s), no survivor"
+else
+    rc=x; bad "SIGTERM post-take_lock hang (dt=${dt}s survivor=$survivor)"
+fi
+if flock -n "$lockfile_term" true; then
+    ok "lock free after SIGTERM (post-take_lock hang)"
+else
+    rc=x; bad "lock still held after SIGTERM (post-take_lock hang)"
+fi
+
+# --- SIGKILL case: on_signal never runs (uncatchable), so the ONLY defence
+#     is that fd 9 was never inherited by a descendant in the first place. ---
+hang_after_lock_setup 62.583 ssh.hangkill
+printf 'Completed 100\n' > "$work/seq.hangkill"
+lockfile_kill="$work/fw-update-10.0.0.1.lock"; rm -f "$lockfile_kill"
+( REAL_SSH_STUB="$work/ssh" FLAX_REDFISH_EXEC="$work/rf" FLAX_BMC_REMOTE_EXEC="$work/ssh.hangkill" FLAX_FETCH_EXEC="$work/fetch" \
+    BIOS_FW_UPDATE_POLL_S=0 BIOS_FW_UPDATE_CUT_POLL_S=0 BIOS_FW_UPDATE_CUT_WAIT_S=2 \
+    BIOS_FW_UPDATE_LOCK_DIR="$work" BIOS_FW_UPDATE_JOURNAL_FETCH_S=30 \
+    FIX_CMDLOG="$work/cmd.hangkill" FIX_SEQN="$work/seqn.hangkill" FIX_BOOTN="$work/bootn.hangkill" FIX_SEQ="$work/seq.hangkill" \
+    bash "$work/bin" flash 10.0.0.1 http://share/TPC_P26F.tar --port et25b1 >/dev/null 2>"$work/err.hangkill" ) &
+bpid=$!
+for i in $(seq 1 100); do pgrep -f 'sleep 62\.583' >/dev/null 2>&1 && break; sleep 0.1; done
+pgrep -f 'sleep 62\.583' >/dev/null 2>&1 || { rc=x; bad "F6 SIGKILL setup: the hang never started"; }
+tree_pids=$(collect_tree "$bpid" | sort -un)
+holders=""
+for p in $tree_pids; do
+    [ -e "/proc/$p/fd/9" ] || continue
+    tgt=$(readlink "/proc/$p/fd/9" 2>/dev/null)
+    [ "$tgt" = "$lockfile_kill" ] && holders="$holders $p"
+done
+nholders=$(printf '%s\n' "$holders" | wc -w)
+if [ "$nholders" -le 1 ]; then
+    ok "at most one process (the lock-taking job) holds fd 9 before SIGKILL, not every descendant ($nholders)"
+else
+    rc=x; bad "fd 9 was duplicated onto $nholders descendants before any signal:$holders"
+fi
+kill -9 $tree_pids 2>/dev/null
+wait "$bpid" 2>/dev/null
+sleep 0.3
+survivors=""
+for p in $tree_pids; do kill -0 "$p" 2>/dev/null && survivors="$survivors $p"; done
+if [ -z "$survivors" ]; then
+    ok "SIGKILL leaves no survivor from the pre-kill process set"
+else
+    rc=x; bad "SIGKILL survivors:$survivors"
+fi
+if flock -n "$lockfile_kill" true; then
+    ok "lock free after SIGKILL"
+else
+    rc=x; bad "lock still held after SIGKILL"
+fi
 
 echo "---"; echo "pass=$pass fail=$fail"
 [ $fail -eq 0 ]

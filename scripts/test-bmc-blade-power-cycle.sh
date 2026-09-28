@@ -571,25 +571,87 @@ else
 fi
 chmod 755 "$rodir"
 
-# ── F6: SIGTERM mid-ssh leaves no child and frees the lock (2026-09-27, et6b4) ──
-cat > "$work/stub.hang" <<'EOF'
+# ── F6 (fix round 1, 2026-09-27): SIGTERM/SIGKILL while hung on the i2cset
+#     write AFTER the interlock (take_lock already succeeded) leaves no
+#     child and frees the lock. Round 1's F6 hung on the very FIRST remote
+#     call (the preflight identity probe), BEFORE take_lock -- so the lock
+#     was never actually held and `wait` blocked until the 60s stub exited
+#     on its own; a mutation that no-ops kill_tree still passed it (see the
+#     fix report). This hangs the ACTUAL i2cset write, with a distinctive
+#     sleep duration (not used anywhere else in this suite) as the pgrep
+#     fingerprint, so kill_tree/the async wait is what's under test.
+cat > "$work/stub.hangafter" <<'EOF'
 #!/bin/bash
-sleep 60
+cmd="$2"
+case "$cmd" in
+  *'MAC=%s'*) printf 'MAC=%s\nOS=%s\n' 'aa:bb:cc:dd:ee:09' 'flax-onetree-1.1.1' ;;
+  *'/sys/kernel/debug/gpio'*)
+      printf ' gpio-612 (CPU0_THERMTRIP_LATCH|host-error-monitor  ) in  hi IRQ ACTIVE LOW\n'
+      printf ' gpio-613 (CPU1_THERMTRIP_LATCH|host-error-monitor  ) in  hi IRQ ACTIVE LOW\n' ;;
+  *'i2cset'*) exec sleep "$HANG_DUR" ;;
+  *) : ;;
+esac
 EOF
-chmod +x "$work/stub.hang"
-( FLAX_BMC_REMOTE_EXEC="$work/stub.hang" FLAX_CYCLE_LOCK_DIR="$work" FLAX_REDFISH_EXEC="$work/rf" \
+chmod +x "$work/stub.hangafter"
+lockfile6="$work/fw-update-10.0.0.9.lock"
+collect_tree6() { local p; echo "$1"; for p in $(pgrep -P "$1" 2>/dev/null); do collect_tree6 "$p"; done; }
+
+# --- SIGTERM case ---
+rm -f "$lockfile6"
+( HANG_DUR=71.418 FLAX_BMC_REMOTE_EXEC="$work/stub.hangafter" FLAX_CYCLE_LOCK_DIR="$work" FLAX_REDFISH_EXEC="$work/rf" \
     bash "$work/bin" cycle 10.0.0.9 >/dev/null 2>&1 ) & bpid=$!
-sleep 1; kill -TERM "$bpid"; wait "$bpid" 2>/dev/null
-sleep 1
-if pgrep -f "$work/stub.hang" >/dev/null; then
-    echo "FAIL - orphaned identity-probe child after SIGTERM"; fail=$((fail+1))
+for i in $(seq 1 100); do pgrep -f 'sleep 71\.418' >/dev/null 2>&1 && break; sleep 0.1; done
+pgrep -f 'sleep 71\.418' >/dev/null 2>&1 || { echo "FAIL - F6 SIGTERM setup: the hang never started"; fail=$((fail+1)); }
+t0=$(date +%s)
+kill -TERM "$bpid"
+wait "$bpid" 2>/dev/null
+dt=$(( $(date +%s) - t0 ))
+survivor=$(pgrep -f 'sleep 71\.418' 2>/dev/null)
+if [ "$dt" -le 5 ] && [ -z "$survivor" ]; then
+    echo "ok   - SIGTERM while hung on i2cset AFTER the interlock exits fast (${dt}s), no survivor"; pass=$((pass+1))
 else
-    echo "ok   - SIGTERM kills the whole tree (no orphaned identity-probe child)"; pass=$((pass+1))
+    echo "FAIL - SIGTERM post-interlock hang (dt=${dt}s survivor=$survivor)"; fail=$((fail+1))
 fi
-if flock -n "$work/fw-update-10.0.0.9.lock" true; then
-    echo "ok   - per-BMC lock is free after SIGTERM"; pass=$((pass+1))
+if flock -n "$lockfile6" true; then
+    echo "ok   - per-BMC lock is free after SIGTERM (post-interlock hang)"; pass=$((pass+1))
 else
-    echo "FAIL - per-BMC lock still held after SIGTERM"; fail=$((fail+1))
+    echo "FAIL - per-BMC lock still held after SIGTERM (post-interlock hang)"; fail=$((fail+1))
+fi
+
+# --- SIGKILL case: on_signal never runs (uncatchable), so the ONLY
+#     defence is that fd 9 was never inherited by a descendant. ---
+rm -f "$lockfile6"
+( HANG_DUR=72.529 FLAX_BMC_REMOTE_EXEC="$work/stub.hangafter" FLAX_CYCLE_LOCK_DIR="$work" FLAX_REDFISH_EXEC="$work/rf" \
+    bash "$work/bin" cycle 10.0.0.9 >/dev/null 2>&1 ) & bpid=$!
+for i in $(seq 1 100); do pgrep -f 'sleep 72\.529' >/dev/null 2>&1 && break; sleep 0.1; done
+pgrep -f 'sleep 72\.529' >/dev/null 2>&1 || { echo "FAIL - F6 SIGKILL setup: the hang never started"; fail=$((fail+1)); }
+tree_pids6=$(collect_tree6 "$bpid" | sort -un)
+holders6=""
+for p in $tree_pids6; do
+    [ -e "/proc/$p/fd/9" ] || continue
+    tgt=$(readlink "/proc/$p/fd/9" 2>/dev/null)
+    [ "$tgt" = "$lockfile6" ] && holders6="$holders6 $p"
+done
+nholders6=$(printf '%s\n' "$holders6" | wc -w)
+if [ "$nholders6" -le 1 ]; then
+    echo "ok   - at most one process (the lock-taking job) holds fd 9 before SIGKILL, not every descendant ($nholders6)"; pass=$((pass+1))
+else
+    echo "FAIL - fd 9 was duplicated onto $nholders6 descendants before any signal:$holders6"; fail=$((fail+1))
+fi
+kill -9 $tree_pids6 2>/dev/null
+wait "$bpid" 2>/dev/null
+sleep 0.3
+survivors6=""
+for p in $tree_pids6; do kill -0 "$p" 2>/dev/null && survivors6="$survivors6 $p"; done
+if [ -z "$survivors6" ]; then
+    echo "ok   - SIGKILL leaves no survivor from the pre-kill process set"; pass=$((pass+1))
+else
+    echo "FAIL - SIGKILL survivors:$survivors6"; fail=$((fail+1))
+fi
+if flock -n "$lockfile6" true; then
+    echo "ok   - per-BMC lock is free after SIGKILL"; pass=$((pass+1))
+else
+    echo "FAIL - per-BMC lock still held after SIGKILL"; fail=$((fail+1))
 fi
 
 echo; echo "passed: $pass  failed: $fail"
