@@ -78,9 +78,15 @@ def main():
     log.info("flax-post producers starting; full=%ss power=%ss", PROBE_INTERVAL_S, POWER_INTERVAL_S)
     # credentials-bmc.json's cipher<->login pairing (spec 2026-09-28-observe-bmc-load
     # §3.5) is set once at startup; empty/mismatched -> ipmi falls back to its
-    # existing 3-then-auto credential walk.
+    # existing 3-then-auto credential walk. Wrapped so a malformed file can
+    # never stop post-observe starting -- pairing just stays off (fix round 1
+    # minor #2); configure_pairing itself already fails closed to [], but this
+    # is the belt-and-braces the round asked for.
     bmc_creds = _creds.load_redfish_creds(ipmi.BMC_CREDS_PATH)
-    ipmi.configure_pairing(bmc_creds)
+    try:
+        ipmi.configure_pairing(bmc_creds)
+    except Exception:
+        log.exception("ipmi pairing configuration failed; continuing with pairing off")
     threading.Thread(target=_power_loop, name="power-lane", daemon=True).start()
     from ..app import _blade_slots
     from . import worker
