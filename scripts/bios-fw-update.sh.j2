@@ -76,6 +76,15 @@ kill_tree() {
 on_signal() {
     trap - TERM INT HUP
     kill_tree "$CHILD"
+    # 2026-09-27 fix round 3, M1: wait (bounded) for the child to actually
+    # exit before this process does. Without this, `exit 143` here races
+    # the child's OWN TERM trap cleanup (`rm -f "$ART"`) against the
+    # `--pdeathsig` SIGKILL the kernel delivers to the child the instant
+    # THIS process exits -- measured: $ART survived in 3 of 6 runs. The
+    # child is already frozen+killed by kill_tree above, so this loop is
+    # normally a couple of 0.1s ticks, never the full 2s.
+    local w
+    for w in $(seq 1 20); do kill -0 "$CHILD" 2>/dev/null || break; sleep 0.1; done
     exit 143
 }
 
@@ -480,8 +489,25 @@ main() {
     esac
 }
 
-if [ "${FLAX_BIN_CHILD:-}" = 1 ]; then
-    # ── CHILD (2026-09-27 fix round 2) ──────────────────────────────────
+if [ -n "${FLAX_BIN_CHILD:-}" ]; then
+    # ── CHILD (2026-09-27 fix round 2; marker hardened round 3, I1/M3) ──
+    # $FLAX_BIN_CHILD carries the PARENT's own pid (not a literal "1"), so
+    # this checks $PPID against it before doing anything else. `setpriv`
+    # only arms --pdeathsig AFTER it execs (a prctl() call in the child's
+    # own new image) -- if the PARENT is killed in the narrow window
+    # between the fork and that exec, the kernel never delivers KILL to
+    # this process at all, and it would otherwise run `main` all the way
+    # to the 12V cut with NO lock held and NO parent left (measured: 1/550
+    # natural runs, reproducible every time with a slowed `setpriv`). Bash
+    # sets $PPID at process startup, which for a re-exec'd script means
+    # AFTER the prctl -- so if this process was already reparented (to
+    # init or a subreaper) before its own startup, $PPID no longer equals
+    # the pid the PARENT put in the marker, and it exits immediately
+    # instead of running unlocked. `unset` afterward so no nested call
+    # this bin might someday make (none does today) inherits a stale
+    # marker and silently skips its own lock (M3).
+    [ "$PPID" = "$FLAX_BIN_CHILD" ] || exit 70
+    unset FLAX_BIN_CHILD
     # The PARENT already holds the per-BMC lock and owns all TERM/INT/HUP
     # handling via kill_tree; this process must not compete with it (no
     # `trap on_signal ...` here). It DOES need its own minimal handler so a
@@ -510,8 +536,13 @@ fi
 # `--pdeathsig KILL` (util-linux setpriv) makes the kernel SIGKILL the
 # child the instant this PARENT dies for ANY reason -- including a SIGKILL
 # to this process, which no trap can catch -- so a killed bin can never go
-# on to finish a push after its caller has given up on it.
-FLAX_BIN_CHILD=1 setpriv --pdeathsig KILL "$0" "$@" 9>&- &
+# on to finish a push after its caller has given up on it. The marker is
+# THIS process's own pid, checked by the child above (I1) -- not a literal
+# "1" -- and `readlink -f` resolves `$0` to an absolute path (fix round 3,
+# M2) so setpriv's execvp() never falls through to a PATH search, which
+# could otherwise run some OTHER same-named binary as the child while this
+# process still holds the lock.
+FLAX_BIN_CHILD=$$ setpriv --pdeathsig KILL "$(readlink -f -- "$0")" "$@" 9>&- &
 CHILD=$!
 trap on_signal TERM INT HUP
 # Only re-wait while the child is actually still alive (2026-09-27 fix

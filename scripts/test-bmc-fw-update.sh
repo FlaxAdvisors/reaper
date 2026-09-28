@@ -137,5 +137,133 @@ else
 fi
 chmod 755 "$rodir"
 
+# ── fix round 3, M4: this bin got the SAME parent/child restructuring
+#     (round 2) as bios-fw-update / bmc-blade-power-cycle, but carried NO
+#     dedicated test of its own -- dropping --pdeathsig, dropping the
+#     spawn's 9>&-, or reverting the wait loop all left this suite at
+#     16/0. These port the bios-fw-update cases: SIGKILL of the TOP-LEVEL
+#     pid only (mid-flash, hung in busy_check's interlock read), kill the
+#     CHILD directly (TERM and KILL), and a closed-stdout case. ──────────
+cat > "$work/rf.hang" <<'EOF'
+#!/bin/bash
+method="$1"; path="$2"; shift 2
+[ -n "${FIX_CMDLOG:-}" ] && printf '%s %s %s\n' "$method" "$path" "$*" >> "$FIX_CMDLOG"
+case "$method $path" in
+  "GET /redfish/v1/TaskService/Tasks") exec sleep "$HANG_DUR" ;;
+  *) printf '\nHTTP=404' ;;
+esac
+EOF
+chmod +x "$work/rf.hang"
+lockfile_bmcfw="$work/fw-update-10.0.0.2.lock"
+
+# --- SIGKILL of the TOP-LEVEL pid only, hung in busy_check's interlock
+#     read: the child must be gone fast, the lock free immediately, and
+#     no surviving process may hold fd 9. ---
+rm -f "$lockfile_bmcfw"
+cmdlog_bk="$work/cmd.bmcfw-sigkill"; : > "$cmdlog_bk"
+( HANG_DUR=81.418 FLAX_REDFISH_EXEC="$work/rf.hang" FLAX_FETCH_EXEC="$work/fetch" FLAX_PING_EXEC="$work/ping" \
+  FLAX_FORGET_BIN="$work/forget" BMC_FW_UPDATE_LOCK_DIR="$work" FIX_CMDLOG="$cmdlog_bk" \
+  "$work/bin" flash 10.0.0.2 http://share/flax-onetree-1.1.2.tar >/dev/null 2>"$work/err.bmcfw-sigkill" ) &
+bp=$!
+for i in $(seq 1 100); do pgrep -f 'sleep 81\.418' >/dev/null 2>&1 && break; sleep 0.1; done
+pgrep -f 'sleep 81\.418' >/dev/null 2>&1 || { echo "FAIL - bmc-fw-update SIGKILL setup: the hang never started"; fail=$((fail+1)); }
+childp_bk=""
+for i in $(seq 1 50); do childp_bk=$(pgrep -P "$bp" 2>/dev/null | head -1); [ -n "$childp_bk" ] && break; sleep 0.1; done
+t0=$(date +%s)
+kill -9 "$bp"
+child_gone_bk=0
+for i in $(seq 1 20); do
+    [ -n "$childp_bk" ] && { kill -0 "$childp_bk" 2>/dev/null || { child_gone_bk=1; break; }; }
+    [ -z "$childp_bk" ] && { child_gone_bk=1; break; }
+    sleep 0.1
+done
+dt=$(( $(date +%s) - t0 ))
+if [ "$child_gone_bk" = 1 ] && [ "$dt" -le 3 ]; then
+    ok "SIGKILL of the top-level pid: the child is gone within ${dt}s (--pdeathsig KILL)"
+else
+    rc=x; bad "SIGKILL of the top-level pid: child $childp_bk still alive after ${dt}s" bmcfw-sigkill
+fi
+if flock -n "$lockfile_bmcfw" true; then
+    ok "lock free immediately after SIGKILL of the top-level pid"
+else
+    rc=x; bad "lock still held after SIGKILL of the top-level pid" bmcfw-sigkill
+fi
+holder_bk=$(for p in /proc/[0-9]*; do pid=${p#/proc/}; [ -e "$p/fd/9" ] || continue; tgt=$(readlink "$p/fd/9" 2>/dev/null); [ "$tgt" = "$lockfile_bmcfw" ] && echo "$pid"; done)
+if [ -z "$holder_bk" ]; then
+    ok "no surviving process holds fd 9 on the lock file after SIGKILL"
+else
+    rc=x; bad "fd 9 still held by:$holder_bk" bmcfw-sigkill
+fi
+if grep -q '^POST' "$cmdlog_bk" 2>/dev/null; then
+    rc=x; bad "a POST was sent despite the SIGKILL" bmcfw-sigkill
+else
+    ok "no POST sent after SIGKILL mid-busy_check"
+fi
+pkill -9 -f 'sleep 81\.418' 2>/dev/null
+
+# --- N1: TERM (then KILL) sent to the CHILD directly, bypassing the
+#     parent. This bin's CHILD branch installs no TERM/INT/HUP trap of
+#     its own, so a direct TERM hits default disposition and terminates
+#     immediately even mid-hang (same reasoning as bmc-blade-power-cycle;
+#     unlike bios-fw-update, which needs a short hang because its CHILD
+#     traps TERM to clean $ART). ---
+kill_child_test_bmcfw() {  # kill_child_test_bmcfw <signal-name> <sleep-duration>
+    local sig="$1" dur="$2" fp; fp=$(echo "$dur" | sed 's/\./\\./g')
+    ( HANG_DUR="$dur" FLAX_REDFISH_EXEC="$work/rf.hang" FLAX_FETCH_EXEC="$work/fetch" FLAX_PING_EXEC="$work/ping" \
+      FLAX_FORGET_BIN="$work/forget" BMC_FW_UPDATE_LOCK_DIR="$work" \
+      "$work/bin" flash 10.0.0.2 http://share/flax-onetree-1.1.2.tar >/dev/null 2>&1 ) &
+    local bp=$! i childp=""
+    for i in $(seq 1 100); do pgrep -f "sleep $fp" >/dev/null 2>&1 && break; sleep 0.1; done
+    for i in $(seq 1 50); do childp=$(pgrep -P "$bp" 2>/dev/null | head -1); [ -n "$childp" ] && break; sleep 0.1; done
+    if [ -z "$childp" ]; then rc=x; bad "kill-child-bmcfw-$sig: could not find the child pid" x; kill -9 "$bp" 2>/dev/null; return; fi
+    kill -s "$sig" "$childp"
+    local t0 dt still_alive=1
+    t0=$(date +%s)
+    for i in $(seq 1 40); do
+        kill -0 "$bp" 2>/dev/null || { still_alive=0; break; }
+        sleep 0.1
+    done
+    dt=$(( $(date +%s) - t0 ))
+    if [ "$still_alive" = 1 ]; then
+        rc=x; bad "kill-child-bmcfw-$sig: parent still alive after ${dt}s (N1 spin?)" x
+        kill -9 "$bp" "$childp" 2>/dev/null
+    else
+        wait "$bp" 2>/dev/null; local wrc=$?
+        if [ "$wrc" -ne 0 ]; then
+            ok "kill-child-bmcfw-$sig: parent exits within ${dt}s, non-zero status ($wrc)"
+        else
+            rc=x; bad "kill-child-bmcfw-$sig: parent exited with status 0 (unexpected)" x
+        fi
+    fi
+    pkill -9 -f "sleep $fp" 2>/dev/null
+}
+kill_child_test_bmcfw TERM 82.529
+kill_child_test_bmcfw KILL 83.631
+
+# --- N1: a downstream reader closing stdout early must not spin the
+#     parent (the CHILD dies of SIGPIPE). Process substitution keeps $!
+#     tracking the bin's own pid. A normal, fast happy-path run. ---
+printf 'New 0\nNew 40\nNew 90\nDOWN\n' > "$work/seq.closedout"
+: > "$work/cmd.closedout"
+FIX_SEQ="$work/seq.closedout" FLAX_REDFISH_EXEC="$work/rf" FLAX_FETCH_EXEC="$work/fetch" FLAX_PING_EXEC="$work/ping" \
+  FLAX_FORGET_BIN="$work/forget" BMC_FW_POLL_SECS=0 BMC_FW_ACT_POLL_SECS=0 BMC_FW_ACTIVATION_WAIT=5 \
+  BMC_FW_UPDATE_LOCK_DIR="$work" FIX_CMDLOG="$work/cmd.closedout" FIX_SEQN="$work/seqn.closedout" FIX_VERN="$work/vern.closedout" FIX_FORGOT="$work/forgot.closedout" \
+  "$work/bin" flash 10.0.0.2 http://share/flax-onetree-1.1.2.tar --port et10b1 > >(head -c1 >/dev/null) 2>/dev/null &
+bpid=$!
+t0=$(date +%s)
+still_alive=1
+for i in $(seq 1 40); do
+    kill -0 "$bpid" 2>/dev/null || { still_alive=0; break; }
+    sleep 0.1
+done
+dt=$(( $(date +%s) - t0 ))
+if [ "$still_alive" = 1 ]; then
+    rc=x; bad "closed stdout: parent still alive after ${dt}s (N1 spin?)" x
+    kill -9 "$bpid" 2>/dev/null
+else
+    ok "closed stdout: parent exits promptly (${dt}s), no spin"
+fi
+wait "$bpid" 2>/dev/null
+
 echo "---"; echo "pass=$pass fail=$fail"
 [ $fail -eq 0 ]

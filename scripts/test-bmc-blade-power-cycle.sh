@@ -690,31 +690,111 @@ sigkill_cycle_test() {  # sigkill_cycle_test <name> <bmc_remote_exec> <redfish_e
     pkill -9 -f "sleep $fp" 2>/dev/null
 }
 
+# fix round 3, I2: these stubs must ANSWER VALIDLY once their own (short,
+# well under the 8s check) hang ends, not just `exec sleep N` forever. A
+# stub that never answers means a surviving orphan (a REGRESSION, e.g.
+# --pdeathsig dropped) could only ever reach thermtrip_unknown or
+# tasks_unreadable, never i2cset -- so the "no i2cset within 8s" assertion
+# below could not fail no matter what it was testing against (measured:
+# with the OLD forever-hanging stubs, dropping --pdeathsig still passed
+# all four i2cset assertions). Plain `sleep N` (not `exec sleep N`) so the
+# stub script itself resumes and prints the answer after the sleep --
+# `exec` would replace the stub with `sleep` and never return to the
+# printf lines below it.
 cat > "$work/stub.gpiohang6" <<'EOF'
 #!/bin/bash
 cmd="$2"
 [ -n "${FIX_CMDLOG:-}" ] && printf '%s\n' "$cmd" >> "$FIX_CMDLOG"
 case "$cmd" in
   *'MAC=%s'*) printf 'MAC=%s\nOS=%s\n' 'aa:bb:cc:dd:ee:09' 'flax-onetree-1.1.1' ;;
-  *'/sys/kernel/debug/gpio'*) exec sleep 73.641 ;;
+  *'/sys/kernel/debug/gpio'*)
+      sleep 3.641
+      printf ' gpio-612 (CPU0_THERMTRIP_LATCH|host-error-monitor  ) in  hi IRQ ACTIVE LOW\n'
+      printf ' gpio-613 (CPU1_THERMTRIP_LATCH|host-error-monitor  ) in  hi IRQ ACTIVE LOW\n'
+      ;;
   *'i2cset'*) : ;;
   *) : ;;
 esac
 EOF
 chmod +x "$work/stub.gpiohang6"
-sigkill_cycle_test "gpio-hang" "$work/stub.gpiohang6" "$work/rf" "73.641"
+sigkill_cycle_test "gpio-hang" "$work/stub.gpiohang6" "$work/rf" "3.641"
 
 cat > "$work/rf.hang6" <<'EOF'
 #!/bin/bash
 method="$1"; path="$2"; shift 2
 [ -n "${FIX_CMDLOG:-}" ] && printf 'RF %s %s %s\n' "$method" "$path" "$*" >> "$FIX_CMDLOG"
 case "$method $path" in
-  "GET /redfish/v1/TaskService/Tasks") exec sleep 74.752 ;;
+  "GET /redfish/v1/TaskService/Tasks")
+      sleep 3.752
+      printf '{"Members":[]}\nHTTP=200'
+      ;;
   *) printf '\nHTTP=404' ;;
 esac
 EOF
 chmod +x "$work/rf.hang6"
-sigkill_cycle_test "busy-check-hang" "$work/stub.ok6" "$work/rf.hang6" "74.752"
+sigkill_cycle_test "busy-check-hang" "$work/stub.ok6" "$work/rf.hang6" "3.752"
+
+# --- I1 (fix round 3): the pdeathsig ARMING race. `setpriv` only calls
+#     prctl(PR_SET_PDEATHSIG) AFTER it execs into the target -- if the
+#     PARENT is SIGKILLed in the narrow window between the fork and that
+#     exec, the kernel never delivers the signal at all, and (without the
+#     $PPID check the fix adds) the child runs to the 12V cut with no
+#     lock and no parent (measured naturally: 1/550 spawns; every time
+#     with a slowed setpriv). A `setpriv` shim placed earlier in PATH,
+#     which sleeps briefly before exec'ing the real setpriv, stretches
+#     that race window long enough to hit deterministically: SIGKILL the
+#     top pid while the shim is still sleeping (i.e. strictly before
+#     --pdeathsig is ever armed), then confirm the (now-orphaned,
+#     never-armed) child still refuses to run unlocked.
+mkdir -p "$work/faketools"
+cat > "$work/faketools/setpriv" <<'EOF'
+#!/bin/bash
+sleep 0.371
+exec /usr/bin/setpriv "$@"
+EOF
+chmod +x "$work/faketools/setpriv"
+cat > "$work/stub.race" <<'EOF'
+#!/bin/bash
+cmd="$2"
+[ -n "${FIX_CMDLOG:-}" ] && printf '%s\n' "$cmd" >> "$FIX_CMDLOG"
+case "$cmd" in
+  *'MAC=%s'*) printf 'MAC=%s\nOS=%s\n' 'aa:bb:cc:dd:ee:08' 'flax-onetree-1.1.1' ;;
+  *'/sys/kernel/debug/gpio'*)
+      printf ' gpio-612 (CPU0_THERMTRIP_LATCH|host-error-monitor  ) in  hi IRQ ACTIVE LOW\n'
+      printf ' gpio-613 (CPU1_THERMTRIP_LATCH|host-error-monitor  ) in  hi IRQ ACTIVE LOW\n' ;;
+  *'i2cset'*) : ;;
+  *) : ;;
+esac
+EOF
+chmod +x "$work/stub.race"
+racelock="$work/fw-update-10.0.0.8.lock"; rm -f "$racelock"
+racecmdlog="$work/cmd.race"; : > "$racecmdlog"
+( PATH="$work/faketools:$PATH" FLAX_BMC_REMOTE_EXEC="$work/stub.race" FLAX_REDFISH_EXEC="$work/rf" FLAX_CYCLE_LOCK_DIR="$work" \
+  FIX_CMDLOG="$racecmdlog" FLAX_DOWN_WAIT=1 BLADE_CYCLE_TIMEOUT=1 FLAX_POLL_INTERVAL=0.1 \
+  "$work/bin" cycle 10.0.0.8 >/dev/null 2>"$work/err.race" ) &
+racebp=$!
+racefound=0
+for i in $(seq 1 100); do pgrep -f 'sleep 0\.371' >/dev/null 2>&1 && { racefound=1; break; }; sleep 0.02; done
+if [ "$racefound" != 1 ]; then
+    echo "FAIL - I1 race setup: the setpriv shim's sleep never started"; fail=$((fail+1))
+else
+    kill -9 "$racebp"
+    sleep 3   # the shim's 0.371s sleep, then the real setpriv/prctl (armed
+              # too late, against the wrong/no parent), then -- if the
+              # child were unprotected -- the whole cmd_cycle up to i2cset
+    if grep -q 'i2cset' "$racecmdlog" 2>/dev/null; then
+        echo "FAIL - I1: i2cset sent after a parent SIGKILL landed in the pdeathsig arming window"; fail=$((fail+1))
+    else
+        echo "ok   - I1: no i2cset sent when a parent SIGKILL lands in the pdeathsig arming window"; pass=$((pass+1))
+    fi
+    if flock -n "$racelock" true; then
+        echo "ok   - I1: lock free after the race"; pass=$((pass+1))
+    else
+        echo "FAIL - I1: lock still held after the race"; fail=$((fail+1))
+    fi
+fi
+pkill -9 -f 'sleep 0\.371' 2>/dev/null
+pkill -9 -f 'bin cycle 10.0.0.8' 2>/dev/null
 
 # --- N1: TERM (then KILL) sent to the CHILD directly, bypassing the
 #     parent entirely (e.g. OOM, pkill, a supervisor that targets the
