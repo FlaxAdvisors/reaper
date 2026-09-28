@@ -20,6 +20,24 @@ echo "Live ISO boot to do: $action"
 . "$(dirname "$0")/post_status.sh"
 ps_init "$action"
 
+# The tools post.tgz bundles alongside this script -- the bang's copies at build
+# time (roles/apply_pxe_payloads post_build_binaries; keep the two lists equal).
+# The live ISO bakes its own /opt/flax/bin, and those copies go stale between ISO
+# builds (LiveLeap 3.0.0: Feb 2025 macinv printing every FRU as "Board Mfg:",
+# older dimmsum/bootorder, no dimmerr). Unpacking the bundle installs the current
+# ones. Only a copy that differs is rewritten; nothing outside the list is touched.
+bundle_bins="macinv dimmerr dimmsum lsnet alldisks bootorder"
+function install_bundled_bins()
+{
+    local here b bin="${FLAX_BIN:-/opt/flax/bin}"
+    here="$(cd "$(dirname "$0")" && pwd)"
+    mkdir -p "$bin"
+    for b in $bundle_bins; do
+        [ -f "$here/$b" ] || continue
+        cmp -s "$here/$b" "$bin/$b" || install -m 0755 "$here/$b" "$bin/"
+    done
+}
+
 # postautomate: launch the free-running qualification agent (Wave 4) in its OWN
 # transient systemd unit, then stop. banghook.service is Type=oneshot with no
 # RemainAfterExit, so its cgroup (and any bare `&`/nohup child) is torn down the
@@ -32,6 +50,9 @@ ps_init "$action"
 if [ "$action" == "postautomate" ]; then
     echo "Launching flax qualification agent (postautomate)"
     ps_begin agent "flax-qual-agent"
+    # The engine's launch never reaches the bang rsync below: install the
+    # bundled tools here, before the agent calls any of them.
+    install_bundled_bins
     agent_dir="$(cd "$(dirname "$0")" && pwd)"
     systemctl reset-failed flax-qual-agent 2>/dev/null || true
     systemctl stop flax-qual-agent 2>/dev/null || true
@@ -316,9 +337,7 @@ if ! rsync -a --timeout=20 \
         ${dst}:/opt/flax/bin/ /opt/flax/bin/ ; then
     echo "post.sh: bin refresh from ${dst} failed -- falling back to the post.tgz bundle"
     ps_note "bang unreachable -- using the post.tgz copies"
-    for b in macinv dimmerr dimmsum lsnet alldisks bootorder ; do
-        [ -f "$(dirname "$0")/$b" ] && install -m 0755 "$(dirname "$0")/$b" /opt/flax/bin/
-    done
+    install_bundled_bins
 fi
 ps_done
 
