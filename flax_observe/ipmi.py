@@ -114,7 +114,7 @@ def _maybe_fire_redfish_reset(bmc_ip):
 # ---------------------------------------------------------------------------
 
 def _default_ipmi_runner(host, user, password, args,
-                         timeout=IPMITOOL_TIMEOUT_SECS):
+                         timeout=IPMITOOL_TIMEOUT_SECS, cipher=None, sdr_cache=None):
     """Single ipmitool invocation, returns stdout text. Caller catches.
 
     Tries cipher suite 3 first (the historical default that works for
@@ -127,9 +127,28 @@ def _default_ipmi_runner(host, user, password, args,
     'insufficient resources for session' (AMI MegaRAC RMCP+ session
     table full), fires `bmc-reset-via-redfish` in the background to
     recover the BMC. Rate-limited; see `_maybe_fire_redfish_reset`.
+
+    cipher: when given (the vendor table knows it -- bmc_vendor.ipmi_login
+    pairs it with its credential), exactly ONE call with that suite, no
+    fallback. None keeps the historical 3-then-auto for unknown vendors.
+    sdr_cache: an `ipmitool sdr dump` file; adds `-S <file>` so sensor
+    lookups never re-read the BMC's SDR repository (spec 2026-09-28 §3.1).
     """
     common = ["-I", "lanplus", "-N", "2", "-R", "3",
               "-U", user, "-P", password, "-H", host]
+    if sdr_cache:
+        common = ["-S", sdr_cache] + common
+    if cipher is not None:
+        try:
+            result = subprocess.run(
+                ["ipmitool", "-C", str(cipher)] + common + args,
+                timeout=timeout, capture_output=True, check=True,
+            )
+            return result.stdout.decode("utf-8", errors="replace")
+        except subprocess.CalledProcessError as e:
+            if _IPMI_SESSION_EXHAUSTION_PATTERN in (e.stderr or b"").lower():
+                _maybe_fire_redfish_reset(host)
+            raise
     last_err = b""
     try:
         result = subprocess.run(

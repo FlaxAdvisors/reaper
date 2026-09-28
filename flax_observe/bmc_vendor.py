@@ -13,6 +13,7 @@ depending on which probe happened to answer.
 
 Spec: docs/superpowers/specs/2026-09-18-bmc-vendor-classification-design.md
 """
+import logging
 
 AMI_LEGACY = "ami_legacy"   # legacy AMI OEM / MegaRAC: IPMI, no ssh
 FACEBOOK = "facebook"       # Facebook OpenBMC: *-util family over ssh, no IPMI-over-LAN
@@ -123,3 +124,39 @@ def vendor_from_probe(osrelease_text, fb_utils_present):
     if ident.lower() == "openbmc-phosphor":
         return PHOSPHOR
     return FACEBOOK
+
+
+_LOG = logging.getLogger("flax_observe.bmc_vendor")
+
+# Operator rule 2026-09-28 (spec 2026-09-28-observe-bmc-load §3.3): the cipher
+# decides the credential. credentials-bmc.json is ordered USERID, root, ...:
+# -C 3 uses entry 0 (USERID -- Leopard / ami_legacy), -C 17 uses entry 1
+# (root -- Tioga Pass / phosphor). One login per read, no walk.
+_PAIRED_ENTRY = {3: 0, 17: 1}
+_EXPECTED_ORDER = ("USERID", "root")
+_ORDER_WARNED = False
+
+
+def login_order_ok(bmc_creds):
+    """True iff entry 0 is USERID and entry 1 is root. A reordered vault file
+    must degrade to the old walk (slow), never to the wrong login (dead)."""
+    users = [c.get("bmcuser") for c in (bmc_creds or [])[:2]]
+    return tuple(users) == _EXPECTED_ORDER
+
+
+def ipmi_login(cipher, bmc_creds):
+    """(user, password) paired with `cipher`, or None (unknown cipher, short
+    file, or a reordered file -- logged once as ipmi_login_order_mismatch)."""
+    global _ORDER_WARNED
+    idx = _PAIRED_ENTRY.get(cipher)
+    if idx is None:
+        return None
+    if not login_order_ok(bmc_creds):
+        if bmc_creds and len(bmc_creds) >= 2 and not _ORDER_WARNED:
+            _ORDER_WARNED = True
+            _LOG.error("ipmi_login_order_mismatch: credentials-bmc.json entries 0/1 are %s, "
+                       "expected %s; using the credential walk",
+                       [c.get("bmcuser") for c in bmc_creds[:2]], list(_EXPECTED_ORDER))
+        return None
+    c = bmc_creds[idx]
+    return (c["bmcuser"], c["bmcpass"])

@@ -28,7 +28,7 @@ I/O contract:
       .ssh_uptime(ip, host_creds)                 -> 'ok'/'fail'/'unknown'
       .inventory_status(nodes_root, nic_mac, link_ts) -> 'found'/'notfound'/'unknown'
       .intentional_flap_active(switch, port)      -> bool
-      .sol_session_active(bmc_ip)                 -> bool
+      .sol_session_active(port)                   -> bool (internal port, e.g. et6b1)
       .ensure_inband_admin_configured(port_state, bmc_ip, bmc_mac, kind,
                                       creds_used, emit_event)
 
@@ -47,6 +47,7 @@ tests stub it out using _stub_env() in the test module.
 import datetime
 import logging
 import os
+import re
 import subprocess
 import time as _time_mod
 
@@ -102,7 +103,8 @@ SSH_KNOWN_HOSTS = "/opt/flax/var/ssh/known_hosts"
 SSH_TIMEOUT_SECS = 8
 PING_PACKETS = 1
 PING_WAIT_SECS = 1
-SOL_ACTIVE_DIR = "/run/flax/sol-active"
+SOL_ACTIVE_DIR = "/etc/flax/soltriage"      # triage server's SOL history dir
+SOL_ACTIVE_MAX_AGE_SECS = 180
 INTENTIONAL_FLAP_DIR = "/run/flax/intentional-flap"
 FORGET_PORT_DIR = "/run/flax/forget-port"
 MAX_FLAP_HOLD_SECS = 120
@@ -495,33 +497,27 @@ def _forget_port_requested(port, forget_port_dir=None):
         return False
 
 
-def _sol_session_active(bmc_ip, sol_active_dir=None):
-    """True iff soltriage is holding an SOL session for bmc_ip.
+def _internal_port(port):
+    """Et6/1 or Ethernet6/1 -> et6b1; anything else unchanged (the triage
+    server names sentinels by slot, e.g. et6b1.active)."""
+    m = re.match(r"^Et(?:hernet)?(\d+)/(\d+)$", port or "")
+    return "et%sb%s" % (m.group(1), m.group(2)) if m else (port or "")
 
-    Reads <sol_active_dir>/<bmc_ip>; the file contains soltriage's PID.
-    The sentinel is honoured only while the PID is still alive — a
-    crashed soltriage that leaked its sentinel must not mask the BMC
-    forever, so a stale (PID gone) file is unlinked and treated as
-    inactive.
-    """
-    if not bmc_ip:
+
+def _sol_session_active(port, sol_active_dir=None,
+                        max_age_secs=SOL_ACTIVE_MAX_AGE_SECS, now=None):
+    """True iff the triage server's heartbeat <dir>/<port>.active was touched
+    less than max_age_secs ago (spec 2026-09-28 §3.4). The writer lives in
+    another container, so no PID check; the mount is read-only, so a stale
+    file is ignored, never unlinked."""
+    if not port:
         return False
-    if sol_active_dir is None:
-        sol_active_dir = SOL_ACTIVE_DIR
-    path = os.path.join(sol_active_dir, bmc_ip)
+    path = os.path.join(sol_active_dir or SOL_ACTIVE_DIR, port + ".active")
     try:
-        with open(path) as f:
-            pid = int(f.read().strip())
-        os.kill(pid, 0)
-        return True
-    except FileNotFoundError:
+        mtime = os.path.getmtime(path)
+    except OSError:
         return False
-    except (ValueError, ProcessLookupError, PermissionError, OSError):
-        try:
-            os.unlink(path)
-        except FileNotFoundError:
-            pass
-        return False
+    return ((now if now is not None else _time_mod.time()) - mtime) < max_age_secs
 
 
 def _ensure_inband_admin_configured(
@@ -1225,19 +1221,27 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
         if transport == "ssh":
             pwr = _bmc_power_status_openbmc(probe_host, creds_used)
         if transport == "ipmi":
-            # Mitigation 1: skip if soltriage holds an SOL session on this
-            # BMC -- competing RMCP+ sessions evict the SOL slot on AMI
-            # MegaRAC's small (4-8 slot) session table.
-            if (_bmc_vendor.caps_for(vendor).ssh == _bmc_vendor.FULL
-                    and (not bmc_ip or _sol_active(bmc_ip))):
-                # A vendor that ALSO has ssh (phosphor) does not skip: with no
-                # IPv4 bmc_ip (link-local-only reach) or a live SOL session, it
-                # reads power over ssh on probe_host instead -- live, no RMCP+
-                # session, watts None. Nothing is skipped, so no
-                # sol_active_skip event. ami_legacy (ssh NONE) and unknown
-                # vendors never enter here.
+            _cipher = _bmc_vendor.caps_for(vendor).ipmi_cipher
+            _paired = _bmc_vendor.ipmi_login(_cipher, bmc_creds)
+            # The paired login is only safe to SUBSTITUTE for the kind
+            # probe's proven-working login when it's either the only login
+            # we have (creds_used falsy) or it agrees on user with what the
+            # probe proved works -- a BMC whose working login is admin/oper,
+            # or whose USERID/root password differs, must not be silently
+            # overridden, or its power reads go "unknown" every cycle.
+            if _paired and (not creds_used or creds_used[0] == _paired[0]):
+                _login = _paired
+                _use_cipher = _cipher
+            else:
+                _login = creds_used
+                _use_cipher = None
+            _has_ssh = _bmc_vendor.caps_for(vendor).ssh == _bmc_vendor.FULL
+            # Phosphor keeps its (now one short) IPMI session while SOL is
+            # live; only link-local-only reach (no IPv4) moves it to ssh.
+            if _has_ssh and not bmc_ip:
                 pwr = _bmc_power_status_openbmc(probe_host, creds_used)
-            elif _sol_active(bmc_ip):
+            # ami_legacy: a 4-8 slot RMCP+ session table -- a competing session evicts the live SOL, so skip.
+            elif not _has_ssh and _sol_active(_internal_port(port)):
                 emit_event({
                     "kind": "sol_active_skip",
                     "switch": switch,
@@ -1250,7 +1254,9 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
             else:
                 # Mitigation 3: one RMCP+ session for both `power status`
                 # and `sdr` via ipmitool's `exec` script form.
-                pwr, watts = _bmc_power_and_sdr_traditional(bmc_ip, creds_used)
+                pwr, watts = _bmc_power_and_sdr_traditional(
+                    bmc_ip, _login, bmc_mac=port_state.get("bmc_mac"),
+                    port=_internal_port(port), cipher=_use_cipher)
                 # SDR-stall fallback (et7b2, 2026-09-18): on some phosphor
                 # BMCs the combined exec hangs in `sdr` past the runner
                 # timeout while plain power status answers in ~5s. A vendor
@@ -1273,14 +1279,22 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
                     sn = None  # latch keeps the existing value below
                 else:
                     sn, sn_state = _serial_read(
-                        _chassis_serial_traditional(bmc_ip, creds_used))
+                        _chassis_serial_traditional(bmc_ip, _login, cipher=_use_cipher))
                     if sn_state in ("ok", "no_serial"):
                         port_state["chassis_sn_verified"] = True
         # Serial over ssh runs AFTER the IPMI block, and also on a SOL-active
-        # skip: ssh does not touch the BMC's RMCP+ session table.
-        if transport is not None and serial_via_ssh:
+        # skip: ssh does not touch the BMC's RMCP+ session table. Once
+        # latched AND re-verified this process (mirrors the traditional-branch
+        # latch above), skip the refetch -- saves one ssh session per poll.
+        # Hardware swap clears chassis_sn above (mac_changed branch), and
+        # _forget_identity clears chassis_sn_verified, forcing a re-read.
+        _ssh_sn_latched = (port_state.get("chassis_sn") and not mac_changed
+                           and port_state.get("chassis_sn_verified"))
+        if transport is not None and serial_via_ssh and not _ssh_sn_latched:
             sn, sn_state = _serial_read(
                 _chassis_serial_openbmc(probe_host, creds_used))
+            if sn_state in ("ok", "no_serial"):
+                port_state["chassis_sn_verified"] = True
             # The ssh FRU 0 read decides the fallback: ok or no_serial means
             # the board answered FRU 0 and a missing field is final. Only
             # absent (some Tioga Pass BMCs answer "Device not present" on the
@@ -1292,6 +1306,7 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
                         bmc_ip, (c["bmcuser"], c["bmcpass"])))
                     if lan_state in ("ok", "no_serial"):
                         sn, sn_state = lan_sn, lan_state
+                        port_state["chassis_sn_verified"] = True
                         break
 
         # Latch decision: while the BMC is identified (chassis_sn latched)

@@ -6,11 +6,13 @@ per the no-cross-import rule, like flax_post/fwd/creds.py). One pass writes the
 LIVE post_state[port] and upserts the DURABLE post_node[bmc_mac], stamping the
 active order. The sole IPMI toucher of post BMCs (docs/Post-UI-Design.md §3.2).
 """
+import contextlib
 import json
 import logging
 import os
 import subprocess
 import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -111,10 +113,120 @@ def _default_make_redfish(redfish_creds, bmc_creds=None):
     return lambda ip: RedfishClient(ip, creds)
 
 
+# Operator rule 2026-09-28 (spec 2026-09-28-observe-bmc-load §3.5): try
+# (root, -C 17) then (USERID, -C 3) first; only when BOTH fail, fall back to
+# today's full walk over EVERY credential in file order with 3-then-auto --
+# forcing the paired cipher on every attempt with no plain retry (fix round 1
+# Important #1) left a BMC needing another combination (e.g. root answering
+# only auto-negotiate) permanently IPMI-dark once its two paired tries failed.
+# Set once at start by configure_pairing; empty = today's 3-then-auto walk
+# for every read, unreordered by any memo (fix round 1 minor #3).
+_PAIRING = {}
+_WORKING = {}          # bmc ip -> {"bmcuser": ..., "cipher": int | None} that last answered
+
+# Thread-local override consulted ONLY by _default_ipmi_runner: an int forces
+# that -C suite for calls made inside the `_forced_cipher` context, None forces
+# the plain 3-then-auto walk (bypassing the by-user _PAIRING lookup), and no
+# override at all (the attribute absent) keeps _default_ipmi_runner's original
+# by-user _PAIRING behaviour for anyone calling it directly. An injected fake
+# ipmi_runner (as every test uses) never reads this -- it only shapes what the
+# REAL runner does, so the `ipmi_runner(ip, user, password, args)` call shape
+# the loops use is unchanged.
+_cipher_override = threading.local()
+_NO_OVERRIDE = object()
+
+
+@contextlib.contextmanager
+def _forced_cipher(cipher):
+    prev = getattr(_cipher_override, "value", _NO_OVERRIDE)
+    _cipher_override.value = cipher
+    try:
+        yield
+    finally:
+        if prev is _NO_OVERRIDE:
+            del _cipher_override.value
+        else:
+            _cipher_override.value = prev
+
+
+def configure_pairing(creds):
+    global _PAIRING
+    creds = creds or []
+    users = [c.get("bmcuser") for c in creds[:2]]
+    if users == ["USERID", "root"]:
+        _PAIRING = {"USERID": 3, "root": 17}
+        return True
+    _PAIRING = {}
+    if not creds:
+        log.warning("no BMC credentials; pairing off")
+    else:
+        log.error("ipmi_login_order_mismatch: credentials-bmc.json entries 0/1 are %s, "
+                  "expected ['USERID', 'root']; using the credential walk", users)
+    return False
+
+
+def _attempts(ip, creds):
+    """Ordered (cred, cipher) attempts for one probe of `ip` (spec §3.5):
+
+    pairing ON: the BMC's last working (user, cipher) pair first (if
+    memoised), then (root, 17), then (USERID, 3) -- skipping any exact
+    duplicate of an attempt already queued -- and finally the full file in
+    ORIGINAL order with cipher=None (today's plain 3-then-auto walk), so a
+    credential that only works plain (or a BMC needing a login the pairing
+    doesn't cover) is still reached once the paired tries fail.
+
+    pairing OFF: today's plain file-order walk, cipher=None throughout,
+    never reordered by the memo."""
+    creds = list(creds or [])
+    if not _PAIRING:
+        return [(c, None) for c in creds]
+    by_user = {}
+    for c in creds:
+        by_user.setdefault(c.get("bmcuser"), c)
+    seq, seen = [], set()
+
+    def add(cred, cipher):
+        if cred is None:
+            return
+        key = (id(cred), cipher)
+        if key in seen:
+            return
+        seen.add(key)
+        seq.append((cred, cipher))
+
+    w = _WORKING.get(ip)
+    if w:
+        add(by_user.get(w.get("bmcuser")), w.get("cipher"))
+    add(by_user.get("root"), 17)
+    add(by_user.get("USERID"), 3)
+    for c in creds:
+        add(c, None)
+    return seq
+
+
+def _remember(ip, cred, cipher=None):
+    _WORKING[ip] = {"bmcuser": cred.get("bmcuser"), "cipher": cipher}
+
+
+def _forget(ip):
+    _WORKING.pop(ip, None)
+
+
 def _default_ipmi_runner(host, user, password, args, timeout=IPMITOOL_TIMEOUT_SECS):
     """One ipmitool call -> stdout. Cipher-3 first, then auto-negotiate. Caller catches.
-    Mirrors flax_observe.ipmi._default_ipmi_runner (minus the redfish-reset side-effect)."""
+    Mirrors flax_observe.ipmi._default_ipmi_runner (minus the redfish-reset side-effect).
+
+    A `_forced_cipher` context (set by the _attempts-driven callers) overrides
+    the by-user _PAIRING lookup for the duration of the call; with no such
+    context active (a direct call, as flax_post/observe/worker.py's
+    _bmc_data still makes), the by-user lookup is unchanged."""
     common = ["-I", "lanplus", "-N", "2", "-R", "3", "-U", user, "-P", password, "-H", host]
+    override = getattr(_cipher_override, "value", _NO_OVERRIDE)
+    cipher = override if override is not _NO_OVERRIDE else _PAIRING.get(user)
+    if cipher is not None:
+        r = subprocess.run(["ipmitool", "-C", str(cipher)] + common + args,
+                           timeout=timeout, capture_output=True, check=True)
+        return r.stdout.decode("utf-8", errors="replace")
     try:
         r = subprocess.run(["ipmitool", "-C", "3"] + common + args,
                            timeout=timeout, capture_output=True, check=True)
@@ -254,12 +366,15 @@ def bmc_data_check(ip, creds, ipmi_runner, ping, family_map=None) -> "dict | Non
     if not ip or not ping(ip):
         return None
     fm = _family_map(family_map)
-    for c in creds or []:
+    for c, cipher in _attempts(ip, creds):
         try:
-            _text, bb = _read_fru0(ip, c["bmcuser"], c["bmcpass"], ipmi_runner, fm)
+            with _forced_cipher(cipher):
+                _text, bb = _read_fru0(ip, c["bmcuser"], c["bmcpass"], ipmi_runner, fm)
         except Exception:
             continue
+        _remember(ip, c, cipher)
         return bb
+    _forget(ip)
     return None
 
 
@@ -277,27 +392,33 @@ def probe_blade(ip, creds, ipmi_runner, redfish_client=None, family_map=None):
               "sel": [], "fru": {}, "product_serial": None}
     fm = _family_map(family_map)
     answered = False
-    for c in creds:
+    for c, cipher in _attempts(ip, creds):
         u, p = c["bmcuser"], c["bmcpass"]
         try:
-            text, bb = _read_fru0(ip, u, p, ipmi_runner, fm)
+            with _forced_cipher(cipher):
+                text, bb = _read_fru0(ip, u, p, ipmi_runner, fm)
         except Exception:
             continue
         answered = True
         result["serial"] = result["product_serial"] = bb["serial"]
         result["fru"] = _fru0_fields(text)
         try:
-            combined_txt = _power_and_sdr(ip, u, p, ipmi_runner)
+            with _forced_cipher(cipher):
+                combined_txt = _power_and_sdr(ip, u, p, ipmi_runner)
             result["power_on"] = _parse_power(combined_txt)
             result["watts"] = _parse_watts(combined_txt)
             result["sdr"] = _parse_sdr(combined_txt)
         except Exception:
             pass
         try:
-            result["sel"] = _parse_sel(ipmi_runner(ip, u, p, ["sel", "elist"]))
+            with _forced_cipher(cipher):
+                result["sel"] = _parse_sel(ipmi_runner(ip, u, p, ["sel", "elist"]))
         except Exception:
             pass
+        _remember(ip, c, cipher)
         break                       # first working cred wins
+    if not answered:
+        _forget(ip)
     _redfish_fill(result, redfish_client, serial=not answered)
     return result
 
@@ -338,11 +459,15 @@ def probe_power(ip, creds, ipmi_runner, redfish_client=None):
     Used by the fast power lane; kept separate from probe_blade so it can run on a
     tight interval with a short timeout without dragging the slow serial/SDR/SEL reads.
     Falls back to Redfish (redfish_client.get_power_state) when IPMI answers nothing."""
-    for c in creds:
+    for c, cipher in _attempts(ip, creds):
         try:
-            return _parse_power(ipmi_runner(ip, c["bmcuser"], c["bmcpass"], ["power", "status"]))
+            with _forced_cipher(cipher):
+                power = _parse_power(ipmi_runner(ip, c["bmcuser"], c["bmcpass"], ["power", "status"]))
         except Exception:
             continue
+        _remember(ip, c, cipher)
+        return power
+    _forget(ip)
     if redfish_client is not None:
         try:
             return _norm_redfish_power(redfish_client.get_power_state()[0])
@@ -601,7 +726,15 @@ def _process_blade_power(d, creds, ipmi_runner, ping, set_state, switch=SWITCH, 
     bmc_ip = d.get("lease_ip") or d.get("reservation_ip")
     bmc_pinged = bool(bmc_ip and ping(bmc_ip))
     rc = make_redfish(bmc_ip) if (make_redfish and bmc_ip) else None
-    power = probe_power(bmc_ip, creds, ipmi_runner, redfish_client=rc) if bmc_ip else None
+    # A dark BMC (no ping answer) can't answer IPMI either -- skip probe_power
+    # entirely rather than spend its paired attempts (2 ipmitool calls) on a
+    # read that can never come back (finding 5, spec 2026-09-28-observe-bmc-
+    # load §3.5: pairing already doubled probe_power's cost on a live BMC;
+    # this keeps that cost off the common dark-BMC case). Pinged BMCs are
+    # unaffected -- probe_power (incl. its Redfish fallback) runs exactly as
+    # before.
+    power = (probe_power(bmc_ip, creds, ipmi_runner, redfish_client=rc)
+             if (bmc_ip and bmc_pinged) else None)
     cleared = clear_fields_for(prior_row, d.get("mac"), power)
     if cleared:
         log.info("ipmi: %s reset %s (human power-on)", port, ",".join(sorted(cleared)))
