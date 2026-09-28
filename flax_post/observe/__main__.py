@@ -10,6 +10,7 @@ import threading
 import time
 
 from .. import records, retention
+from ..fwd import creds as _creds
 from . import gc, ipmi
 
 log = logging.getLogger("flax-post.observe")
@@ -75,6 +76,11 @@ def slot_ports() -> list:
 def main():
     logging.basicConfig(level=logging.INFO)
     log.info("flax-post producers starting; full=%ss power=%ss", PROBE_INTERVAL_S, POWER_INTERVAL_S)
+    # credentials-bmc.json's cipher<->login pairing (spec 2026-09-28-observe-bmc-load
+    # §3.5) is set once at startup; empty/mismatched -> ipmi falls back to its
+    # existing 3-then-auto credential walk.
+    bmc_creds = _creds.load_redfish_creds(ipmi.BMC_CREDS_PATH)
+    ipmi.configure_pairing(bmc_creds)
     threading.Thread(target=_power_loop, name="power-lane", daemon=True).start()
     from ..app import _blade_slots
     from . import worker

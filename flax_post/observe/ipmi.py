@@ -111,10 +111,54 @@ def _default_make_redfish(redfish_creds, bmc_creds=None):
     return lambda ip: RedfishClient(ip, creds)
 
 
+# Operator rule 2026-09-28 (spec 2026-09-28-observe-bmc-load §3.5): -C 3 goes
+# with entry 0 (USERID, Leopard), -C 17 with entry 1 (root, Tioga Pass).
+# Set once at start by configure_pairing; empty = today's 3-then-auto walk.
+_PAIRING = {}
+_WORKING = {}          # bmc ip -> bmcuser that last answered
+
+
+def configure_pairing(creds):
+    global _PAIRING
+    users = [c.get("bmcuser") for c in (creds or [])[:2]]
+    if users == ["USERID", "root"]:
+        _PAIRING = {"USERID": 3, "root": 17}
+        return True
+    _PAIRING = {}
+    log.error("ipmi_login_order_mismatch: credentials-bmc.json entries 0/1 are %s, "
+              "expected ['USERID', 'root']; using the credential walk", users)
+    return False
+
+
+def _login_order(ip, creds):
+    """Paired logins first -- root (-C 17), then USERID (-C 3) -- the BMC's
+    last working one ahead of both; the rest of the file after."""
+    creds = list(creds or [])
+    rank = {"root": 0, "USERID": 1} if _PAIRING else {}
+    ordered = sorted(creds, key=lambda c: rank.get(c.get("bmcuser"), 2))
+    w = _WORKING.get(ip)
+    if w:
+        ordered.sort(key=lambda c: 0 if c.get("bmcuser") == w else 1)
+    return ordered
+
+
+def _remember(ip, cred):
+    _WORKING[ip] = cred.get("bmcuser")
+
+
+def _forget(ip):
+    _WORKING.pop(ip, None)
+
+
 def _default_ipmi_runner(host, user, password, args, timeout=IPMITOOL_TIMEOUT_SECS):
     """One ipmitool call -> stdout. Cipher-3 first, then auto-negotiate. Caller catches.
     Mirrors flax_observe.ipmi._default_ipmi_runner (minus the redfish-reset side-effect)."""
     common = ["-I", "lanplus", "-N", "2", "-R", "3", "-U", user, "-P", password, "-H", host]
+    cipher = _PAIRING.get(user)
+    if cipher is not None:
+        r = subprocess.run(["ipmitool", "-C", str(cipher)] + common + args,
+                           timeout=timeout, capture_output=True, check=True)
+        return r.stdout.decode("utf-8", errors="replace")
     try:
         r = subprocess.run(["ipmitool", "-C", "3"] + common + args,
                            timeout=timeout, capture_output=True, check=True)
@@ -254,12 +298,14 @@ def bmc_data_check(ip, creds, ipmi_runner, ping, family_map=None) -> "dict | Non
     if not ip or not ping(ip):
         return None
     fm = _family_map(family_map)
-    for c in creds or []:
+    for c in _login_order(ip, creds):
         try:
             _text, bb = _read_fru0(ip, c["bmcuser"], c["bmcpass"], ipmi_runner, fm)
         except Exception:
             continue
+        _remember(ip, c)
         return bb
+    _forget(ip)
     return None
 
 
@@ -277,7 +323,7 @@ def probe_blade(ip, creds, ipmi_runner, redfish_client=None, family_map=None):
               "sel": [], "fru": {}, "product_serial": None}
     fm = _family_map(family_map)
     answered = False
-    for c in creds:
+    for c in _login_order(ip, creds):
         u, p = c["bmcuser"], c["bmcpass"]
         try:
             text, bb = _read_fru0(ip, u, p, ipmi_runner, fm)
@@ -297,7 +343,10 @@ def probe_blade(ip, creds, ipmi_runner, redfish_client=None, family_map=None):
             result["sel"] = _parse_sel(ipmi_runner(ip, u, p, ["sel", "elist"]))
         except Exception:
             pass
+        _remember(ip, c)
         break                       # first working cred wins
+    if not answered:
+        _forget(ip)
     _redfish_fill(result, redfish_client, serial=not answered)
     return result
 
@@ -338,11 +387,14 @@ def probe_power(ip, creds, ipmi_runner, redfish_client=None):
     Used by the fast power lane; kept separate from probe_blade so it can run on a
     tight interval with a short timeout without dragging the slow serial/SDR/SEL reads.
     Falls back to Redfish (redfish_client.get_power_state) when IPMI answers nothing."""
-    for c in creds:
+    for c in _login_order(ip, creds):
         try:
-            return _parse_power(ipmi_runner(ip, c["bmcuser"], c["bmcpass"], ["power", "status"]))
+            power = _parse_power(ipmi_runner(ip, c["bmcuser"], c["bmcpass"], ["power", "status"]))
         except Exception:
             continue
+        _remember(ip, c)
+        return power
+    _forget(ip)
     if redfish_client is not None:
         try:
             return _norm_redfish_power(redfish_client.get_power_state()[0])
