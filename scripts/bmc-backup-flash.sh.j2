@@ -29,7 +29,9 @@
 #       BMCs can come back DARK on the network after a reset; never do this
 #       with the host off" -- an on host is the KCS/IPMI safety net if the
 #       reset leaves the BMC unreachable; CLEANUP.md #8, et8b3 2026-09-28,
-#       needed a physical reseat). Refuses (reason host_off/
+#       needed a physical reseat). "On" means RUNNING: chassis On AND CPU0
+#       VCCIN >= NETRESET_MIN_CPU0_W (default 1 W) -- a dead host reads On at
+#       0 W (et23b4). Refuses (reason host_off/host_not_running/
 #       host_power_unknown) unless called with --force. Never calls
 #       flax-forget-port.
 #
@@ -506,10 +508,10 @@ mac_ok() { [[ "${1:-}" =~ ^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$ ]]; }
 # One ssh: boot_id, addr_assign_type, current MAC + permaddr (iproute2 prints
 # permaddr only when it differs from the current MAC), the network file's
 # [Link] pin (section-aware, same awk as FIRST_READ), and (CLEANUP.md #8) the
-# chassis power state -- folded into this SAME bounded call, no extra round
-# trip, so the pre-state read that already runs before FactoryReset also
-# answers the host-off refusal below.
-STATE_READ='echo BOOT=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null); echo ASSIGN=$(cat /sys/class/net/eth0/addr_assign_type 2>/dev/null); ip link show eth0 | awk '"'"'/link\/ether/{print "MAC=" $2; for(i=1;i<=NF;i++) if($i=="permaddr") print "PERM=" $(i+1)}'"'"'; f='"$NET_FILE"'; if [ -f "$f" ]; then echo NF=present; awk '"'"'/^\[/{s=$0} s=="[Link]" && /^MACAddress=/{sub(/^MACAddress=/,""); print "NP=" $0; exit}'"'"' "$f"; else echo NF=absent; fi; echo PWR=$(busctl get-property xyz.openbmc_project.State.Chassis /xyz/openbmc_project/state/chassis0 xyz.openbmc_project.State.Chassis CurrentPowerState 2>/dev/null)'
+# chassis power state plus CPU0's VR output power -- folded into this SAME
+# bounded call, no extra round trip, so the pre-state read that already runs
+# before FactoryReset also answers the host-power refusal below.
+STATE_READ='echo BOOT=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null); echo ASSIGN=$(cat /sys/class/net/eth0/addr_assign_type 2>/dev/null); ip link show eth0 | awk '"'"'/link\/ether/{print "MAC=" $2; for(i=1;i<=NF;i++) if($i=="permaddr") print "PERM=" $(i+1)}'"'"'; f='"$NET_FILE"'; if [ -f "$f" ]; then echo NF=present; awk '"'"'/^\[/{s=$0} s=="[Link]" && /^MACAddress=/{sub(/^MACAddress=/,""); print "NP=" $0; exit}'"'"' "$f"; else echo NF=absent; fi; echo PWR=$(busctl get-property xyz.openbmc_project.State.Chassis /xyz/openbmc_project/state/chassis0 xyz.openbmc_project.State.Chassis CurrentPowerState 2>/dev/null); echo CPU0W=$(busctl get-property xyz.openbmc_project.PSUSensor /xyz/openbmc_project/sensors/power/MB_VR_CPU0_VCCIN_Output_Power xyz.openbmc_project.Sensor.Value Value 2>/dev/null)'
 kv() { printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -n 1; }
 
 # hostpwr_of <STATE_READ output> -> on|off|unknown, from the PWR= line's
@@ -522,10 +524,29 @@ kv() { printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -n 1; }
 hostpwr_of() {
     local v; v=$(printf '%s' "$(kv "$1" PWR)" | tr -d '"')
     case "$v" in
-        *.On)  echo on ;;
+        *.On)  hostrun_of "$1" ;;
         *.Off) echo off ;;
         *)     echo unknown ;;
     esac
+}
+
+# cpu0w_of <STATE_READ output> -> CPU0 VCCIN watts as a plain number, or ""
+# (sensor absent / unreadable). busctl prints 'd 5.4375'.
+cpu0w_of() {
+    local v; v=$(kv "$1" CPU0W); v="${v#d }"
+    [[ "$v" =~ ^[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$ ]] && printf '%s' "$v"
+}
+
+# hostrun_of <STATE_READ output> -> on|not_running|unknown for a chassis that
+# reads On. "On" is not "running": et23b4 (2026-09-28) read On with CPU0's VR
+# at 0.0 W -- a dead host has no KCS either. Running = CPU0 VCCIN draws at
+# least NETRESET_MIN_CPU0_W (default 1 W; a live idle host reads ~5 W, the
+# dead ones 0-0.03 W). No reading at all is unknown, never on.
+hostrun_of() {
+    local w; w=$(cpu0w_of "$1")
+    [ -n "$w" ] || { echo unknown; return; }
+    awk -v w="$w" -v min="${NETRESET_MIN_CPU0_W:-1}" 'BEGIN { exit !(w + 0 >= min + 0) }' \
+        && echo on || echo not_running
 }
 
 nr_verdict() {  # nr_verdict <outcome> <reason>
@@ -559,7 +580,7 @@ cmd_netreset() {   # CHILD only: the PARENT holds the lock and the claim
     # after the reset -- do not reset what we could not then verify.
     mac_ok "$native" || { echo "error: cannot read the MAC of eth0 on $ip; not resetting" >&2; nr_verdict error mac_unreadable; exit 1; }
     hostpwr=$(hostpwr_of "$pre")
-    echo "netreset $ip ($port): file=$(kv "$pre" NF) pin=$pre_pin mac=$pre_mac native=$native hostpwr=$hostpwr" >&2
+    echo "netreset $ip ($port): file=$(kv "$pre" NF) pin=$pre_pin mac=$pre_mac native=$native hostpwr=$hostpwr cpu0=$(cpu0w_of "$pre")" >&2
 
     # CLEANUP.md #8 / runbook Persistent_MAC_on_BMC.md: host power is the KCS
     # safety net -- if the reset leaves the BMC dark on the network (et8b3,
@@ -569,9 +590,14 @@ cmd_netreset() {   # CHILD only: the PARENT holds the lock and the claim
     # lock + busy check (a busy node is still reported busy first) and
     # BEFORE FactoryReset -- nothing destructive has happened yet.
     if [ "$hostpwr" != on ] && [ -z "$force" ]; then
-        echo "refusing: host is $hostpwr on $ip -- no KCS safety net if the BMC comes back dark; power the host on first or pass --force" >&2
+        if [ "$hostpwr" = not_running ]; then
+            echo "refusing: host reads On but CPU0 VR is $(cpu0w_of "$pre") W on $ip -- no KCS safety net if the BMC comes back dark (dead host); pass --force to override" >&2
+        else
+            echo "refusing: host is $hostpwr on $ip -- no KCS safety net if the BMC comes back dark; power the host on first or pass --force" >&2
+        fi
         case "$hostpwr" in
             off) nr_verdict refused host_off ;;
+            not_running) nr_verdict refused host_not_running ;;
             *)   nr_verdict refused host_power_unknown ;;
         esac
         exit 4

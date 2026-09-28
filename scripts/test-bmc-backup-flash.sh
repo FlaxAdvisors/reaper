@@ -161,7 +161,8 @@ cmd=$(printf '%s' "$cmd" | sed \
     -e "s#/sys/class/net/eth0/addr_assign_type#$d/assign#g" \
     -e "s#/etc/systemd/network/00-bmc-eth0.network#$d/netfile#g" \
     -e "s#ip link show eth0#cat $d/iplink#g" \
-    -e "s#busctl get-property xyz.openbmc_project.State.Chassis /xyz/openbmc_project/state/chassis0 xyz.openbmc_project.State.Chassis CurrentPowerState#cat $d/power#g")
+    -e "s#busctl get-property xyz.openbmc_project.State.Chassis /xyz/openbmc_project/state/chassis0 xyz.openbmc_project.State.Chassis CurrentPowerState#cat $d/power#g" \
+    -e "s#busctl get-property xyz.openbmc_project.PSUSensor /xyz/openbmc_project/sensors/power/MB_VR_CPU0_VCCIN_Output_Power xyz.openbmc_project.Sensor.Value Value#cat $d/cpu0#g")
 eval "$cmd"
 STUB
 chmod +x "$work/nrstub"
@@ -187,10 +188,14 @@ nr_setup() {  # nr_setup <pinned-mac> <perm-mac>
     # case above (written before the refusal existed) keeps passing; the
     # host-off/unknown cases below override this per-run.
     printf 's "xyz.openbmc_project.State.Chassis.PowerState.On"\n' > "$work/nr/power"
+    # ...and CPU0's VR to a live host's idle draw (et23b1 read 5.4375 W).
+    printf 'd 5.4375\n' > "$work/nr/cpu0"
     : > "$work/nr/log"
 }
 nr_pwr_off()     { printf 's "xyz.openbmc_project.State.Chassis.PowerState.Off"\n' > "$work/nr/power"; }
 nr_pwr_unknown() { rm -f "$work/nr/power"; }
+nr_cpu0()        { printf 'd %s\n' "$1" > "$work/nr/cpu0"; }
+nr_cpu0_absent() { rm -f "$work/nr/cpu0"; }
 # the test seams (every path under $work). An ARRAY, not only a function: a
 # backgrounded function is a subshell, so its $! would not be the bin's pid.
 NR_SEAMS=(NR_DIR="$work/nr" FLAX_BMC_REMOTE_EXEC="$work/nrstub" FLAX_REDFISH_EXEC="$work/nrrf"
@@ -245,6 +250,30 @@ chk "host power unreadable: nothing reset, no marker" eval '! log_has FactoryRes
 nr_setup $PIN $PERM; nr_pwr_off; nr_run --force
 chk "host off + --force: proceeds, clean"     eval 'rc_is 0 && out_has "\"netreset\":\"clean\""'
 chk "host off + --force: FactoryReset sent"   log_has FactoryReset
+
+# "On" is not "running": et23b4 (2026-09-28) reads chassis On with CPU0's VR
+# at 0.0 W -- a dead host has no KCS either. The host counts as running only
+# when CPU0 VCCIN draws >= NETRESET_MIN_CPU0_W (default 1 W).
+nr_setup $PIN $PERM; nr_cpu0 0; nr_run
+chk "On + CPU0 0 W: rc 4, reason host_not_running" eval 'rc_is 4 && out_has "\"netreset\":\"refused\",\"reason\":\"host_not_running\""'
+chk "On + CPU0 0 W: readable refusal on stderr" err_has "refusing: host reads On but CPU0 VR is 0 W on 172.17.8.101 -- no KCS safety net"
+chk "On + CPU0 0 W: nothing reset, no marker"  eval '! log_has FactoryReset && ! log_has "reboot -f" && [ ! -e "$work/nr/reboot/et8b1" ]'
+
+nr_setup $PIN $PERM; nr_cpu0 0.03; nr_run
+chk "On + CPU0 0.03 W (et8b1): refused host_not_running" eval 'rc_is 4 && out_has "\"reason\":\"host_not_running\""'
+
+nr_setup $PIN $PERM; nr_cpu0 0.5; NETRESET_MIN_CPU0_W=0.4 nr_run
+chk "NETRESET_MIN_CPU0_W lowers the floor"     eval 'rc_is 0 && out_has "\"netreset\":\"clean\""'
+
+nr_setup $PIN $PERM; nr_cpu0_absent; nr_run
+chk "On + CPU0 sensor absent: rc 4, host_power_unknown" eval 'rc_is 4 && out_has "\"reason\":\"host_power_unknown\""'
+chk "On + CPU0 sensor absent: nothing reset"   eval '! log_has FactoryReset'
+
+nr_setup $PIN $PERM; nr_cpu0 0; nr_run --force
+chk "On + CPU0 0 W + --force: proceeds, clean" eval 'rc_is 0 && out_has "\"netreset\":\"clean\""'
+
+nr_setup $PIN $PERM; nr_run
+chk "status line reports cpu0 watts"          err_has "cpu0=5.4375"
 
 nr_setup $PIN $PERM; NR_LL_ONLY=1 nr_run
 chk "native-MAC LL follow: clean via $LL"     eval 'rc_is 0 && out_has "\"target\":\"$LL\""'
