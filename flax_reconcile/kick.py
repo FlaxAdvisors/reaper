@@ -228,13 +228,17 @@ def _iface_for_vid(vid, vlan_parents=None):
 
 def run_ladder(*, pool, switches, mac, kind, switch, port, vid, target_ip,
                obmc_user, obmc_pass, host_creds, flap_hold_seconds, reason,
-               vlan_parents=None):
+               vlan_parents=None, allow_flap=True):
     """Pick the class-appropriate rung and execute it, falling through on
     failure. Returns (rung_name, ok). Mirrors reaper_leased.kick().
 
     vlan_parents maps vid (int) → parent iface name (str); loaded from
     vlans.json by the entrypoint and threaded down here so the bmc_ll rung
     can probe the correct host interface (e.g. eth1 on eindhoven, not eth0).
+
+    allow_flap=False (boot grace after a marked BMC reboot) drops the
+    switch_flap rung: the class rung still runs, and if it fails the result is
+    (None, False) so the caller defers and retries next cycle.
     """
     if kind == "bmc" and vid:
         if kick_via_bmc_ll(mac=mac, iface=_iface_for_vid(vid, vlan_parents),
@@ -243,7 +247,7 @@ def run_ladder(*, pool, switches, mac, kind, switch, port, vid, target_ip,
     elif kind == "host" and target_ip:
         if kick_via_host_ssh(ip=target_ip, host_creds=host_creds):
             return ("host_ssh", True)
-    if switch and port:
+    if allow_flap and switch and port:
         if kick_via_switch_flap(pool=pool, switches=switches, sw_name=switch,
                                 port=port, kind=kind or "host", reason=reason,
                                 mac=mac, hold_seconds=flap_hold_seconds):

@@ -13,10 +13,11 @@ set (the steer subsumes it). PASS 2 is the lease!=reservation kick.
 """
 import json
 import logging
+import time
 
 from . import db, queue, actions, mismatch, steer, sentinel, kick as kick_mod
 from . import bmc_reset as bmc_reset_mod
-from .claims import bmc_fw_claim_active
+from . import claims as claims_mod
 from .config import DEFAULTS as _CFG_DEFAULTS
 from .mismatch import _norm as mismatch_norm
 from .portname import to_arista, to_internal
@@ -218,12 +219,38 @@ class Reconciler:
             # sentinel is keyed on the internal form the triage worker writes
             # (the Arista form's "/" would be a subdir, not a filename).
             claim_port = to_internal(req["port"]) if req["port"] else req["port"]
-            if bmc_fw_claim_active(claim_port):
+            # A fw bin run by hand (bmc-fw-update etc.) holds a HEARTBEAT claim
+            # /run/flax/bmc-fw-manual/<port> instead: same deferral, but only
+            # while it is fresh (a killed bin's leftover file goes stale).
+            # Module-attribute lookups (claims_mod.*) so tests can repoint the
+            # dirs and helpers.
+            wall_now = time.time()
+            if claims_mod.bmc_fw_claim_active(
+                    claim_port, claim_dir=claims_mod.BMC_FW_ACTIVE_DIR):
                 log.info("skip %s: BMC-FW claim active", claim_port)
                 queue.defer(pool, req["id"],
                             cooldown_secs=self.cfg["kick_cooldown_secs"],
                             max_attempts=self.cfg["max_attempts"])
                 continue
+            if claims_mod.bmc_manual_claim_active(
+                    claim_port, wall_now, self.cfg["manual_claim_max_age_secs"],
+                    claim_dir=claims_mod.BMC_FW_MANUAL_DIR):
+                log.info("skip %s: manual fw-bin claim active", claim_port)
+                queue.defer(pool, req["id"],
+                            cooldown_secs=self.cfg["kick_cooldown_secs"],
+                            max_attempts=self.cfg["max_attempts"])
+                continue
+            # Boot grace: a fw bin marked a reboot of this port's BMC less than
+            # boot_grace_secs ago, so the BMC is still booting. The
+            # non-disruptive bmc_ll rung may run, but no switch_flap (it would
+            # only flush the FDB and restart the reservation loop). A failed
+            # ladder follows the normal defer path, so once the window has
+            # passed a BMC truly stuck on a pool lease is flapped as before.
+            in_grace = req["kind"] == "bmc" and claims_mod.bmc_reboot_recent(
+                claim_port, wall_now, self.cfg["boot_grace_secs"],
+                reboot_dir=claims_mod.BMC_REBOOT_DIR)
+            if in_grace:
+                log.info("boot grace %s: bmc_ll only", claim_port)
             # AUTO convergence kick: release the device's STALE Kea lease (a
             # pool/conflict lease whose address differs from its reservation)
             # BEFORE the flap, so the re-DHCP the flap triggers lands on the
@@ -257,7 +284,8 @@ class Reconciler:
                 vid=kick_vid, target_ip=None, obmc_user=self.obmc_user,
                 obmc_pass=self.obmc_pass, host_creds=self.host_creds,
                 flap_hold_seconds=self.cfg["flap_hold_seconds"],
-                reason=req["reason"], vlan_parents=self.vlan_parents)
+                reason=req["reason"], vlan_parents=self.vlan_parents,
+                allow_flap=not in_grace)
             actions.log_action(
                 pool, switch=req["switch"] or "?", port=flap_port or "?",
                 action=rung or "no_rung",

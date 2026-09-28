@@ -21,6 +21,8 @@ DEFAULTS = {
     "flap_circuit_window_secs": 300,   # rolling window length (seconds)
     "flap_circuit_backoff_secs": 900,  # how long to hold off after threshold hit
     "reclaim_stale_claim_secs": 180,   # crash-stranded 'claimed' row reclaim age
+    "boot_grace_secs": 600,            # after a marked BMC reboot: bmc_ll only, no flap
+    "manual_claim_max_age_secs": 180,  # fw-bin heartbeat claim (touched every 60 s)
 }
 
 

@@ -16,3 +16,5 @@ apply_flax_reconcile_config:
   flap_circuit_threshold: 3
   flap_circuit_window_secs: 300
   flap_circuit_backoff_secs: 900
+  boot_grace_secs: 600
+  manual_claim_max_age_secs: 180
