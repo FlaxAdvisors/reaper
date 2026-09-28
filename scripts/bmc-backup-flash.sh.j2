@@ -13,6 +13,18 @@
 #   version <bmc-ip>             -> {"backup_version":...,"active_version":...}
 #   write   <bmc-ip> <tar-url>   -> progress records, then {"ok":true}
 #   verify  <bmc-ip> <expected>  -> exit 0 iff the chip reads <expected>
+#   netreset <bmc-ip> --port <p> [--iface <if>]
+#                                -> FactoryReset of the BMC network file +
+#                                   a verified reboot (spec 2026-09-27 §6.1);
+#                                   one JSON verdict line
+#                                   {"netreset":"clean"|"not_clean"|"error"|"refused",...}
+#       netreset exit codes: 0 clean; 1 error; 2 usage; 3 not clean (file or
+#       pin regenerated, or addr_assign_type != 0); 4 interlock refusal
+#       (per-BMC lock held, or a Redfish job live / ended < 60 s ago);
+#       70 orphaned child; 143 signalled. Only netreset takes the per-BMC
+#       lock and runs as PARENT + CHILD (Part 1 bin structure, bottom of this
+#       file); version/write/verify run in the top-level process as before.
+#       netreset has NO host-power refusal and never calls flax-forget-port.
 #
 # Error codes emitted as {"error":"<code>"} (or inline as an "error" field on
 # a version record): chip_absent, read_failed, reader_canary_failed,
@@ -71,6 +83,233 @@ bmc() {
 }
 
 json_err() { printf '{"error":"%s"}\n' "$1"; exit 1; }
+
+# ── Part 1 bin structure (copied from bmc-fw-update.sh.j2; netreset only) ────
+# Copied verbatim, comments included: where they say `flash` (bmc-fw-update's
+# only locking subcommand), read `netreset` -- the only one that locks here.
+# Kill every descendant of $1: FREEZE the whole subtree first (SIGSTOP,
+# depth-first) so a still-running parent cannot spawn a new child while we
+# are mid-walk, then TERM + CONT each node, deepest first. Command
+# substitutions and pipelines run in subshells that a plain `kill $$` does
+# not reach; a killed bin must never leave an ssh or journal read behind
+# holding the per-BMC lock (et6b4 2026-09-27: >1 h).
+kill_tree() {
+    local c
+    [ "$1" != "$$" ] && kill -STOP "$1" 2>/dev/null
+    for c in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$c"; done
+    [ "$1" != "$$" ] && { kill -TERM "$1" 2>/dev/null; kill -CONT "$1" 2>/dev/null; }
+    return 0
+}
+# 2026-09-27 fix round 2 (Review Focus 2, N1/N2): this bin now runs as TWO
+# processes. The PARENT (the pid callers see, at the very bottom of this
+# file) parses argv, runs need_lock_dir, and -- for `flash`, the only
+# subcommand that locks -- takes the per-BMC flock on fd 9 ITSELF, then
+# re-execs its own body as a CHILD (`FLAX_BIN_CHILD=1 setpriv --pdeathsig
+# KILL "$0" "$@" 9>&-`) that never sees fd 9 and never takes the lock
+# again. `on_signal` (PARENT only) freezes and kills the CHILD's whole
+# subtree; `--pdeathsig KILL` makes the kernel SIGKILL the child the
+# instant the PARENT dies for ANY reason, including a SIGKILL to the
+# PARENT itself, which no trap can catch. Round 1's `main "$@" & wait`
+# looked similar but forked a SUBSHELL of the SAME process (not a real
+# child), so SIGKILL of the bin pid left that subshell alive, holding the
+# lock, running to completion. This design ties the lock's fate to the
+# PARENT process's own survival: fd 9 is only ever open in the PARENT, so
+# it closes the instant the PARENT exits, however that happens.
+on_signal() {
+    trap - TERM INT HUP
+    kill_tree "$CHILD"
+    # 2026-09-27 fix round 3, M1: wait (bounded) for the child to actually
+    # exit before this process does -- see bios-fw-update.sh.j2's on_signal
+    # for why (there, a race here let $ART survive in 3 of 6 runs; this
+    # bin has no equivalent state, but the same ordering discipline
+    # applies uniformly).
+    local w
+    for w in $(seq 1 20); do kill -0 "$CHILD" 2>/dev/null || break; sleep 0.1; done
+    hb_stop
+    claim_release   # Task 3: the manual claim goes with the lock
+    exit 143
+}
+
+# ── manual-run claim + BMC reboot marker (2026-09-27, part1 Task 3) ──────────
+# CLAIM. Reconcile defers every action on a port while a fw bin runs on it.
+# A bin's claim is /run/flax/bmc-fw-manual/<port> -- NOT bmc-fw-active/<port>,
+# which is bmc_fw's own (days-long) claim and which no bin ever touches. The
+# PARENT (the lock holder) writes it right after taking the per-BMC lock and
+# removes it on normal exit and on TERM/INT/HUP, so it lives and dies with
+# the lock. It is a HEARTBEAT: the PARENT re-touches it every HEARTBEAT_S
+# (60 s) from its wait loop while it lives, and reconcile honours it only
+# while now - mtime < 180 s -- so a flash of any length stays protected, and
+# a SIGKILLed bin's claim (which nothing can remove) goes stale within 3 min
+# because nothing is left to touch it. Content is "<parent pid>@<host>"; on exit a bin removes the
+# file only if it still holds its OWN token (two IPs mapping to one port can
+# race; the per-BMC lock serialises runs per IP only). A stale claim from a
+# dead run is simply overwritten.
+# (Every external command here closes fd 9: the PARENT holds the lock.)
+# REBOOT MARKER. /run/flax/bmc-reboot/<port>, touched by whichever process
+# sends a reboot-causing action; its mtime is the reboot time, from which
+# reconcile gives the port a boot-grace window (no switch_flap mid-boot).
+MANUAL_CLAIM_DIR="${FLAX_MANUAL_CLAIM_DIR:-/run/flax/bmc-fw-manual}"
+REBOOT_DIR="${FLAX_REBOOT_DIR:-/run/flax/bmc-reboot}"
+HEARTBEAT_S="${FLAX_CLAIM_HEARTBEAT_S:-60}"
+CLAIM_FILE=""; CLAIM_TOKEN=""; HB_PID=""
+# A port becomes a file name: accept only the internal port form's alphabet.
+port_ok() { [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; }
+# arg_port <argv...> -> the value of the LAST --port (the child's parser
+# also keeps the last, so claim and marker always name the same port); a
+# following token that starts with "--" is a flag, not a value -> "".
+arg_port() {
+    local v=""
+    while [ $# -gt 0 ]; do
+        if [ "$1" = --port ]; then
+            case "${2:-}" in --*|"") v="" ;; *) v="$2"; shift ;; esac
+        fi
+        shift
+    done
+    printf '%s' "$v"
+}
+claim_take() {   # claim_take <port> -- PARENT only, after take_lock
+    [ -n "${1:-}" ] || return 0
+    port_ok "$1" || { echo "claim: ignoring malformed port '$1'" >&2; return 0; }
+    mkdir -p "$MANUAL_CLAIM_DIR" 2>/dev/null 9>&- || { echo "claim: cannot create $MANUAL_CLAIM_DIR; running unclaimed" >&2; return 0; }
+    CLAIM_TOKEN="$$@${HOSTNAME:-$(cat /proc/sys/kernel/hostname 2>/dev/null)}"
+    if printf '%s\n' "$CLAIM_TOKEN" > "$MANUAL_CLAIM_DIR/$1" 2>/dev/null; then
+        CLAIM_FILE="$MANUAL_CLAIM_DIR/$1"
+    else
+        echo "claim: cannot write $MANUAL_CLAIM_DIR/$1; running unclaimed" >&2
+    fi
+    return 0
+}
+claim_release() {   # PARENT only; removes the claim only if it is still ours
+    [ -n "$CLAIM_FILE" ] || return 0
+    [ "$(cat "$CLAIM_FILE" 2>/dev/null 9>&-)" = "$CLAIM_TOKEN" ] && rm -f "$CLAIM_FILE" 9>&-
+    CLAIM_FILE=""
+    return 0
+}
+claim_heartbeat() {   # PARENT, from its wait loop: move the claim's mtime
+    [ -n "$CLAIM_FILE" ] || return 0
+    if [ -e "$CLAIM_FILE" ]; then touch -c "$CLAIM_FILE" 2>/dev/null 9>&-
+    else printf '%s\n' "$CLAIM_TOKEN" > "$CLAIM_FILE" 2>/dev/null; fi   # re-claim if another run's exit removed it
+    return 0
+}
+# The ticker that wakes the PARENT's `wait` every HEARTBEAT_S: a separate
+# process that sends this PARENT a (trapped, no-op) USR1. The PARENT does the
+# touching itself, so once the PARENT is gone nothing touches the claim. The
+# ticker dies with the PARENT (--pdeathsig KILL; its own $PPID check closes
+# the fork-to-prctl window exactly as the CHILD's marker check does), and
+# never holds fd 9 or the caller's stdout/stderr.
+hb_start() {   # PARENT only, after the CHILD is spawned
+    [ -n "$CLAIM_FILE" ] || return 0
+    trap ':' USR1   # before the ticker exists: an untrapped USR1 would kill us
+    # The sleep runs in the BACKGROUND under a TERM trap that kills it, so
+    # hb_stop never leaves an orphaned `sleep` (re-parented to PID 1 -- a
+    # zombie under a non-reaping init; cf. the 2026-09-25 pids-max incident).
+    FLAX_HB_PARENT=$$ setpriv --pdeathsig KILL bash -c \
+        'p=$FLAX_HB_PARENT; [ "$PPID" = "$p" ] || exit 0; s=""
+         trap '"'"'[ -n "$s" ] && kill "$s" 2>/dev/null; exit 0'"'"' TERM
+         while :; do sleep "$1" & s=$!; wait "$s" || exit 0; s=""; kill -USR1 "$p" 2>/dev/null || exit 0; done' _ "$HEARTBEAT_S" \
+        </dev/null >/dev/null 2>&1 9>&- &
+    HB_PID=$!
+}
+hb_stop() {   # belt and braces: the ticker's own sleep first, then the ticker
+    [ -n "$HB_PID" ] && { pkill -P "$HB_PID" 2>/dev/null 9>&-; kill "$HB_PID" 2>/dev/null; }
+    HB_PID=""; return 0
+}
+mark_reboot() {   # mark_reboot <port> -- touch, so an existing marker's mtime moves too
+    port_ok "${1:-}" || return 0
+    mkdir -p "$REBOOT_DIR" 2>/dev/null 9>&- && touch "$REBOOT_DIR/$1" 2>/dev/null 9>&-
+    return 0
+}
+
+# ── netreset transport + interlock (copied from bmc-fw-update.sh.j2) ─────────
+RF_USER=root
+QUIET_S="${BMC_FW_UPDATE_QUIET_S:-60}"
+LOCK_DIR="${BMC_FW_UPDATE_LOCK_DIR:-/run/flax}"
+
+rf() {   # rf <METHOD> <ip> <path> [curl args...] -> body, then HTTP=<code>
+    local method="$1" ip="$2" path="$3"; shift 3
+    if [ -n "${FLAX_REDFISH_EXEC:-}" ]; then
+        "$FLAX_REDFISH_EXEC" "$method" "$path" "$@" 9>&-
+        return $?
+    fi
+    # No caller passes a request body on stdin (the flash upload reads the
+    # artifact from a tempfile path via --data-binary "@$art"), so the netrc
+    # can safely ride curl's own stdin -- no process substitution, no child
+    # process for PID 1 to reap. 9>&- (2026-09-27): curl must never inherit
+    # the per-BMC lock fd -- see bios-fw-update.sh.j2's rf() for why.
+    curl -sk --netrc-file /dev/stdin \
+        --connect-timeout 6 --max-time "${RF_MAX_TIME:-15}" -X "$method" \
+        -w '\nHTTP=%{http_code}' "https://${ip}${path}" "$@" \
+        <<<"machine $ip login $RF_USER password $SSHPASS" 9>&-
+}
+body_of() { sed '$d'; }
+code_of() { tail -n 1 | sed -n 's/^HTTP=//p'; }
+
+# Redfish job interlock (spec §6.1): refuse while an update job is live or
+# ended < QUIET_S (60 s) ago. Part 1's busy_check (bmc-fw-update.sh.j2,
+# live-proven EndTime parsing kept verbatim) with one change: a live job is
+# reported as "job_running <id> <state> <pct>" so the refusal can name it.
+# Prints "idle" (rc 0) or job_running.../quiet_window.../tasks_unreadable (rc 3).
+net_busy_check() {
+    local ip="$1" coll ids docs="[" first=1 id t
+    coll=$(rf GET "$ip" /redfish/v1/TaskService/Tasks)
+    [ "$(printf '%s' "$coll" | code_of)" = "200" ] || { echo "tasks_unreadable"; return 3; }
+    ids=$(printf '%s' "$coll" | body_of | python3 -c '
+import sys, json
+try:
+    for m in json.load(sys.stdin).get("Members", []):
+        print(m.get("@odata.id", "").rstrip("/").rsplit("/", 1)[-1])
+except Exception:
+    print("__UNREADABLE__")' 9>&-)
+    case "$ids" in *__UNREADABLE__*) echo "tasks_unreadable"; return 3;; esac
+    for id in $ids; do
+        t=$(rf GET "$ip" "/redfish/v1/TaskService/Tasks/$id")
+        [ "$(printf '%s' "$t" | code_of)" = "200" ] || { echo "tasks_unreadable"; return 3; }
+        [ $first = 1 ] || docs="$docs,"; first=0
+        docs="$docs$(printf '%s' "$t" | body_of)"
+    done
+    printf '%s]' "$docs" | QUIET="$QUIET_S" python3 -c '
+import sys, json, os, re, calendar, time
+quiet = float(os.environ["QUIET"]); now = time.time()
+LIVE = {"New", "Starting", "Running", "Pending", "Stopping", "Suspended",
+        "Interrupted", "Cancelling", "Service"}
+def epoch(s):
+    m = re.match(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.\d+)?(Z|[+-]\d\d:\d\d)?$", s or "")
+    if not m: return None
+    t = calendar.timegm(time.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S"))
+    tz = m.group(2)
+    if tz and tz != "Z":
+        t -= (1 if tz[0] == "+" else -1) * (int(tz[1:3]) * 3600 + int(tz[4:6]) * 60)
+    return t
+try: tasks = json.loads(sys.stdin.read())
+except Exception: print("tasks_unreadable"); sys.exit(3)
+for t in tasks:
+    if t.get("TaskState") in LIVE:
+        print("job_running %s %s %s" % (t.get("Id", "?"), t.get("TaskState"), t.get("PercentComplete", "?"))); sys.exit(3)
+ends = [e for e in (epoch(t.get("EndTime")) for t in tasks) if e is not None]
+if ends and now - max(ends) < quiet:
+    print("quiet_window ended_s_ago=%d" % int(now - max(ends))); sys.exit(3)
+print("idle")' 9>&-
+}
+
+take_lock() {
+    local dir="$LOCK_DIR"
+    exec 9>"$dir/fw-update-${1}.lock" || return 1
+    flock -n 9
+}
+
+# The lock lives in LOCK_DIR (/run/flax), shared by the agents' containers
+# (root) and operators on the bang host. An operator without write access
+# re-runs this bin under passwordless sudo. There is deliberately NO fallback
+# directory: a lock taken in a different directory is no lock at all.
+# (FLAX_SUDO is the test hook.)
+need_lock_dir() {
+    [ -w "$LOCK_DIR" ] && return 0
+    if [ "$(id -u)" != 0 ] && "${FLAX_SUDO:-sudo}" -n true 2>/dev/null; then
+        exec "${FLAX_SUDO:-sudo}" -n "$0" "$@"
+    fi
+    echo "$(basename "$0"): cannot write the lock directory $LOCK_DIR; run as root or with passwordless sudo" >&2
+    exit 2
+}
 
 # Single-quote a value for the remote shell. $active_os is read off the BMC, so
 # it is not fully trusted; sshd re-parses the command with the remote shell.
@@ -196,9 +435,184 @@ cmd_verify() {
     fi
 }
 
+# ── netreset (spec 2026-09-27 §6.1; Part 3 Task 2) ───────────────────────────
+NR_USAGE="usage: bmc-backup-flash netreset <bmc-ip> --port <port> [--iface <iface>]"
+
+# nr_parse <bmc-ip> [--port P] [--iface I] -> sets nr_ip/nr_port/nr_iface;
+# rc 2 on anything malformed. Used by BOTH the PARENT (before it touches the
+# lock dir, so a usage error never takes a lock or sudo) and the CHILD. The
+# LAST --port wins, as in arg_port, so claim, marker and body name one port.
+# The address must be dotted IPv4: it names the lock file and its second
+# octet names the default link-local interface.
+nr_parse() {
+    nr_ip="${1:-}"; nr_port=""; nr_iface=""
+    [ $# -gt 0 ] && shift
+    [[ "$nr_ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] || return 2
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --port)  [ $# -ge 2 ] || return 2; nr_port="$2"; shift 2 ;;
+            --iface) [ $# -ge 2 ] || return 2; nr_iface="$2"; shift 2 ;;
+            *) return 2 ;;
+        esac
+    done
+    port_ok "$nr_port" || return 2
+    [ -z "$nr_iface" ] || [[ "$nr_iface" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 2
+    return 0
+}
+
+# EUI-64 link-local of a MAC: the address the BMC answers on with NO IPv4
+# (R1: after the reset the BMC uses its NATIVE MAC, so its IPv4 may change or,
+# with the kea pool guard on, not exist yet).
+ll_of() {
+    local IFS=:; set -- $1
+    printf 'fe80::%x:%x:%x:%x' $(( ((0x$1 ^ 2) << 8) | 0x$2 )) $(( (0x$3 << 8) | 0xff )) \
+        $(( (0xfe << 8) | 0x$4 )) $(( (0x$5 << 8) | 0x$6 ))
+}
+mac_ok() { [[ "${1:-}" =~ ^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$ ]]; }
+
+# One ssh: boot_id, addr_assign_type, current MAC + permaddr (iproute2 prints
+# permaddr only when it differs from the current MAC), and the network file's
+# [Link] pin (section-aware, same awk as FIRST_READ).
+STATE_READ='echo BOOT=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null); echo ASSIGN=$(cat /sys/class/net/eth0/addr_assign_type 2>/dev/null); ip link show eth0 | awk '"'"'/link\/ether/{print "MAC=" $2; for(i=1;i<=NF;i++) if($i=="permaddr") print "PERM=" $(i+1)}'"'"'; f='"$NET_FILE"'; if [ -f "$f" ]; then echo NF=present; awk '"'"'/^\[/{s=$0} s=="[Link]" && /^MACAddress=/{sub(/^MACAddress=/,""); print "NP=" $0; exit}'"'"' "$f"; else echo NF=absent; fi'
+kv() { printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -n 1; }
+_js() { printf '%s' "${1:-}" | tr -d '"\\\n'; }   # values read off the BMC: no JSON breakage
+
+nr_verdict() {  # nr_verdict <outcome> <reason>
+    printf '{"netreset":"%s","reason":"%s","pre_mac":"%s","native_mac":"%s","pre_pin":"%s","post_mac":"%s","post_pin":"%s","post_assign":"%s","target":"%s"}\n' \
+        "$1" "$(_js "$2")" "$(_js "${pre_mac:-}")" "$(_js "${native:-}")" "$(_js "${pre_pin:-none}")" \
+        "$(_js "${post_mac:-}")" "$(_js "${post_pin:-}")" "$(_js "${post_assign:-}")" "$(_js "${target:-}")"
+}
+
+cmd_netreset() {   # CHILD only: the PARENT holds the lock and the claim
+    nr_parse "$@" || { echo "$NR_USAGE" >&2; exit 2; }
+    local ip="$nr_ip" port="$nr_port" iface="$nr_iface" b brc pre pre_boot ll deadline post s nb t
+    [ -n "$iface" ] || iface="${FLAX_LL_PARENT:-eth1}.$(printf '%s' "$ip" | cut -d. -f2)"
+
+    b=$(net_busy_check "$ip"); brc=$?
+    if [ $brc -ne 0 ]; then
+        case "$b" in
+            job_running*) set -- $b; echo "refusing: BMC FW update job $2 running ($3 $4%) on $ip" >&2 ;;
+            *) echo "refusing: $b on $ip" >&2 ;;
+        esac
+        nr_verdict refused "$b"; exit 4
+    fi
+
+    pre=$(bmc "$ip" "$STATE_READ" 2>/dev/null)
+    pre_boot=$(kv "$pre" BOOT); pre_mac=$(kv "$pre" MAC); pre_pin=$(kv "$pre" NP); [ -n "$pre_pin" ] || pre_pin=none
+    native=$(kv "$pre" PERM); [ -n "$native" ] || native="$pre_mac"
+    [ -n "$pre_boot" ] || { echo "error: cannot read boot_id on $ip; not resetting (reboot could not be verified)" >&2; nr_verdict error boot_id_unreadable; exit 1; }
+    # Without the native MAC the BMC could not be followed to its link-local
+    # after the reset -- do not reset what we could not then verify.
+    mac_ok "$native" || { echo "error: cannot read the MAC of eth0 on $ip; not resetting" >&2; nr_verdict error mac_unreadable; exit 1; }
+    echo "netreset $ip ($port): file=$(kv "$pre" NF) pin=$pre_pin mac=$pre_mac native=$native" >&2
+
+    bmc "$ip" 'busctl call xyz.openbmc_project.Network /xyz/openbmc_project/network xyz.openbmc_project.Common.FactoryReset Reset' >/dev/null 2>&1 \
+        || { echo "error: FactoryReset call failed on $ip" >&2; nr_verdict error factoryreset_failed; exit 1; }
+    bmc "$ip" "[ ! -f $NET_FILE ]" 2>/dev/null \
+        || { echo "error: $NET_FILE still present after FactoryReset on $ip" >&2; nr_verdict error file_not_removed; exit 1; }
+
+    mark_reboot "$port"                     # BEFORE the reboot (Part 1 interface)
+    bmc "$ip" 'sync; reboot -f' >/dev/null 2>&1 || true   # the session dies with the BMC
+
+    # Verified = a boot_id different from the pre-reset one, read from the
+    # native MAC's link-local or (each poll) the old IPv4, whichever answers.
+    ll="$(ll_of "$native")%$iface"
+    deadline=$(( $(date +%s) + ${NETRESET_BOOT_WAIT_S:-300} ))
+    post=""; target=""
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        sleep "${NETRESET_POLL_S:-5}"
+        for t in "$ll" "$ip"; do
+            s=$(bmc "$t" "$STATE_READ" 2>/dev/null)
+            nb=$(kv "$s" BOOT)
+            if [ -n "$nb" ] && [ "$nb" != "$pre_boot" ]; then post="$s"; target="$t"; break 2; fi
+        done
+    done
+    [ -n "$post" ] || { echo "error: no boot_id change on $ip / $ll within ${NETRESET_BOOT_WAIT_S:-300}s (wedged?)" >&2; nr_verdict error boot_not_confirmed; exit 1; }
+
+    post_mac=$(kv "$post" MAC); post_assign=$(kv "$post" ASSIGN)
+    post_pin=$(kv "$post" NP); [ -n "$post_pin" ] || post_pin=none
+    if [ "$(kv "$post" NF)" = absent ] && [ "$post_assign" = 0 ]; then
+        echo "clean: $port rebooted, no network file, native MAC $post_mac" >&2
+        nr_verdict clean ok; exit 0
+    fi
+    echo "NOT CLEAN: $port file=$(kv "$post" NF) pin=$post_pin assign=$post_assign after a confirmed reboot" >&2
+    nr_verdict not_clean regenerated; exit 3
+}
+
+main() {
 case "${1:-}" in
     version) [ $# -eq 2 ] || { echo "usage: bmc-backup-flash version <bmc-ip>" >&2; exit 2; }; cmd_version "$2" ;;
     write)   [ $# -eq 3 ] || { echo "usage: bmc-backup-flash write <bmc-ip> <tar-url>" >&2; exit 2; }; cmd_write "$2" "$3" ;;
     verify)  [ $# -eq 3 ] || { echo "usage: bmc-backup-flash verify <bmc-ip> <version>" >&2; exit 2; }; cmd_verify "$2" "$3" ;;
-    *) echo "usage: bmc-backup-flash {version|write|verify} ..." >&2; exit 2 ;;
+    netreset) [ $# -ge 3 ] || { echo "$NR_USAGE" >&2; exit 2; }; shift; cmd_netreset "$@" ;;
+    *) echo "usage: bmc-backup-flash {version|write|verify|netreset} ..." >&2; exit 2 ;;
 esac
+}
+
+if [ -n "${FLAX_BIN_CHILD:-}" ]; then
+    # ── CHILD (copied from bmc-fw-update.sh.j2; netreset only) ──
+    # $FLAX_BIN_CHILD carries the PARENT's own pid (not a literal "1") --
+    # see bios-fw-update.sh.j2's child branch for the full explanation:
+    # `setpriv` only arms --pdeathsig AFTER it execs, so a PARENT killed in
+    # the narrow window between fork and that exec leaves this process
+    # reparented with no signal ever coming and no lock held. $PPID is set
+    # at this process's own startup, i.e. after the prctl, so a mismatch
+    # here means it was already orphaned before pdeathsig was armed.
+    [ "$PPID" = "$FLAX_BIN_CHILD" ] || exit 70
+    unset FLAX_BIN_CHILD
+    # The PARENT already holds the per-BMC lock and owns all TERM/INT/HUP
+    # handling via kill_tree; this process must not compete with it.
+    main "$@"
+    exit $?
+fi
+
+# version / write / verify: unchanged -- no lock, no child, top-level process.
+[ "${1:-}" = netreset ] || { main "$@"; exit $?; }
+
+# ── PARENT (the pid callers see; netreset only) ─────────────────────────
+# Usage errors exit 2 here, before the lock dir, sudo or a claim are touched.
+nr_parse "${@:2}" || { echo "$NR_USAGE" >&2; exit 2; }
+need_lock_dir "$@"
+if ! take_lock "$nr_ip"; then
+    echo "refusing: another firmware update holds the lock for this BMC" >&2
+    printf '{"netreset":"refused","reason":"local_lock"}\n'
+    exit 4
+fi
+# The manual claim, taken only once the lock is ours. Until on_signal is
+# armed below, a TERM/INT/HUP still removes it.
+trap 'claim_release; exit 143' TERM INT HUP
+claim_take "$(arg_port "$@")"
+# Re-exec the whole body as a CHILD that never sees fd 9 (2026-09-27 fix
+# round 2, N2): a command-substitution subshell inherits an open fd across
+# a fork, so nothing short of a SEPARATE process with fd 9 closed at its
+# own exec keeps the lock's fate tied to THIS process alone.
+# `--pdeathsig KILL` (util-linux setpriv) makes the kernel SIGKILL the
+# child the instant this PARENT dies for ANY reason -- including a SIGKILL
+# to this process, which no trap can catch. The marker is THIS process's
+# own pid (I1), and `readlink -f` resolves `$0` to an absolute path (M2)
+# so setpriv's execvp() never falls through to a PATH search.
+FLAX_BIN_CHILD=$$ setpriv --pdeathsig KILL "$(readlink -f -- "$0")" "$@" 9>&- &
+CHILD=$!
+trap on_signal TERM INT HUP
+hb_start   # Task 3: claim heartbeat (no-op without a claim)
+# Only re-wait while the child is actually still alive (2026-09-27 fix
+# round 2, N1): bash keeps the SAVED exit status of an already-reaped pid,
+# so `wait "$CHILD"` after the child is gone returns that same status
+# forever -- a naive `while [ "$rc" -gt 128 ]` loop (round 1) spun at 100%
+# CPU whenever the child ended above 128 for a reason unrelated to a
+# signal THIS process received. `kill -0` distinguishes "wait was itself
+# interrupted, child still alive, wait again" from "the child is actually
+# dead", so this exits promptly either way.
+# Task 3: the heartbeat ticker's USR1 also interrupts `wait` -- same
+# "child still alive -> wait again" path, touching the claim on the way.
+# After the loop, one more `wait` reads the child's REAL status (a USR1 that
+# lands just as the child exits would otherwise leave rc=138).
+while :; do
+    wait "$CHILD"; rc=$?
+    kill -0 "$CHILD" 2>/dev/null || break
+    claim_heartbeat
+done
+hb_stop
+wait "$CHILD"; rc=$?
+claim_release
+exit "$rc"
