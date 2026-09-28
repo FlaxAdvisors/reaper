@@ -28,7 +28,7 @@ I/O contract:
       .ssh_uptime(ip, host_creds)                 -> 'ok'/'fail'/'unknown'
       .inventory_status(nodes_root, nic_mac, link_ts) -> 'found'/'notfound'/'unknown'
       .intentional_flap_active(switch, port)      -> bool
-      .sol_session_active(bmc_ip)                 -> bool
+      .sol_session_active(port)                   -> bool (internal port, e.g. et6b1)
       .ensure_inband_admin_configured(port_state, bmc_ip, bmc_mac, kind,
                                       creds_used, emit_event)
 
@@ -47,6 +47,7 @@ tests stub it out using _stub_env() in the test module.
 import datetime
 import logging
 import os
+import re
 import subprocess
 import time as _time_mod
 
@@ -102,7 +103,8 @@ SSH_KNOWN_HOSTS = "/opt/flax/var/ssh/known_hosts"
 SSH_TIMEOUT_SECS = 8
 PING_PACKETS = 1
 PING_WAIT_SECS = 1
-SOL_ACTIVE_DIR = "/run/flax/sol-active"
+SOL_ACTIVE_DIR = "/etc/flax/soltriage"      # triage server's SOL history dir
+SOL_ACTIVE_MAX_AGE_SECS = 180
 INTENTIONAL_FLAP_DIR = "/run/flax/intentional-flap"
 FORGET_PORT_DIR = "/run/flax/forget-port"
 MAX_FLAP_HOLD_SECS = 120
@@ -495,33 +497,27 @@ def _forget_port_requested(port, forget_port_dir=None):
         return False
 
 
-def _sol_session_active(bmc_ip, sol_active_dir=None):
-    """True iff soltriage is holding an SOL session for bmc_ip.
+def _internal_port(port):
+    """Et6/1 or Ethernet6/1 -> et6b1; anything else unchanged (the triage
+    server names sentinels by slot, e.g. et6b1.active)."""
+    m = re.match(r"^Et(?:hernet)?(\d+)/(\d+)$", port or "")
+    return "et%sb%s" % (m.group(1), m.group(2)) if m else (port or "")
 
-    Reads <sol_active_dir>/<bmc_ip>; the file contains soltriage's PID.
-    The sentinel is honoured only while the PID is still alive — a
-    crashed soltriage that leaked its sentinel must not mask the BMC
-    forever, so a stale (PID gone) file is unlinked and treated as
-    inactive.
-    """
-    if not bmc_ip:
+
+def _sol_session_active(port, sol_active_dir=None,
+                        max_age_secs=SOL_ACTIVE_MAX_AGE_SECS, now=None):
+    """True iff the triage server's heartbeat <dir>/<port>.active was touched
+    less than max_age_secs ago (spec 2026-09-28 §3.4). The writer lives in
+    another container, so no PID check; the mount is read-only, so a stale
+    file is ignored, never unlinked."""
+    if not port:
         return False
-    if sol_active_dir is None:
-        sol_active_dir = SOL_ACTIVE_DIR
-    path = os.path.join(sol_active_dir, bmc_ip)
+    path = os.path.join(sol_active_dir or SOL_ACTIVE_DIR, port + ".active")
     try:
-        with open(path) as f:
-            pid = int(f.read().strip())
-        os.kill(pid, 0)
-        return True
-    except FileNotFoundError:
+        mtime = os.path.getmtime(path)
+    except OSError:
         return False
-    except (ValueError, ProcessLookupError, PermissionError, OSError):
-        try:
-            os.unlink(path)
-        except FileNotFoundError:
-            pass
-        return False
+    return ((now if now is not None else _time_mod.time()) - mtime) < max_age_secs
 
 
 def _ensure_inband_admin_configured(
@@ -1225,19 +1221,12 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
         if transport == "ssh":
             pwr = _bmc_power_status_openbmc(probe_host, creds_used)
         if transport == "ipmi":
-            # Mitigation 1: skip if soltriage holds an SOL session on this
-            # BMC -- competing RMCP+ sessions evict the SOL slot on AMI
-            # MegaRAC's small (4-8 slot) session table.
-            if (_bmc_vendor.caps_for(vendor).ssh == _bmc_vendor.FULL
-                    and (not bmc_ip or _sol_active(bmc_ip))):
-                # A vendor that ALSO has ssh (phosphor) does not skip: with no
-                # IPv4 bmc_ip (link-local-only reach) or a live SOL session, it
-                # reads power over ssh on probe_host instead -- live, no RMCP+
-                # session, watts None. Nothing is skipped, so no
-                # sol_active_skip event. ami_legacy (ssh NONE) and unknown
-                # vendors never enter here.
+            _has_ssh = _bmc_vendor.caps_for(vendor).ssh == _bmc_vendor.FULL
+            # Phosphor keeps its (now one short) IPMI session while SOL is
+            # live; only link-local-only reach (no IPv4) moves it to ssh.
+            if _has_ssh and not bmc_ip:
                 pwr = _bmc_power_status_openbmc(probe_host, creds_used)
-            elif _sol_active(bmc_ip):
+            elif not _has_ssh and _sol_active(_internal_port(port)):
                 emit_event({
                     "kind": "sol_active_skip",
                     "switch": switch,
