@@ -237,7 +237,7 @@ services:
       # one-port bring-up with an operator go). Empty = every port, - = none.
       - BIOS_FW_BOOTCHECK_PORTS=et25b1,et25b2,et25b3,et25b4,et7b4,et8b1,et8b2,et8b3
       - BIOS_FW_RECOVER_PORTS=-
-      - BIOS_FW_RECOVER_CYCLE=true
+      - BIOS_FW_RECOVER_CYCLE=false
       - BIOS_FW_SETTLE_S=420
       - BIOS_FW_CHECK_FRESH_S=3600
       - BIOS_FW_GATE_ABSENT_S=420
