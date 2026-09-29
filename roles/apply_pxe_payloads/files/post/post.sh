@@ -341,7 +341,7 @@ if ! rsync -a --timeout=20 \
 fi
 ps_done
 
-ps_begin tools "dimmsum (1 of 7)"
+ps_begin tools "dimmsum (1 of 8)"
 /opt/flax/bin/dimmsum     2>&1 > $logdir/dimmsum.txt
 # dimmsum is DIMM *inventory* (size/locator/mfg/serial/part/speed from
 # dmidecode); dimmerr is DIMM *health* -- per-DIMM EDAC correctable and
@@ -352,22 +352,28 @@ ps_begin tools "dimmsum (1 of 7)"
 # Degrades quietly: no EDAC nodes under /sys (module not loaded, or a platform
 # EDAC does not cover) means the glob matches nothing and the file is empty --
 # the same "absent, not healthy" signal an empty smartctl--all.txt carries.
-ps_note "dimmerr (2 of 7)"
+ps_note "dimmerr (2 of 8)"
 /opt/flax/bin/dimmerr     2>&1 > $logdir/dimmerr.txt
-ps_note "alldisks (3 of 7)"
+ps_note "alldisks (3 of 8)"
 /opt/flax/bin/alldisks -v 2>&1 > $logdir/alldisks-v.txt
-ps_note "lsnet (4 of 7)"
+ps_note "lsnet (4 of 8)"
 /opt/flax/bin/lsnet       2>&1 > $logdir/lsnet.txt
-ps_note "bootorder (5 of 7)"
+ps_note "bootorder (5 of 8)"
 /opt/flax/bin/bootorder   2>&1 > $logdir/bootorder.txt
-ps_note "collect_mellanox (6 of 7)"
+ps_note "collect_mellanox (6 of 8)"
 ./collect_mellanox.sh $logdir
 
-ps_note "smartctl (7 of 7)"
+ps_note "smartctl (7 of 8)"
 for dev in $(smartctl --scan | cut -d' ' -f1)
 do
     smartctl --all $dev
 done > $logdir/smartctl--all.txt
+
+# Last on purpose: loading the driver for the BMC's USB NIC (our OpenBMC's RNDIS
+# gadget) adds an ethN the NIC reads above must not see. Left up afterwards so a
+# staylive node keeps the in-band link for debug. See the script header.
+ps_note "bmc usb nic (8 of 8)"
+./collect_bmc_usbnet.sh > $logdir/bmc_usbnet.txt 2>&1
 ps_done
 
 ps_begin ident "chassis identify 180"

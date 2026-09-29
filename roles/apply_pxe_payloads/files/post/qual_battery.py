@@ -266,6 +266,8 @@ def _inventory(runner):
     arts["macinv"] = ("digest", count)                              # population count-form (design §5.6)
     if detail is not None:
         arts["macinv-v"] = ("digest", detail)                       # detail form -> flax_post INV modal
+    # Last: it brings up the BMC's USB NIC as a new ethN, which the NIC reads above must not see.
+    arts["bmc-usbnet"] = ("raw", _cap(runner, ["./collect_bmc_usbnet.sh"], 60))
     return {"verdict": "pass", "summary": {"tools": len(arts)}, "artifacts": arts}
 
 

@@ -107,6 +107,23 @@ def test_inventory_without_a_detail_form_uploads_no_macinv_v(monkeypatch):
     assert arts["macinv"] == ("digest", _COUNT) and "macinv-v" not in arts
 
 
+def test_inventory_uploads_the_bmc_usbnet_report_last(monkeypatch):
+    # collect_bmc_usbnet.sh brings up a new ethN, so it must run after every
+    # NIC-reading capture (hwinfo, lsnet, macinv) or they would list it.
+    seen = []
+    monkeypatch.setattr(qual_battery, "_INV_CMDS", [("lsnet", ["./lsnet"], "raw")])
+    monkeypatch.setattr(qual_battery, "_smartctl_all", lambda runner: "")
+
+    def runner(argv, t):
+        seen.append(argv[0])
+        if argv == ["./collect_bmc_usbnet.sh"]:
+            return 0, "present: yes\nverdict: ok\n"
+        return (0, _COUNT) if argv[:2] == ["bash", "-c"] else (0, "")
+    arts = qual_battery._inventory(runner)["artifacts"]
+    assert arts["bmc-usbnet"] == ("raw", "present: yes\nverdict: ok\n")
+    assert seen[-1] == "./collect_bmc_usbnet.sh"
+
+
 def _stage(name, verdict="pass", arts=None):
     def fn(runner):
         return {"verdict": verdict, "summary": {"s": name},
