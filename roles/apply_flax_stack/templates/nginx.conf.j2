@@ -36,7 +36,17 @@ server {
     ssl_certificate_key /etc/nginx/tls/server.key;
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
-    return 404;
+
+    # Operator guides (static HTML in /srv/pxe/guides on the host, served by
+    # the host nginx's :80 PXE vhost). Browsers upgrade http:// to https://,
+    # so the bare name needs them here too. Everything else stays 404.
+    location /guides/ {
+        proxy_pass         http://127.0.0.1:80;
+        proxy_set_header   Host bang;
+    }
+    location / {
+        return 404;
+    }
 }
 
 server {
