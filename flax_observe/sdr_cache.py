@@ -38,6 +38,23 @@ reading that had actually succeeded, every gated cycle, for up to
 `rebuild_min_secs` per failed rebuild attempt. Fixed by extracting
 `_exec_power_watts`, the one shared CalledProcessError/parse-power helper
 every read (primary AND both gated fallbacks) now goes through.
+
+SDR Repository Info stamp (reaper-devel TODO-09-28 item 7, 2026-09-29): the
+onetree BMCs number dynamic sensors by their position in the sorted D-Bus
+sensor list, so any sensor that appears or disappears (an INA230 that misses
+its boot probe, CPU/DIMM sensors at host power-on) renumbers everything after
+it. A cached `-S` read then asks for the wrong sensor number: et7b3 read
+1805.4 W with the host off. Every session now also sends `raw 0x0a 0x20`
+(Get SDR Repository Info: record count + last add/erase timestamps, one small
+command). The build asks for it in its OWN call, because `ipmitool exec`
+returns rc=1 if any command in the session fails (verified on et7b3): a BMC
+that rejects it gets `sdr_stamp: null` and its cycles never send it, i.e.
+today's behaviour. Otherwise the stamp is stored in <mac>.json and every cycle
+sends it in the same session as the reading; an answer that differs means the
+cached mapping is stale, so the reading is discarded and the cache rebuilt
+(same 600 s rate limit). A build whose dump record count disagrees with the
+stamp (the SDR changed mid-dump) is stored as "dump_mismatch" so the next
+cycle rebuilds. An answer with no stamp is not a mismatch.
 """
 import json
 import os
@@ -55,6 +72,8 @@ CACHE_DIR = "/run/flax/sdr-cache"
 REBOOT_DIR = "/run/flax/bmc-reboot"
 REBUILD_MIN_SECS = 600
 MAX_AGE_SECS = 86400
+REPO_INFO = "raw 0x0a 0x20"          # Get SDR Repository Info
+DUMP_MISMATCH = "dump_mismatch"
 
 
 def _paths(cache_dir, bmc_mac):
@@ -126,6 +145,46 @@ def _hsc_name(full_text):
     return None
 
 
+def _repo_stamp(text):
+    """[record count, last add, last erase] from a `raw 0x0a 0x20` answer
+    (" 51 68 00 ff ff 9d 7b bb 6a 99 7b bb 6a 83"), or None if absent."""
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) != 14 or not all(len(p) == 2 for p in parts):
+            continue
+        try:
+            b = [int(p, 16) for p in parts]
+        except ValueError:
+            continue
+        return [b[1] | b[2] << 8,
+                b[5] | b[6] << 8 | b[7] << 16 | b[8] << 24,
+                b[9] | b[10] << 8 | b[11] << 16 | b[12] << 24]
+    return None
+
+
+def _read_stamp(runner, ip, login, cipher):
+    """The stamp from a standalone `raw 0x0a 0x20` call, or None if the BMC
+    rejects it (or the call fails for any other reason)."""
+    try:
+        out = runner(ip, login[0], login[1], REPO_INFO.split(), cipher=cipher)
+    except Exception:
+        return None
+    if isinstance(out, bytes):
+        out = out.decode("utf-8", errors="replace")
+    return _repo_stamp(out or "")
+
+
+def _dump_records(path):
+    """Number of SDR records in an `sdr dump` file (5-byte header each)."""
+    with open(path, "rb") as f:
+        data = f.read()
+    i = n = 0
+    while i + 5 <= len(data):
+        n += 1
+        i += 5 + data[i + 4]
+    return n
+
+
 def _reading(text, name):
     """'NN.NN W' from `sensor reading "<name>"` output ('<name> | 141.600'), or None."""
     for line in text.splitlines():
@@ -148,12 +207,13 @@ def _exec_power_watts(runner, ip, login, lines, cipher, sdr_cache, name):
     handling now covers every caller, primary AND gated, via this one
     helper -- not a copy in each).
 
-    Returns (power, watts, ok): `ok` is False iff the call raised, in which
+    Returns (power, watts, ok, stamp): `ok` is False iff the call raised, in which
     case `power` is parsed from the exception's `e.output` (bytes -> utf-8
     with errors="replace", None -> "", str left as-is) and `watts` is
     always None (an exception's output is never trusted for the full
     sensor-reading text). `ok` is True for a clean return, with `watts`
-    from `_reading` when `name` is given.
+    from `_reading` when `name` is given. `stamp` is the SDR Repository
+    Info stamp if the session asked for one and got it, else None.
     """
     try:
         text = _exec(runner, ip, login, lines, cipher=cipher, sdr_cache=sdr_cache)
@@ -163,10 +223,10 @@ def _exec_power_watts(runner, ip, login, lines, cipher, sdr_cache, name):
             out = out.decode("utf-8", errors="replace")
         elif out is None:
             out = ""
-        return _parse_power_from_ipmi_output(out), None, False
+        return _parse_power_from_ipmi_output(out), None, False, None
     pwr = _parse_power_from_ipmi_output(text)
     watts = _reading(text, name) if name else None
-    return pwr, watts, True
+    return pwr, watts, True, _repo_stamp(text)
 
 
 def _record_attempt(meta_path, prior_meta, t):
@@ -197,6 +257,9 @@ def _build(ip, login, cache, meta_path, cipher, runner, t, prior_meta):
     tmp_cache = cache + ".tmp"
     try:
         runner(ip, login[0], login[1], ["sdr", "dump", tmp_cache], cipher=cipher)
+        stamp = _read_stamp(runner, ip, login, cipher)
+        if stamp is not None and _dump_records(tmp_cache) != stamp[0]:
+            stamp = DUMP_MISMATCH
         full = _exec(runner, ip, login, ["power status", "sdr"], cipher=cipher)
     except Exception:
         try:
@@ -205,7 +268,7 @@ def _build(ip, login, cache, meta_path, cipher, runner, t, prior_meta):
             pass
         raise
     os.replace(tmp_cache, cache)
-    meta = {"name": _hsc_name(full), "built": t, "attempted": t}
+    meta = {"name": _hsc_name(full), "built": t, "attempted": t, "sdr_stamp": stamp}
     tmp_meta = meta_path + ".tmp"
     with open(tmp_meta, "w") as f:
         json.dump(meta, f)
@@ -241,9 +304,9 @@ def _gated_build(ip, login, cache, meta_path, cipher, runner, t, meta, rebuild_m
         if meta is not None and os.path.exists(cache) and not marker_stale:
             name = meta.get("name")
             lines = ["power status"] + (['sensor reading "%s"' % name] if name else [])
-            pwr, watts, ok = _exec_power_watts(runner, ip, login, lines, cipher, cache, name)
+            pwr, watts, ok, _stamp = _exec_power_watts(runner, ip, login, lines, cipher, cache, name)
             return pwr, (watts if ok else None)
-        pwr, _watts, _ok = _exec_power_watts(runner, ip, login, ["power status"], cipher,
+        pwr, _watts, _ok, _stamp = _exec_power_watts(runner, ip, login, ["power status"], cipher,
                                              None, None)
         return pwr, None
     return _build(ip, login, cache, meta_path, cipher, runner, t, meta)
@@ -287,14 +350,22 @@ def power_and_watts(ip, login, bmc_mac, port, *, cipher=None, runner=None,
         marker_stale = (meta is not None and marker is not None
                         and marker > meta["built"])
         valid = (meta is not None and os.path.exists(cache)
+                 and "sdr_stamp" in meta          # a cache from before the stamp rebuilds once
                  and t - meta["built"] < max_age_secs
                  and not marker_stale)
         if not valid:
             return _gated_build(ip, login, cache, meta_path, cipher, runner, t, meta,
                                 rebuild_min_secs, marker_stale=marker_stale)
         name = meta.get("name")
-        lines = ["power status"] + (['sensor reading "%s"' % name] if name else [])
-        pwr, watts, ok = _exec_power_watts(runner, ip, login, lines, cipher, cache, name)
+        lines = (["power status"] + ([REPO_INFO] if meta["sdr_stamp"] is not None else [])
+                 + (['sensor reading "%s"' % name] if name else []))
+        pwr, watts, ok, stamp = _exec_power_watts(runner, ip, login, lines, cipher, cache, name)
+        if ok and stamp is not None and meta["sdr_stamp"] is not None \
+                and stamp != meta["sdr_stamp"]:
+            # The SDR changed since the build: `name` may now map to another
+            # sensor number, so this reading is not trusted.
+            return _stale(ip, login, cache, meta_path, cipher, runner, t, meta,
+                          rebuild_min_secs, pwr)
         if not ok:
             if pwr == "unknown":
                 return "unknown", None
