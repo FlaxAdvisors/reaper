@@ -297,6 +297,18 @@ bmc_fw_platforms:
     auto: true
     post_flash_net_reset: true   # Part 3 D: clear 00-bmc-eth0.network after a flash (gated by BMC_FW_NETRESET_PORTS)
 
+# Host (BIOS) firmware manifest for the triage bios_fw worker (role default is
+# TPC_P26F). 2026-09-29 operator: TPO_P26F, flashed only on BIOS_FW_ENABLE_PORTS.
+host_fw_platforms:
+  tiogapass-bios:
+    match:
+      product_name: ["(?i)tioga", "(?i)sv7220g3"]
+    target_version: "TPO_P26F"
+    flash:
+      method: redfish-update-multipart
+      artifact: "SXC-Lab_OCP-Updates/OEM-TP-wiwynn-FW-2021-02-23/tiogapass-bios-TPO_P26F.tar"
+    auto: true
+
 # Role registry (spine migration phase 1) universe for the post role,
 # rendered into /etc/flax/roles.d/post.json by apply_lease_agent. Values
 # match the flax_role_post_* template defaults -- pinned explicitly here so

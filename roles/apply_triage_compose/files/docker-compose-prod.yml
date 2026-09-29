@@ -148,7 +148,13 @@ services:
       - BMC_FW_MANIFEST=/etc/flax/bmc-firmware-versions.json
       - BMC_FW_SHARE_BASE=http://bang/export/share
       - BMC_FW_MODE=enforce
-      - BMC_FW_ENABLE_PORTS=
+      - BMC_FW_ENABLE_PORTS=et25b1,et25b2,et25b3,et25b4,et7b4,et8b1,et8b2,et8b3,et6b2,et6b3
+      # BMC network-file reset (spec 2026-09-27 SS6): the automatic post-flash
+      # and insertion resets run only on ports matching this list (fnmatch,
+      # comma-separated; empty = every port, "-" = none) AND with the manifest
+      # entry's post_flash_net_reset on. Ships "-". The operator Reset button
+      # is not gated by it.
+      - BMC_FW_NETRESET_PORTS=-
       # Hard opt-out, outranks MODE and ENABLE_PORTS, and holds the host OFF too.
       # A station's card is swapped by hand, which changes the BMC MAC and so
       # the slot identity, and a slot read as new can draw a power-on under
@@ -216,7 +222,7 @@ services:
       # Staged bring-up (A.5.2): ONLY this port may be authorised. Every
       # other port stays blocked even if it reports a delta. Widen with a
       # glob (et10b*) or empty (= all) once the flash is proven on metal.
-      - BIOS_FW_ENABLE_PORTS=
+      - BIOS_FW_ENABLE_PORTS=et25b1,et25b2,et25b3,et25b4,et7b4,et8b1,et8b2,et8b3,et6b2,et6b3
       # Hard opt-out, outranks MODE and ENABLE_PORTS. Nothing is touched on
       # these ports at all: no ACK (so post.sh never shuts one down), no
       # flash, no hold-release power-on, and no row on the page.
