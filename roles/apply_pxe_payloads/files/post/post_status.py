@@ -126,7 +126,12 @@ def render(st, issue=False):
         out.append(("  " + "".join(c.ljust(width) for c in cells[i:i + per_row])).rstrip())
     out.append("")
     out.append("  Node:      %s   MAC %s" % (clean(st["host"] or "?"), clean(st["mac"] or "?")))
-    out.append("  BMC:       %s" % IPMI.get(st["ipmigood"], clean(st["ipmigood"])))
+    bmc = IPMI.get(st["ipmigood"], clean(st["ipmigood"]))
+    if st.get("bmc"):
+        # bmc_ready.sh: the BMC went away under the run (a reset) and a gate
+        # is waiting for it -- say so where the operator looks for the BMC.
+        bmc += " -- " + clean(st["bmc"])
+    out.append("  BMC:       %s" % bmc)
     stage = clean(st["stage"]) + (" -- " + clean(st["note"]) if st["note"] else "")
     out.append("  Stage:     %s" % (stage or "-"))
     mono = _mono()
@@ -291,7 +296,7 @@ def main(argv):
                 val = int(val)
             except ValueError:
                 val = None
-        if key in ("mac", "ipmigood", "host", "logdir"):
+        if key in ("mac", "ipmigood", "host", "logdir", "bmc"):
             st[key] = val
     elif cmd == "finish":
         for s in st["stages"]:

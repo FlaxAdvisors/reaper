@@ -68,6 +68,9 @@ binfwver=""
 binpsid=""
 
 source ./common_mellanox.sh
+# bmc_reset_cold: the reset below leaves a marker, so post.sh's next bmc_gate
+# waits for the BMC to come back instead of running into it.
+source ./bmc_ready.sh
 
 # Select the firmware image for a device PSID. Sets fwsrc/fwbin and returns 0
 # when the PSID is mapped; logs + returns 1 (caller skips) when it is not.
@@ -158,7 +161,7 @@ function setuefi()
 
 function bmcresetcold()
 {
-    ipmitool mc reset cold
+    bmc_reset_cold
 }
 
 ####

@@ -19,6 +19,9 @@ echo "Live ISO boot to do: $action"
 # never the job: every ps_* call hands back the $? it was called with.
 . "$(dirname "$0")/post_status.sh"
 ps_init "$action"
+# bmc_gate: every in-band IPMI section below first proves the BMC answers
+# (and waits for it when it is rebooting). See bmc_ready.sh.
+. "$(dirname "$0")/bmc_ready.sh"
 
 # The tools post.tgz bundles alongside this script -- the bang's copies at build
 # time (roles/apply_pxe_payloads post_build_binaries; keep the two lists equal).
@@ -125,7 +128,7 @@ dstdir="${dst}:/export/nodes/."
 # skip for liveboot and memtest
 if [ $action == "cfgipmi" ] || [ $action == "inventory" ]; then
     # monolake ipmigood == 2 ::: skip cfg
-    if [ $ipmigood -eq 1 ]; then
+    if [ $ipmigood -eq 1 ] && bmc_gate "ipmi setup"; then
         ./setipmiuser.sh 2>&1 > $logdir/setipmiuser.txt
         ipmitool chassis identify 180
     fi
@@ -176,6 +179,10 @@ if [ $action == "inventory" ]; then
         ps_state REBOOTING "nicfw: may reset or reboot after flashing a NIC -- not a crash."
         ./update_mellanox.sh
         sleep 5
+        # update_mellanox.sh cold-resets the BMC after it turns a NIC's UEFI
+        # option on. Wait here, inside the stage that caused it, until the BMC
+        # is back -- not in the middle of the inventory.
+        [ $ipmigood -ge 1 ] && bmc_gate "the inventory"
         ps_done
         if [ -n "$leopard" ] && [ -n "$quanta" ]; then
             ps_begin biosfw "update_quanta_leopard.sh $biosver"
@@ -230,7 +237,7 @@ if [ $action == "memtest" ]; then
         [ -d $logdir ] || mkdir -p $logdir
         dmidecode 2>&1 > $logdir/dmidecode.txt
         dmesg 2>&1 > $logdir/dmesg.txt
-        if [ $ipmigood -ge 1 ]; then
+        if [ $ipmigood -ge 1 ] && bmc_gate "ipmitool fru"; then
             ipmitool fru 2>&1 > $logdir/ipmitool_fru.txt
         fi
 
@@ -256,7 +263,7 @@ if [ $action == "memtest" ]; then
     touch $macdir/states/memtestnext/yes
     ps_done
     ps_begin ident "chassis identify force"
-    ipmitool chassis identify force
+    bmc_gate "chassis identify" && ipmitool chassis identify force
     ps_done
 else
 
@@ -283,13 +290,25 @@ dmesg > $logdir/dmesg.txt
 dmidecode 2>&1 > $logdir/dmidecode.txt
 ps_note "hwinfo (3 of 6)"
 hwinfo --arch --bios --block --bridge --cdrom --cpu --disk --framebuffer --gfxcard --hub --ide --keyboard --memory --mmc-ctrl --monitor --mouse --netcard --network --partition --pci --pcmcia --pcmcia-ctrl --scsi --smp --storage-ctrl --sys --tape --tv --uml --usb --usb-ctrl --vbe --wlan --xen --zip 2>&1 > $logdir/hwinfo.txt
-ps_note "ipmitool fru, sdr (4 of 6)"
+# One gate for both IPMI blocks. A BMC that never came back leaves the files
+# absent (the existing "not collected" signal) plus bmc_unreachable.txt saying
+# why, instead of eight commands each hanging on a dead KCS link.
+bmcready=0
 if [ $ipmigood -ge 1 ]; then
+    if bmc_gate "the ipmitool reads"; then
+        bmcready=1
+    else
+        echo "BMC did not answer in-band IPMI within ${BMC_WAIT_MAX}s; ipmitool_* files not collected" \
+            > $logdir/bmc_unreachable.txt
+    fi
+fi
+ps_note "ipmitool fru, sdr (4 of 6)"
+if [ $bmcready -eq 1 ]; then
     ipmitool fru 2>&1 > $logdir/ipmitool_fru.txt
     ipmitool sdr elist 2>&1 > $logdir/ipmitool_sdr_elist.txt
 fi
 ps_note "ipmitool mc, sel, lan, user, sensor -- sel can take long on a flooded SEL (5 of 6)"
-if [ $ipmigood -eq 1 ]; then
+if [ $ipmigood -eq 1 ] && [ $bmcready -eq 1 ]; then
     ipmitool mc info 2>&1 > $logdir/ipmitool_mc_info.txt
     ipmitool sel elist 2>&1 > $logdir/ipmitool_sel_elist.txt
     ipmitool lan print 1 2>&1 > $logdir/ipmitool_lan_print_1.txt
@@ -402,7 +421,7 @@ ps_note "bmc usb nic (8 of 8)"
 ps_done
 
 ps_begin ident "chassis identify 180"
-ipmitool chassis identify 180
+bmc_gate "chassis identify" && ipmitool chassis identify 180
 ps_done
 
 fi # end of if memtest else clause (inventory section)
@@ -469,6 +488,9 @@ else
     donemsg="$action results NOT delivered to the bang (dump failed) - CHECK THE GUI and the banghook journal"
 fi
 ps_begin poweroff
+# Before the last word goes up: the wait for a rebooting BMC must be visible
+# as a running stage, not hidden behind the final POWER-OFF frame.
+[ $ipmigood -eq 1 ] && bmc_gate "the power off"
 ps_done
 ps_finish POWER-OFF "$donemsg"
 # Flush, don't guess: wait for the final frame to leave the SOL UART, then
@@ -477,7 +499,25 @@ ps_finish POWER-OFF "$donemsg"
 ps_flush
 if [ $ipmigood -eq 1 ]; then
     echo "using IPMI to power off."
-    ipmitool chassis power off
+    # A BMC still settling answers "Command not supported in present state":
+    # re-gate and retry rather than leave the blade on. If it never takes the
+    # command, an OS shutdown still turns the host off.
+    offok=0
+    for try in 1 2 3; do
+        bmc_gate "the power off" || break
+        if ipmitool chassis power off; then
+            offok=1
+            break
+        fi
+        echo "post.sh: BMC refused the power off (try $try of 3)"
+        sleep 10
+    done
+    if [ $offok -ne 1 ]; then
+        echo "post.sh: BMC did not take the power off -- invoking shutdown."
+        ps_state POWER-OFF "BMC did not take the power off -- OS shutdown. $donemsg"
+        ps_flush
+        shutdown -h now
+    fi
 else
     echo "No IPMI on this system? Invoking shutdown."
     shutdown -h now
