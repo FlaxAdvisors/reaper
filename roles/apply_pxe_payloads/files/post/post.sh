@@ -312,6 +312,31 @@ ip -d address 2>&1 > $logdir/ip-d_address.txt
 cat /proc/cpuinfo 2>&1 > $logdir/cpuinfo.txt
 cat /proc/meminfo 2>&1 > $logdir/meminfo.txt
 cat /proc/scsi/scsi 2>&1 > $logdir/scsi.txt
+# BIOS flash chip identity. The kernel's part name and JEDEC id are the SAME
+# for MX25L25635F and the 4-byte-only MX25L25735F (both "mx25l25635e", c22019);
+# only the chip's SFDP table tells them apart: bits 2:1 of the third byte of
+# the basic table's first word (e5 20 f3 ff vs e5 20 f5 ff). A Quanta Tioga
+# Pass does not boot from the 4-byte-only part; a Wiwynn does (2026-10-02).
+# Find them in the archive with: grep -l addr_mode=4-byte-only .../spi-nor.txt
+for d in /sys/bus/spi/devices/*/spi-nor; do
+    [ -d "$d" ] || continue
+    sfdp=$(od -An -v -tx1 "$d/sfdp" 2>/dev/null | tr -d ' \n')
+    mode=unknown
+    if [ "${sfdp:0:8}" = "53464450" ]; then
+        # first parameter header is at byte 8; its 3-byte table pointer at 12
+        p=$(( 0x${sfdp:28:2}${sfdp:26:2}${sfdp:24:2} ))
+        b=${sfdp:$(( (p + 2) * 2 )):2}
+        case "$(( (0x${b:-0} >> 1) & 3 ))" in
+            0) mode=3-byte-only ;;
+            1) mode=3-byte+4-byte ;;
+            2) mode=4-byte-only ;;
+        esac
+    fi
+    echo "dev=$(basename "$(dirname "$d")") partname=$(cat "$d/partname" 2>/dev/null)" \
+         "manufacturer=$(cat "$d/manufacturer" 2>/dev/null) jedec_id=$(cat "$d/jedec_id" 2>/dev/null)" \
+         "addr_mode=$mode"
+    echo "sfdp=$sfdp"
+done > $logdir/spi-nor.txt 2>&1
 # Refresh /opt/flax/bin from the bang before the tool calls below.
 #
 # These are invoked by absolute path, but /opt/flax/bin on a live-booted DUT is
