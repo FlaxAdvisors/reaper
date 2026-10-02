@@ -35,3 +35,7 @@ apply_bmc_scripts_plain:
   # /usr/sbin/bios-update before every push (2026-10-02). It also runs by hand
   # on a BMC: --read, --regs, --me-info.
   - { src: fb-bios-update.sh, dest: fb-bios-update }
+  # Runs on a booted DUT, not on the bang: names the BIOS flash chip from its
+  # SFDP table (MX25L25635F vs the 4-byte-only MX25L25735F). It rides here
+  # because post.sh rsyncs the bang's /opt/flax/bin onto every DUT.
+  - { src: spichip.sh, dest: spichip }
