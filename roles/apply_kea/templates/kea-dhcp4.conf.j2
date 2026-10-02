@@ -37,8 +37,12 @@
         "test": "substring(option[60].text,0,6) == 'udhcp '" },
       { "name": "BMC_NETWORKD",
         "test": "option[55].hex == 0x0103060c0f212a72777879 and not option[60].exists and not option[93].exists and not option[77].exists and not option[175].exists" },
+{#  Facebook OpenBMC (ISC dhclient, /etc/dhcp/dhclient.conf request list): option 55 = 1,28,2,3,15,6,12,44,47,42,
+    no option 60 / client-id. Same list on the old ODM image (eindhoven et24b1) and fbtp-v2019.43.0 (et24b3), 2026-09-30. #}
+      { "name": "BMC_FB_DHCLIENT",
+        "test": "option[55].hex == 0x011c02030f060c2c2f2a and not option[60].exists and not option[93].exists and not option[77].exists and not option[175].exists" },
       { "name": "POOL_HOSTS",
-        "test": "not member('BMC_UDHCP') and not member('BMC_NETWORKD')" }
+        "test": "not member('BMC_UDHCP') and not member('BMC_NETWORKD') and not member('BMC_FB_DHCLIENT')" }
     ],
     "subnet4": [
 {% for v in vlans %}
