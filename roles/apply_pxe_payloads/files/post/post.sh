@@ -29,7 +29,7 @@ ps_init "$action"
 # builds (LiveLeap 3.0.0: Feb 2025 macinv printing every FRU as "Board Mfg:",
 # older dimmsum/bootorder, no dimmerr). Unpacking the bundle installs the current
 # ones. Only a copy that differs is rewritten; nothing outside the list is touched.
-bundle_bins="macinv dimmerr dimmsum lsnet alldisks bootorder"
+bundle_bins="macinv dimmerr dimmsum lsnet alldisks bootorder spichip"
 function install_bundled_bins()
 {
     local here b bin="${FLAX_BIN:-/opt/flax/bin}"
@@ -331,31 +331,6 @@ ip -d address 2>&1 > $logdir/ip-d_address.txt
 cat /proc/cpuinfo 2>&1 > $logdir/cpuinfo.txt
 cat /proc/meminfo 2>&1 > $logdir/meminfo.txt
 cat /proc/scsi/scsi 2>&1 > $logdir/scsi.txt
-# BIOS flash chip identity. The kernel's part name and JEDEC id are the SAME
-# for MX25L25635F and the 4-byte-only MX25L25735F (both "mx25l25635e", c22019);
-# only the chip's SFDP table tells them apart: bits 2:1 of the third byte of
-# the basic table's first word (e5 20 f3 ff vs e5 20 f5 ff). A Quanta Tioga
-# Pass does not boot from the 4-byte-only part; a Wiwynn does (2026-10-02).
-# Find them in the archive with: grep -l addr_mode=4-byte-only .../spi-nor.txt
-for d in /sys/bus/spi/devices/*/spi-nor; do
-    [ -d "$d" ] || continue
-    sfdp=$(od -An -v -tx1 "$d/sfdp" 2>/dev/null | tr -d ' \n')
-    mode=unknown
-    if [ "${sfdp:0:8}" = "53464450" ]; then
-        # first parameter header is at byte 8; its 3-byte table pointer at 12
-        p=$(( 0x${sfdp:28:2}${sfdp:26:2}${sfdp:24:2} ))
-        b=${sfdp:$(( (p + 2) * 2 )):2}
-        case "$(( (0x${b:-0} >> 1) & 3 ))" in
-            0) mode=3-byte-only ;;
-            1) mode=3-byte+4-byte ;;
-            2) mode=4-byte-only ;;
-        esac
-    fi
-    echo "dev=$(basename "$(dirname "$d")") partname=$(cat "$d/partname" 2>/dev/null)" \
-         "manufacturer=$(cat "$d/manufacturer" 2>/dev/null) jedec_id=$(cat "$d/jedec_id" 2>/dev/null)" \
-         "addr_mode=$mode"
-    echo "sfdp=$sfdp"
-done > $logdir/spi-nor.txt 2>&1
 # Refresh /opt/flax/bin from the bang before the tool calls below.
 #
 # These are invoked by absolute path, but /opt/flax/bin on a live-booted DUT is
@@ -372,7 +347,7 @@ done > $logdir/spi-nor.txt 2>&1
 #
 # Best-effort on purpose: a DUT that cannot reach the bang must still complete
 # its inventory, so on failure fall back to the copies post.tgz bundles
-# alongside this script -- which is exactly the six tools invoked below.
+# alongside this script -- which is exactly the tools invoked below.
 ps_done
 ps_begin binrefresh "rsync /opt/flax/bin from the bang"
 mkdir -p /opt/flax/bin
@@ -385,7 +360,7 @@ if ! rsync -a --timeout=20 \
 fi
 ps_done
 
-ps_begin tools "dimmsum (1 of 8)"
+ps_begin tools "dimmsum (1 of 9)"
 /opt/flax/bin/dimmsum     2>&1 > $logdir/dimmsum.txt
 # dimmsum is DIMM *inventory* (size/locator/mfg/serial/part/speed from
 # dmidecode); dimmerr is DIMM *health* -- per-DIMM EDAC correctable and
@@ -396,18 +371,25 @@ ps_begin tools "dimmsum (1 of 8)"
 # Degrades quietly: no EDAC nodes under /sys (module not loaded, or a platform
 # EDAC does not cover) means the glob matches nothing and the file is empty --
 # the same "absent, not healthy" signal an empty smartctl--all.txt carries.
-ps_note "dimmerr (2 of 8)"
+ps_note "dimmerr (2 of 9)"
 /opt/flax/bin/dimmerr     2>&1 > $logdir/dimmerr.txt
-ps_note "alldisks (3 of 8)"
+ps_note "alldisks (3 of 9)"
 /opt/flax/bin/alldisks -v 2>&1 > $logdir/alldisks-v.txt
-ps_note "lsnet (4 of 8)"
+ps_note "lsnet (4 of 9)"
 /opt/flax/bin/lsnet       2>&1 > $logdir/lsnet.txt
-ps_note "bootorder (5 of 8)"
+ps_note "bootorder (5 of 9)"
 /opt/flax/bin/bootorder   2>&1 > $logdir/bootorder.txt
-ps_note "collect_mellanox (6 of 8)"
+# BIOS flash chip identity. The kernel's part name and JEDEC id are the SAME
+# for MX25L25635F and the 4-byte-only MX25L25735F (both "mx25l25635e", c22019);
+# spichip reads the chip's SFDP table to tell them apart. A Quanta Tioga Pass
+# does not boot from the 4-byte-only part; a Wiwynn does (2026-10-02).
+# Find them in the archive with: grep -l addr_mode=4-byte-only .../spichip.txt
+ps_note "spichip (6 of 9)"
+/opt/flax/bin/spichip -v  2>&1 > $logdir/spichip.txt
+ps_note "collect_mellanox (7 of 9)"
 ./collect_mellanox.sh $logdir
 
-ps_note "smartctl (7 of 8)"
+ps_note "smartctl (8 of 9)"
 for dev in $(smartctl --scan | cut -d' ' -f1)
 do
     smartctl --all $dev
@@ -416,7 +398,7 @@ done > $logdir/smartctl--all.txt
 # Last on purpose: loading the driver for the BMC's USB NIC (our OpenBMC's RNDIS
 # gadget) adds an ethN the NIC reads above must not see. Left up afterwards so a
 # staylive node keeps the in-band link for debug. See the script header.
-ps_note "bmc usb nic (8 of 8)"
+ps_note "bmc usb nic (9 of 9)"
 ./collect_bmc_usbnet.sh > $logdir/bmc_usbnet.txt 2>&1
 ps_done
 

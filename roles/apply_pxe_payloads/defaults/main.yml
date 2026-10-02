@@ -18,6 +18,7 @@ post_build_binaries:
   - lsnet
   - alldisks
   - bootorder
+  - spichip
 
 # The single iperf3 serializer the qual agent's iperf stage dials (rendered into
 # post.tgz as flax-qual.env -> FLAX_IPERF_SERVER). Defaults to the eindhoven backup
