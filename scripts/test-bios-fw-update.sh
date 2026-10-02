@@ -67,6 +67,9 @@ case "$2" in
       if [ "$n" -le "${FIX_BOOT_SAME_FOR:-999}" ]; then echo "${FIX_BOOT0:-aaaa}"
       elif [ "${FIX_BOOT_AFTER:-}" = "DOWN" ]; then exit 255
       else echo "${FIX_BOOT_AFTER:-bbbb}"; fi ;;
+  *bios-update.new*)
+      printf '%s\n' "$2" >> "$FIX_CMDLOG.ssh"
+      echo "${FIX_INJ_MD5:-}  /usr/sbin/bios-update" ;;
   *journalctl*)
       [ -n "${FIX_SSH_DOWN:-}" ] && exit 255
       cat "$FIX_JOURNAL"
@@ -595,6 +598,61 @@ claim_signal_test_bios() {  # <TERM|KILL> <sleep-duration>
 }
 claim_signal_test_bios TERM 63.719
 claim_signal_test_bios KILL 64.823
+
+# ── f: bios-update injection (2026-10-02) ───────────────────────────────────
+# With an injectable file next to the bin, it is copied to the BMC and
+# installed BEFORE the push; a failed or mismatched install means no push.
+cat > "$work/put" <<'STUB'
+#!/bin/bash
+printf 'PUT %s %s %s\n' "$1" "$(md5sum < "$2" | cut -d' ' -f1)" "$3" >> "$FIX_CMDLOG"
+exit "${FIX_PUT_RC:-0}"
+STUB
+chmod +x "$work/put"
+printf '#!/bin/bash\necho injected bios-update\n' > "$work/inj"
+injmd5=$(md5sum < "$work/inj" | cut -d' ' -f1)
+export FLAX_BMC_PUT_EXEC="$work/put"
+
+BIOS_FW_UPDATE_INJECT="$work/inj" FIX_INJ_MD5="$injmd5" run inject_ok
+[ $rc -eq 0 ] && posted && grep -q "^PUT 10.0.0.1 $injmd5 /usr/sbin/bios-update.new" "$FIX_CMDLOG" \
+    && ok "inject: file copied to the BMC and installed, then pushed" || bad "inject ok"
+[ "$(grep -n -m1 '^PUT' "$work/cmd.inject_ok" | cut -d: -f1)" -lt "$(grep -n -m1 '^POST' "$work/cmd.inject_ok" | cut -d: -f1)" ] \
+    && ok "inject: installed BEFORE the push" || { rc=x; bad "inject order"; }
+grep -q 'bios-update.stock' "$work/cmd.inject_ok.ssh" && ok "inject: keeps the BMC's stock script as bios-update.stock" || { rc=x; bad "inject stock copy"; }
+echo "$out" | grep -q '"state":"Injecting"' && ok "inject: progress line emitted" || bad "inject progress"
+
+BIOS_FW_UPDATE_INJECT="$work/inj" FIX_INJ_MD5="0000deadbeef" run inject_mismatch
+[ $rc -eq 1 ] && ! posted && echo "$out" | grep -q InjectFailed && ok "inject: md5 mismatch on the BMC -> no push" || bad "inject mismatch"
+
+BIOS_FW_UPDATE_INJECT="$work/inj" FIX_INJ_MD5="$injmd5" FIX_PUT_RC=1 run inject_putfail
+[ $rc -eq 1 ] && ! posted && ok "inject: copy to the BMC fails -> no push" || bad "inject put failure"
+
+BIOS_FW_UPDATE_INJECT="" FIX_INJ_MD5="$injmd5" run inject_off
+[ $rc -eq 0 ] && posted && ! grep -q '^PUT' "$FIX_CMDLOG" && ok "inject: BIOS_FW_UPDATE_INJECT= (empty) -> stock script, still pushes" || bad "inject disabled"
+
+BIOS_FW_UPDATE_INJECT="$work/no-such-file" run inject_missing
+[ $rc -eq 0 ] && posted && ! grep -q '^PUT' "$FIX_CMDLOG" && ok "inject: file missing -> stock script, still pushes" || bad "inject missing file"
+
+# the injected script's journal lines classify like the stock script's
+cat > "$work/j.fb_booted" <<'J'
+2026-10-02T09:20:00+00:00 tiogapass bios-update[1]: ME: ME put into recovery
+2026-10-02T09:24:00+00:00 tiogapass bios-update[1]: bios-update: flash complete
+2026-10-02T09:24:40+00:00 tiogapass bios-update[1]: bios-update: host state after power-on: xyz.openbmc_project.State.Host.HostState.Running
+J
+BIOS_FW_UPDATE_INJECT="$work/inj" FIX_INJ_MD5="$injmd5" FIX_JOURNAL="$work/j.fb_booted" run fb_booted
+echo "$out" | grep -q '"ending": "booted"' && ok "injected script: flash complete + host Running -> booted" || bad "fb booted verdict"
+cat > "$work/j.fb_off" <<'J'
+2026-10-02T09:24:00+00:00 tiogapass bios-update[1]: bios-update: flash complete
+2026-10-02T09:25:40+00:00 tiogapass bios-update[1]: bios-update: host state after power-on: xyz.openbmc_project.State.Host.HostState.Off
+2026-10-02T09:25:40+00:00 tiogapass bios-update[1]: bios-update: host did not come up
+J
+BIOS_FW_UPDATE_INJECT="$work/inj" FIX_INJ_MD5="$injmd5" FIX_JOURNAL="$work/j.fb_off" run fb_off
+echo "$out" | grep -q '"ending": "poweron_failed"' && ok "injected script: host stays Off -> poweron_failed" || bad "fb poweron_failed verdict"
+cat > "$work/j.fb_err" <<'J'
+2026-10-02T09:21:00+00:00 tiogapass bios-update[1]: bios-update: error: ME did not enter recovery (state: normal); nothing written
+J
+BIOS_FW_UPDATE_INJECT="$work/inj" FIX_INJ_MD5="$injmd5" FIX_JOURNAL="$work/j.fb_err" run fb_err
+echo "$out" | grep -q '"ending": "failed"' && ok "injected script: error before flash complete -> failed" || bad "fb failed verdict"
+unset FLAX_BMC_PUT_EXEC
 
 echo "---"; echo "pass=$pass fail=$fail"
 [ $fail -eq 0 ]

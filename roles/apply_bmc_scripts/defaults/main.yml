@@ -30,3 +30,8 @@ apply_bmc_scripts_files:
 apply_bmc_scripts_plain:
   - { src: bios_gate, dest: bios_gate }
   - { src: kea-bmc-denials.sh, dest: kea-bmc-denials }
+  # The BMC-side BIOS flasher (Facebook tiogapass sequence: ME recovery, full
+  # write, ME cold reset). bios-fw-update installs it over the BMC's own
+  # /usr/sbin/bios-update before every push (2026-10-02). It also runs by hand
+  # on a BMC: --read, --regs, --me-info.
+  - { src: fb-bios-update.sh, dest: fb-bios-update }

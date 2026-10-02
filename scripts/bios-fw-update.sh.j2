@@ -236,6 +236,37 @@ fetch() {  # fetch <url> <out>
     curl -fsSL --max-time 300 -o "$2" "$1" 9>&-
 }
 
+# ── bios-update injection (2026-10-02, operator) ─────────────────────────────
+# Before the push, replace the BMC's own /usr/sbin/bios-update with reaper's
+# fb-bios-update (scripts/fb-bios-update.sh): the Facebook tiogapass sequence --
+# ME into recovery, full-chip flashcp, ME cold reset, power on. The BMC's stock
+# script does none of the ME steps. The BMC root filesystem is RAM, so the
+# replacement lasts until the BMC reboots: it is re-installed before EVERY
+# flash, and the stock script is kept beside it as bios-update.stock.
+# Default: the file next to this bin. BIOS_FW_UPDATE_INJECT= (empty) or a
+# missing file leaves the BMC's stock bios-update in place.
+INJECT="${BIOS_FW_UPDATE_INJECT-$(dirname "$0")/fb-bios-update}"
+
+bmc_put() {   # bmc_put <ip> <local file> <remote path>
+    if [ -n "${FLAX_BMC_PUT_EXEC:-}" ]; then
+        "$FLAX_BMC_PUT_EXEC" "$1" "$2" "$3" 9>&-
+        return $?
+    fi
+    sshpass -e ssh -T $SSH_OPTS "root@$1" "cat > '$3'" < "$2" 9>&-
+}
+
+# inject_update <ip> -> 0 installed (or nothing to install), 1 failed.
+# Fails closed: the caller does not push when this returns 1.
+inject_update() {
+    local ip="$1" want got
+    [ -n "$INJECT" ] && [ -s "$INJECT" ] || return 0
+    want=$(md5sum < "$INJECT" | cut -d' ' -f1)
+    bmc_put "$ip" "$INJECT" /usr/sbin/bios-update.new || return 1
+    got=$(bmc "$ip" '[ -e /usr/sbin/bios-update.stock ] || cp -p /usr/sbin/bios-update /usr/sbin/bios-update.stock; chmod 755 /usr/sbin/bios-update.new && mv /usr/sbin/bios-update.new /usr/sbin/bios-update && md5sum /usr/sbin/bios-update' \
+          2>/dev/null | cut -d' ' -f1 | tr -d '\r\n ')
+    [ -n "$got" ] && [ "$got" = "$want" ]
+}
+
 now_s() { if [ -n "${FLAX_NOW:-}" ]; then echo "$FLAX_NOW"; else date +%s; fi; }
 nap()   { [ "${1:-0}" -gt 0 ] 2>/dev/null && sleep "$1"; return 0; }
 
@@ -469,6 +500,18 @@ cmd_flash() {
     fi
 
     local boot0 t0; boot0="$(boot_id "$ip")"; t0="$(now_s)"
+
+    # Install reaper's bios-update on the BMC first (see INJECT above). A
+    # failed install means NO push: flashing with whichever script happens to
+    # be on the BMC is exactly what this step exists to prevent.
+    if [ -n "$INJECT" ] && [ -s "$INJECT" ]; then
+        emit flashing 0 "" Injecting
+        if ! inject_update "$ip"; then
+            emit flashing 0 "" InjectFailed bios_update_not_installed
+            echo "could not install $INJECT as /usr/sbin/bios-update on $ip; nothing pushed" >&2
+            return 1
+        fi
+    fi
 
     emit flashing 0 "" Uploading
     local resp code task
