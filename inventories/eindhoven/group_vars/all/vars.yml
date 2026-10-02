@@ -291,14 +291,15 @@ bmc_fw_platforms:
     match:
       product_name: ["(?i)tioga", "(?i)tp[-_ ]?", "(?i)wiwynn.*tp", "(?i)quanta.*tioga"]
       bmc_kind: openbmc
-    target_version: "flax-onetree-1.1.3"
+    target_version: "flax-onetree-1.1.4-202609290832"
     check: { method: redfish-firmware-inventory, id: bmc_active }
-    flash: { method: redfish-update-multipart, artifact: "SXC-Lab_OCP-Updates/OpenBMC/flax-onetree-1.1.3.tar" }
+    flash: { method: redfish-update-multipart, artifact: "SXC-Lab_OCP-Updates/OpenBMC/flax-onetree-1.1.4-202609290832.tar" }
     auto: true
     post_flash_net_reset: true   # Part 3 D: clear 00-bmc-eth0.network after a flash (gated by BMC_FW_NETRESET_PORTS)
 
 # Host (BIOS) firmware manifest for the triage bios_fw worker (role default is
-# TPC_P26F). 2026-09-29 operator: TPO_P26F, flashed only on BIOS_FW_ENABLE_PORTS.
+# TPC_P26F). 2026-09-29 operator: TPO_P26F. 2026-10-02 operator: one BIOS for
+# Quanta and Wiwynn again (the Quanta-only F08 entry is gone).
 host_fw_platforms:
   tiogapass-bios:
     match:
