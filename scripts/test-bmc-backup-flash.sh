@@ -102,6 +102,81 @@ net_absent
 run_case "backup_version record unchanged by the net fields" "flax-onetree-1.1.1" "flax-onetree-1.1.1" "flax-onetree-1.1.1-202608281924" \
     '"backup_version":"flax-onetree-1.1.1-202608281924","active_version":"flax-onetree-1.1.1","net_file":"absent"'
 
+# A chip holding Facebook OpenBMC is a readable chip with a version that is
+# not ours -- not a blank and not "unreadable" (et8b3 / et24b1 2026-10-02).
+mk_fb() { printf 'JUNKJUNKJUNK\nU-Boot SPL 2016.07 %s (Oct 31 2019 - 00:50:32)\nU-Boot fitImage for Facebook OpenBMC/1.0/fbtp\nMOREJUNK\n' "$1" > "$2"; }
+fb_case() {  # name fb_version expect_substring
+    printf 'VERSION_ID=%s\n' "flax-onetree-1.1.4" > "$work/osrel"
+    mk_chip "flax-onetree-1.1.4" "$work/m0"; mk_fb "$2" "$work/m5"
+    printf 'dev:    size   erasesize  name\nmtd0: 04000000 00010000 "bmc"\nmtd5: 04000000 00010000 "bmc-backup"\n' > "$work/procmtd"
+    local out
+    out=$(FLAX_BMC_REMOTE_EXEC="$work/stub" FIX_MTD0="$work/m0" FIX_MTD5="$work/m5" \
+          FIX_OSREL="$work/osrel" FIX_PROCMTD="$work/procmtd" FIX_NETFILE="$work/netfile" \
+          "$work/bin" version 10.0.0.1 2>&1)
+    if printf '%s' "$out" | grep -qF "$3" && ! printf '%s' "$out" | grep -q '"error"'; then
+        printf '  PASS  %s\n' "$1"; pass=$((pass+1))
+    else
+        printf '  FAIL  %s\n        want substring: %s\n        got: %s\n' "$1" "$3" "$out"; fail=$((fail+1))
+    fi
+}
+fb_case "Facebook OpenBMC on the backup chip reads as its own version" \
+    "fbtp-v2019.43.0" '"backup_version":"fbtp-v2019.43.0"'
+fb_case "old Facebook OpenBMC (fbtp-v4.2) reads too" \
+    "fbtp-v4.2" '"backup_version":"fbtp-v4.2"'
+# Presence proof for the blank case: a chip with neither string still reports
+# read_failed, so the Facebook match did not turn every chip into a version.
+run_case "a blank backup chip is still read_failed" \
+    "flax-onetree-1.1.1" "flax-onetree-1.1.1" "BLANK" \
+    '"error":"read_failed"'
+
+# ── write: chip size and a chip that takes nothing ───────────────────────────
+echo "bmc-backup-flash write"
+# The write stub answers the BMC-side flash script from a fixture and runs
+# everything else (the /proc/mtd size read) for real; scp is a no-op seam.
+cat > "$work/wstub" <<'STUB'
+#!/bin/bash
+case "$2" in
+    *backup-bmc-flash*) printf '%s\nRC=%s\n' "$FIX_FLASH_OUT" "${FIX_FLASH_RC:-0}"; exit 0 ;;
+    *"rm -f /tmp/image-bmc"*) exit 0 ;;
+esac
+cmd=$(printf '%s' "$2" | sed -e "s#/proc/mtd#$FIX_PROCMTD#g")
+eval "$cmd"
+STUB
+cat > "$work/scpstub" <<'STUB'
+#!/bin/bash
+echo "$1 $2" >> "$FIX_SCP_LOG"
+STUB
+chmod +x "$work/wstub" "$work/scpstub"
+write_case() {  # name chip_hex image_bytes flash_out flash_rc expect_substring scp_expected(yes|no)
+    local name="$1" chip="$2" bytes="$3" fout="$4" frc="$5" want="$6" scp="$7" out
+    rm -rf "$work/cache"; mkdir -p "$work/cache"; : > "$work/scplog"
+    head -c "$bytes" /dev/zero > "$work/cache/img.image-bmc"
+    printf '%s\n' "$bytes" > "$work/cache/img.image-bmc.size"
+    printf 'dev:    size   erasesize  name\nmtd0: 04000000 00010000 "bmc"\nmtd5: %s 00010000 "bmc-backup"\n' "$chip" > "$work/procmtd"
+    out=$(FLAX_BMC_REMOTE_EXEC="$work/wstub" FLAX_BMC_SCP_EXEC="$work/scpstub" FIX_SCP_LOG="$work/scplog" \
+          FIX_PROCMTD="$work/procmtd" FIX_FLASH_OUT="$fout" FIX_FLASH_RC="$frc" BMC_BACKUP_CACHE="$work/cache" \
+          "$work/bin" write 10.0.0.1 http://bang/x/img.tar 2>&1)
+    local scpd=no; [ -s "$work/scplog" ] && scpd=yes
+    if printf '%s' "$out" | grep -qF "$want" && [ "$scpd" = "$scp" ]; then
+        printf '  PASS  %s\n' "$name"; pass=$((pass+1))
+    else
+        printf '  FAIL  %s\n        want substring: %s (scp %s)\n        got: %s (scp %s)\n' "$name" "$want" "$scp" "$out" "$scpd"; fail=$((fail+1))
+    fi
+}
+# 0x1000 = 4096-byte chip.
+write_case "an image larger than the chip is refused before the scp" \
+    00001000 8192 "" 0 '{"error":"chip_too_small","chip_bytes":4096,"image_bytes":8192}' no
+write_case "an image that fits is written" \
+    00001000 4096 "backup-bmc-flash: done" 0 '{"ok":true}' yes
+write_case "an unreadable chip size does not refuse (the BMC script decides)" \
+    zz 8192 "backup-bmc-flash: done" 0 '{"ok":true}' yes
+write_case "the BMC script's own size refusal maps to chip_too_small" \
+    zz 8192 "backup-bmc-flash: error: image (8192 B) is larger than chip (4096 B)" 1 '{"error":"chip_too_small"}' yes
+write_case "a chip that takes nothing is write_rejected, not flash_failed" \
+    00001000 4096 "File does not seem to match flash data. First mismatch at 0x00000000-0x00010000" 1 '{"error":"write_rejected"}' yes
+write_case "any other flash failure is still flash_failed" \
+    00001000 4096 "flashcp: something else" 1 '{"error":"flash_failed"}' yes
+
 # ── netreset (Part 3 Task 2) ─────────────────────────────────────────────────
 # FactoryReset of the BMC network file + a verified reboot. The stub models a
 # BMC across a reboot: state files in $NR_DIR, and the bin's REAL state-read

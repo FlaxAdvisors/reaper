@@ -38,7 +38,7 @@
 # Error codes emitted as {"error":"<code>"} (or inline as an "error" field on
 # a version record): chip_absent, read_failed, reader_canary_failed,
 # ssh_unreachable, fetch_failed, extract_failed, cache_unwritable, scp_failed,
-# flash_failed.
+# flash_failed, chip_too_small (with chip_bytes / image_bytes), write_rejected.
 set -u
 
 # I7: NO surrounding quotes -- ansible's `quote` filter emits its own, correctly,
@@ -61,7 +61,14 @@ CACHE_DIR="${BMC_BACKUP_CACHE:-/run/flax/bmc-backup}"
 # from target and the chip is rewritten. UNDER-matching is the dangerous case:
 # a populated chip that matches nothing reads as blank, and bmcfw.is_chip_blank
 # would authorise writing it. Never narrow this to a specific version scheme.
-READ_FMT='dd if=/dev/mtd%s bs=64k count=64 2>/dev/null | strings -n 8 | grep -oE "flax-onetree-[A-Za-z0-9._-]+" | head -n 1'
+#
+# A chip holding SOMEBODY ELSE'S firmware is not blank and not unreadable: it
+# is a version that differs from target. Facebook OpenBMC names itself in its
+# U-Boot banner ("U-Boot 2016.07 fbtp-v2019.43.0"), so that string is reported
+# as the backup version and the agent judges it stale like any other mismatch
+# (et8b3 / et24b1 2026-10-02: both latched "backup chip unreadable" over a
+# perfectly readable Facebook image).
+READ_FMT='dd if=/dev/mtd%s bs=64k count=64 2>/dev/null | strings -n 8 | grep -oE "(flax-onetree|fbtp)-[A-Za-z0-9._-]+" | head -n 1'
 
 # Network file (spec 2026-09-27 §6.1): through it the first MAC a BMC ever saw
 # becomes persistent ("FW locked" blades). Read in the SAME ssh as
@@ -89,6 +96,16 @@ bmc() {
         return $?
     fi
     sshpass -e ssh -n -T $SSH_OPTS "root@$1" "$2"
+}
+
+# scp of the image to the BMC's /tmp. FLAX_BMC_SCP_EXEC is the test seam, as
+# FLAX_BMC_REMOTE_EXEC is for bmc().
+bmc_scp() {   # bmc_scp <ip> <local image>
+    if [ -n "${FLAX_BMC_SCP_EXEC:-}" ]; then
+        "$FLAX_BMC_SCP_EXEC" "$1" "$2"
+        return $?
+    fi
+    sshpass -e scp $SSH_OPTS "$2" "root@$1:/tmp/image-bmc" >/dev/null 2>&1
 }
 
 json_err() { printf '{"error":"%s"}\n' "$1"; exit 1; }
@@ -421,8 +438,24 @@ cmd_write() {
         rm -rf "$tmpd" "$tmptar"
     fi
 
+    # The chip must be able to hold the image, and that is a HARDWARE FACT worth
+    # its own code: a 32 MiB part in the backup socket (et24b1 2026-10-02) can
+    # never take a ~35 MiB image, and retrying only delays saying so. Checked
+    # before the 35 MB scp. An unreadable size is not a refusal -- the BMC-side
+    # script makes the same comparison and its message is mapped below.
+    img_bytes=$(wc -c < "$img" 2>/dev/null | tr -d ' ')
+    chip_hex=$(bmc "$ip" 'sed -n "s/^mtd[0-9]*: \([0-9a-fA-F]*\) .*\"bmc-backup\"\$/\1/p" /proc/mtd' 2>/dev/null | head -n 1)
+    case "$chip_hex" in
+        ''|*[!0-9a-fA-F]*) ;;
+        *)  chip_bytes=$(( 16#$chip_hex ))
+            if [ -n "$img_bytes" ] && [ "$chip_bytes" -gt 0 ] && [ "$img_bytes" -gt "$chip_bytes" ]; then
+                printf '{"error":"chip_too_small","chip_bytes":%s,"image_bytes":%s}\n' "$chip_bytes" "$img_bytes"
+                exit 1
+            fi ;;
+    esac
+
     printf '{"phase":"backup_writing","percent":5}\n'
-    if ! sshpass -e scp $SSH_OPTS "$img" "root@$ip:/tmp/image-bmc" >/dev/null 2>&1; then
+    if ! bmc_scp "$ip" "$img"; then
         bmc "$ip" 'rm -f /tmp/image-bmc' >/dev/null 2>&1
         json_err scp_failed
     fi
@@ -435,6 +468,11 @@ cmd_write() {
 
     case "$out" in
         *"MTD partition not found"*) json_err chip_absent ;;
+        *"is larger than chip"*) json_err chip_too_small ;;
+        # flashcp wrote, read back, and found the OLD contents: the chip took
+        # nothing. Seen on a backup chip a Facebook OpenBMC had block-protected
+        # (status register bc, et8b3 2026-10-02). Not a transient.
+        *"does not seem to match flash data"*) json_err write_rejected ;;
         *RC=0*) printf '{"phase":"backup_writing","percent":100}\n{"ok":true}\n' ;;
         *) json_err flash_failed ;;
     esac
