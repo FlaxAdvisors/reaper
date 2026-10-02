@@ -67,6 +67,9 @@ case "$2" in
       if [ "$n" -le "${FIX_BOOT_SAME_FOR:-999}" ]; then echo "${FIX_BOOT0:-aaaa}"
       elif [ "${FIX_BOOT_AFTER:-}" = "DOWN" ]; then exit 255
       else echo "${FIX_BOOT_AFTER:-bbbb}"; fi ;;
+  *VERSION_ID*)
+      [ -n "${FIX_VER_DOWN:-}" ] && exit 255
+      echo "${FIX_BMC_VER-flax-onetree-1.1.0}" ;;
   *bios-update.new*)
       printf '%s\n' "$2" >> "$FIX_CMDLOG.ssh"
       echo "${FIX_INJ_MD5:-}  /usr/sbin/bios-update" ;;
@@ -631,6 +634,24 @@ BIOS_FW_UPDATE_INJECT="" FIX_INJ_MD5="$injmd5" run inject_off
 
 BIOS_FW_UPDATE_INJECT="$work/no-such-file" run inject_missing
 [ $rc -eq 0 ] && posted && ! grep -q '^PUT' "$FIX_CMDLOG" && ok "inject: file missing -> stock script, still pushes" || bad "inject missing file"
+
+# which BMC builds get the injected script: 1.1.0-1.1.3 (any suffix) and
+# datestamped 1.1.4-<digits>; plain 1.1.4 and later keep their own.
+for v in flax-onetree-1.1.0 flax-onetree-1.1.1 flax-onetree-1.1.2-202609091341 flax-onetree-1.1.3 flax-onetree-1.1.4-202609290832; do
+    BIOS_FW_UPDATE_INJECT="$work/inj" FIX_INJ_MD5="$injmd5" FIX_BMC_VER="$v" run "ver_$v"
+    [ $rc -eq 0 ] && posted && grep -q '^PUT' "$FIX_CMDLOG" && ok "inject: $v gets the injected script" || bad "inject version $v"
+done
+for v in flax-onetree-1.1.4 flax-onetree-1.1.5 flax-onetree-1.2.0 flax-onetree-1.1.40-20270101 flax-onetree-1.0.5-202606041223; do
+    BIOS_FW_UPDATE_INJECT="$work/inj" FIX_INJ_MD5="$injmd5" FIX_BMC_VER="$v" run "ver_$v"
+    [ $rc -eq 0 ] && posted && ! grep -q '^PUT' "$FIX_CMDLOG" && echo "$out" | grep -q '"state":"InjectSkipped"' \
+        && ok "inject: $v keeps its own bios-update, still pushes" || bad "inject skip version $v"
+done
+BIOS_FW_UPDATE_INJECT="$work/inj" FIX_INJ_MD5="$injmd5" FIX_BMC_VER="" run ver_empty
+[ $rc -eq 1 ] && ! posted && echo "$out" | grep -q bmc_version_unreadable && ok "inject: BMC version unreadable -> no push" || bad "inject version unreadable"
+BIOS_FW_UPDATE_INJECT="$work/inj" FIX_INJ_MD5="$injmd5" FIX_VER_DOWN=1 run ver_sshdown
+[ $rc -eq 1 ] && ! posted && ok "inject: ssh for the version fails -> no push" || bad "inject version ssh down"
+BIOS_FW_UPDATE_INJECT="$work/inj" BIOS_FW_UPDATE_INJECT_VERSIONS='^flax-onetree-9' FIX_INJ_MD5="$injmd5" FIX_BMC_VER="flax-onetree-1.1.0" run ver_override
+[ $rc -eq 0 ] && posted && ! grep -q '^PUT' "$FIX_CMDLOG" && ok "inject: BIOS_FW_UPDATE_INJECT_VERSIONS overrides the default range" || bad "inject version override"
 
 # the injected script's journal lines classify like the stock script's
 cat > "$work/j.fb_booted" <<'J'
