@@ -26,11 +26,15 @@
 # No set -e/-u, like post.sh. ps_note/ps_set come from post_status.sh when the
 # caller sourced it; without it the progress still lands in the journal.
 
-BMC_WAIT_MAX=${BMC_WAIT_MAX:-420}
-BMC_PROBE_EVERY=${BMC_PROBE_EVERY:-5}
+# 900 s: et6b4, 2026-10-02 -- after the cold reset the BMC's own IPMI daemon
+# (phosphor-ipmi-host) hit its start timeout and was restarted; in-band IPMI
+# answered 398 s after the reset. 420 s left no margin. Probing every 10 s
+# and reloading the driver every 120 s keeps the host quiet while it boots.
+BMC_WAIT_MAX=${BMC_WAIT_MAX:-900}
+BMC_PROBE_EVERY=${BMC_PROBE_EVERY:-10}
 BMC_PROBE_TIMEOUT=${BMC_PROBE_TIMEOUT:-15}
 BMC_DOWN_GRACE=${BMC_DOWN_GRACE:-90}
-BMC_DRIVER_RESTART_AFTER=${BMC_DRIVER_RESTART_AFTER:-60}
+BMC_DRIVER_RESTART_AFTER=${BMC_DRIVER_RESTART_AFTER:-120}
 BMC_RESET_MARK=${BMC_RESET_MARK:-/run/flax/bmc-reset-requested}
 # Boot clock, not wall time: chronyd steps the wall clock early in post.sh.
 BMC_NOW_CMD=${BMC_NOW_CMD:-cut -d. -f1 /proc/uptime}
