@@ -110,14 +110,15 @@ function App() {
                alert: n('alert') };
     },
     // The ONE predicate behind a summary button: what it counts is exactly what
-    // it highlights. A blade belongs to its ladder phase whether or not a step
-    // in it faulted -- the fault is shown by the tile's red dot (phaseKey), not
-    // by moving the blade out of every button (2026-10-03: DISCOVER counted 2
-    // and lit none, QUALIFY 5 and none, DONE 11 and 5).
+    // it highlights. A blade belongs to the server's chip_phase: the earliest
+    // phase with a fault (a not-clean pass goes to its first hole), else the
+    // phase the ladder reached. Not b.phase -- the ladder runs on past a
+    // problem, so DONE counted 11 with 5 clean (2026-10-03). The fault itself
+    // is the tile's red dot (phaseKey), never a reason to leave every button.
     inFilter(b, f) {
       if (!b || b.empty) return false;
       if (f === 'alert') return !!(this.hasSel(b) || (b.alerts && b.alerts.length));
-      return (b.phase || '').toLowerCase() === f;
+      return (b.chip_phase || b.phase || '').toLowerCase() === f;
     },
     get matchCount() { return real(this.visible).filter((b) => this.matches(b)).length; },
 

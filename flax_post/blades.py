@@ -466,6 +466,22 @@ def holes_text(holes: dict) -> str:
     return "; ".join("%s: %s" % (p, ", ".join(v)) for p, v in holes.items())
 
 
+def chip_phase(phase: str, steps: dict, holes: dict) -> str:
+    """The phase a blade is COUNTED under by the UI's summary buttons.
+
+    `phase` is how far the run got, and nothing stops the ladder completing as
+    far as it can past a problem, so it is not where the blade went wrong. This
+    is: the earliest phase with a faulted step, else the phase reached. Done's
+    own `done` fault on a not-clean pass is only the echo of a hole, so that
+    blade is charged to the phase of its first hole (2026-10-03: DONE counted
+    11 with 5 clean; the other 6 were Firmware bmc-updated holes). A hole that
+    never faulted does not outrank a real fault in a later phase."""
+    for p in PHASES:
+        if "fault" in (steps.get(p) or {}).values():
+            return next(iter(holes)) if p == "Done" and holes else p
+    return phase
+
+
 def _done_steps(st, holes=None):
     """identify -> power-off -> done, from post_state.vars.done. No verdict -> all
     pending; a fail verdict leaves them pending (node stays powered). A tail step
@@ -541,6 +557,7 @@ def _record(slot, c, st, settings, live_link, macs):
         "power_on": st.get("power_on"), "watts": st.get("watts"),
         "bmc_pinged": bool(st.get("bmc_pinged")),
         "phase": phase,
+        "chip_phase": chip_phase(phase, steps, holes),
         "step": ("not clean" if holes else None) if verdict == "pass" else next(
             (n for n, s in discover_steps.items() if s not in _ADVANCES), None),
         "steps": steps,
