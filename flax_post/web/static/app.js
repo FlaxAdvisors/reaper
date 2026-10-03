@@ -58,9 +58,9 @@ function App() {
     customer: boot.customer || '',
     settingsAt: boot.settings_at || null,
     // header connection dot: did the LAST poll of the server answer (null =
-    // none has finished yet: grey, never a red flash on page load); its click
-    // shows the build this page was rendered by
-    live: null, showVer: false,
+    // none has finished yet: grey, never a red flash on page load). The build
+    // this page was rendered by is always shown beside it.
+    live: null,
     activeSwitch: '', sel: null, modal: null, filter: null, q: '',
     pwrChoice: null, pwrConfirm: false, idntMode: 'on', popProfile: '', solHeld: false,
     solHolder: null, solClientId: null, solLog: [], solIdle: null,

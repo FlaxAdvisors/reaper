@@ -36,10 +36,9 @@
         </div>
       </div>
       <div class="tr">
-        <button class="live" :class="{off:live===false, wait:live===null}" @click="showVer=!showVer"
-                :title="(live ? 'connected: the last poll of the server answered' : live===false ? 'not connected: the last poll of the server failed' : 'connecting: no poll has answered yet') + ' · click for the version'">
-          <i class="live-dot"></i><span>{{live ? 'live' : live===false ? 'offline' : 'connecting'}}</span><span class="live-ver mono" v-if="showVer">{{boot.version || '?'}}</span>
-        </button>
+        <span class="live" :class="{off:live===false, wait:live===null}">
+          <i class="live-dot"></i><span>{{live ? 'live' : live===false ? 'offline' : 'connecting'}}</span><span class="live-ver mono">{{boot.version || '?'}}</span>
+        </span>
         <span class="title">{{site}} Post Servers</span>
       </div>
     </div>

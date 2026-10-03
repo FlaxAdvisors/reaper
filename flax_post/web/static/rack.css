@@ -22,11 +22,11 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .toprow .tr{display:flex;align-items:center;gap:.6rem;margin-left:auto;min-width:0}
 .flogo{height:30px;width:auto;opacity:.95}
 .title{font-size:1rem;font-weight:700;letter-spacing:.5px;white-space:nowrap}
-/* connection indicator: green while the last poll answered, red when it failed */
+/* connection indicator: green while the last poll answered, red when it failed;
+   the page build always beside it. Not a control. */
 .live{display:inline-flex;align-items:center;gap:.35rem;padding:.15rem .5rem;border:1px solid var(--border);
   border-radius:999px;background:transparent;color:var(--muted);font:inherit;font-size:.68rem;
-  text-transform:uppercase;letter-spacing:.4px;cursor:pointer;white-space:nowrap}
-.live:hover{border-color:var(--line)}
+  text-transform:uppercase;letter-spacing:.4px;white-space:nowrap}
 .live-dot{width:8px;height:8px;border-radius:50%;background:var(--green)}
 .live.off{color:var(--red)} .live.off .live-dot{background:var(--red)}
 .live.wait .live-dot{background:var(--grey)}
