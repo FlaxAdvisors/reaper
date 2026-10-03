@@ -35,7 +35,13 @@
           <div class="metric alert" :class="{on:filter==='alert'}" @click="toggle('alert')"><b>{{counts.alert}}</b><span>alerts</span></div>
         </div>
       </div>
-      <div class="tr"><span class="title">{{site}} Post Servers</span></div>
+      <div class="tr">
+        <button class="live" :class="{off:!live}" @click="showVer=!showVer"
+                :title="(live ? 'connected: the last poll of the server answered' : 'not connected: the last poll of the server failed') + ' · click for the version'">
+          <i class="live-dot"></i><span>{{live ? 'live' : 'offline'}}</span><span class="live-ver mono" v-if="showVer">{{boot.version || '?'}}</span>
+        </button>
+        <span class="title">{{site}} Post Servers</span>
+      </div>
     </div>
     <!-- row 2: search (left) · customer, order, population, set stamp (right) -->
     <div class="toprow sub">

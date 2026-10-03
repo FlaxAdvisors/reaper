@@ -57,6 +57,9 @@ function App() {
     population: boot.population || '',
     customer: boot.customer || '',
     settingsAt: boot.settings_at || null,
+    // header connection dot: did the LAST poll of the server answer; its
+    // click shows the build this page was rendered by
+    live: false, showVer: false,
     activeSwitch: '', sel: null, modal: null, filter: null, q: '',
     pwrChoice: null, pwrConfirm: false, idntMode: 'on', popProfile: '', solHeld: false,
     solHolder: null, solClientId: null, solLog: [], solIdle: null,
@@ -83,8 +86,9 @@ function App() {
         this.slots = d.slots || []; this.racks = d.racks || {};
         if (this.sel) this.sel = this.slots.find((s) => s.port === this.sel.port) || null;
         if (d.settings) this.applySettings(d.settings);
+        this.live = true;
         this.checkVersion(d.version);
-      } catch (e) { console.error(e); }
+      } catch (e) { this.live = false; console.error(e); }
     },
     // A deploy must reach every open browser, not only the next page load: the
     // poll carries the server's build and a page rendered by another one
