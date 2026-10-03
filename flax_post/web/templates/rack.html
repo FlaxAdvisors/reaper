@@ -7,7 +7,7 @@
   <link rel="icon" href="/web-static/flax-logo.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/web-static/rack.css?v={{ version }}">
   <link rel="stylesheet" href="/web-static/vendor/xterm.css">
-  <script>window.BOOT = { site: {{ site|tojson }}, rackname: {{ rackname|tojson }},
+  <script>window.BOOT = { version: {{ version|tojson }}, site: {{ site|tojson }}, rackname: {{ rackname|tojson }},
     phases: {{ phases|tojson }}, order_no: {{ (settings.order_no or '')|tojson }},
     population: {{ (settings.population or '')|tojson }},
     customer: {{ (settings.customer or '')|tojson }}, settings_at: {{ (settings.updated_at or '')|tojson }} };</script>

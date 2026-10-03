@@ -83,7 +83,23 @@ function App() {
         this.slots = d.slots || []; this.racks = d.racks || {};
         if (this.sel) this.sel = this.slots.find((s) => s.port === this.sel.port) || null;
         if (d.settings) this.applySettings(d.settings);
+        this.checkVersion(d.version);
       } catch (e) { console.error(e); }
+    },
+    // A deploy must reach every open browser, not only the next page load: the
+    // poll carries the server's build and a page rendered by another one
+    // reloads itself. Held while a modal is open (a SOL console must not be
+    // dropped) or a field has focus; the next poll retries. One reload per
+    // server build per tab, so a page that still disagrees cannot loop.
+    checkVersion(v) {
+      if (!v || !this.boot.version || v === this.boot.version) return;
+      const a = document.activeElement;
+      if (this.modal || (a && ['INPUT', 'TEXTAREA', 'SELECT'].includes(a.tagName))) return;
+      try {
+        if (sessionStorage.getItem('post-reloaded-for') === v) return;
+        sessionStorage.setItem('post-reloaded-for', v);
+      } catch (e) { /* no storage: reload anyway */ }
+      location.reload();
     },
     // The server's operator context wins over this browser's copy, except for
     // the one field the operator is typing in right now (a poll must not eat

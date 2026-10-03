@@ -92,9 +92,11 @@ def api_blades() -> JSONResponse:
     geo = geometry.load_geometry()
     # The operator context rides on every poll: order, population and customer
     # are set in ONE browser and must show in EVERY open browser within a poll
-    # (ruling 2026-09-12), not only on the next page load.
+    # (ruling 2026-09-12), not only on the next page load. So does the build:
+    # a page rendered by an older one reloads itself (app.js checkVersion).
     return JSONResponse({"switch": blades.post_switch(geo), "racks": geo["racks"],
-                         "slots": _blade_slots(), "settings": state.read_settings()})
+                         "slots": _blade_slots(), "settings": state.read_settings(),
+                         "version": __version__})
 
 
 @app.get("/api/v1/profiles")
