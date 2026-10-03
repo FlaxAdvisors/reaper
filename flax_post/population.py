@@ -23,13 +23,16 @@ PROFILE_DIR = os.environ.get("FLAX_POST_PROFILE_DIR", "/opt/flax/node_config")
 
 
 def list_profiles() -> list:
-    """Profile filenames (sorted); skip hidden + editor-backup (~) files."""
+    """Profile filenames (sorted); skip hidden + editor-backup (~) files, and
+    *.json -- the dir also holds blocklist-parts.json (flax_post.blocklist),
+    which is not a profile."""
     try:
         names = os.listdir(PROFILE_DIR)
     except OSError:
         return []
     return sorted(n for n in names
                   if not n.startswith(".") and not n.endswith("~")
+                  and not n.endswith(".json")
                   and os.path.isfile(os.path.join(PROFILE_DIR, n)))
 
 
