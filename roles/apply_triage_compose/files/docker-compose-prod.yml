@@ -45,6 +45,9 @@ services:
       - /export/nodes:/export/nodes:ro
       - /etc/flax/:/etc/flax/
       - /opt/flax/bin:/usr/local/sbin:ro
+      # node_config population profiles, read by the tile POP verdict
+      # (api population.py). The same catalog post reads; never written here.
+      - /opt/flax/node_config:/opt/flax/node_config:ro
       # Backup EEPROM refresh marker channel, shared with bmc_fw.
       - /run/flax/:/run/flax/
     environment:
