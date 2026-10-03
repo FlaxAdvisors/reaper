@@ -105,9 +105,19 @@ function App() {
     get visible() { return this.activeSwitch ? this.slots.filter((s) => s.switch === this.activeSwitch) : this.slots; },
     get groups() { return buildGroups(this.visible); },
     get counts() {
-      const b = real(this.visible), n = (ph) => b.filter((x) => x.phase === ph).length;
-      return { discover: n('Discover'), firmware: n('Firmware'), qualify: n('Qualify'), done: n('Done'),
-               alert: b.filter((x) => this.hasSel(x) || (x.alerts && x.alerts.length)).length };
+      const b = real(this.visible), n = (f) => b.filter((x) => this.inFilter(x, f)).length;
+      return { discover: n('discover'), firmware: n('firmware'), qualify: n('qualify'), done: n('done'),
+               alert: n('alert') };
+    },
+    // The ONE predicate behind a summary button: what it counts is exactly what
+    // it highlights. A blade belongs to its ladder phase whether or not a step
+    // in it faulted -- the fault is shown by the tile's red dot (phaseKey), not
+    // by moving the blade out of every button (2026-10-03: DISCOVER counted 2
+    // and lit none, QUALIFY 5 and none, DONE 11 and 5).
+    inFilter(b, f) {
+      if (!b || b.empty) return false;
+      if (f === 'alert') return !!(this.hasSel(b) || (b.alerts && b.alerts.length));
+      return (b.phase || '').toLowerCase() === f;
     },
     get matchCount() { return real(this.visible).filter((b) => this.matches(b)).length; },
 
@@ -193,8 +203,7 @@ function App() {
       if (this.sel && this.sel.port === b.port) cl.push('active');
       if (this.q) { this.matches(b) ? cl.push('match') : cl.push('faded'); }
       else if (this.filter) {
-        const inF = this.filter === 'alert' ? (this.hasSel(b) || (b.alerts && b.alerts.length)) : this.phaseKey(b) === this.filter;
-        if (!inF) cl.push('faded');
+        if (!this.inFilter(b, this.filter)) cl.push('faded');
       }
       return cl.join(' ');
     },
