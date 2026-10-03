@@ -23,19 +23,21 @@
 
   <!-- ================= header ================= -->
   <div class="top">
-    <!-- row 1: logo (left) · summary counts (centre) · site (right) -->
+    <!-- row 1: logo + summary counts (left) · site (right) -->
     <div class="toprow">
-      <div class="tl"><img class="flogo" src="/web-static/flax-logo.svg" alt="flax" onerror="this.style.display='none'"></div>
-      <div class="metrics">
-        <div class="metric discover" :class="{on:filter==='discover'}" @click="toggle('discover')"><b>{{counts.discover}}</b><span>discover</span></div>
-        <div class="metric firmware" :class="{on:filter==='firmware'}" @click="toggle('firmware')"><b>{{counts.firmware}}</b><span>firmware</span></div>
-        <div class="metric qualify" :class="{on:filter==='qualify'}" @click="toggle('qualify')"><b>{{counts.qualify}}</b><span>qualify</span></div>
-        <div class="metric done" :class="{on:filter==='done'}" @click="toggle('done')"><b>{{counts.done}}</b><span>done</span></div>
-        <div class="metric alert" :class="{on:filter==='alert'}" @click="toggle('alert')"><b>{{counts.alert}}</b><span>alerts</span></div>
+      <div class="tl">
+        <img class="flogo" src="/web-static/flax-logo.svg" alt="flax" onerror="this.style.display='none'">
+        <div class="metrics">
+          <div class="metric discover" :class="{on:filter==='discover'}" @click="toggle('discover')"><b>{{counts.discover}}</b><span>discover</span></div>
+          <div class="metric firmware" :class="{on:filter==='firmware'}" @click="toggle('firmware')"><b>{{counts.firmware}}</b><span>firmware</span></div>
+          <div class="metric qualify" :class="{on:filter==='qualify'}" @click="toggle('qualify')"><b>{{counts.qualify}}</b><span>qualify</span></div>
+          <div class="metric done" :class="{on:filter==='done'}" @click="toggle('done')"><b>{{counts.done}}</b><span>done</span></div>
+          <div class="metric alert" :class="{on:filter==='alert'}" @click="toggle('alert')"><b>{{counts.alert}}</b><span>alerts</span></div>
+        </div>
       </div>
       <div class="tr"><span class="title">{{site}} Post Servers</span></div>
     </div>
-    <!-- row 2: search (left) · population (centre) · order / customer / set (right) -->
+    <!-- row 2: search (left) · customer, order, population, set stamp (right) -->
     <div class="toprow sub">
       <div class="tl">
         <div class="search">
@@ -47,22 +49,20 @@
           <option v-for="r in rackList" :value="r.switch">{{r.label}}</option>
         </select>
       </div>
-      <div class="ctx">
+      <div class="tr"><div class="ctx">
+        <label>Customer
+          <input name="post-customer" autocomplete="off" v-model="customer" @change="saveCustomer"
+                 placeholder="customer">
+          <span class="clr" title="clear" @click="clearCustomer">✕</span></label>
+        <label>Order <input name="post-order" autocomplete="off" v-model="order_no" @change="saveOrder" placeholder="RRORD-003">
+          <span class="clr" title="clear" @click="clearOrder">✕</span></label>
         <label>Population
           <select name="post-population" v-model="population" @change="savePopulation">
             <option value="">—</option>
             <option v-for="p in profiles" :value="p">{{p}}</option>
           </select></label>
-      </div>
-      <div class="tr ctx">
-        <label>Order <input name="post-order" autocomplete="off" v-model="order_no" @change="saveOrder" placeholder="RRORD-003">
-          <span class="clr" title="clear" @click="clearOrder">✕</span></label>
-        <label>Customer
-          <input name="post-customer" autocomplete="off" v-model="customer" @change="saveCustomer"
-                 placeholder="customer">
-          <span class="clr" title="clear" @click="clearCustomer">✕</span></label>
         <span class="ctx-at" :title="'order / population / customer are shared: set in any browser, every open post UI shows them within 15 s'">{{settingsAtText()}}</span>
-      </div>
+      </div></div>
     </div>
   </div>
 
