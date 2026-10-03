@@ -29,6 +29,7 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .live:hover{border-color:var(--line)}
 .live-dot{width:8px;height:8px;border-radius:50%;background:var(--green)}
 .live.off{color:var(--red)} .live.off .live-dot{background:var(--red)}
+.live.wait .live-dot{background:var(--grey)}
 .live-ver{text-transform:none;letter-spacing:0;color:var(--text)}
 .metrics{display:flex;gap:.4rem}
 .metric{display:flex;flex-direction:column;align-items:center;min-width:62px;padding:.2rem .5rem;
