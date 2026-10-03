@@ -13,8 +13,15 @@ body{margin:0;background:var(--bg);color:var(--text);font:13px/1.4 system-ui,-ap
 code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 
 /* ---- fixed header ---- */
-.top{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:18px;
-  padding:.55rem 1rem;background:var(--panel);border-bottom:1px solid var(--border)}
+.top{position:sticky;top:0;z-index:20;display:flex;flex-direction:column;gap:.4rem;
+  padding:.5rem 1rem;background:var(--panel);border-bottom:1px solid var(--border)}
+/* Two rows, each left | centre | right. Equal side columns keep the centre
+   cell truly centred while there is room; their max-content floor lets the
+   centre slide instead of overlapping when the window is narrow. */
+.toprow{display:grid;grid-template-columns:minmax(max-content,1fr) auto minmax(max-content,1fr);
+  align-items:center;gap:14px}
+.toprow .tl{display:flex;align-items:center;gap:.6rem;justify-self:start;min-width:0}
+.toprow .tr{display:flex;align-items:center;gap:.6rem;justify-self:end;min-width:0}
 .flogo{height:30px;width:auto;opacity:.95}
 .title{font-size:1rem;font-weight:700;letter-spacing:.5px;white-space:nowrap}
 .metrics{display:flex;gap:.4rem}
@@ -26,7 +33,7 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .metric span{font-size:.62rem;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);margin-top:2px}
 .metric.discover b{color:var(--violet)} .metric.firmware b{color:var(--accent)}
 .metric.qualify b{color:var(--amber)} .metric.done b{color:var(--green)} .metric.alert b{color:var(--red)}
-.search{margin-left:auto;display:flex;align-items:center;gap:.4rem}
+.search{display:flex;align-items:center;gap:.4rem}
 .search input{background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--text);
   padding:.32rem .6rem;width:210px;font-family:ui-monospace,monospace;font-size:.8rem}
 .search .hint{color:var(--dim);font-size:.7rem;white-space:nowrap}
@@ -36,7 +43,8 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
   letter-spacing:.4px;color:var(--muted);font-weight:600}
 .ctx input,.ctx select{background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--text);
   padding:.3rem .45rem;font-family:ui-monospace,monospace;font-size:.78rem}
-.ctx input{width:110px;text-transform:none}
+.ctx input{width:96px;text-transform:none}
+.ctx select{max-width:170px}
 .ctx .clr{cursor:pointer;color:var(--dim);font-size:.95rem;padding:0 .15rem}
 .ctx .clr:hover{color:var(--text)}
 .rackpick{background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--text);padding:.3rem .45rem;font-size:.78rem}

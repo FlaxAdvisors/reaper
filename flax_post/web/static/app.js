@@ -441,6 +441,7 @@ function App() {
     async clearOrder() { this.order_no = ''; await saveSettings({ order_no: null }); this.refresh(); },
     async savePopulation() { await saveSettings({ population: this.population || null }); this.refresh(); },
     async saveCustomer() { await saveSettings({ customer: this.customer || null }); this.refresh(); },
+    async clearCustomer() { this.customer = ''; await saveSettings({ customer: null }); this.refresh(); },
   };
 }
 
