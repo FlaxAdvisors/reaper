@@ -20,6 +20,11 @@
 #       -> {"phase":"journal","bios_update":[...],"power_control":[...],
 #           "entity_manager":[...]}; exit 0, or {"error":"ssh_unreachable"} exit 1
 #       R4 (09-23 spec §11): the diagnosis reads these BEFORE any recovery action.
+#   bios-fw-update inspect <bmc-ip> [--port <et25b1>]
+#       READ-ONLY. Runs `bios-update --inspect` on the BMC: is the ME answering,
+#       and if not, the chip part (SFDP), blank or not, structure, mux readback.
+#       -> one {"phase":"inspect",...} line. Exit 0 facts, 1 error, 3 INTERLOCK
+#       (live job / quiet window / local lock: nothing copied, nothing run).
 #
 # Exit codes: 0 the BMC job completed (read the verdict for what that means);
 #             1 failure; 2 usage; 3 INTERLOCK -- nothing was pushed.
@@ -472,6 +477,63 @@ except Exception: print("")'
 
 cmd_busy() { busy_check "$1"; }
 
+INSPECT_S="${BIOS_FW_UPDATE_INSPECT_S:-150}"   # bound on the BMC-side run (30 s ME window + reads)
+
+# inspect: the facts bios_fw needs after a power-good failure (2026-10-05).
+# The BMC's bios-update does the reading; triage (biosfw/chip_read.py) decides.
+# The same version gate as a flash puts reaper's bios-update on the builds that
+# need it; a build that ships its own is used as it is. A bios-update that has
+# no --inspect is NEVER invoked with it: an older script would take the flag
+# for an image path and power the host off.
+cmd_inspect() {
+    local ip="${1:?bmc ip required}"
+    local b brc bver raw rrc
+    b=$(busy_check "$ip"); brc=$?
+    if [ $brc -ne 0 ]; then
+        printf '%s\n' "$b" | sed 's/^{/{"phase":"interlock",/'
+        return 3
+    fi
+    if [ -n "$INJECT" ] && [ -s "$INJECT" ]; then
+        bver="$(bmc_version "$ip")"
+        if [ -z "$bver" ]; then
+            printf '{"phase":"inspect","error":"version_unreadable"}\n'; return 1
+        elif [[ "$bver" =~ $INJECT_VERSIONS ]]; then
+            if ! inject_update "$ip"; then
+                printf '{"phase":"inspect","error":"put_failed"}\n'; return 1
+            fi
+        fi
+    fi
+    bmc "$ip" 'grep -q -- --inspect /usr/sbin/bios-update' >/dev/null 2>&1; rrc=$?
+    if [ $rrc -eq 255 ]; then printf '{"phase":"inspect","error":"ssh_unreachable"}\n'; return 1; fi
+    if [ $rrc -ne 0 ];   then printf '{"phase":"inspect","error":"no_inspect"}\n'; return 1; fi
+    # Bounded on both ends (same shape as journal_fetch): the BMC's own timeout,
+    # and a local one in case the ssh never returns.
+    raw=$( { timeout --kill-after=5 $(( INSPECT_S + 30 )) bash -c 'bmc "$@"' _ "$ip" \
+             "timeout $INSPECT_S /usr/sbin/bios-update --inspect 2>&1"; } 9>&- 2>/dev/null )
+    rrc=$?
+    printf '%s\n' "$raw" | RRC="$rrc" python3 -c '
+import sys, json, os
+rrc = int(os.environ["RRC"])
+facts = {}
+for line in sys.stdin.read().replace("\r", "").splitlines():
+    if not line.startswith("inspect: ") or "=" not in line:
+        continue
+    k, v = line[len("inspect: "):].split("=", 1)
+    facts[k.strip()] = v.strip()
+out = {"phase": "inspect"}
+out.update(facts)
+err = facts.get("error")
+if not err:
+    if not facts:
+        err = "ssh_unreachable" if rrc == 255 else "no_facts"
+    elif rrc != 0 or facts.get("end") != "ok":
+        err = "cut_off"
+if err:
+    out["error"] = err
+print(json.dumps(out))
+sys.exit(1 if err else 0)'
+}
+
 boot_id() { bmc "$1" 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null | tr -d '\r\n '; }
 
 cmd_flash() {
@@ -648,7 +710,8 @@ main() {
         busy)    [ $# -eq 2 ] || { echo "usage: bios-fw-update busy <bmc-ip>" >&2; exit 2; }; cmd_busy "$2" ;;
         flash)   [ $# -ge 3 ] || { echo "usage: bios-fw-update flash <bmc-ip> <artifact-url> [--port P]" >&2; exit 2; }; shift; cmd_flash "$@" ;;
         journal) [ $# -eq 3 ] || { echo "usage: bios-fw-update journal <bmc-ip> <since-epoch>" >&2; exit 2; }; cmd_journal "$2" "$3" ;;
-        *) echo "usage: bios-fw-update {version|busy|flash|journal} ..." >&2; exit 2 ;;
+        inspect) [ $# -ge 2 ] || { echo "usage: bios-fw-update inspect <bmc-ip> [--port P]" >&2; exit 2; }; cmd_inspect "$2" ;;
+        *) echo "usage: bios-fw-update {version|busy|flash|inspect|journal} ..." >&2; exit 2 ;;
     esac
 }
 
@@ -683,8 +746,9 @@ if [ -n "${FLAX_BIN_CHILD:-}" ]; then
 fi
 
 # ── PARENT (the pid callers see) ────────────────────────────────────────
-[ "${1:-}" = flash ] && need_lock_dir "$@"
-if [ "${1:-}" = flash ]; then
+# inspect takes the same lock as flash: the SPI bus is never shared with one.
+case "${1:-}" in flash|inspect) need_lock_dir "$@" ;; esac
+if [ "${1:-}" = flash ] || [ "${1:-}" = inspect ]; then
     ip="${2:-}"
     if ! take_lock "$ip"; then
         emit interlock 0 "" Busy local_lock

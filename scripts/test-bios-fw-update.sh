@@ -62,6 +62,16 @@ STUB
 cat > "$work/ssh" <<'STUB'
 #!/bin/bash
 case "$2" in
+  *bios-update\ --inspect*)
+      printf 'RUN %s\n' "$2" >> "$FIX_CMDLOG.ssh"
+      [ -n "${FIX_INSPECT_DOWN:-}" ] && exit 255
+      cat "${FIX_INSPECT:-/dev/null}"
+      exit "${FIX_INSPECT_RC:-0}" ;;
+  *grep\ -q*--inspect*)
+      printf 'PROBE\n' >> "$FIX_CMDLOG.ssh"
+      [ -n "${FIX_PROBE_DOWN:-}" ] && exit 255
+      [ -n "${FIX_NO_INSPECT:-}" ] && exit 1
+      exit 0 ;;
   *boot_id*)
       n=$(cat "$FIX_BOOTN" 2>/dev/null || echo 0); n=$((n + 1)); echo $n > "$FIX_BOOTN"
       if [ "$n" -le "${FIX_BOOT_SAME_FOR:-999}" ]; then echo "${FIX_BOOT0:-aaaa}"
@@ -674,6 +684,109 @@ J
 BIOS_FW_UPDATE_INJECT="$work/inj" FIX_INJ_MD5="$injmd5" FIX_JOURNAL="$work/j.fb_err" run fb_err
 echo "$out" | grep -q '"ending": "failed"' && ok "injected script: error before flash complete -> failed" || bad "fb failed verdict"
 unset FLAX_BMC_PUT_EXEC
+
+# ── inspect: read-only chip facts ─────────────────────────────────────────────
+cat > "$work/iput" <<'STUB'
+#!/bin/bash
+printf 'PUT %s\n' "$3" >> "$FIX_CMDLOG.ssh"
+[ -n "${FIX_PUT_FAIL:-}" ] && exit 1
+exit 0
+STUB
+chmod +x "$work/iput"
+printf 'the-bios-update-script\n' > "$work/iinj"
+iinjmd5=$(md5sum < "$work/iinj" | cut -d' ' -f1)
+runi() {  # runi <name> -- like run, for `inspect`
+    export FIX_CMDLOG="$work/cmd.$1" FIX_SEQN="$work/seqn.$1" FIX_BOOTN="$work/bootn.$1"
+    : > "$FIX_CMDLOG"; : > "$FIX_CMDLOG.ssh"
+    out=$(FLAX_REDFISH_EXEC="$work/rf" FLAX_BMC_REMOTE_EXEC="$work/ssh" FLAX_BMC_PUT_EXEC="$work/iput" \
+          BIOS_FW_UPDATE_INJECT="${INJ-$work/iinj}" FIX_INJ_MD5="${FIX_INJ_MD5-$iinjmd5}" \
+          BIOS_FW_UPDATE_LOCK_DIR="$work" \
+          "$work/bin" inspect 10.0.0.1 --port et25b1 2>"$work/err.$1")
+    rc=$?
+}
+jget() { printf '%s' "$out" | python3 -c 'import sys,json; print(json.loads(sys.stdin.read().strip().splitlines()[-1]).get(sys.argv[1],"<absent>"))' "$1"; }
+ran()    { grep -q '^RUN ' "$FIX_CMDLOG.ssh"; }
+copied() { grep -q '^PUT ' "$FIX_CMDLOG.ssh"; }
+
+cat > "$work/i.read" <<'I'
+switch bios GPIO to bmc
+inspect: host=off
+inspect: me=silent
+inspect: bus=taken
+inspect: rdid=c2 20 19
+inspect: sfdp=e5 20 f3 ff
+inspect: size=33554432
+inspect: blank_ref=ecb99e6ffea7be1e5419350f725da86b
+inspect: blank=0
+inspect: sig=3f 00 c0 e3
+inspect: flreg1=
+inspect: flreg2=
+inspect: fpt=
+inspect: end=ok
+inspect: mux=0
+I
+FIX_INSPECT="$work/i.read" runi read
+[ $rc -eq 0 ] && [ "$(jget phase)" = inspect ] && [ "$(jget sfdp)" = "e5 20 f3 ff" ] && [ "$(jget me)" = silent ] \
+  && [ "$(jget mux)" = 0 ] && [ "$(jget end)" = ok ] && [ "$(jget error)" = "<absent>" ] \
+  && ok "inspect: facts relayed as JSON" || bad "inspect facts"
+[ "$(printf '%s\n' "$out" | grep -c .)" -eq 1 ] && ok "inspect: exactly one stdout line" || bad "inspect one line"
+copied && ran && grep -q '^RUN .*/usr/sbin/bios-update --inspect' "$FIX_CMDLOG.ssh" \
+  && ok "inspect: bios-update installed, then /usr/sbin/bios-update --inspect run" || bad "inspect install+run"
+grep -q '^GET ' "$FIX_CMDLOG" && ! grep -q '^POST\|^PATCH' "$FIX_CMDLOG" \
+  && ok "inspect: reads the job list, sends no Redfish write" || bad "inspect redfish"
+ran && ! grep -q 'fb-bios-update' "$FIX_CMDLOG.ssh" && ok "inspect: no remote command names the stop-gap" || bad "inspect names stop-gap"
+
+printf 'inspect: host=off\ninspect: me=normal\ninspect: end=ok\n' > "$work/i.me"
+FIX_INSPECT="$work/i.me" runi merun
+[ $rc -eq 0 ] && [ "$(jget me)" = normal ] && [ "$(jget bus)" = "<absent>" ] && [ "$(jget mux)" = "<absent>" ] \
+  && ok "inspect: answering ME -> facts without bus keys" || bad "inspect me answers"
+
+sed 's/^inspect: mux=0/inspect: mux=1/' "$work/i.read" > "$work/i.mux"
+FIX_INSPECT="$work/i.mux" runi muxrelay
+[ "$(jget mux)" = 1 ] && ok "inspect: mux readback relayed as read (triage judges it)" || bad "inspect mux relay"
+
+grep -v '^inspect: end=\|^inspect: mux=' "$work/i.read" > "$work/i.cut"
+FIX_INSPECT="$work/i.cut" FIX_INSPECT_RC=255 runi cut
+[ $rc -eq 1 ] && [ "$(jget error)" = cut_off ] && [ "$(jget bus)" = taken ] && ok "inspect: run cut off after the bus was taken -> cut_off, facts kept" || bad "inspect cut off"
+
+printf 'inspect: host=on\ninspect: error=host_not_off\n' > "$work/i.on"
+FIX_INSPECT="$work/i.on" FIX_INSPECT_RC=1 runi hoston
+[ $rc -eq 1 ] && [ "$(jget error)" = host_not_off ] && ok "inspect: host on -> host_not_off" || bad "inspect host on"
+
+FIX_INSPECT_DOWN=1 runi sshdown
+[ $rc -eq 1 ] && [ "$(jget error)" = ssh_unreachable ] && ok "inspect: ssh down at the run -> ssh_unreachable" || bad "inspect ssh down"
+
+FIX_NO_INSPECT=1 FIX_INSPECT="$work/i.read" runi noinspect
+[ $rc -eq 1 ] && [ "$(jget error)" = no_inspect ] && ! ran && ok "inspect: bios-update without --inspect -> never invoked" || bad "inspect no_inspect"
+
+FIX_PROBE_DOWN=1 FIX_INSPECT="$work/i.read" runi probedown
+[ $rc -eq 1 ] && [ "$(jget error)" = ssh_unreachable ] && ! ran && ok "inspect: ssh down at the probe -> nothing run" || bad "inspect probe down"
+
+FIX_PUT_FAIL=1 FIX_INSPECT="$work/i.read" runi putfail
+[ $rc -eq 1 ] && [ "$(jget error)" = put_failed ] && ! ran && ok "inspect: install failed -> nothing run" || bad "inspect put failed"
+
+FIX_VER_DOWN=1 FIX_INSPECT="$work/i.read" runi verdown
+[ $rc -eq 1 ] && [ "$(jget error)" = version_unreadable ] && ! copied && ! ran && ok "inspect: BMC version unreadable -> nothing copied or run" || bad "inspect version"
+
+FIX_BMC_VER=flax-onetree-1.1.4 FIX_INSPECT="$work/i.read" runi newbuild
+[ $rc -eq 0 ] && ! copied && ran && ok "inspect: plain 1.1.4 build -> its own bios-update, nothing copied" || bad "inspect new build"
+
+INJ="" FIX_INSPECT="$work/i.read" runi noinject
+[ $rc -eq 0 ] && ! copied && ran && ok "inspect: injection switched off -> still runs the BMC's bios-update" || bad "inspect no inject"
+
+FIX_TASKS_COLL='{"Members":[{"@odata.id":"/redfish/v1/TaskService/Tasks/1"}]}' \
+FIX_OLD_TASK='{"Id":"1","TaskState":"Running","PercentComplete":40}' FIX_INSPECT="$work/i.read" runi ibusy
+[ $rc -eq 3 ] && ! ran && ! copied && [ "$(jget phase)" = interlock ] && echo "$out" | grep -q job_running \
+  && ok "inspect: running BMC job -> busy, nothing copied or run" || bad "inspect busy"
+
+exec 8>"$work/fw-update-10.0.0.1.lock"; flock -n 8
+FIX_INSPECT="$work/i.read" runi ilocked
+[ $rc -eq 3 ] && ! ran && ! copied && [ "$(jget phase)" = interlock ] && echo "$out" | grep -q local_lock \
+  && ok "inspect: local lock held -> busy, nothing copied or run" || bad "inspect local lock"
+exec 8>&-
+
+FIX_INSPECT="$work/i.read" runi argv
+ran && ! grep -rq 'test-dummy' "$FIX_CMDLOG" "$FIX_CMDLOG.ssh" && ok "inspect: credential not in any command" || bad "inspect credential"
 
 echo "---"; echo "pass=$pass fail=$fail"
 [ $fail -eq 0 ]
