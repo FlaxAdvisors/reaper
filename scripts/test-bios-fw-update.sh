@@ -786,7 +786,7 @@ FIX_INSPECT="$work/i.read" runi ilocked
 exec 8>&-
 
 FIX_INSPECT="$work/i.read" runi argv
-ran && ! grep -rq 'test-dummy' "$FIX_CMDLOG" "$FIX_CMDLOG.ssh" && ok "inspect: credential not in any command" || bad "inspect credential"
+ran && ! grep -rq 'test-dummy' "$FIX_CMDLOG" "$FIX_CMDLOG.ssh" "$work/err.argv" && ! printf '%s' "$out" | grep -q 'test-dummy' && ok "inspect: credential not in any command" || bad "inspect credential"
 
 echo "---"; echo "pass=$pass fail=$fail"
 [ $fail -eq 0 ]

@@ -382,6 +382,7 @@ if [ "$1" = "--inspect" ]; then
     }
     _insp_bus=0
     insp_done() {
+        trap '' INT TERM HUP PIPE
         if [ "${_insp_bus}" = 1 ]; then
             _insp_bus=0
             ins mux "$(insp_release_bus)"
@@ -390,7 +391,7 @@ if [ "$1" = "--inspect" ]; then
     }
     trap insp_done EXIT
     # A signal ENDS the run: report, exit, and the EXIT trap hands the bus back.
-    trap 'ins error signal; exit 143' INT TERM HUP PIPE
+    trap 'trap "" INT TERM HUP PIPE; ins error signal; exit 143' INT TERM HUP PIPE
 
     st=$(power_status)
     ins host "${st:-unknown}"
@@ -409,6 +410,10 @@ if [ "$1" = "--inspect" ]; then
         normal|recovery|other) ins me "${me}"; ins end ok; exit 0 ;;   # bus NOT taken
         *) ins error me_unreadable; exit 1 ;;
     esac
+
+    # The host state was read 40-110 s ago: re-check it right before the mux moves.
+    st=$(power_status)
+    if [ "${st}" != off ]; then ins host "${st:-unknown}"; ins error host_not_off; exit 1; fi
 
     ins bus taken            # printed first: a dead output channel ends the run here
     _insp_bus=1

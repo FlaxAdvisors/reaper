@@ -23,7 +23,13 @@ if ! command -v hexdump >/dev/null 2>&1; then
 fi
 
 cat > "$work/hooks" <<'H'
-power_status() { echo "${FIX_HOST:-off}"; }
+power_status() {
+    if [ -n "${FIX_HOST_FLIP:-}" ]; then
+        echo x >> "$FIX_LOG.pw"
+        [ "$(wc -l < "$FIX_LOG.pw")" -ge 2 ] && { echo on; return; }
+    fi
+    echo "${FIX_HOST:-off}"
+}
 me_state() {
     echo x >> "$FIX_LOG.me"
     n=$(wc -l < "$FIX_LOG.me")
@@ -135,6 +141,22 @@ for _ in $(seq 50); do grep -q '^regs$' "$FIX_LOG" 2>/dev/null && break; sleep 0
 kill -TERM "$pid"; wait "$pid"; rc=$?; out=$(cat "$work/out.sig")
 [ $rc -eq 143 ] && [ "$(fact error)" = signal ] && [ "$(fact mux)" = 0 ] && [ "$(released)" = 1 ] && ! has end && ! grep -q '^bind$' "$FIX_LOG" \
   && ok "TERM mid-read -> bus released once, mux reported, nothing after it" || bad "signal"
+
+# A dead output channel after the bus is taken: the reader leaves at bus=taken.
+export FIX_LOG="$work/log.pipe"; : > "$FIX_LOG"; : > "$FIX_LOG.me"
+( FIX_SLOW=2 FIX_CHIP="$work/blank" BIOS_UPDATE_TEST_HOOKS="$work/hooks" \
+    bash "$here/fb-bios-update.sh" --inspect 2>/dev/null; echo $? > "$work/rc.pipe" ) \
+  | ( while IFS= read -r l; do case "$l" in "inspect: bus=taken") break ;; esac; done )
+for _ in $(seq 100); do [ -s "$work/rc.pipe" ] && break; sleep 0.1; done
+rc=$(cat "$work/rc.pipe" 2>/dev/null); out="(stdout was a dead pipe)"
+[ "$(released)" = 1 ] && [ "$rc" != 139 ] && [ -n "$rc" ] && ! grep -q '^bind$' "$FIX_LOG" \
+  && ok "dead stdout after bus=taken -> bus released once, no crash (rc=$rc), no bind" || bad "dead stdout"
+
+# The host is read again right before the bus is taken.
+FIX_HOST_FLIP=1 FIX_CHIP="$work/blank" run hostflip
+[ $rc -eq 1 ] && [ "$(fact error)" = host_not_off ] && [ "$(printf '%s\n' "$out" | sed -n 's/^inspect: host=//p' | tail -n 1)" = on ] && ! took && ! has bus \
+  && ok "host powered on during the ME window -> host_not_off, bus not taken" || bad "host flip"
+printf '%s\n' "$out" | grep -c '^inspect: host=' | grep -q 2 || bad "host flip prints both reads"
 
 # ── static: nothing in the block writes, powers or resets ────────────────────
 a=$(grep -n '"--inspect" \]; then' "$here/fb-bios-update.sh" | cut -d: -f1)
