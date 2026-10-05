@@ -18,6 +18,12 @@
 #   fb-bios-update --regs        same sequence, but only reads the chip's status,
 #                                configuration and security registers (read-only)
 #   fb-bios-update --me-info     only query the ME (Get Device ID + self test)
+#   fb-bios-update --inspect     READ-ONLY: is the ME answering, and if it is
+#                                not, which chip part is fitted (SFDP), is it
+#                                blank, and what structure does it hold. Prints
+#                                "inspect: key=value" lines. No power action, no
+#                                ME recovery, no ME reset, no chip write. The SPI
+#                                bus is NOT taken if the ME answers.
 #
 # The person running this does not need to know what the ME is doing; the
 # script finds out and says what it did:
@@ -316,6 +322,155 @@ if [ "$1" = "--me-info" ]; then
     exit 0
 fi
 
+# ONETREE: --inspect is not in upstream. The facts bios_fw needs when a host
+# fails power-good (2026-10-05: seven Quantas with good chips holding foreign
+# BMC images sat dark). RAW FACTS ONLY: the decision is triage's
+# (biosfw/chip_read.py), where it is tested. Never writes the chip, never
+# powers the host, never touches the ME beyond the self-test query.
+INSPECT_ME_S=${INSPECT_ME_S:-30}        # how long the ME must stay silent
+# The five functions that touch hardware. Everything else in the mode is logic
+# and is tested (scripts/test-bios-update-inspect.sh) with these replaced.
+insp_take_bus() {       # mux to BMC, flash driver unbound (user mode needs the controller)
+    set_gpio_to_bmc >/dev/null 2>&1
+    cd /
+    if [ -e "$SPI_PATH/$SPI_DEV" ]; then
+        echo -n $SPI_DEV > $SPI_PATH/unbind 2>/dev/null
+        sleep 1
+    fi
+    return 0
+}
+insp_regs() { spi_regs 2>&1; }
+insp_bind() {           # bind the flash driver; echoes the read-only device path
+    local i n p=""
+    echo -n $SPI_DEV > $SPI_PATH/bind 2>/dev/null
+    sleep 2
+    for i in 1 2 3 4 5; do
+        for n in /sys/class/mtd/mtd*/name; do
+            [ "$(cat "$n" 2>/dev/null)" = pnor ] && p=$(basename "$(dirname "$n")") && break
+        done
+        [ -n "$p" ] && break
+        sleep 2
+    done
+    [ -n "$p" ] || return 1
+    if [ -e "/dev/${p}ro" ]; then echo "/dev/${p}ro"; else echo "/dev/$p"; fi
+}
+insp_size() { local d; d=$(basename "$1"); cat "/sys/class/mtd/${d%ro}/size" 2>/dev/null; }
+insp_release_bus() {    # unbind, mux to PCH; echoes the GPIO readback ("0" = at PCH)
+    local v=absent g=/sys/class/gpio/gpio$GPIO
+    [ -e "$SPI_PATH/$SPI_DEV" ] && echo -n $SPI_DEV > $SPI_PATH/unbind 2>/dev/null
+    sleep 1
+    [ -d "$g" ] || echo $GPIO > /sys/class/gpio/export 2>/dev/null
+    if [ -d "$g" ]; then
+        echo out > "$g/direction" 2>/dev/null
+        echo 0   > "$g/value"     2>/dev/null
+        v=$(cat "$g/value" 2>/dev/null)     # read BEFORE the unexport
+        echo in  > "$g/direction" 2>/dev/null
+        echo $GPIO > /sys/class/gpio/unexport 2>/dev/null
+    fi
+    echo "${v:-unreadable}"
+}
+# Test seam: a file of function overrides (root runs this tool; the caller
+# already controls its environment).
+[ -n "${BIOS_UPDATE_TEST_HOOKS:-}" ] && . "$BIOS_UPDATE_TEST_HOOKS"
+
+if [ "$1" = "--inspect" ]; then
+    set +e
+    ins() { echo "inspect: $1=$2"; }
+    hx() {  # hx <dev> <byte offset> <count> -> "aa bb cc"
+        dd if="$1" bs=1 skip="$2" count="$3" 2>/dev/null \
+            | hexdump -v -e '1/1 "%02x "' | sed 's/ *$//'
+    }
+    _insp_bus=0
+    insp_done() {
+        if [ "${_insp_bus}" = 1 ]; then
+            _insp_bus=0
+            ins mux "$(insp_release_bus)"
+        fi
+        rm -f /tmp/.inspect.ff /tmp/.inspect.w
+    }
+    trap insp_done EXIT
+    # A signal ENDS the run: report, exit, and the EXIT trap hands the bus back.
+    trap 'ins error signal; exit 143' INT TERM HUP PIPE
+
+    st=$(power_status)
+    ins host "${st:-unknown}"
+    if [ "${st}" != off ]; then ins error host_not_off; exit 1; fi
+
+    # Any reply at all is "answers". Silent only after INSPECT_ME_S of silence.
+    me=""; t=0
+    while :; do
+        me=$(me_state 2>/dev/null); me=${me%%:*}
+        [ "${me}" != silent ] && break
+        [ "${t}" -ge "${INSPECT_ME_S}" ] && break
+        sleep 3; t=$(( t + 3 ))
+    done
+    case "${me}" in
+        silent) ins me silent ;;
+        normal|recovery|other) ins me "${me}"; ins end ok; exit 0 ;;   # bus NOT taken
+        *) ins error me_unreadable; exit 1 ;;
+    esac
+
+    ins bus taken            # printed first: a dead output channel ends the run here
+    _insp_bus=1
+    insp_take_bus
+    regs=$(insp_regs)
+    ins rdid "$(printf '%s\n' "$regs" | sed -n 's/^RDID *(9F): *//p' | head -n 1)"
+    # The SFDP basic parameter table starts at 0x30: its first word is bytes 49-52.
+    ins sfdp "$(printf '%s\n' "$regs" | sed -n 's/^SFDP *(5A): *//p' | head -n 1 \
+        | awk '{print $49, $50, $51, $52}')"
+
+    D=$(insp_bind) || D=""
+    if [ -z "$D" ]; then ins error bind_failed; exit 1; fi
+    size=$(insp_size "$D")
+    case "$size" in ''|*[!0-9]*) ins error chip_absent; exit 1 ;; esac
+    if [ "$size" -lt 16777216 ] || [ "$size" -gt 134217728 ]; then ins error chip_absent; exit 1; fi
+    ins size "$size"
+
+    # Blank by IDENTITY, never by counting: cmp rc 0 = erased, 1 = content,
+    # anything else = error. The reference block is identified by its md5,
+    # which triage checks.
+    dd if=/dev/zero bs=64k count=1 2>/dev/null | tr '\000' '\377' > /tmp/.inspect.ff
+    ins blank_ref "$(md5sum < /tmp/.inspect.ff 2>/dev/null | cut -d' ' -f1)"
+    blank_at() {  # blank_at <64k block index> -> 1 | 0 | err
+        dd if="$D" bs=64k count=1 skip="$1" 2>/dev/null > /tmp/.inspect.w
+        [ "$(wc -c < /tmp/.inspect.w 2>/dev/null)" = 65536 ] || { echo err; return; }
+        cmp -s /tmp/.inspect.w /tmp/.inspect.ff
+        case $? in 0) echo 1 ;; 1) echo 0 ;; *) echo err ;; esac
+    }
+    # Sampled: every 4 MiB from block 0, then the last block (reset vector).
+    nblk=$(( size / 65536 )); blank=1; i=0
+    while [ "$i" -lt "$nblk" ]; do
+        case "$(blank_at "$i")" in 1) ;; 0) blank=0; break ;; *) blank=err; break ;; esac
+        i=$(( i + 64 ))
+    done
+    if [ "$blank" = 1 ]; then
+        case "$(blank_at $(( nblk - 1 )))" in 1) ;; 0) blank=0 ;; *) blank=err ;; esac
+    fi
+    ins blank "$blank"
+
+    # Structure of a non-blank chip: RECORDED, never judged. Raw bytes only.
+    if [ "$blank" = 0 ]; then
+        sig=$(hx "$D" 16 4); f1=""; f2=""; fpt=""
+        if [ "$sig" = "5a a5 f0 0f" ]; then
+            fb=$(hx "$D" 22 1)                              # FLMAP0 bits 23:16 = FRBA
+            case "$fb" in [0-9a-f][0-9a-f])
+                frba=$(( 0x$fb << 4 ))
+                f1=$(hx "$D" $(( frba + 4 )) 4)             # FLREG1 = BIOS
+                f2=$(hx "$D" $(( frba + 8 )) 4)             # FLREG2 = ME
+                set -- $f2
+                if [ $# -eq 4 ]; then
+                    mb=$(( ((0x$2 << 8 | 0x$1) & 0x7fff) << 12 ))
+                    [ "$mb" -lt "$size" ] && fpt=$(hx "$D" $(( mb + 16 )) 4)
+                fi ;;
+            esac
+        fi
+        ins sig "$sig"; ins flreg1 "$f1"; ins flreg2 "$f2"; ins fpt "$fpt"
+    fi
+    ins end ok
+    exit 0      # the EXIT trap hands the bus back and prints mux=
+fi
+# end of --inspect
+
 # ONETREE: --read <file> is not in upstream. It runs the same sequence with the
 # flashcp replaced by two full-chip reads (compared, so a flaky SPI read cannot
 # pass), and restores the host to the power state it was found in.
@@ -336,7 +491,7 @@ elif [ "$1" = "--read" ]; then
     MODE=read
     OUT_FILE=$2
     if [ -z "$OUT_FILE" ]; then
-        echo "usage: $0 [--no-poweron] <image.bin> | --read <out.bin> | --regs | --me-info"
+        echo "usage: $0 [--no-poweron] <image.bin> | --read <out.bin> | --regs | --me-info | --inspect"
         exit 2
     fi
     OUT_FILE=$(readlink -f "$OUT_FILE")
@@ -356,7 +511,7 @@ IMAGE_FILE=$1
 # ExecStart=/usr/sbin/bios-update /tmp/images/<id>); the image is image-bios.
 [ -d "$IMAGE_FILE" ] && IMAGE_FILE="$IMAGE_FILE/image-bios"
 if [ -z "$IMAGE_FILE" ]; then
-    echo "usage: $0 [--no-poweron] <image.bin> | --read <out.bin> | --regs | --me-info"
+    echo "usage: $0 [--no-poweron] <image.bin> | --read <out.bin> | --regs | --me-info | --inspect"
     exit 2
 fi
 # ONETREE: refuse before touching anything rather than discover a missing image
