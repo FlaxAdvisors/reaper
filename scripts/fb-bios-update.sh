@@ -322,6 +322,86 @@ if [ "$1" = "--me-info" ]; then
     exit 0
 fi
 
+# ONETREE: chip unlock, part of the flash (operator 2026-10-05: "the point is
+# the result, not the lock status"). A chip that Facebook OpenBMC has run from
+# comes back BLOCK-PROTECTED: status register bc (SRWD + BP0-3). Erase and
+# program are then silently ignored -- flashcp "writes" 32 MiB in 10 s and
+# fails its verify at block 0 (et24b1, 2026-10-05). So before the write: read
+# the status register, and if any block-protect bit is set clear them with
+# WREN + WRSR. QE and the configuration register are written back as read.
+# If the chip will not unlock (SRWD set and WP# low = hardware protected) the
+# flash is NOT attempted and the error says why.
+# Same user-mode access as spi_regs; the flash driver must be UNBOUND.
+SPI_CFG=""; SPI_CTL=""; SPI_USER=""
+spi_user_begin() {
+    SPI_CFG=$(devmem ${SPI1_REGS} 32)
+    SPI_CTL=$(devmem $(( SPI1_REGS + 0x10 )) 32)
+    # user mode (bits 1:0 = 3), single-bit I/O (clear bits 29:28), keep clocks
+    SPI_USER=$(( (SPI_CTL & ~0x30000003) | 0x3 ))
+    devmem ${SPI1_REGS} 32 $(( SPI_CFG | 0x10000 ))             # CE0 write-enable
+}
+spi_user_end() {
+    devmem $(( SPI1_REGS + 0x10 )) 32 ${SPI_CTL}                # restore, always
+    devmem ${SPI1_REGS} 32 ${SPI_CFG}
+}
+spi_xfer() {    # spi_xfer "<bytes to send>" <nbytes to read> -> hex bytes read
+    local i b out=""
+    devmem $(( SPI1_REGS + 0x10 )) 32 $(( SPI_USER | 0x4 ))     # CS high
+    devmem $(( SPI1_REGS + 0x10 )) 32 ${SPI_USER}               # CS low
+    for b in $1; do devmem ${SPI1_WIN} 8 $b; done
+    i=0; while [ "$i" -lt "$2" ]; do
+        out="${out} $(printf %02x $(( $(devmem ${SPI1_WIN} 8) )))"; i=$(( i + 1 ))
+    done
+    devmem $(( SPI1_REGS + 0x10 )) 32 $(( SPI_USER | 0x4 ))     # CS high
+    echo ${out}
+}
+# chip_unlock -> 0 = the chip accepts writes (it was not protected, it was
+# unlocked, or its state could not be read and the flash goes on as before);
+# 1 = it is protected and would not unlock: do not write.
+chip_unlock() {
+    local id sr cr want i
+    spi_user_begin
+    id=$(spi_xfer 0x9f 3)
+    if [ "${id}" != "c2 20 19" ]; then
+        spi_user_end
+        echo "chip id '${id}' is not c2 20 19: block protection not checked"
+        return 0
+    fi
+    sr=$(spi_xfer 0x05 1)
+    cr=$(spi_xfer 0x15 1)
+    case "${sr}:${cr}" in
+        [0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]) ;;
+        *)  spi_user_end
+            echo "chip status register unreadable ('${sr}' '${cr}'): block protection not checked"
+            return 0 ;;
+    esac
+    if [ $(( 0x${sr} & 0x3c )) -eq 0 ]; then
+        spi_user_end
+        echo "bios-update: chip is not block-protected (SR ${sr})"
+        return 0
+    fi
+    echo "bios-update: chip is block-protected (SR ${sr}, CR ${cr}): clearing the protection"
+    want=$(printf '0x%02x' $(( 0x${sr} & 0x40 )))   # keep QE; clear SRWD and BP0-3
+    spi_xfer 0x06 0 >/dev/null                      # WREN
+    spi_xfer "0x01 ${want} 0x${cr}" 0 >/dev/null    # WRSR: status + configuration (as read)
+    i=0; while [ "$i" -lt 5 ]; do                   # tW is 40 ms; wait for WIP to clear
+        sr=$(spi_xfer 0x05 1)
+        case "${sr}" in [0-9a-f][0-9a-f]) [ $(( 0x${sr} & 1 )) -eq 0 ] && break ;; esac
+        sleep 1; i=$(( i + 1 ))
+    done
+    sr=$(spi_xfer 0x05 1)
+    spi_user_end
+    case "${sr}" in
+        [0-9a-f][0-9a-f])
+            if [ $(( 0x${sr} & 0x3c )) -eq 0 ]; then
+                echo "bios-update: chip unlocked (SR ${sr})"
+                return 0
+            fi ;;
+    esac
+    echo "bios-update: error: chip is write-protected and would not unlock (SR ${sr}); nothing written"
+    return 1
+}
+
 # ONETREE: --inspect is not in upstream. The facts bios_fw needs when a host
 # fails power-good (2026-10-05: seven Quantas with good chips holding foreign
 # BMC images sat dark). RAW FACTS ONLY: the decision is triage's
@@ -616,6 +696,12 @@ if [ "$MODE" = regs ]; then
     # Driver stays UNBOUND: user mode needs the controller to itself.
     spi_regs && READ_OK=yes || true
 else
+# ONETREE: clear a block-protected chip BEFORE the write (see chip_unlock).
+# Flash only -- a read changes nothing. Driver still unbound here.
+UNLOCK_FAILED=0
+if [ "$MODE" = flash ]; then
+    chip_unlock || UNLOCK_FAILED=1
+fi
 echo "bind spi-aspeed-smc spi driver"
 echo -n $SPI_DEV > $SPI_PATH/bind
 sleep 1
@@ -654,6 +740,10 @@ elif [ -n "$PNOR" ] && [ "$MODE" = read ]; then
         echo "bios read FAILED (rc=$rc size=$s1/$want md5 $m1 vs $m2) -- $OUT_FILE is not trustworthy"
         mv "$OUT_FILE" "$OUT_FILE.BAD" 2>/dev/null || true
     fi
+elif [ -n "$PNOR" ] && [ "${UNLOCK_FAILED:-0}" = 1 ]; then
+    # chip_unlock already printed the bios-update: error line.
+    echo "bios update failed..."
+    FLASH_FAILED=1
 elif [ -n "$PNOR" ]; then
     echo "Flashing bios image to $PNOR..."
     wdt_disarm
