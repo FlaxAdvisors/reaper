@@ -59,6 +59,13 @@ services:
       # Marker directory shared with bmc_fw (Backup EEPROM on-demand refresh);
       # must match bmc_fw's BMC_BACKUP_REFRESH_DIR.
       - BMC_BACKUP_REFRESH_DIR=/run/flax/bmc-backup-refresh
+      # fru_fw (spec 2026-10-05-triage-fru-fw-design): the api queues APPLY
+      # requests and reads the worker's row and the asset-tag ledger. THESE
+      # THREE MUST EQUAL fru_fw's below; reaper-devel
+      # tests/test_frufw_compose.py enforces it.
+      - FRU_FW_DB=/etc/flax/frufw.json
+      - FRU_FW_LEDGER=/etc/flax/frufw-asset-tags.json
+      - FRU_FW_REQUEST_DIR=/run/flax/fru-fw-request
       # mezz_flash: the mezzanine FW-unlock station agent. Zone A --
       # rabbit-gouda Et5 (left), Et9 (centre), Et27 (right), the top four OUs
       # of each column.
@@ -244,3 +251,38 @@ services:
       - BIOS_FW_SETTLE_S=420
       - BIOS_FW_CHECK_FRESH_S=3600
       - BIOS_FW_GATE_ABSENT_S=420
+
+  # fru_fw: writes a blade's FRU EEPROM when an operator pressed APPLY in the
+  # FRU drawer (spec 2026-10-05-triage-fru-fw-design). It acts ONLY on a
+  # request file; it never scans for work and never powers anything.
+  fru_fw:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    command: python -m frufw.worker
+    # Same orphan-reaping need as bmc_fw: PID 1 is the python worker and
+    # bmc-fru-eeprom shells out to ssh.
+    init: true
+    restart: always
+    network_mode: host
+    env_file:
+      - ./.env_prod
+    volumes:
+      - /etc/flax/:/etc/flax/
+      - /run/flax/:/run/flax/
+      - /opt/flax/bin:/usr/local/sbin:ro
+      # Read-only: the asset-tag collision check and the duplicate-serial
+      # check read every post dump's FRU ID 0.
+      - /export/nodes:/export/nodes:ro
+    environment:
+      - SWITCHPORTRECON_URL=http://localhost:8000
+      - FRU_FW_BIN=/usr/local/sbin
+      # ONE writer for these three: this container.
+      - FRU_FW_DB=/etc/flax/frufw.json
+      - FRU_FW_LEDGER=/etc/flax/frufw-asset-tags.json
+      - FRU_FW_BACKUP_DIR=/etc/flax/frufw-backup
+      # tmpfs on purpose: a request must not outlive a reboot.
+      - FRU_FW_REQUEST_DIR=/run/flax/fru-fw-request
+      # Read-only: refuse a write while either firmware agent is mid-job.
+      - BMC_FW_DB=/etc/flax/bmcfw.json
+      - BIOS_FW_DB=/etc/flax/biosfw.json
