@@ -204,7 +204,9 @@ _FW_BIOS = {
     "flashing": ("done", "cur"), "activating": ("done", "cur"),
     "fault": ("done", "fault"),
     "unreachable": ("cur", "pending"), "unknown": ("cur", "pending"),
-    "unsupported": ("done", "done"),   # nothing to do on this platform
+    # A row biosd wrote before 2026-10-06: platform not in the manifest, BIOS
+    # version never compared. An unmatched check fails (biosd now writes `fault`).
+    "unsupported": ("done", "fault"),
 }
 
 
@@ -228,15 +230,19 @@ def _nic_steps(st):
 # mode nothing will ever flash a needs_update blade, so the gate lets it
 # through and the tile keeps showing the update step as `cur`.
 _GATE_PASS = frozenset({"up_to_date", "done", "oem", "unsupported"})
+# BIOS: every post blade must read the manifest target, so `unsupported` (no
+# manifest match, nothing compared) does not pass (ruling 2026-10-06).
+_GATE_PASS_BY_KEY = {"fw_bios": _GATE_PASS - {"unsupported"}}
 
 
-def fw_gate_passed(slice_, mode=None) -> bool:
+def fw_gate_passed(slice_, mode=None, key=None) -> bool:
     """True when this firmware slice no longer blocks Qualify. A missing mode
-    on the row reads as 'detect' (rows written before the field existed)."""
+    on the row reads as 'detect' (rows written before the field existed).
+    `key` (fw_bmc|fw_bios|fw_nic) selects that slice's own pass set."""
     if not slice_:
         return False
     phase = slice_.get("phase")
-    if phase in _GATE_PASS:
+    if phase in _GATE_PASS_BY_KEY.get(key, _GATE_PASS):
         return True
     if phase == "needs_update":
         return (mode or slice_.get("mode") or "detect") == "detect"
@@ -257,7 +263,7 @@ def fw_gate_fault_step(st):
     if ((st.get("ladder") or {}).get("fault") or {}).get("rung") != "fw-gates":
         return None
     for key, step in _GATE_STEPS:
-        if not fw_gate_passed(st.get(key)):
+        if not fw_gate_passed(st.get(key), key=key):
             return step
     return None
 
@@ -282,7 +288,7 @@ def _firmware_steps(st):
 
 def fw_gates_passed(st) -> bool:
     """All three firmware slices pass fw_gate_passed (spec §7)."""
-    return all(fw_gate_passed(st.get(k)) for k in ("fw_bmc", "fw_bios", "fw_nic"))
+    return all(fw_gate_passed(st.get(k), key=k) for k in ("fw_bmc", "fw_bios", "fw_nic"))
 
 
 _QUAL_MAP = {"pass": "done", "running": "cur", "pending": "pending",

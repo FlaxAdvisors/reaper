@@ -59,7 +59,7 @@ _PHASE_MEANING = {
     "unreachable": "the daemon could not reach the device on its last pass (BMC off the network, or the host is off)",
     "unknown": "version unreadable on either side",
     "oem": "OEM board: firmware is not flax-managed",
-    "unsupported": "platform not in the manifest: nothing to flash",
+    "unsupported": "platform not in the manifest: nothing to compare against",
 }
 
 

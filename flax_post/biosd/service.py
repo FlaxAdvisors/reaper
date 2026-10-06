@@ -1,9 +1,11 @@
 """Probe loop for the post BIOS firmware driver (twin of flax_post.fwd.service).
 
 probe_once(deps) walks every post host device (dev with an ssh-reachable
-host_ip), reads its DMI product via `dmidecode`, matches it against the BIOS
-manifest, reads the current BIOS version via afulnx, classifies it against the
-manifest target, and writes the row (report-only — no flashing here).
+host_ip), reads its DMI product via `dmidecode`, resolves it to a family (site
+family map) and that family's BIOS manifest entry, reads the current BIOS version via afulnx, classifies it against the
+manifest target, and writes the row (report-only — no flashing here). A product
+the manifest does not name is a `fault`: an unmatched check fails, it never
+passes (ruling 2026-10-06).
 
 `deps` (real wiring in __main__._Deps, fakes in tests) supplies:
   hosts() -> [device dict]         (post 'host' rows with a host_ip)
@@ -18,6 +20,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from . import classify, config, driver
+from .manifest import dmi_product
 
 log = logging.getLogger("flax-post-biosd")
 
@@ -73,7 +76,12 @@ def _probe_host(deps, registry, dev) -> dict | None:
             return deps.set_row(port, phase="unreachable", current=None, target=None, fault_reason="")
         entry = deps.matcher.match(dmi)
         if entry is None:
-            return deps.set_row(port, phase="unsupported", current=None, target=None, fault_reason="")
+            # No expected string to compare against is a FAILED check. Still
+            # read the version so the tile shows what the board runs.
+            rc, out = deps.run(ip, driver.BIOS_SCRIPT + "\n")
+            return deps.set_row(
+                port, phase="fault", current=driver.parse_bios_version(out), target=None,
+                fault_reason="platform not in the manifest: DMI product %r" % (dmi_product(dmi) or "unread"))
         rc, out = deps.run(ip, driver.check_script(entry))
         current = driver.parse_bios_version(out)
         phase = classify.classify(current, entry["target"])
