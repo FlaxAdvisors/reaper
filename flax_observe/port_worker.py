@@ -49,7 +49,7 @@ from .host_probe import (lookup_lease_ip, lookup_kea_ip, nginx_pxe_seen,
                          inventory_status, ssh_uptime, kea_lease_fresh)
 from .ipmi import _default_ipmi_runner
 from .persistence import upsert_observe_state, emit_audit_event
-from .state_machine import STATE_VARS, port_worker_one_iter, _forget_identity, _forget_port_requested
+from .state_machine import STATE_VARS, port_worker_one_iter, _forget_identity, _forget_port_requested, SERIAL_REWRITTEN_DIR
 from .switch_facts import SwitchFactsCache
 
 
@@ -314,6 +314,21 @@ class PortWorker(threading.Thread):
 
         # Collect transition events emitted during the iter
         events: list[dict] = []
+
+        # Serial-rewritten sentinel (fru_fw, spec 2026-10-06): a latched serial
+        # was overwritten on the chip. Nothing re-reads a latched serial, so
+        # treat it as a pull + re-insert: forget the whole identity, exactly as
+        # a committed link-down does, then let this cycle's iteration start
+        # re-acquiring it.
+        _sr_dir = getattr(self.env, "serial_rewritten_dir", None) or SERIAL_REWRITTEN_DIR
+        if _forget_port_requested(self.port, forget_port_dir=_sr_dir):
+            prior_sn = self.port_state.get("chassis_sn")
+            prior_mac = self.port_state.get("bmc_mac")
+            _forget_identity(self.port_state, events.append)
+            events.append({"kind": "serial_rewritten_forget",
+                           "switch": self.switch, "port": self.port,
+                           "prior_chassis_sn": prior_sn, "prior_bmc_mac": prior_mac})
+
         port_worker_one_iter(
             self.port_state, switch_facts,
             emit_event=events.append, env=self.env,

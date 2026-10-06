@@ -107,6 +107,12 @@ SOL_ACTIVE_DIR = "/etc/flax/soltriage"      # triage server's SOL history dir
 SOL_ACTIVE_MAX_AGE_SECS = 180
 INTENTIONAL_FLAP_DIR = "/run/flax/intentional-flap"
 FORGET_PORT_DIR = "/run/flax/forget-port"
+# fru_fw (triage) drops <dir>/<port> after it OVERWROTE a serial this service
+# has latched (spec 2026-10-06-serial-rewritten-forget). Honoured, unlike
+# forget-port: the blade is treated as pulled and re-inserted. A separate
+# directory on purpose -- the BMC flash bin still drops forget-port on every
+# flash, and that one must stay ignored.
+SERIAL_REWRITTEN_DIR = "/run/flax/serial-rewritten"
 MAX_FLAP_HOLD_SECS = 120
 # Bound on the bmcpower latch: hold a stale on/off through this many consecutive
 # unknown polls (transient RMCP+/session-table glitches), then GIVE UP and
