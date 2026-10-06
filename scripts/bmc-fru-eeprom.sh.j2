@@ -32,12 +32,18 @@ SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLeve
 
 # Remote executor; FLAX_BMC_REMOTE_EXEC lets the tests run the same commands
 # against a fixture. stdin is passed through (write streams the image in).
+# Every call is bounded: a BMC that stops answering mid-session must not hang
+# the worker (bios-fw-update's journal ssh once hung >1 h, et6b4 2026-09-27).
+# 9>&-: the remote command never inherits the per-BMC lock fd, so an ssh that
+# outlives a killed bin cannot keep bmc_fw / bios_fw locked out.
+SSH_TIMEOUT="${FRU_SSH_TIMEOUT:-90}"
 bmc() {
     if [ -n "${FLAX_BMC_REMOTE_EXEC:-}" ]; then
-        "$FLAX_BMC_REMOTE_EXEC" "$1" "$2"
+        timeout -k 5 "$SSH_TIMEOUT" "$FLAX_BMC_REMOTE_EXEC" "$1" "$2" 9>&-
         return $?
     fi
-    sshpass -e ssh -T $SSH_OPTS "root@$1" "$2"
+    timeout -k 5 "$SSH_TIMEOUT" sshpass -e ssh -T $SSH_OPTS \
+        -o ServerAliveInterval=5 -o ServerAliveCountMax=3 "root@$1" "$2" 9>&-
 }
 
 json_err() { printf '{"error":"%s"}\n' "$1"; exit 1; }
@@ -102,7 +108,7 @@ cmd_reread() {
     rc=$?
     case "$out" in
         *RESCANNED*) printf '{"rescanned":true}\n' ;;
-        *) [ "$rc" -eq 255 ] && json_err ssh_unreachable; json_err rescan_failed ;;
+        *) [ "$rc" -eq 255 ] || [ "$rc" -eq 124 ] && json_err ssh_unreachable; json_err rescan_failed ;;
     esac
 }
 
