@@ -1,0 +1,116 @@
+#!/bin/bash
+# bmc-fru-eeprom -- read, write and rescan the baseboard FRU EEPROM on an
+# OpenBMC BMC. Called by the triage fru_fw worker; also usable by hand.
+#
+# RENDERED FROM THE SITE VAULT by roles/apply_bmc_scripts. RULE ZERO: the value
+# below is the BMC ROOT SHELL credential. It is never echoed, and sshpass -e
+# keeps it out of argv and out of ps.
+#
+# The procedure is Harlan's (openbmc-ami-tools/fru-serial/README.md), made
+# non-interactive. The BMC is BusyBox: no base64, and dd cannot patch in place,
+# so an image comes back as hex and goes out whole.
+#
+#   read   <bmc-ip> <out-file>  ->  {"read":true,"size":8192,"md5":"..."}
+#   write  <bmc-ip> <in-file>   ->  {"staged_ok":true,"verified":true,"md5":"..."}
+#                               ->  {"staged_ok":true,"verified":false,...}   chip differs; exit 1
+#                               ->  {"error":"stage_mismatch"}   nothing written; exit 1
+#   reread <bmc-ip>             ->  {"rescanned":true}
+#   errors: {"error":"ssh_unreachable"|"no_eeprom"|"bad_size"|"busy"|"bad_file"|...}  exit 1
+#
+# write holds the per-BMC firmware lock (the one bmc-fw-update / bios-fw-update
+# take), so it never overlaps a flash. Both md5 gates are mandatory: the staged
+# file must equal the image sent BEFORE the chip is touched, and the chip must
+# equal it after.
+set -u
+
+EEPROM=/sys/bus/i2c/devices/6-0054/eeprom
+SIZE=8192
+LOCK_DIR="${FW_UPDATE_LOCK_DIR:-/run/flax}"
+
+export SSHPASS={{ bmc_root_password | quote }}
+SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10"
+
+# Remote executor; FLAX_BMC_REMOTE_EXEC lets the tests run the same commands
+# against a fixture. stdin is passed through (write streams the image in).
+bmc() {
+    if [ -n "${FLAX_BMC_REMOTE_EXEC:-}" ]; then
+        "$FLAX_BMC_REMOTE_EXEC" "$1" "$2"
+        return $?
+    fi
+    sshpass -e ssh -T $SSH_OPTS "root@$1" "$2"
+}
+
+json_err() { printf '{"error":"%s"}\n' "$1"; exit 1; }
+
+take_lock() {
+    mkdir -p "$LOCK_DIR" 2>/dev/null
+    exec 9>"$LOCK_DIR/fw-update-${1}.lock" || return 1
+    flock -n 9
+}
+
+unhex() { python3 -c 'import sys,binascii; sys.stdout.buffer.write(binascii.unhexlify(sys.stdin.read().strip()))'; }
+
+cmd_read() {
+    ip="$1"; out="$2"
+    raw=$(bmc "$ip" "[ -e $EEPROM ] || { echo NOEEPROM; exit 0; }; echo SIZE=\$(wc -c < $EEPROM); echo HEX=\$(hexdump -v -e '1/1 \"%02x\"' $EEPROM); echo MD5=\$(md5sum < $EEPROM | cut -d' ' -f1)" </dev/null)
+    rc=$?
+    case "$raw" in
+        *NOEEPROM*) json_err no_eeprom ;;
+        *SIZE=*HEX=*MD5=*) ;;
+        *) [ "$rc" -ne 0 ] && json_err ssh_unreachable; json_err read_failed ;;
+    esac
+    size=$(printf '%s\n' "$raw" | sed -n 's/^SIZE=//p' | tr -d '\r ')
+    hex=$(printf '%s\n' "$raw" | sed -n 's/^HEX=//p' | tr -d '\r ')
+    md5=$(printf '%s\n' "$raw" | sed -n 's/^MD5=//p' | tr -d '\r ')
+    [ "$size" = "$SIZE" ] || json_err bad_size
+    printf '%s' "$hex" | unhex > "$out" 2>/dev/null || json_err read_failed
+    [ "$(md5sum < "$out" | cut -d' ' -f1)" = "$md5" ] || json_err read_mismatch
+    printf '{"read":true,"size":%s,"md5":"%s"}\n' "$size" "$md5"
+}
+
+cmd_write() {
+    ip="$1"; in="$2"
+    [ -f "$in" ] && [ "$(wc -c < "$in" | tr -d ' ')" = "$SIZE" ] || json_err bad_file
+    want=$(md5sum < "$in" | cut -d' ' -f1)
+    take_lock "$ip" || json_err busy
+    # Gate 1: stage on the BMC's tmpfs and compare BEFORE the chip is touched.
+    got=$(bmc "$ip" "[ -e $EEPROM ] || { echo NOEEPROM; exit 0; }; [ \"\$(wc -c < $EEPROM)\" = $SIZE ] || { echo BADSIZE; exit 0; }; cat > /tmp/fru-new.bin && echo STAGED=\$(md5sum < /tmp/fru-new.bin | cut -d' ' -f1)" < "$in")
+    rc=$?
+    case "$got" in
+        *NOEEPROM*) json_err no_eeprom ;;
+        *BADSIZE*) json_err bad_size ;;
+        *STAGED=*) ;;
+        *) [ "$rc" -ne 0 ] && json_err ssh_unreachable; json_err stage_failed ;;
+    esac
+    staged=$(printf '%s\n' "$got" | sed -n 's/^STAGED=//p' | tr -d '\r ')
+    [ "$staged" = "$want" ] || json_err stage_mismatch
+    # Gate 2: keep the old image on the BMC, write the whole chip in one cat,
+    # read it back.
+    got=$(bmc "$ip" "dd if=$EEPROM of=/tmp/fru-6-54.bak bs=1024 2>/dev/null; cat /tmp/fru-new.bin > $EEPROM; echo CHIP=\$(md5sum < $EEPROM | cut -d' ' -f1)" </dev/null)
+    chip=$(printf '%s\n' "$got" | sed -n 's/^CHIP=//p' | tr -d '\r ')
+    if [ "$chip" = "$want" ]; then
+        printf '{"staged_ok":true,"verified":true,"md5":"%s"}\n' "$want"
+    else
+        printf '{"staged_ok":true,"verified":false,"md5":"%s","chip_md5":"%s"}\n' "$want" "$chip"
+        exit 1
+    fi
+}
+
+cmd_reread() {
+    ip="$1"
+    out=$(bmc "$ip" "busctl call xyz.openbmc_project.FruDevice /xyz/openbmc_project/FruDevice xyz.openbmc_project.FruDeviceManager ReScan && sleep 5 && echo RESCANNED" </dev/null)
+    rc=$?
+    case "$out" in
+        *RESCANNED*) printf '{"rescanned":true}\n' ;;
+        *) [ "$rc" -eq 255 ] && json_err ssh_unreachable; json_err rescan_failed ;;
+    esac
+}
+
+usage() { echo "usage: bmc-fru-eeprom {read <bmc-ip> <out-file>|write <bmc-ip> <in-file>|reread <bmc-ip>}" >&2; exit 2; }
+
+case "${1:-}" in
+    read)   [ $# -eq 3 ] || usage; cmd_read "$2" "$3" ;;
+    write)  [ $# -eq 3 ] || usage; cmd_write "$2" "$3" ;;
+    reread) [ $# -eq 2 ] || usage; cmd_reread "$2" ;;
+    *) usage ;;
+esac

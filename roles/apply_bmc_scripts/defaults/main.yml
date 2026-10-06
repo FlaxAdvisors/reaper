@@ -23,6 +23,9 @@ apply_bmc_scripts_files:
   # credential; Redfish job interlock). bios-fw-update is new.
   - { src: bmc-fw-update.sh.j2,           dest: bmc-fw-update }
   - { src: bios-fw-update.sh.j2,          dest: bios-fw-update }
+  # Baseboard FRU EEPROM read / write / rescan for the triage fru_fw agent
+  # (2026-10-05). Vault-templated: carries the BMC root shell credential.
+  - { src: bmc-fru-eeprom.sh.j2,          dest: bmc-fru-eeprom }
 
 # Plain (non-templated) operator scripts -- no vault variables, so these
 # must NOT go through the vault-templated apply_bmc_scripts_files loop
