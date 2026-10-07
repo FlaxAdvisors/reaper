@@ -138,6 +138,10 @@ ps_done "ipmigood=$ipmigood"
 # we're ready to exit for BOTH "cfgipmi" and "liveboot" actions
 # to leave the node up for more operations and fun
 if [ $action == "cfgipmi" ] || [ $action == "liveboot" ]; then
+    # Bring up the in-band host<->BMC USB ethernet here too: the inventory
+    # flow does it as its last step, which a live boot never reaches, and the
+    # live ISO binds no driver to the gadget on its own.
+    ./collect_bmc_usbnet.sh > $logdir/bmc_usbnet.txt 2>&1
     echo "Live boot tasks complete. Hanging out for SSH or perf tests."
     ps_finish WAITING "live boot tasks done -- up for ssh."
     exit 0
