@@ -51,6 +51,13 @@ SSH_TIMEOUT_SECS = 8
 # connect to :22 by under ~1 s (et26b3, 2026-09-14: rc=255 3/3 back to back,
 # ok 4/4 with a 1-2 s gap); the default port probe waits out this window.
 SSH_AFTER_PORT_PROBE_SECS = 2.0
+# A Tioga Pass BMC a few minutes into its boot (load 7-8) takes 2.3-3.4 s to
+# complete an ssh login against the 3 s ConnectTimeout below, 1.6-2.2 s once
+# idle (et25b1, 2026-10-08). A failed os-release read is asked once more with
+# these, after SSH_RETRY_GAP_SECS, before the IPMI/Redfish legs get a say.
+SSH_RETRY_CONNECT_SECS = 10
+SSH_RETRY_TIMEOUT_SECS = 20
+SSH_RETRY_GAP_SECS = 2.0
 _monotonic = time.monotonic
 _sleep = time.sleep
 
@@ -132,7 +139,8 @@ def _ipmi_responsive(host, timeout=2.0):
 # SSH runner
 # ---------------------------------------------------------------------------
 
-def _default_ssh_runner(host, user, password, cmd, timeout=SSH_TIMEOUT_SECS):
+def _default_ssh_runner(host, user, password, cmd, timeout=SSH_TIMEOUT_SECS,
+                        connect_timeout=3):
     """sshpass + ssh, returns stdout text. Caller catches exceptions.
 
     host may be a zoned IPv6 link-local literal (fe80::EUI64%<iface>); ssh
@@ -155,12 +163,18 @@ def _default_ssh_runner(host, user, password, cmd, timeout=SSH_TIMEOUT_SECS):
     full = ["sshpass", "-p", password, "ssh",
             "-o", "StrictHostKeyChecking=no",
             "-o", f"UserKnownHostsFile={SSH_KNOWN_HOSTS}",
-            "-o", "ConnectTimeout=3",
+            "-o", "ConnectTimeout=%d" % connect_timeout,
             "-o", "KexAlgorithms=+diffie-hellman-group14-sha1",
             "-o", "HostKeyAlgorithms=+ssh-rsa",
             f"{user}@{host}", cmd]
     return subprocess.check_output(full, timeout=timeout, text=True,
                                    stderr=subprocess.DEVNULL)
+
+
+def _patient_ssh_runner(host, user, password, cmd):
+    return _default_ssh_runner(host, user, password, cmd,
+                               timeout=SSH_RETRY_TIMEOUT_SECS,
+                               connect_timeout=SSH_RETRY_CONNECT_SECS)
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +274,10 @@ def probe_bmc_kind(ip, credentials, bmc_creds,
     Returns {"kind": "openbmc"|"traditional"|"redfish"|"unknown",
              "vendor": "ami_legacy"|"facebook"|"phosphor"|"unknown",
              "product_name": str|None, "creds_used": (user, pass)|None}.
+    A traditional/redfish result also carries "ssh_inconclusive": True when
+    ssh:22 was open but no ssh session completed: that board was never asked
+    whether it is an OpenBMC, so the caller must not take the fallback's
+    ami_legacy at face value (state_machine._settle_inconclusive).
 
     `kind` is FROZEN and deprecated -- it mixes axes (a capability, a protocol
     and a vendor) and cannot distinguish an AMI OEM board from a Phosphor one.
@@ -281,8 +299,10 @@ def probe_bmc_kind(ip, credentials, bmc_creds,
          resolves as 'openbmc' (no eindhoven regression).
       5. Else: 'unknown' (closed and unknown are binned together).
     """
+    ssh_retry_runner = ssh_runner
     if ssh_runner is None:
         ssh_runner = _default_ssh_runner
+        ssh_retry_runner = _patient_ssh_runner
     if ipmi_runner is None:
         ipmi_runner = _default_ipmi_runner
     if redfish_probe is None:
@@ -297,13 +317,20 @@ def probe_bmc_kind(ip, credentials, bmc_creds,
 
     probed_at = _monotonic()
     ports = port_probe(ip)
+    ssh_answered = False
 
     if ports.get("ssh"):
         if default_port_probe:
             _sleep(max(0.0, SSH_AFTER_PORT_PROBE_SECS - (_monotonic() - probed_at)))
         try:
-            rel = ssh_runner(ip, credentials["obmcuser"],
-                             credentials["obmcpass"], _OS_RELEASE_CMD)
+            try:
+                rel = ssh_runner(ip, credentials["obmcuser"],
+                                 credentials["obmcpass"], _OS_RELEASE_CMD)
+            except Exception:
+                _sleep(SSH_RETRY_GAP_SECS)
+                rel = ssh_retry_runner(ip, credentials["obmcuser"],
+                                       credentials["obmcpass"], _OS_RELEASE_CMD)
+            ssh_answered = True
             if "openbmc" in rel.lower():
                 pn = None
                 try:
@@ -333,6 +360,10 @@ def probe_bmc_kind(ip, credentials, bmc_creds,
         except Exception:
             pass
 
+    # ssh:22 open and neither attempt completed: the OpenBMC question was
+    # never answered, so the legs below are a fallback, not an identification.
+    ssh_inconclusive = bool(ports.get("ssh")) and not ssh_answered
+
     if ports.get("ipmi"):
         for c in bmc_creds:
             try:
@@ -341,6 +372,7 @@ def probe_bmc_kind(ip, credentials, bmc_creds,
                 return {"kind": "traditional",
                         "vendor": _bmc_vendor.AMI_LEGACY,
                         "product_name": pn,
+                        "ssh_inconclusive": ssh_inconclusive,
                         "creds_used": (c["bmcuser"], c["bmcpass"])}
             except Exception:
                 continue
@@ -364,6 +396,7 @@ def probe_bmc_kind(ip, credentials, bmc_creds,
                     "vendor": _bmc_vendor.AMI_LEGACY,
                     "product_name": info.get("product_name"),
                     "creds_used": None,
+                    "ssh_inconclusive": ssh_inconclusive,
                     "redfish_version": info.get("redfish_version")}
 
     return {"kind": "unknown", "vendor": _bmc_vendor.UNKNOWN,

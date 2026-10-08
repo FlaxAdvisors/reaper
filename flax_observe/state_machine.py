@@ -242,9 +242,58 @@ def _early_reprobe_due(cache):
             and _secs_since(cache.get("probed_at")) >= EARLY_PROBE_SECS)
 
 
+# A fallback verdict (traditional/redfish) reached while ssh:22 was open but no
+# ssh session completed says nothing about the vendor: a loaded OpenBMC misses
+# the ssh login and answers IPMI as root (et25b1, 2026-10-08, shown as
+# ami_legacy with no re-check). Such a probe is asked again this often, its
+# vendor published as unknown, until INCONCLUSIVE_SETTLE_PROBES in a row agree;
+# then the fallback is accepted (a board whose ssh never lets us in) and it is
+# re-asked on the slow cadence only.
+INCONCLUSIVE_RETRY_SECS = 60
+INCONCLUSIVE_SETTLE_PROBES = 5
+
+
+def _inconclusive_retry_due(cache):
+    n = cache.get("inconclusive") or 0
+    if not n:
+        return False
+    wait = (INCONCLUSIVE_RETRY_SECS if n < INCONCLUSIVE_SETTLE_PROBES
+            else PRODUCT_NAME_RETRY_SECS)
+    return _secs_since(cache.get("probed_at")) >= wait
+
+
+def _settle_inconclusive(probe, prior, mac):
+    """Judge a probe whose ssh leg was inconclusive against the port's prior
+    cache for the same BMC mac. Returns the probe to cache.
+
+    - conclusive probe: unchanged, the count is gone.
+    - prior already identified this mac as an ssh-capable vendor: keep that
+      identity (a slow login does not un-make an OpenBMC), keep counting.
+    - otherwise: vendor unknown until INCONCLUSIVE_SETTLE_PROBES in a row,
+      then the fallback's own vendor.
+    """
+    if not probe.get("ssh_inconclusive"):
+        return probe
+    same = bool(prior) and prior.get("for_mac") == mac
+    n = ((prior.get("inconclusive") or 0) if same else 0) + 1
+    if same and _bmc_vendor.caps_for(prior.get("vendor")).ssh == _bmc_vendor.FULL:
+        kept = dict(probe)
+        for k in ("kind", "vendor", "product_name", "creds_used",
+                  "redfish_version"):
+            kept[k] = prior.get(k)
+        kept["inconclusive"] = n
+        return kept
+    out = dict(probe)
+    out["inconclusive"] = n
+    if n < INCONCLUSIVE_SETTLE_PROBES:
+        out["vendor"] = _bmc_vendor.UNKNOWN
+    return out
+
+
 def _reprobe_due(cache):
     return (_product_name_retry_due(cache) or _kind_retry_due(cache)
-            or _taxonomy_stale(cache) or _early_reprobe_due(cache))
+            or _taxonomy_stale(cache) or _early_reprobe_due(cache)
+            or _inconclusive_retry_due(cache))
 
 
 def _reprobe_kwargs(cache):
@@ -862,6 +911,7 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
                      "creds_used": _prior_cache.get("creds_used"),
                      "redfish_version": _prior_cache.get("redfish_version"),
                      "probed_at": _prior_cache.get("probed_at"),
+                     "inconclusive": _prior_cache.get("inconclusive") or 0,
                      "early": bool(_prior_cache.get("early"))}
             bmc_probe_by_mac[mac] = probe
             return probe["kind"]
@@ -876,6 +926,7 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
             probe = dict(_probe_bmc_kind(
                 target, credentials, bmc_creds, redfish_creds=redfish_creds,
                 **(_reprobe_kwargs(_prior_cache) if same_mac else {})))
+            probe = _settle_inconclusive(probe, _prior_cache, mac)
         probe["probed_at"] = _ts_now()
         bmc_probe_by_mac[mac] = probe
         return probe.get("kind")
@@ -1010,6 +1061,7 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
             "product_name": _probe.get("product_name"),
             "redfish_version": _probe.get("redfish_version"),
             "probed_at": _probe.get("probed_at"),
+            "inconclusive": _probe.get("inconclusive") or 0,
             # A reused cache keeps its flag; a fresh probe is judged now.
             "early": (_probe["early"] if "early" in _probe else
                       _probe_is_early(port_state, _probe.get("probed_at"))),
@@ -1176,12 +1228,15 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
             probe = _probe_bmc_kind(
                 probe_host, credentials, bmc_creds, redfish_creds=redfish_creds,
                 **({} if mac_changed else _reprobe_kwargs(cache)))
+            probe = _settle_inconclusive(
+                probe, None if mac_changed else cache, bmc_mac)
             cache = {"kind": probe["kind"],
                      "vendor": probe.get("vendor", _bmc_vendor.UNKNOWN),
                      "taxonomy_version": _bmc_vendor.TAXONOMY_VERSION,
                      "creds_used": probe["creds_used"],
                      "product_name": probe.get("product_name"),
                      "redfish_version": probe.get("redfish_version"),
+                     "inconclusive": probe.get("inconclusive") or 0,
                      "probed_at": _ts_now(),
                      "for_mac": bmc_mac}
             cache["early"] = _probe_is_early(port_state, cache["probed_at"])
