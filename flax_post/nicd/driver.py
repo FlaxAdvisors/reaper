@@ -86,8 +86,3 @@ def uefi_script(pci: str) -> str:
         f"nohup mstfwreset -d {pci} -y reset </dev/null >/tmp/mstfwreset.log 2>&1 &\n"
         "sleep 2\n"
     )
-
-
-# BMC (OpenBMC) uptime read + reboot, over a separate SSH session (bmc creds).
-# The BMC is rebooted over REDFISH (flax_post.fwd.redfish.RedfishClient
-# .manager_reset), NOT SSH/IPMI -- OpenBMC's `ipmitool mc reset cold` hangs it.

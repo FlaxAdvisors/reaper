@@ -59,7 +59,6 @@ declare -A FWMAP=(
 
 devuntouchable="secure-fw"
 uefival=1
-needbmcreset=0
 
 # selected-image state (set by selectfw)
 fwsrc=""
@@ -68,9 +67,6 @@ binfwver=""
 binpsid=""
 
 source ./common_mellanox.sh
-# bmc_reset_cold: the reset below leaves a marker, so post.sh's next bmc_gate
-# waits for the BMC to come back instead of running into it.
-source ./bmc_ready.sh
 
 # Select the firmware image for a device PSID. Sets fwsrc/fwbin and returns 0
 # when the PSID is mapped; logs + returns 1 (caller skips) when it is not.
@@ -152,16 +148,11 @@ function setuefi()
 {
     devhere=$1
     domstconfig set $devhere "EXP_ROM_UEFI_x86_ENABLE=true"
+    # The NIC reset is all the option needs. The BMC is NOT reset here: that
+    # was for enabling BMC use of the NIC, which this script does not touch,
+    # and a BMC reset under a running host garbles its serial console.
     domstfwreset $devhere
-    if [ $needbmcreset -eq 0 ]; then
-        needbmcreset=1
-    fi
     sleep 5
-}
-
-function bmcresetcold()
-{
-    bmc_reset_cold
 }
 
 ####
@@ -181,7 +172,3 @@ for mlxdev in $(printf "%s\n" $pcidev); do
     if needsverup; then flashnicfw $mlxdev; fi
     if needuefi ${mlxdev}; then setuefi ${mlxdev}; fi
 done
-
-if [ $needbmcreset -ne 0 ]; then
-    bmcresetcold
-fi

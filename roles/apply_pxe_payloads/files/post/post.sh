@@ -183,9 +183,10 @@ if [ $action == "inventory" ]; then
         ps_state REBOOTING "nicfw: may reset or reboot after flashing a NIC -- not a crash."
         ./update_mellanox.sh
         sleep 5
-        # update_mellanox.sh cold-resets the BMC after it turns a NIC's UEFI
-        # option on. Wait here, inside the stage that caused it, until the BMC
-        # is back -- not in the middle of the inventory.
+        # update_mellanox.sh no longer resets the BMC (it used to, after it
+        # turned a NIC's UEFI option on). The gate stays: it is free on a
+        # healthy BMC, and a BMC that went away is waited for here, not in
+        # the middle of the inventory.
         [ $ipmigood -ge 1 ] && bmc_gate "the inventory"
         ps_done
         if [ -n "$leopard" ] && [ -n "$quanta" ]; then

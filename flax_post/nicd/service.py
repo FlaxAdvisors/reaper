@@ -132,7 +132,6 @@ def enforce_once(deps, registry, mode, allowlist, clock=time.time):
 def _flash_node(deps, port, ip, devices, clock):
     deadline = clock() + config.FLASH_TIMEOUT
     deps.set_row(port, phase="flashing")
-    needbmcreset = False
     for dev in devices:
         if dev.get("phase") != "needs_update" or dev.get("secure"):
             continue
@@ -156,21 +155,14 @@ def _flash_node(deps, port, ip, devices, clock):
                 if not wait_card_reset(deps, ip, dev["pci"], m, deadline, clock):
                     deps.set_row(port, phase="fault", fault_reason="uefi reset did not take on %s" % dev["pci"])
                     return
-                needbmcreset = True
+                # The card reset is all the option needs. No BMC reset: that
+                # was for enabling BMC use of the NIC, which nicd does not
+                # touch, and a BMC reset under a running host garbles its
+                # serial console (et24b2, 2026-10-08).
             elif uefi is None:                        # target FW exposes no UEFI knob
                 deps.set_row(port, phase="fault",
                              fault_reason="no EXP_ROM_UEFI_x86_ENABLE on %s at target FW; cannot enable UEFI boot" % dev["pci"])
                 return
-    if needbmcreset or config.FORCE_BMC_RESET:
-        # Reboot the BMC over REDFISH (Manager.Reset) -- out of context for
-        # SSH/IPMI, so it dodges the `ipmitool mc reset cold` hang that bricks
-        # these OpenBMCs. 2xx accept = success; the BMC reboots in the
-        # background (we don't block-poll for it).
-        ok, detail = deps.redfish_bmc_reset(port)
-        log.info("bmc-reset %s: redfish Manager.Reset -> ok=%s %s", port, ok, detail)
-        if not ok:
-            deps.set_row(port, phase="fault", fault_reason="bmc reset rejected: %s" % detail)
-            return
     # re-query all cards -> aggregate
     rc, out = deps.run(ip, driver.QUERY_SCRIPT)
     cards = [classify.classify_device(c, deps.matcher.match(c["psid"])) for c in driver.parse_cards(out)]

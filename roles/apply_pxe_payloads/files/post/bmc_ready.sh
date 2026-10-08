@@ -1,8 +1,9 @@
-# bmc_ready.sh -- sourced by post.sh and update_mellanox.sh: never talk to a
+# bmc_ready.sh -- sourced by post.sh: never talk to a
 # BMC that is not there.
 #
-# The BMC can go away under a run. update_mellanox.sh cold-resets it after it
-# turns a NIC's UEFI option on, and post.sh used to walk straight into the
+# The BMC can go away under a run. update_mellanox.sh used to cold-reset it
+# after it turned a NIC's UEFI option on (removed 2026-10-08: the option only
+# needs the NIC reset), and post.sh used to walk straight into the
 # inventory: `ipmitool fru` hung 50 s, every later read came back empty, and
 # the final `ipmitool chassis power off` was refused ("Command not supported
 # in present state"), so the blade stayed on with a green banner (eindhoven
