@@ -291,9 +291,9 @@ bmc_fw_platforms:
     match:
       product_name: ["(?i)tioga", "(?i)tp[-_ ]?", "(?i)wiwynn.*tp", "(?i)quanta.*tioga"]
       bmc_kind: openbmc
-    target_version: "flax-onetree-1.1.4-202609290832"
+    target_version: "flax-onetree-1.1.4"
     check: { method: redfish-firmware-inventory, id: bmc_active }
-    flash: { method: redfish-update-multipart, artifact: "SXC-Lab_OCP-Updates/OpenBMC/flax-onetree-1.1.4-202609290832.tar" }
+    flash: { method: redfish-update-multipart, artifact: "SXC-Lab_OCP-Updates/OpenBMC/flax-onetree-1.1.4.tar" }
     auto: true
     post_flash_net_reset: true   # Part 3 D: clear 00-bmc-eth0.network after a flash (gated by BMC_FW_NETRESET_PORTS)
 
