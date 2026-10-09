@@ -389,3 +389,22 @@
 # and (b) wasn't a useful default in practice — every site needs to populate
 # real boot logic, and the stub gave the false impression that the chain
 # was wired when it wasn't.
+
+# === /tmp housekeeping ===
+
+# /tmp on a bang is a btrfs subvolume (it survives reboots) and openSUSE's
+# /usr/lib/tmpfiles.d/fs-tmp.conf sets no age, so scratch files piled up for
+# good (7,900 entries on bang-gouda by 2026-10-09). The file name must match
+# the vendor one: a same-named file in /etc replaces it, while a second line
+# for /tmp under another name is dropped as a duplicate. The daily
+# systemd-tmpfiles-clean.timer applies it; nothing is deleted at deploy time.
+- name: Expire /tmp entries by age
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/tmpfiles.d/fs-tmp.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Ansible managed (apply_bang_services). Overrides /usr/lib/tmpfiles.d/fs-tmp.conf.
+      q /tmp 1777 root root {{ apply_bang_services_tmp_max_age }}

@@ -15,3 +15,7 @@ apply_bang_services_shared_inputs_dir: "{{ playbook_dir }}/../files/services/_co
 # dnsmasq logs to a FILE (not only journald) so the post slot ladder can scrape
 # tftp lines from a read-only bind mount (spec 2026-09-11 post-slot-ladder §6).
 apply_bang_services_dnsmasq_log_dir: /var/log/dnsmasq
+
+# Age limit for /tmp (systemd-tmpfiles). openSUSE ships "-" (never), and /tmp
+# on the bangs is an on-disk btrfs subvolume, so nothing ever expired.
+apply_bang_services_tmp_max_age: 30d
