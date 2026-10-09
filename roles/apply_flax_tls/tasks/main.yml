@@ -30,6 +30,7 @@
   register: apply_flax_tls_existing_san
   changed_when: false
   failed_when: false
+  check_mode: false   # read-only — skipped under --check it reads as "no leaf" and forces a regeneration
 
 - name: Decide whether the leaf needs (re)generation
   ansible.builtin.set_fact:
@@ -41,8 +42,20 @@
          or ('DNS:*.' ~ inventory_hostname ~ '.' ~ apply_flax_tls_domain)
             not in apply_flax_tls_existing_san.stdout }}
 
+# Signing shells out on the control node, which --check skips; report the
+# pending regeneration as a change instead of failing on the missing build dir.
+- name: Report a pending leaf (re)generation (check mode only)
+  ansible.builtin.debug:
+    msg: "{{ inventory_hostname }}: wildcard leaf missing or SAN drift — a real run signs and installs a new one"
+  changed_when: true
+  when:
+    - ansible_check_mode
+    - apply_flax_tls_needs_leaf | bool
+
 - name: Sign + install a fresh wildcard leaf
-  when: apply_flax_tls_needs_leaf | bool
+  when:
+    - apply_flax_tls_needs_leaf | bool
+    - not ansible_check_mode
   block:
     - name: Make a control-node build dir
       ansible.builtin.tempfile:
