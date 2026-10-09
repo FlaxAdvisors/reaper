@@ -122,7 +122,7 @@ def load_no_steer(path: str) -> set:
             json.JSONDecodeError, ValueError):
         # Absent file, a docker-created directory (bind-mount of a missing host
         # path), or malformed JSON -> no exclusions. observe now loads this at
-        # startup, so a directory must NOT crash it (mirrors load_rabbit_geometry).
+        # startup, so a directory must NOT crash it.
         return set()
     if not isinstance(data, list):
         return set()

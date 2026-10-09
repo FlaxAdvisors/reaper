@@ -1,4 +1,4 @@
-"""Lab-enrollment scope for flax-observe (post-world dynamic rabbit-geometry).
+"""Lab-enrollment scope for flax-observe (post-world dynamic enrollment).
 
 Pure, DB-free helpers that compute which access ports on the lab's rabbit
 switch(es) flax-observe should enroll device-discovery workers for. The set is
@@ -13,7 +13,6 @@ Arista (before converting) and return internal short form.
 load_no_steer is reused from flax_classify.vlan_policy (the flax-control image
 bundles both packages), so observe and classify read the identical site file.
 """
-import json
 import logging
 
 from flax_classify.vlan_policy import load_no_steer  # noqa: F401  (re-export)
@@ -22,33 +21,6 @@ from .port_worker import _arista_to_internal
 
 
 log = logging.getLogger("flax-observe.enroll")
-
-
-def load_rabbit_geometry(path: str = "/etc/flax/rabbit-geometry.json") -> list[str]:
-    """rabbit-geometry.json (a list of {"switch": "<name>"}) -> switch names.
-
-    Tolerant safe-load mirroring the turtle-geometry soft-load in __main__:
-    an absent file, a directory path (a docker bind-mount of a missing path
-    creates an empty dir), an empty/malformed file, or a non-list payload all
-    soft-fail to []. Entries missing "switch" are skipped. Absent file =>
-    empty switch list => empty dynamic set => pure static behaviour.
-    """
-    try:
-        with open(path) as f:
-            data = json.load(f)
-    except (FileNotFoundError, IsADirectoryError, json.JSONDecodeError,
-            OSError, ValueError):
-        return []
-    if not isinstance(data, list):
-        return []
-    out: list[str] = []
-    for e in data:
-        if not isinstance(e, dict):
-            continue
-        switch = e.get("switch")
-        if switch:
-            out.append(switch)
-    return out
 
 
 def dynamic_access(cache, switches, no_steer):
