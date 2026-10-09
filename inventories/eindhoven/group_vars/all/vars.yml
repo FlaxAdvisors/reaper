@@ -384,3 +384,9 @@ apply_radvd_image_tag: "latest"
 # node only (apply_flax_tls, delegate_to localhost) -- never copied to a bang.
 # Same plaintext across all sites; encrypted separately per site vault.
 apply_flax_tls_ca_key: "{{ vault_flax_tls_ca_key }}"
+
+# Triage UI: the population profile a bang with no /etc/flax/triage-ui/settings.json
+# starts on (a file under /opt/flax/node_config, deployed from
+# files/configs/eindhoven/services/node_config/). Seed only -- the UI owns the
+# file once it exists.
+apply_triage_compose_node_config: ovh-bare-tp

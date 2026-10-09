@@ -45,6 +45,56 @@
     group: root
     mode: "0644"
 
+# State the compose file points at but nothing else creates. On a fresh bang
+# the api exits at import without $DB_FILE, and a missing bind-mount source is
+# created by docker as a root-owned DIRECTORY, which the agents cannot open as
+# a file. Seeds only: force:false never touches a store that already holds data.
+- name: Ensure triage state directories exist
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /etc/flax/mezzflash
+    - /etc/flax/frufw-backup
+    - /etc/flax/triage-ui
+
+- name: Seed an empty flash.json (the api's $DB_FILE)
+  become: true
+  ansible.builtin.copy:
+    content: ""
+    dest: /etc/flax/flash.json
+    force: false
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Seed an empty frufw.json state store
+  become: true
+  ansible.builtin.copy:
+    content: "{}\n"
+    dest: /etc/flax/frufw.json
+    force: false
+    owner: root
+    group: root
+    mode: "0600"
+
+# The UI owns this file after first boot (it rewrites it with set_at on every
+# operator change); the seed only gives a fresh bang the site's usual profile.
+- name: Seed the triage UI's selected node_config
+  become: true
+  ansible.builtin.copy:
+    content: "{{ {'node_config': apply_triage_compose_node_config} | to_json }}\n"
+    dest: /etc/flax/triage-ui/settings.json
+    force: false
+    owner: root
+    group: root
+    mode: "0644"
+  when: apply_triage_compose_node_config | length > 0
+
 - name: Bring triage stack up — master only (SOL listener requires VIP exclusivity)
   become: true
   ansible.builtin.command:

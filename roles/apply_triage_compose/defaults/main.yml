@@ -11,3 +11,6 @@ apply_triage_compose_compose_file: docker-compose-prod.yml
 # notify_{master,backup,fault}.sh templates so master/backup transitions
 # act on the same project regardless of compose `name:` field.
 apply_triage_compose_project: prod
+# Profile under /opt/flax/node_config the triage UI starts on when a bang has
+# no settings.json yet. Empty = no seed (the UI starts with nothing selected).
+apply_triage_compose_node_config: ""

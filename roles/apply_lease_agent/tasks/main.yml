@@ -251,6 +251,32 @@
   # empties the map would need manual removal of the stale file (no site does).
   when: (flax_role_integra_ports | default({})) | length > 0
 
+# Population profiles (one regex-per-line file per customer build) plus
+# blocklist-parts.json. Mounted read-only into the triage api and flax-post;
+# the triage UI's selected profile names one of these files. Operators have
+# edited them in place on the bang -- the repo copy is now the source, so an
+# in-place edit must be carried back here or the next run reverts it. Files
+# the repo does not know (editor backups) are left alone.
+- name: Ensure /opt/flax/node_config exists
+  become: true
+  ansible.builtin.file:
+    path: /opt/flax/node_config
+    state: directory
+    owner: root
+    group: root
+    mode: "0775"
+
+- name: Deploy node_config profiles
+  become: true
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/opt/flax/node_config/{{ item | basename }}"
+    owner: root
+    group: root
+    mode: "0664"
+  with_fileglob:
+    - "{{ config_output_dir }}/{{ site_name }}/services/node_config/*"
+
 - name: Deploy family-map files
   become: true
   ansible.builtin.copy:
