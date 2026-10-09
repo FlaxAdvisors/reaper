@@ -22,7 +22,7 @@ systemctl stop dnsmasq 2>/dev/null || true
 # Demote the flax-* pipeline on this host — these are single-writer services
 # (observe → observe_state, classify → kea.hosts); two of them racing across
 # both bangs would corrupt/churn those tables. Stop them on the backup.
-for u in flax-switch-sense flax-observe flax-classify flax-discover flax-reconcile flax-post flax-post-fwd flax-post-biosd flax-post-nicd flax-post-sol flax-post-nginx; do
+for u in flax-switch-sense flax-observe flax-classify flax-discover flax-reconcile flax-post flax-post-observe flax-post-fwd flax-post-biosd flax-post-nicd flax-post-sol flax-post-nginx; do
   systemctl stop "$u" 2>/dev/null || true
 done
 
