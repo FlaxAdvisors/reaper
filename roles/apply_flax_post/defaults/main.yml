@@ -46,6 +46,11 @@ apply_flax_post_ladder_ports: ""            # comma list; empty = every slot
 # Ladder budgets (seconds). host-ssh must cover the "already on" path where ping
 # answers from iPXE while the ISO is still downloading: measured 150 s on et24b2.
 apply_flax_post_ladder_host_ssh_s: 360
+# ipxe-seen (code default 120): tftp to the boot.ipxe fetch is 67-68 s, but on
+# some boots the BIOS first posts its memory collection to the BMC before it
+# starts the NBP, and the fetch lands 126-182 s after tftp (14 of 33 boots on
+# 2026-10-12, every one of which then booted).
+apply_flax_post_ladder_ipxe_seen_s: 300
 apply_flax_post_power_hold_dir: /etc/flax/post-power-hold
 apply_flax_post_sol_capture_dir: /var/lib/flax/post-sol
 apply_flax_post_claim_dir: /run/flax/bmc-fw-active
