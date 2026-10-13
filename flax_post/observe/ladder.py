@@ -72,7 +72,14 @@ def evidence_needed(ladder):
 
 # Boot markers of one PXE boot sit 67-74 s apart (tftp -> iPXE -> ISO, every
 # boot on bang-gouda 2026-09-14); anything wider is a different or broken boot.
+# The tftp -> iPXE leg is the exception: the BIOS sometimes posts its memory
+# collection to the BMC before it starts the NBP (124-211 s on six blades
+# 2026-10-13), so that leg gets whatever the watched ladder allows on ipxe-seen.
 BOOT_PROOF_BOUND_S = 120
+
+
+def _tftp_proof_bound_s():
+    return max(BOOT_PROOF_BOUND_S, budget_s("ipxe-seen") or 0)
 
 
 def _needs_boot_proof(lad) -> bool:
@@ -84,7 +91,7 @@ def _needs_boot_proof(lad) -> bool:
 def _prove_boot(born_at, times, kernel_boot) -> "dict | None":
     """{tftp, ipxe, iso, kernel} when the running kernel came from a PXE boot
     logged after born_at, else None. Newest iPXE since birth; its tftp within
-    BOOT_PROOF_BOUND_S before; its ISO within BOOT_PROOF_BOUND_S after; and the
+    the ipxe-seen budget before; its ISO within BOOT_PROOF_BOUND_S after; and the
     kernel booted between that iPXE and ISO fetch (an older boot's pair cannot
     bracket a kernel that booted later)."""
     if kernel_boot is None:
@@ -93,7 +100,7 @@ def _prove_boot(born_at, times, kernel_boot) -> "dict | None":
     if not ipxes:
         return None
     ipxe = max(ipxes)
-    tftps = [t for t in times.get("tftp") or [] if born_at <= t <= ipxe and ipxe - t <= BOOT_PROOF_BOUND_S]
+    tftps = [t for t in times.get("tftp") or [] if born_at <= t <= ipxe and ipxe - t <= _tftp_proof_bound_s()]
     isos = [t for t in times.get("iso") or [] if ipxe <= t <= ipxe + BOOT_PROOF_BOUND_S]
     if not tftps or not isos:
         return None
