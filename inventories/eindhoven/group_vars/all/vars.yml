@@ -79,6 +79,18 @@ vlans:
   # ttyS0 serial console, matching TP vids 17/25. (grandcanyon defaulted to
   # ttys1f, which would have broken that console on deploy.)
   - { vid: 31, family: tiogapass,    phase: post,   parent: eth1, cidr: 172.31.0.0/16, gateway_vip: 172.31.0.10, console: "{{ console_zerofast }}", dhcp_mode: pool, pxe: { menu: menu-ubuntu, submenu: "C_24.04" } }
+  # vid 32: a general-purpose post VLAN on the eth0/turtle path (mirrors the
+  # 26/27 eth0 OOB placement, NOT eth1 like 31). "Non-hardware-specific": it is
+  # deliberately ABSENT from flax_role_post_vid_by_family below, so flax-classify
+  # never steers a family to it and never sweeps it -- a pure open DHCP pool
+  # (dhcp_mode: pool, 172.32.0.50-.200) for post/integration work the flax
+  # pipeline shouldn't touch, the same posture as 26/27. family: tiogapass only
+  # sets the FALLBACK PXE console (com1f/ttyS0 115200n8, node wiwynn-tp) for an
+  # un-pinned client; the per-MAC pins in /srv/pxe/ipxe override it. No pxe:
+  # override, so phase=post gives menu-live + staylive. Companion config:
+  # ifcfg-eth0.32 on both bangs (172.32.0.1/.2) and `32` appended to the turtle
+  # Te1/1/1 + Te1/1/2 trunk allowed-vlan list (running-config.txt).
+  - { vid: 32, family: tiogapass,    phase: post,   parent: eth0, cidr: 172.32.0.0/16, gateway_vip: 172.32.0.10, console: "{{ console_zerofast }}", dhcp_mode: pool }
 
 # Mgmt VIP (VLAN 4 native on eth0). Carried by the same vrrp_instance.
 bang_mgmt_vip: 192.168.88.10

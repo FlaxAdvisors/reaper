@@ -152,6 +152,9 @@ vlan 30
 vlan 31
  name post-grandcanyon
 !
+vlan 32
+ name post-general
+!
 lldp run
 !
 !
@@ -258,8 +261,8 @@ interface GigabitEthernet1/0/20
  spanning-tree portfast edge
 !
 interface GigabitEthernet1/0/21
- description Zone E switch DUTs (W400 x4) - OOB mgmt
- switchport access vlan 27
+ description F4 rack E1050 uplink (swp25) - post vlan 32
+ switchport access vlan 32
  switchport mode access
  spanning-tree portfast edge
 !
@@ -388,7 +391,7 @@ interface GigabitEthernet1/1/4
 !
 interface TenGigabitEthernet1/1/1
  description bang-gouda mezz-p0 SFP+ DAC - corp + mgmt + wedge OOB
- switchport trunk allowed vlan 2,4,26,27
+ switchport trunk allowed vlan 2,4,26,27,32
  switchport trunk encapsulation dot1q
  switchport trunk native vlan 4
  switchport mode trunk
@@ -396,7 +399,7 @@ interface TenGigabitEthernet1/1/1
 !
 interface TenGigabitEthernet1/1/2
  description bang-edam mezz-p0 SFP+ DAC - corp + mgmt + wedge OOB
- switchport trunk allowed vlan 2,4,26,27
+ switchport trunk allowed vlan 2,4,26,27,32
  switchport trunk encapsulation dot1q
  switchport trunk native vlan 4
  switchport mode trunk
