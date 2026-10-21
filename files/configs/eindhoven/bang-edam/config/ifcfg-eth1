@@ -1,3 +1,2 @@
 BOOTPROTO='none'
 STARTMODE='auto'
-ZONE=external
