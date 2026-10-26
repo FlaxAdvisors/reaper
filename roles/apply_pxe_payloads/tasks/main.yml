@@ -96,6 +96,7 @@
     - test_qual_server.py
     - test_qual_agent.py
     - test_qual_contract.py
+    - test_wipe_disks.py
     - __pycache__
   tags: [post_tgz]
 

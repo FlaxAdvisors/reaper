@@ -407,6 +407,22 @@ ps_note "bmc usb nic (9 of 9)"
 ./collect_bmc_usbnet.sh > $logdir/bmc_usbnet.txt 2>&1
 ps_done
 
+# Triage disk wipe: recycled drives arrive with a previous owner's OS on them,
+# and a disk-first boot order then boots it instead of PXE (et10b4, 2026-10-26).
+# After the inventory above has recorded what was on them, clear partition
+# tables + signatures and discard the blocks -- minimal, no crypto/sanitize,
+# and only disks that need it (see wipe_disks.sh). Inventory action only, and
+# only where the VLAN's PXE config passes flaxwipe=1 (triage VLANs by default;
+# apply_pxe_payloads boot.ipxe.j2). staylive/liveboot exits long before here.
+flaxwipe=$(sed -n 's/^.*flaxwipe=\([01]\).*$/\1/p' /proc/cmdline)
+if [ "$action" == "inventory" ] && [ "$flaxwipe" == "1" ]; then
+    ps_begin diskwipe "wipe_disks.sh"
+    ./wipe_disks.sh > $logdir/diskwipe.txt 2>&1
+    ps_done "$(grep -c '^WIPED' $logdir/diskwipe.txt) wiped, $(grep -c '^CLEAN' $logdir/diskwipe.txt) already clean"
+else
+    ps_skip diskwipe "flaxwipe=${flaxwipe:-unset} action=$action"
+fi
+
 ps_begin ident "chassis identify 180"
 bmc_gate "chassis identify" && ipmitool chassis identify 180
 ps_done

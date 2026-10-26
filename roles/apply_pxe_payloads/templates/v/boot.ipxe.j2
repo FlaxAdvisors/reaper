@@ -14,13 +14,16 @@
 {%- set com = pxe_override.com | default(fam.com) -%}
 {%- set com_setting = pxe_override.com_setting | default(fam.com_setting) -%}
 {%- set node = pxe_override.node | default(fam.node) -%}
+{#- Disk wipe on the inventory action (post.sh -> wipe_disks.sh): on for
+    triage VLANs, off for post. Per-vlan override: pxe: { wipe: false }. -#}
+{%- set wipe = pxe_override.wipe | default(phase == 'triage') | bool -%}
 #!ipxe
 # Rendered from roles/apply_pxe_payloads/templates/v/boot.ipxe.j2 for
 # vid {{ current_vid }} ({{ family }}-{{ phase }}). Per-VID settings:
-# menu={{ menu }} submenu={{ submenu }} com={{ com }} com-setting={{ com_setting }} node={{ node }}.
+# menu={{ menu }} submenu={{ submenu }} com={{ com }} com-setting={{ com_setting }} node={{ node }} wipe={{ wipe | lower }}.
 # Family + phase derive the defaults via apply_pxe_payloads_pxe_family_map
 # + apply_pxe_payloads_pxe_phase_map. Per-vlan overrides go in the site
-# inventory: vlans entry → pxe: {menu, submenu, com, com_setting, node}.
+# inventory: vlans entry → pxe: {menu, submenu, com, com_setting, node, wipe}.
 # Edit-on-bang would be stomped by the next apply_pxe_payloads run —
 # adjust the inventory (or the role defaults) instead.
 
@@ -42,6 +45,9 @@ set console ${serial} console=${com-setting} earlyprintk=serial,${com-setting}
 
 # specification of node type
 isset ${node-setting} || set node-setting {{ node }}
+# flaxwipe=1: post.sh's inventory action clears leftover partitions/OS
+# signatures off the node's internal disks (wipe_disks.sh). Never on staylive.
+isset ${flaxwipe} || set flaxwipe {{ 1 if wipe else 0 }}
 
 # Figure out if client is 64-bit capable
 cpuid --ext 29 && set arch x64 || set arch x86
@@ -160,7 +166,7 @@ set postaction postautomate
 goto live
 
 :live
-set live rd.live.image rd.live.ram=1 rd.live.debug=1 rd.live.overlay.size=32768 rd.live.overlay.cowfs=ext4 extra iomem=relaxed BOOTIF=01-${mac:hexhyp} postaction=${postaction} pxeaddr=${dns} ksdevice=bootif text
+set live rd.live.image rd.live.ram=1 rd.live.debug=1 rd.live.overlay.size=32768 rd.live.overlay.cowfs=ext4 extra iomem=relaxed BOOTIF=01-${mac:hexhyp} postaction=${postaction} flaxwipe=${flaxwipe} pxeaddr=${dns} ksdevice=bootif text
 set loader ${install-url}/suse/live/test
 set livever 3.0.0
 set iso ${loader}/LiveLeap.x86_64-${livever}.iso
