@@ -36,6 +36,9 @@ DRY="${WIPE_DRYRUN:-0}"
 EFI_DIR="${WIPE_EFI_DIR:-/sys/firmware/efi}"
 SYS_BLOCK="${WIPE_SYS_BLOCK:-/sys/block}"
 
+# Progress on the SOL banner: post.sh exports ps_note; standalone it is a no-op.
+note() { declare -F ps_note >/dev/null && ps_note "$*"; return 0; }
+
 run() {
     if [ "$DRY" = 1 ]; then echo "  dry-run: $*"; return 0; fi
     "$@"
@@ -57,17 +60,22 @@ echo "wipe_disks.sh $(date -u +%FT%TZ) dryrun=$DRY"
 echo "== before"
 lsblk -o NAME,TYPE,TRAN,RM,SIZE,MODEL,SERIAL,FSTYPE,LABEL,PARTUUID 2>&1
 
-PU=$(mktemp)   # PARTUUIDs of wiped disks; a file, since the loop is a subshell
-lsblk -dnpo NAME,TYPE 2>/dev/null | while read -r dev type; do
-    [ "$type" = disk ] || continue
+PU=$(mktemp)   # PARTUUIDs of wiped disks
+# Real disks only: unattached nbd/zram show up as 0-byte "disks".
+disks=""
+for dev in $(lsblk -dnpo NAME,TYPE 2>/dev/null | awk '$2=="disk"{print $1}'); do
+    [ "$(field "$dev" SIZE)" = "0B" ] || disks="$disks $dev"
+done
+n=$(echo $disks | wc -w); i=0
+for dev in $disks; do
+    i=$((i + 1))
     tran=$(field "$dev" TRAN); rm=$(field "$dev" RM)
     model=$(field "$dev" MODEL); serial=$(field "$dev" SERIAL); size=$(field "$dev" SIZE)
+    note "disk $i of $n: checking $dev ${model:-} $size"
     id="$dev model=${model:--} serial=${serial:--} size=${size:--}"
     case "$tran" in
         nvme|sata|sas|ata) ;;
-        *)  # unattached nbd/zram etc. are 0-byte "disks": not worth a line
-            [ "$size" = "0B" ] || echo "SKIP  $id reason=transport:${tran:-none}"
-            continue ;;
+        *) echo "SKIP  $id reason=transport:${tran:-none}"; continue ;;
     esac
     if [ "$rm" = 1 ]; then echo "SKIP  $id reason=removable"; continue; fi
     if lsblk -nro MOUNTPOINT "$dev" 2>/dev/null | grep -q .; then
@@ -87,6 +95,7 @@ lsblk -dnpo NAME,TYPE 2>/dev/null | while read -r dev type; do
         [ -n "$u" ] && echo "$u" >> "$PU"
     done
 
+    note "disk $i of $n: wiping $dev ${model:-} (partitions + signatures, then discard)"
     method="wipefs"
     for p in $parts; do run wipefs -a -q "$p"; done
     run wipefs -a -q "$dev"
@@ -123,6 +132,7 @@ done
 # Boot entries pointing at a wiped partition: remove them, so a disk can
 # never again be put ahead of PXE by a stale "Windows Boot Manager".
 if [ -s "$PU" ] && [ -d "$EFI_DIR" ]; then
+    note "removing UEFI boot entries that pointed at the wiped disks"
     efibootmgr -v 2>/dev/null | grep -E '^Boot[0-9A-Fa-f]{4}' | while IFS= read -r line; do
         low=$(echo "$line" | tr 'A-F' 'a-f')
         while read -r u; do

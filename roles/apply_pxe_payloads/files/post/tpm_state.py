@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+"""tpm_state.py -- is this node's TPM 2.0 owned? Raw TPM2_GetCapability over
+/dev/tpm0, because the live ISO's tpm2-tools ship without the device TCTI
+("Could not load tcti", 2026-10-26).
+
+Prints one line of key=value pairs, e.g.
+  owned=1 perm=0x00000007 ownerAuthSet=1 endorsementAuthSet=1 lockoutAuthSet=1 disableClear=0 persistent=2
+owned=1 when any of the three hierarchy passwords is set or a persistent key
+exists -- what a previous OS (Windows/BitLocker) leaves behind. A cleared TPM
+reads perm=0x00000000 persistent=0. Platform/vendor NV indices (EK certs)
+survive a clear and are not counted. Exit 2 when the TPM cannot be read.
+"""
+import os
+import struct
+import sys
+
+DEV = os.environ.get("TPM_DEV", "/dev/tpm0")
+BITS = {0: "ownerAuthSet", 1: "endorsementAuthSet", 2: "lockoutAuthSet", 8: "disableClear"}
+
+
+def get_capability(f, cap, prop, count):
+    body = struct.pack(">III", cap, prop, count)
+    f.write(struct.pack(">HII", 0x8001, 10 + len(body), 0x0000017A) + body)
+    r = f.read(4096)
+    rc = struct.unpack(">I", r[6:10])[0]
+    if rc:
+        raise IOError("TPM rc=0x%x" % rc)
+    return r[10:]
+
+
+def main():
+    try:
+        with open(DEV, "r+b", buffering=0) as f:
+            r = get_capability(f, 6, 0x200, 1)               # TPM_PT_PERMANENT
+            perm = struct.unpack(">I", r[13:17])[0]
+            r = get_capability(f, 1, 0x81000000, 64)          # persistent handles
+            persistent = struct.unpack(">I", r[5:9])[0]
+    except (OSError, IOError, struct.error) as e:
+        print("owned=? error=%s" % str(e).replace(" ", "_"))
+        return 2
+    owned = int(bool(perm & 0x7) or persistent > 0)
+    print("owned=%d perm=0x%08x %s persistent=%d" % (
+        owned, perm, " ".join("%s=%d" % (n, (perm >> b) & 1) for b, n in BITS.items()), persistent))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
