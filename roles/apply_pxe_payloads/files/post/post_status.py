@@ -28,7 +28,7 @@ SERIAL_INFO = os.environ.get("POST_SERIAL_INFO", "/proc/tty/driver/serial")
 
 STAGES = {
     "inventory": ["boot", "clock", "ipmi", "biosgate", "nicfw", "biosfw",
-                  "inventory", "binrefresh", "tools", "dump", "ident", "poweroff"],
+                  "inventory", "binrefresh", "tools", "diskwipe", "dump", "ident", "poweroff"],
     "memtest": ["boot", "clock", "ipmi", "memtest", "dump", "ident", "poweroff"],
     "postautomate": ["boot", "agent"],
 }
