@@ -97,11 +97,14 @@ echo "==> copying golden config to switch:/tmp/config_db.golden.json"
 "${SCP[@]}" "$GOLDEN" "$USER@$TARGET:/tmp/config_db.golden.json"
 
 # ---- apply on-box (backup -> reload -> disable bgp -> save -> verify) ------
-# The remote work is streamed as one script so a single sudo session drives
-# it. config reload is kicked detached so it survives any mgmt-plane blip,
-# then we wait for swss/syncd to settle before verifying.
-echo "==> applying (this includes a config reload; ~1-2 min)"
-rsh "SUDO_PW='${PASS}' bash -s" <<'REMOTE'
+# The on-box steps are written to files, copied to the switch and run from
+# there. They used to be a heredoc fed to `bash -s`, and anything in them
+# that reads stdin swallowed the rest of the script: `redis-cli --scan` in
+# the wait loop does exactly that, so the chrony drop-in, bgp disable and
+# `config save` silently never ran. Nothing here may go through ssh stdin.
+# config reload is kicked detached so it survives any mgmt-plane blip.
+TMPD="$(mktemp -d)"; trap 'rm -rf "$TMPD"' EXIT
+cat >"$TMPD/l2-apply.sh" <<'REMOTE'
 set -euo pipefail
 S(){ if [ -n "${SUDO_PW:-}" ]; then echo "$SUDO_PW" | sudo -S "$@"; else sudo "$@"; fi; }
 ts="$(date -u +%Y%m%d-%H%M%S)"
@@ -126,13 +129,22 @@ print('    spliced hwsku=%s mac=%s' % (lh.get('hwsku','?'), lh.get('mac','?')))
 # left swss stopped) can never be reloaded back into a good state — the
 # check refuses to run precisely when you most need the reload.
 echo "    config reload (detached, -f)"
-S bash -c 'nohup config reload -y -f /etc/sonic/config_db.json >/tmp/sonic-l2-reload.log 2>&1 &'
+S rm -f /tmp/sonic-l2-reload.log
+pid="$(S bash -c 'nohup config reload -y -f /etc/sonic/config_db.json </dev/null >/tmp/sonic-l2-reload.log 2>&1 & echo $!')"
 # NB: do NOT use "Released lock" as the success signal — config reload
 # prints it on the failure path too (it is lock teardown, not success).
-# The only trustworthy signal is the intent actually landing in CONFIG_DB.
+# Nor is the VLAN alone enough: on a re-run it is already in CONFIG_DB and
+# swss has not stopped yet, which used to declare success 5 s into the
+# reload. Wait for the reload process itself, then for the ports to exist.
+echo "    waiting for config reload (pid $pid) to finish"
+for i in $(seq 1 60); do
+  [ -d "/proc/$pid" ] || break
+  sleep 5
+done
+[ -d "/proc/$pid" ] && echo "    !! config reload still running after 300 s" >&2
 echo "    waiting for swss/syncd to settle"
 ok=0
-for i in $(seq 1 36); do
+for i in $(seq 1 48); do
   sleep 5
   if grep -qE "Could not get the HWSKU|Traceback \(most recent call last\)" /tmp/sonic-l2-reload.log 2>/dev/null; then
     echo "    !! config reload aborted:" >&2
@@ -142,7 +154,9 @@ for i in $(seq 1 36); do
   sw=$(systemctl is-active swss 2>/dev/null || true)
   sy=$(systemctl is-active syncd 2>/dev/null || true)
   [ "$sw" = active ] && [ "$sy" = active ] || continue
-  if [ "$(redis-cli -n 4 --scan --pattern 'VLAN|Vlan1000' 2>/dev/null | wc -l)" -ge 1 ]; then
+  # PortInitDone (APPL_DB, cleared by swss on stop) = the ports exist.
+  [ "$(redis-cli -n 0 exists PORT_TABLE:PortInitDone </dev/null 2>/dev/null)" = 1 ] || continue
+  if [ "$(redis-cli -n 4 --scan --pattern 'VLAN|Vlan1000' </dev/null 2>/dev/null | wc -l)" -ge 1 ]; then
     ok=1; echo "    reload complete after $((i*5))s"; break
   fi
 done
@@ -189,27 +203,27 @@ S systemctl restart chrony || echo "    !! chrony restart failed — check 'syst
 echo "    waiting for FEATURE table to settle"
 for i in $(seq 1 24); do
   sleep 5
-  [ -n "$(redis-cli -n 4 hget 'FEATURE|bgp' state 2>/dev/null)" ] && break
+  [ -n "$(redis-cli -n 4 hget 'FEATURE|bgp' state </dev/null 2>/dev/null)" ] && break
 done
 echo "    disable bgp feature"
 for i in $(seq 1 6); do
   S config feature state bgp disabled || true
   sleep 5
-  [ "$(redis-cli -n 4 hget 'FEATURE|bgp' state 2>/dev/null)" = disabled ] && break
+  [ "$(redis-cli -n 4 hget 'FEATURE|bgp' state </dev/null 2>/dev/null)" = disabled ] && break
 done
-bgpstate="$(redis-cli -n 4 hget 'FEATURE|bgp' state 2>/dev/null)"
+bgpstate="$(redis-cli -n 4 hget 'FEATURE|bgp' state </dev/null 2>/dev/null)"
 [ "$bgpstate" = disabled ] \
   && echo "    bgp feature disabled" \
   || echo "    !! bgp feature is '$bgpstate' (wanted disabled) — harmless with 0 neighbours, but check hostcfgd" >&2
 echo "    save config"
 S config save -y >/dev/null
+echo "    on-box steps complete"
 REMOTE
 
 # ---- verify ----------------------------------------------------------------
-echo "==> verification"
 # Config-level checks first: link state is meaningless when nothing is
 # cabled, so a deploy onto an empty switch must still verify as good.
-rsh 'bash -s' <<'REMOTE'
+cat >"$TMPD/l2-verify.sh" <<'REMOTE'
 python3 -c "
 import json
 d=json.load(open('/etc/sonic/config_db.json'))
@@ -231,6 +245,13 @@ adm25=$(show interfaces status 2>/dev/null | awk '$3=="25G" && $9=="up"{c++} END
 oper25=$(show interfaces status 2>/dev/null | awk '$3=="25G" && $8=="up"{c++} END{print c+0}')
 echo "    25G subports       : $adm25 admin-up, $oper25 oper-up (oper 0 is expected when nothing is cabled)"
 REMOTE
+
+"${SCP[@]}" "$TMPD/l2-apply.sh" "$TMPD/l2-verify.sh" "$USER@$TARGET:/tmp/"
+echo "==> applying (this includes a config reload; ~1-2 min)"
+rsh "SUDO_PW='${PASS}' bash /tmp/l2-apply.sh </dev/null" \
+  || { echo "==> apply FAILED (see above)" >&2; exit 1; }
+echo "==> verification"
+rsh "bash /tmp/l2-verify.sh </dev/null; rm -f /tmp/l2-apply.sh /tmp/l2-verify.sh"
 
 echo "==> done. Backup of the pre-existing config is on the switch under /home/$USER/."
 echo "    Note: 25G breakout subports have FEC unset (N/A). If a 25G link"
