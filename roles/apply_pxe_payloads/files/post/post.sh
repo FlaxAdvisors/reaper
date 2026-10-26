@@ -414,13 +414,34 @@ ps_done
 # and only disks that need it (see wipe_disks.sh). Inventory action only, and
 # only where the VLAN's PXE config passes flaxwipe=1 (triage VLANs by default;
 # apply_pxe_payloads boot.ipxe.j2). staylive/liveboot exits long before here.
+#
+# Same gate, same reason: a TPM a previous OS left owned (Windows/BitLocker)
+# is cleared by the BIOS through the standard PPI request (tpm_clear.sh). The
+# BIOS only does that on a boot, so a queued clear turns the power-off at the
+# end of this run into a reboot; the next inventory pass confirms it and
+# powers off as usual. Both helpers put their progress on the SOL banner
+# through the exported ps_note.
 flaxwipe=$(sed -n 's/^.*flaxwipe=\([01]\).*$/\1/p' /proc/cmdline)
+tpmq=0
 if [ "$action" == "inventory" ] && [ "$flaxwipe" == "1" ]; then
-    ps_begin diskwipe "wipe_disks.sh"
+    export -f _ps ps_note
+    export _ps_on _ps_python _ps_dir _ps_tty
+    ps_begin diskwipe "clearing leftover partitions + OS signatures (wipe_disks.sh)"
     ./wipe_disks.sh > $logdir/diskwipe.txt 2>&1
     ps_done "$(grep -c '^WIPED' $logdir/diskwipe.txt) wiped, $(grep -c '^CLEAN' $logdir/diskwipe.txt) already clean"
+    ps_begin tpmclear "did a previous OS leave the TPM owned? (tpm_clear.sh)"
+    ./tpm_clear.sh > $logdir/tpmclear.txt 2>&1
+    if [ $? -eq 10 ]; then
+        tpmq=1
+        ps_done "clear queued -- this run REBOOTS instead of powering off, so the BIOS can clear it"
+    elif grep -q '^TPM-FAIL' $logdir/tpmclear.txt; then
+        ps_fail "$(grep -m1 '^TPM-FAIL' $logdir/tpmclear.txt | cut -d' ' -f2)"
+    else
+        ps_done "$(grep -oE '^TPM-(CLEARED-AT-BOOT|CLEAN|SKIP)( reason=[^ ]*)?' $logdir/tpmclear.txt | tr '\n' ' ')"
+    fi
 else
     ps_skip diskwipe "flaxwipe=${flaxwipe:-unset} action=$action"
+    ps_skip tpmclear "flaxwipe=${flaxwipe:-unset} action=$action"
 fi
 
 ps_begin ident "chassis identify 180"
@@ -490,6 +511,16 @@ elif [ "$dumpok" = 1 ]; then
 else
     donemsg="$action results NOT delivered to the bang (dump failed) - CHECK THE GUI and the banghook journal"
 fi
+# A queued TPM clear only runs on a boot: reboot, and say why, so the extra
+# boot (and any reset the BIOS adds while clearing) does not read as a crash.
+if [ "$tpmq" = 1 ]; then
+    ps_skip poweroff "rebooting for the BIOS TPM clear instead"
+    ps_finish REBOOTING "TPM CLEAR: rebooting so the BIOS clears the TPM a previous OS left owned. The BIOS may reset once more while it clears. Inventory then runs again, confirms the clear, and powers off. Not a crash. $donemsg"
+    ps_flush
+    systemctl reboot || reboot -f
+    exit 0
+fi
+
 ps_begin poweroff
 # Before the last word goes up: the wait for a rebooting BMC must be visible
 # as a running stage, not hidden behind the final POWER-OFF frame.
