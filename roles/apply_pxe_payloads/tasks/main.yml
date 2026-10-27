@@ -100,6 +100,7 @@
     - test_tpm_clear.py
     - test_tpm_state.py
     - test_tpm_sce.py
+    - test_collect_bmc_usbnet.py
     - __pycache__
   tags: [post_tgz]
 
