@@ -1,0 +1,6 @@
+no vlan 2,6,8,10
+no ip route 0.0.0.0/0 192.168.88.1
+no ip name-server vrf default 192.168.88.1
+interface Ethernet1/1
+   no switchport trunk allowed vlan
+   no switchport mode

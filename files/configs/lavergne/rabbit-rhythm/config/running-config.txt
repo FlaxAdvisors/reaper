@@ -10,32 +10,62 @@ username admin role network-admin secret sha512 $6$3nHPrw5vdN8ylrRi$7ziq9aX/T3P1
 service routing protocols model ribd
 !
 hostname rabbit-rhythm
-ip name-server vrf default 192.168.88.1
+ip name-server vrf default 192.168.88.10
 !
 spanning-tree mode mstp
 !
 service unsupported-transceiver sesame f71a13ed
 !
 vlan 2
-   name external
+   name corp
 !
 vlan 4
-   name rhythm
-!
-vlan 6
    name mgmt
 !
-vlan 8
-   name blues
+vlan 16
+   name triage-leopard
 !
-vlan 10
-   name howlin
+vlan 17
+   name triage-tiogapass
 !
-vlan 12
-   name c2g
+vlan 18
+   name triage-wedge100s
 !
-vlan 14
-   name muddy
+vlan 19
+   name triage-wedge400
+!
+vlan 20
+   name triage-yv3
+!
+vlan 21
+   name triage-brycecanyon
+!
+vlan 22
+   name triage-lightning
+!
+vlan 23
+   name triage-grandcanyon
+!
+vlan 24
+   name post-leopard
+!
+vlan 25
+   name post-tiogapass
+!
+vlan 26
+   name oob-wedge100s
+!
+vlan 27
+   name oob-wedge400
+!
+vlan 28
+   name post-yv3
+!
+vlan 29
+   name post-brycecanyon
+!
+vlan 30
+   name post-lightning
 !
 vlan 31
    name post-howlin
@@ -43,11 +73,8 @@ vlan 31
 vlan 32
    name post-c2g
 !
-vlan 102
-   name harvester102
-!
-vlan 200
-   name vlan200
+vlan 33
+   name post-muddy
 !
 management api http-commands
    no shutdown
@@ -58,366 +85,361 @@ management api http-commands
 interface Ethernet1/1
    description bang-rhythm
    speed forced 25gfull
-   switchport trunk native vlan 6
-   switchport trunk allowed vlan 4,6,8,10,12,14,31-32
+   switchport trunk native vlan 4
+   switchport trunk allowed vlan 4,16-25,28-33
    switchport mode trunk
 !
 interface Ethernet1/2
    description bang-blues
    speed forced 25gfull
-   switchport trunk native vlan 6
-   switchport trunk allowed vlan 4,6,8,10,12,14,31-32,102-200
+   switchport trunk native vlan 4
+   switchport trunk allowed vlan 4,16-25,28-33
    switchport mode trunk
 !
 interface Ethernet1/3
    speed forced 25gfull
-   switchport trunk native vlan 6
-   switchport trunk allowed vlan 4,6
-   switchport mode trunk
+   shutdown
 !
 interface Ethernet1/4
    speed forced 25gfull
-   switchport trunk native vlan 6
-   switchport trunk allowed vlan 4,6
-   switchport mode trunk
+   shutdown
 !
 interface Ethernet2/1
-   switchport access vlan 10
+   description rabbit-howlin
+   switchport access vlan 31
 !
 interface Ethernet3/1
-   switchport trunk allowed vlan 2-20,102-200
-   switchport mode trunk
+   shutdown
 !
 interface Ethernet4/1
    no error-correction encoding
-   switchport access vlan 4
+   description rabbit-blues
+   switchport trunk allowed vlan 4,24-30
+   switchport mode trunk
 !
 interface Ethernet5/1
-   switchport access vlan 8
+   shutdown
 !
 interface Ethernet6/1
-   switchport access vlan 8
+   shutdown
 !
 interface Ethernet7/1
-   switchport access vlan 8
+   shutdown
 !
 interface Ethernet8/1
-   switchport access vlan 8
+   shutdown
 !
 interface Ethernet9/1
+   shutdown
 !
 interface Ethernet10/1
    speed forced 25gfull
-   switchport access vlan 8
+   shutdown
 !
 interface Ethernet10/2
    speed forced 25gfull
-   switchport access vlan 8
+   shutdown
 !
 interface Ethernet10/3
    speed forced 25gfull
-   switchport access vlan 8
+   shutdown
 !
 interface Ethernet10/4
    speed forced 25gfull
-   switchport access vlan 8
+   shutdown
 !
 interface Ethernet11/1
    speed forced 25gfull
-   switchport access vlan 8
+   shutdown
 !
 interface Ethernet11/2
    speed forced 25gfull
-   switchport access vlan 8
+   shutdown
 !
 interface Ethernet11/3
    speed forced 25gfull
-   switchport access vlan 8
+   shutdown
 !
 interface Ethernet11/4
    speed forced 25gfull
-   switchport access vlan 8
+   shutdown
 !
 interface Ethernet12/1
    speed forced 25gfull
-   switchport access vlan 8
+   shutdown
 !
 interface Ethernet12/2
    speed forced 25gfull
-   switchport access vlan 8
+   shutdown
 !
 interface Ethernet12/3
    speed forced 25gfull
-   switchport access vlan 8
+   shutdown
 !
 interface Ethernet12/4
    speed forced 25gfull
-   switchport access vlan 8
+   shutdown
 !
 interface Ethernet13/1
    speed forced 100gfull
-   switchport access vlan 8
+   shutdown
 !
 interface Ethernet13/2
    speed forced 25gfull
-   switchport access vlan 8
 !
 interface Ethernet13/3
    speed forced 25gfull
-   switchport access vlan 8
 !
 interface Ethernet13/4
    speed forced 25gfull
-   switchport access vlan 8
 !
 interface Ethernet14/1
    speed forced 25gfull
-   switchport access vlan 8
+   shutdown
 !
 interface Ethernet14/2
    speed forced 25gfull
-   switchport access vlan 8
+   shutdown
 !
 interface Ethernet14/3
    speed forced 25gfull
-   switchport access vlan 8
+   shutdown
 !
 interface Ethernet14/4
    speed forced 25gfull
-   switchport access vlan 8
+   shutdown
 !
 interface Ethernet15/1
    speed forced 25gfull
-   switchport access vlan 8
+   shutdown
 !
 interface Ethernet15/2
    speed forced 25gfull
-   switchport access vlan 8
+   shutdown
 !
 interface Ethernet15/3
    speed forced 25gfull
-   switchport access vlan 8
+   shutdown
 !
 interface Ethernet15/4
    speed forced 25gfull
-   switchport access vlan 8
+   shutdown
 !
 interface Ethernet16/1
    speed forced 25gfull
-   switchport access vlan 8
+   shutdown
 !
 interface Ethernet16/2
    speed forced 25gfull
-   switchport access vlan 8
+   shutdown
 !
 interface Ethernet16/3
    speed forced 25gfull
-   switchport access vlan 8
+   shutdown
 !
 interface Ethernet16/4
    speed forced 25gfull
-   switchport access vlan 8
+   shutdown
 !
 interface Ethernet17/1
    speed forced 25gfull
-   switchport access vlan 4
+   shutdown
 !
 interface Ethernet17/2
    speed forced 25gfull
-   switchport access vlan 4
+   shutdown
 !
 interface Ethernet17/3
    speed forced 25gfull
-   switchport access vlan 4
+   shutdown
 !
 interface Ethernet17/4
    speed forced 25gfull
-   switchport access vlan 4
+   shutdown
 !
 interface Ethernet18/1
    speed forced 25gfull
-   switchport access vlan 4
+   shutdown
 !
 interface Ethernet18/2
    speed forced 25gfull
-   switchport access vlan 4
+   shutdown
 !
 interface Ethernet18/3
    speed forced 25gfull
-   switchport access vlan 4
+   shutdown
 !
 interface Ethernet18/4
    speed forced 25gfull
-   switchport access vlan 4
+   shutdown
 !
 interface Ethernet19/1
    speed forced 25gfull
-   switchport access vlan 4
+   shutdown
 !
 interface Ethernet19/2
    speed forced 25gfull
-   switchport access vlan 4
+   shutdown
 !
 interface Ethernet19/3
    speed forced 25gfull
-   switchport access vlan 4
+   shutdown
 !
 interface Ethernet19/4
    speed forced 25gfull
-   switchport access vlan 4
+   shutdown
 !
 interface Ethernet20/1
    speed forced 25gfull
-   switchport access vlan 4
+   shutdown
 !
 interface Ethernet20/2
    speed forced 25gfull
-   switchport access vlan 4
+   shutdown
 !
 interface Ethernet20/3
    speed forced 25gfull
-   switchport access vlan 4
+   shutdown
 !
 interface Ethernet20/4
    speed forced 25gfull
-   switchport access vlan 4
+   shutdown
 !
 interface Ethernet21/1
    speed forced 25gfull
-   switchport access vlan 10
+   shutdown
 !
 interface Ethernet21/2
    speed forced 25gfull
-   switchport access vlan 10
+   shutdown
 !
 interface Ethernet21/3
    speed forced 25gfull
-   switchport access vlan 10
+   shutdown
 !
 interface Ethernet21/4
    speed forced 25gfull
-   switchport access vlan 10
+   shutdown
 !
 interface Ethernet22/1
+   shutdown
 !
 interface Ethernet23/1
    speed forced 25gfull
-   switchport access vlan 4
+   shutdown
 !
 interface Ethernet23/2
    speed forced 25gfull
-   switchport access vlan 4
+   shutdown
 !
 interface Ethernet23/3
    speed forced 25gfull
-   switchport access vlan 4
+   shutdown
 !
 interface Ethernet23/4
    speed forced 25gfull
-   switchport access vlan 4
+   shutdown
 !
 interface Ethernet24/1
+   shutdown
 !
 interface Ethernet25/1
    speed forced 25gfull
-   switchport trunk native vlan 6
-   switchport trunk allowed vlan 4,6
-   switchport mode trunk
+   shutdown
 !
 interface Ethernet25/2
    speed forced 25gfull
-   switchport trunk native vlan 6
-   switchport trunk allowed vlan 4,6
-   switchport mode trunk
+   shutdown
 !
 interface Ethernet25/3
    speed forced 25gfull
-   switchport trunk native vlan 6
-   switchport trunk allowed vlan 4,6
-   switchport mode trunk
+   shutdown
 !
 interface Ethernet25/4
    speed forced 25gfull
-   switchport trunk native vlan 6
-   switchport trunk allowed vlan 4,6
-   switchport mode trunk
+   shutdown
 !
 interface Ethernet26/1
+   shutdown
 !
 interface Ethernet27/1
-   switchport trunk allowed vlan 4,6,8,10
-   switchport mode trunk
+   shutdown
 !
 interface Ethernet28/1
+   shutdown
 !
 interface Ethernet29/1
    speed forced 25gfull
-   switchport access vlan 4
+   switchport access vlan 17
 !
 interface Ethernet29/2
    speed forced 25gfull
-   switchport access vlan 4
+   switchport access vlan 17
 !
 interface Ethernet29/3
    speed forced 25gfull
-   switchport access vlan 4
+   switchport access vlan 17
 !
 interface Ethernet29/4
    speed forced 25gfull
-   switchport access vlan 4
+   switchport access vlan 17
 !
 interface Ethernet30/1
    speed forced 25gfull
-   switchport access vlan 4
+   switchport access vlan 17
 !
 interface Ethernet30/2
    speed forced 25gfull
-   switchport access vlan 4
+   switchport access vlan 17
 !
 interface Ethernet30/3
    speed forced 25gfull
-   switchport access vlan 4
+   switchport access vlan 17
 !
 interface Ethernet30/4
    speed forced 25gfull
-   switchport access vlan 4
+   switchport access vlan 17
 !
 interface Ethernet31/1
    speed forced 25gfull
-   switchport access vlan 4
+   switchport access vlan 17
 !
 interface Ethernet31/2
    speed forced 25gfull
-   switchport access vlan 4
+   switchport access vlan 17
 !
 interface Ethernet31/3
    speed forced 25gfull
-   switchport access vlan 4
+   switchport access vlan 17
 !
 interface Ethernet31/4
    speed forced 25gfull
-   switchport access vlan 4
+   switchport access vlan 17
 !
 interface Ethernet32/1
    speed forced 10000full
-   switchport trunk allowed vlan 2-20
+   description turtle-rhythm
+   switchport trunk allowed vlan 2,4,26-27
    switchport mode trunk
 !
 interface Ethernet32/2
    speed forced 10000full
+   shutdown
 !
 interface Ethernet32/3
    speed forced 10000full
+   shutdown
 !
 interface Ethernet32/4
    speed forced 10000full
+   shutdown
 !
 interface Management1
-   ip address 192.168.88.4/24
+   ip address 192.168.88.31/24
 !
 no ip routing
 !
-ip route 0.0.0.0/0 192.168.88.1
+ip route 0.0.0.0/0 192.168.88.10
 !
 ntp server 0.pool.ntp.org
 ntp server 1.pool.ntp.org

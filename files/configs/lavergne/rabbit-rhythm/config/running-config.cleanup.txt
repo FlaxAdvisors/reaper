@@ -1,0 +1,141 @@
+no vlan 6,8,10,12,14,102,200
+no ip route 0.0.0.0/0 192.168.88.1
+no ip name-server vrf default 192.168.88.1
+interface Ethernet1/3
+   no switchport trunk native vlan
+   no switchport trunk allowed vlan
+   no switchport mode
+interface Ethernet1/4
+   no switchport trunk native vlan
+   no switchport trunk allowed vlan
+   no switchport mode
+interface Ethernet3/1
+   no switchport trunk allowed vlan
+   no switchport mode
+interface Ethernet5/1
+   no switchport access vlan
+interface Ethernet6/1
+   no switchport access vlan
+interface Ethernet7/1
+   no switchport access vlan
+interface Ethernet8/1
+   no switchport access vlan
+interface Ethernet10/1
+   no switchport access vlan
+interface Ethernet10/2
+   no switchport access vlan
+interface Ethernet10/3
+   no switchport access vlan
+interface Ethernet10/4
+   no switchport access vlan
+interface Ethernet11/1
+   no switchport access vlan
+interface Ethernet11/2
+   no switchport access vlan
+interface Ethernet11/3
+   no switchport access vlan
+interface Ethernet11/4
+   no switchport access vlan
+interface Ethernet12/1
+   no switchport access vlan
+interface Ethernet12/2
+   no switchport access vlan
+interface Ethernet12/3
+   no switchport access vlan
+interface Ethernet12/4
+   no switchport access vlan
+interface Ethernet13/1
+   no switchport access vlan
+interface Ethernet14/1
+   no switchport access vlan
+interface Ethernet14/2
+   no switchport access vlan
+interface Ethernet14/3
+   no switchport access vlan
+interface Ethernet14/4
+   no switchport access vlan
+interface Ethernet15/1
+   no switchport access vlan
+interface Ethernet15/2
+   no switchport access vlan
+interface Ethernet15/3
+   no switchport access vlan
+interface Ethernet15/4
+   no switchport access vlan
+interface Ethernet16/1
+   no switchport access vlan
+interface Ethernet16/2
+   no switchport access vlan
+interface Ethernet16/3
+   no switchport access vlan
+interface Ethernet16/4
+   no switchport access vlan
+interface Ethernet17/1
+   no switchport access vlan
+interface Ethernet17/2
+   no switchport access vlan
+interface Ethernet17/3
+   no switchport access vlan
+interface Ethernet17/4
+   no switchport access vlan
+interface Ethernet18/1
+   no switchport access vlan
+interface Ethernet18/2
+   no switchport access vlan
+interface Ethernet18/3
+   no switchport access vlan
+interface Ethernet18/4
+   no switchport access vlan
+interface Ethernet19/1
+   no switchport access vlan
+interface Ethernet19/2
+   no switchport access vlan
+interface Ethernet19/3
+   no switchport access vlan
+interface Ethernet19/4
+   no switchport access vlan
+interface Ethernet20/1
+   no switchport access vlan
+interface Ethernet20/2
+   no switchport access vlan
+interface Ethernet20/3
+   no switchport access vlan
+interface Ethernet20/4
+   no switchport access vlan
+interface Ethernet21/1
+   no switchport access vlan
+interface Ethernet21/2
+   no switchport access vlan
+interface Ethernet21/3
+   no switchport access vlan
+interface Ethernet21/4
+   no switchport access vlan
+interface Ethernet23/1
+   no switchport access vlan
+interface Ethernet23/2
+   no switchport access vlan
+interface Ethernet23/3
+   no switchport access vlan
+interface Ethernet23/4
+   no switchport access vlan
+interface Ethernet25/1
+   no switchport trunk native vlan
+   no switchport trunk allowed vlan
+   no switchport mode
+interface Ethernet25/2
+   no switchport trunk native vlan
+   no switchport trunk allowed vlan
+   no switchport mode
+interface Ethernet25/3
+   no switchport trunk native vlan
+   no switchport trunk allowed vlan
+   no switchport mode
+interface Ethernet25/4
+   no switchport trunk native vlan
+   no switchport trunk allowed vlan
+   no switchport mode
+interface Ethernet27/1
+   no switchport trunk allowed vlan
+   no switchport mode
+interface Ethernet4/1
+   no switchport access vlan

@@ -13,76 +13,60 @@ iface lo inet loopback
 
 auto eth0
 iface eth0 inet static
-    address 192.168.88.3/24
-    gateway 192.168.88.1
+    address 192.168.88.33/24
+    gateway 192.168.88.10
 
 ### Standard ports ############################################################
 
 auto swp1
 iface swp1
-    bridge-pvid 6
-    bridge-vids 2 6
+    bridge-pvid 4
+    bridge-vids 2 4 26 27
 
 auto swp2
 iface swp2
-    bridge-pvid 6
-    bridge-vids 2 6
+    bridge-pvid 4
+    bridge-vids 2 4 26 27
 
 auto swp3
 iface swp3
-    bridge-access 6
+    bridge-access 4
 
 auto swp4
 iface swp4
-    bridge-access 6
+    bridge-access 4
 
 auto swp5
 iface swp5
-    bridge-access 6
+    bridge-access 4
 
 auto swp6
 iface swp6
-    bridge-access 6
+    bridge-access 4
 
 auto swp7
 iface swp7
-    bridge-access 6
+    bridge-access 4
 
 auto swp8
 iface swp8
-    bridge-access 6
+    bridge-access 4
 
 auto swp9
 iface swp9
-    bridge-access 6
+    bridge-access 4
 
 auto swp10
 iface swp10
-    bridge-access 6
+    bridge-access 4
 
 auto swp11
 iface swp11
-    bridge-access 6
+    bridge-access 4
 
 auto swp12
 iface swp12
-    bridge-access 6
-
-auto swp13
-iface swp13
-    bridge-access 10
-
-auto swp14
-iface swp14
-    bridge-access 10
-
-auto swp15
-iface swp15
-    bridge-access 10
-
-auto swp16
-iface swp16
-    bridge-access 10
+    bridge-access 4
 
 auto swp43
 iface swp43
@@ -94,7 +78,7 @@ iface swp44
 
 auto swp45
 iface swp45
-    bridge-access 6
+    bridge-access 4
 
 auto swp46
 iface swp46
@@ -102,7 +86,7 @@ iface swp46
 
 auto swp47
 iface swp47
-    bridge-access 6
+    bridge-access 4
 
 auto swp48
 iface swp48
@@ -110,16 +94,16 @@ iface swp48
 
 auto swp49
 iface swp49
-    bridge-vids 2 4 6 8 10 12
+    bridge-vids 2 4 26 27
 
 auto swp50
 iface swp50
-    bridge-vids 2 4 6 8 10 12
+    bridge-vids 2 4 26 27
 
 ### Bridge ####################################################################
 
 auto bridge
 iface bridge
-    bridge-ports swp1 swp2 swp3 swp4 swp5 swp6 swp7 swp8 swp9 swp10 swp11 swp12 swp13 swp14 swp15 swp16 swp43 swp44 swp45 swp46 swp47 swp48 swp49 swp50
-    bridge-vids 1 2 4 6 8 10 12
+    bridge-ports swp1 swp2 swp3 swp4 swp5 swp6 swp7 swp8 swp9 swp10 swp11 swp12 swp43 swp44 swp45 swp46 swp47 swp48 swp49 swp50
+    bridge-vids 1 2 4 26 27
     bridge-vlan-aware yes
