@@ -5,7 +5,6 @@
 !
 no aaa root
 !
-username admin role network-admin secret sha512 $6$3nHPrw5vdN8ylrRi$7ziq9aX/T3P1ON0qZhvsoxmzHN3icxa9OH5gXyg0lBmQq7zHUl9YGGAgS3XJ4MI5NEpuH3qwDJvjqh.FMJzKM/
 !
 service routing protocols model ribd
 !
