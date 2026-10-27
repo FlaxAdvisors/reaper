@@ -347,20 +347,24 @@ interface Ethernet24/1
    shutdown
 !
 interface Ethernet25/1
-   shutdown
    speed forced 25gfull
+   description mezz-flash station (OU16)
+   switchport access vlan 17
 !
 interface Ethernet25/2
-   shutdown
    speed forced 25gfull
+   description mezz-flash station (OU16)
+   switchport access vlan 17
 !
 interface Ethernet25/3
-   shutdown
    speed forced 25gfull
+   description mezz-flash station (OU16)
+   switchport access vlan 17
 !
 interface Ethernet25/4
-   shutdown
    speed forced 25gfull
+   description mezz-flash station (OU16)
+   switchport access vlan 17
 !
 interface Ethernet26/1
    shutdown

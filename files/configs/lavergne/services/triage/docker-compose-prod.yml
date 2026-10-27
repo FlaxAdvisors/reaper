@@ -24,7 +24,7 @@ services:
       # from the api feed; a failed lookup still checks.
       # THESE THREE LISTS MUST MATCH: POWER_INTERLOCK_SKIP_PORTS here,
       # BMC_FW_DISABLE_PORTS (bmc_fw) and BIOS_FW_DISABLE_PORTS (bios_fw).
-      - POWER_INTERLOCK_SKIP_PORTS=
+      - POWER_INTERLOCK_SKIP_PORTS=et25b1,et25b2,et25b3,et25b4
     volumes:
       - /etc/flax/:/etc/flax/
       - /opt/flax/bin:/usr/local/sbin:ro
@@ -76,7 +76,7 @@ services:
       # BMC_FW_POWER_ON=true it can draw a power-on on a slot whose identity
       # changed because the card was swapped by hand.
       # reaper-devel tests/test_mezzflash_compose_ports.py enforces it.
-      - MEZZ_FLASH_PORTS=
+      - MEZZ_FLASH_PORTS=et25b1,et25b2,et25b3,et25b4
       # A DIRECTORY, one JSON file per station blade. /etc/flax is already
       # bind-mounted whole, so this needs no new mount. NEVER bind-mount a
       # file from inside it into another container: this store writes with
@@ -174,7 +174,7 @@ services:
       # et26b3 was the ORIGINAL station and was listed here until 2026-09-24,
       # when that blade moved into Zone A. The slot is back in normal triage
       # processing, so it is deliberately NOT excluded any more.
-      - BMC_FW_DISABLE_PORTS=
+      - BMC_FW_DISABLE_PORTS=et25b1,et25b2,et25b3,et25b4
       - BMC_FW_POWER_ON=true
       # Backup EEPROM (spec 2026-09-01-bmc-backup-chip-design.md). The cache
       # holds ONE extracted image-bmc shared by every node; /run is a 13 GB
@@ -242,7 +242,7 @@ services:
       # NIC flashing stations, which the manifest DOES manage.
       # et26b3 dropped 2026-09-24 -- see bmc_fw above.
       # Globs are allowed here (et5b*); spelled out to match bmc_fw's line.
-      - BIOS_FW_DISABLE_PORTS=
+      - BIOS_FW_DISABLE_PORTS=et25b1,et25b2,et25b3,et25b4
       # Spec 2026-09-24 §3.4 / 09-23 §5.4 staging (O6: every new power path gets
       # one-port bring-up with an operator go). Empty = every port, - = none.
       - BIOS_FW_BOOTCHECK_PORTS=
