@@ -444,9 +444,16 @@ else
     ps_skip tpmclear "flaxwipe=${flaxwipe:-unset} action=$action"
 fi
 
-ps_begin ident "chassis identify 180"
-bmc_gate "chassis identify" && ipmitool chassis identify 180
-ps_done
+# chassis identify is the operator's "pull it" cue. A run that reboots for the
+# TPM clear is not finished, and the BMC would keep a 180 s identify blinking
+# through the reboot, so only the confirming pass after the clear lights it.
+if [ "$tpmq" = 1 ]; then
+    ps_skip ident "rebooting for the TPM clear -- the next inventory pass identifies"
+else
+    ps_begin ident "chassis identify 180"
+    bmc_gate "chassis identify" && ipmitool chassis identify 180
+    ps_done
+fi
 
 fi # end of if memtest else clause (inventory section)
 
