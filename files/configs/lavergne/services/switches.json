@@ -1,8 +1,5 @@
 [
-    {
-        "name": "rabbit-rhythm",
-        "driver": "eos",
-        "host": "rabbit-rhythm",
-        "credentials_key": "eos"
-    }
+  {"name": "rabbit-rhythm", "driver": "eos",     "host": "rabbit-rhythm", "credentials_key": "eos"},
+  {"name": "rabbit-blues",  "driver": "eos",     "host": "rabbit-blues",  "credentials_key": "eos"},
+  {"name": "turtle-rhythm", "driver": "cumulus", "host": "turtle-rhythm", "credentials_key": "cumulus"}
 ]

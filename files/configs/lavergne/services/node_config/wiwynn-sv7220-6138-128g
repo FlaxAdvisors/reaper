@@ -1,0 +1,10 @@
+# Wiwynn SV7220G3 Tioga Pass (Single Side), 2x Xeon Gold 6138, 128GB (2x64GB),
+# 1x Mellanox MCX4411A ConnectX-4 Lx OCP. Authored 2026-07-16 from et10b4's live
+# macinv digest to drive the Post Done tail (population-check gate).
+BIOS Version: TPC_P26C
+System Mfg: Wiwynn , Product Name: SV7220G3
+Board Mfg: Wistron, Product: Tioga Pass
+2 Processor.*Gold 6138.*2.00GHz
+2 Memory Size: 64 GB
+1 Model:.*Mellanox MCX4411A-ACQN, ConnectX-4 Lx EN OCP
+1 Model:.*ASPEED AST1000/2000

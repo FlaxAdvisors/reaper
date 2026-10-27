@@ -1,0 +1,24 @@
+# Managed by apply_bang_services. Do not edit.
+# Loaded by dnsmasq via hostsdir=/etc/dnsmasq.hosts (see dnsmasq.conf).
+# DNS resolution for VLAN-4 mgmt addresses: bang BMCs, rabbit BMCs and lab
+# switches (spec 2026-10-27-lavergne-eindhoven-rebuild §6.1). The VIP .10 and
+# the bangs .21/.22 are rendered by the role, not listed here.
+# expand-hosts in dnsmasq.conf appends the configured domain automatically.
+192.168.88.11 bang-rhythm-bmc
+192.168.88.12 bang-blues-bmc
+192.168.88.13 rabbit-rhythm-bmc
+192.168.88.14 rabbit-blues-bmc
+192.168.88.15 rabbit-howlin-bmc
+192.168.88.16 rabbit-c2g-bmc
+192.168.88.17 rabbit-muddy-bmc
+192.168.88.31 rabbit-rhythm
+192.168.88.32 rabbit-blues
+192.168.88.33 turtle-rhythm
+192.168.88.34 rabbit-howlin
+192.168.88.35 rabbit-c2g
+192.168.88.36 rabbit-muddy
+
+# Bang BMCs (.11/.12) are STATIC and ride NC-SI on the mezz NIC (rabbit-rhythm
+# Et1/1, Et1/2 native vid 4) -- set in band with `ipmitool lan set 1`, not DHCP.
+# Rabbit (Wedge) BMCs are pinned by MAC in bmc-reservations.conf: OpenBMC's
+# overlay FS doesn't keep IP config across reboots.
