@@ -10,7 +10,7 @@ apply_docker_users:
 
 # docker0 (default bridge) IP/prefix and the address-pool docker uses
 # to allocate user-defined networks for compose stacks. Both must stay
-# OUT of the lab VLAN range (vid 16-31 each on 172.<vid>.0.0/16) and
+# OUT of the lab VLAN range (every `vlans:` entry, 172.<vid>.0.0/16) and
 # the bang mgmt subnet 192.168.88.0/24 — otherwise the kernel sees two
 # routes for the same /16 and container egress collides with lab-VLAN
 # reachability. 192.168.0.0/24 for docker0 plus 192.168.100.0/22

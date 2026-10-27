@@ -5,7 +5,7 @@ apiVersion: 1
 # Hardcoding mirrors the fleet topology — per-site inventory iteration
 # would only ever produce the local site's datasource.
 datasources:
-{% set site_primary = {'braintree': 'bang-fiesta', 'eindhoven': 'bang-gouda', 'lavergne': 'bang-blues'} %}
+{% set site_primary = {'braintree': 'bang-fiesta', 'eindhoven': 'bang-gouda', 'lavergne': 'bang-rhythm'} %}
 {% for s in ['braintree', 'eindhoven', 'lavergne'] %}
   - name: {{ s }}
     uid: {{ s }}

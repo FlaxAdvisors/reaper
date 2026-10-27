@@ -34,8 +34,9 @@ post_iperf_server: bang-edam
 apply_pxe_payloads_extra_vids:
   - 4
 
-# Vids to render. By default it's the inventory's vlans (vid 16-31 on
-# eindhoven and braintree both) plus apply_pxe_payloads_extra_vids.
+# Vids to render. By default every entry in the inventory's `vlans:` array
+# (16-31 at braintree, 16-32 at eindhoven, 16-33 at lavergne) plus
+# apply_pxe_payloads_extra_vids.
 apply_pxe_payloads_vids: "{{ apply_pxe_payloads_extra_vids + (vlans | map(attribute='vid') | list) }}"
 
 # === per-VID boot.ipxe rendering ===
