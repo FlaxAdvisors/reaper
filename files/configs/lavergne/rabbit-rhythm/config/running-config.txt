@@ -97,12 +97,12 @@ interface Ethernet1/2
    switchport mode trunk
 !
 interface Ethernet1/3
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet1/4
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet2/1
    description rabbit-howlin
@@ -112,8 +112,8 @@ interface Ethernet3/1
    shutdown
 !
 interface Ethernet4/1
-   no error-correction encoding
    description rabbit-blues
+   no error-correction encoding
    switchport trunk allowed vlan 4,24-30
    switchport mode trunk
 !
@@ -133,231 +133,234 @@ interface Ethernet9/1
    shutdown
 !
 interface Ethernet10/1
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet10/2
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet10/3
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet10/4
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet11/1
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet11/2
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet11/3
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet11/4
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet12/1
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet12/2
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet12/3
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet12/4
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet13/1
-   speed forced 100gfull
    shutdown
+   speed forced 100gfull
 !
 interface Ethernet13/2
    speed forced 25gfull
+   switchport access vlan 8
 !
 interface Ethernet13/3
    speed forced 25gfull
+   switchport access vlan 8
 !
 interface Ethernet13/4
    speed forced 25gfull
+   switchport access vlan 8
 !
 interface Ethernet14/1
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet14/2
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet14/3
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet14/4
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet15/1
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet15/2
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet15/3
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet15/4
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet16/1
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet16/2
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet16/3
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet16/4
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet17/1
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet17/2
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet17/3
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet17/4
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet18/1
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet18/2
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet18/3
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet18/4
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet19/1
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet19/2
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet19/3
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet19/4
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet20/1
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet20/2
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet20/3
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet20/4
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet21/1
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet21/2
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet21/3
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet21/4
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet22/1
    shutdown
 !
 interface Ethernet23/1
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet23/2
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet23/3
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet23/4
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet24/1
    shutdown
 !
 interface Ethernet25/1
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet25/2
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet25/3
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet25/4
-   speed forced 25gfull
    shutdown
+   speed forced 25gfull
 !
 interface Ethernet26/1
    shutdown
@@ -418,22 +421,22 @@ interface Ethernet31/4
    switchport access vlan 17
 !
 interface Ethernet32/1
-   speed forced 10000full
    description turtle-rhythm
+   speed forced 10000full
    switchport trunk allowed vlan 2,4,26-27
    switchport mode trunk
 !
 interface Ethernet32/2
-   speed forced 10000full
    shutdown
+   speed forced 10000full
 !
 interface Ethernet32/3
-   speed forced 10000full
    shutdown
+   speed forced 10000full
 !
 interface Ethernet32/4
-   speed forced 10000full
    shutdown
+   speed forced 10000full
 !
 interface Management1
    ip address 192.168.88.31/24
