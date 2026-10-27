@@ -1,6 +1,6 @@
-IPADDR='192.168.12.1/22'
 BOOTPROTO='static'
+IPADDR='172.19.0.1/16'
 STARTMODE='auto'
 ETHERDEVICE='mezz'
-VLAN_ID='12'
-ZONE=internal
+VLAN_ID='19'
+ZONE=lab-data

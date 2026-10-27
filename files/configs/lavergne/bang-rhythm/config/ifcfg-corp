@@ -1,0 +1,6 @@
+BOOTPROTO='none'
+STARTMODE='hotplug'
+ZONE='external'
+ETHERDEVICE='mgmt'
+VLAN_ID='2'
+# corp drop (spec 2026-10-27 6.2): renamed from public; link-up + DHCP is a follow-up
