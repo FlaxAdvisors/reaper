@@ -98,6 +98,8 @@
     - test_qual_contract.py
     - test_wipe_disks.py
     - test_tpm_clear.py
+    - test_tpm_state.py
+    - test_tpm_sce.py
     - __pycache__
   tags: [post_tgz]
 

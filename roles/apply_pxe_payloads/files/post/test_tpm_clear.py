@@ -21,8 +21,18 @@ def _ppi(tmp, request="96", response="0: No Recent Request", ops=OPS_UNATTENDED)
     return d
 
 
-def _run(ppi, state, note_log=None):
-    env = dict(os.environ, TPM_PPI_DIR=ppi, TPM_STATE_CMD="echo " + state)
+def _run(ppi, state, note_log=None, sce=(3, "SCE-SKIP reason=sce-test-default"), efivars=None):
+    # The SCE route is a stub: it logs that it ran and prints/exits as told.
+    # efivars is the NV-variable dir that holds the "SCE clear queued" marker.
+    base = os.path.dirname(ppi)
+    efivars = efivars or os.path.join(base, "efivars")
+    os.makedirs(efivars, exist_ok=True)
+    sce_cmd = os.path.join(base, "sce_stub.sh")
+    with open(sce_cmd, "w") as f:
+        f.write("#!/bin/bash\necho ran >> %s/sce.calls\necho '%s'\nexit %d\n" % (base, sce[1], sce[0]))
+    os.chmod(sce_cmd, 0o755)
+    env = dict(os.environ, TPM_PPI_DIR=ppi, TPM_STATE_CMD="echo " + state,
+               TPM_SCE_CMD=sce_cmd, TPM_EFIVARS_DIR=efivars)
     cmd = ["bash", SCRIPT]
     if note_log:   # post.sh exports ps_note; prove the progress notes reach it
         cmd = ["bash", "-c", 'ps_note() { echo "$*" >> %s; }; export -f ps_note; bash %s'
@@ -113,9 +123,12 @@ def test_tpm12_falls_back_to_op_5_when_22_needs_the_console(tmp_path):
     assert p.returncode == 10 and "TPM-QUEUED op=5" in p.stdout and req == "5"
 
 
-def test_tpm12_skips_when_no_clear_op_is_unattended(tmp_path):
-    p, req = _run(_ppi(str(tmp_path), ops=OPS12_NONE), OWNED12)
-    assert p.returncode == 0 and "reason=op22-needs-console-confirmation" in p.stdout and req == "96"
+def test_tpm12_skips_when_no_clear_op_is_unattended_and_sce_cannot(tmp_path):
+    p, req = _run(_ppi(str(tmp_path), ops=OPS12_NONE), OWNED12,
+                  sce=(3, "SCE-SKIP reason=sce-unknown-hii:DEADBEEF"))
+    assert p.returncode == 0 and "TPM-SKIP reason=sce-unknown-hii:DEADBEEF" in p.stdout and req == "96"
+    assert "op22-needs-console-confirmation" in p.stdout
+    assert os.listdir(str(tmp_path / "efivars")) == []
 
 
 def test_tpm12_second_pass_reports_the_bios_clear(tmp_path):
@@ -139,3 +152,114 @@ def test_tpm12_no_loop_when_22_refused_or_ineffective(tmp_path):
 def test_tpm2_still_queues_op_5_even_when_22_is_listed(tmp_path):
     p, req = _run(_ppi(str(tmp_path), ops=OPS12), OWNED)
     assert p.returncode == 10 and "TPM-QUEUED op=5" in p.stdout and req == "5"
+
+
+# --- TPM 1.2 through the BIOS setup (AMI SCE, tpm_sce.py) ------------------
+# Leopards: every PPI clear op needs the console, so the clear is scheduled in
+# setup NVRAM instead. An NV EFI variable remembers it was queued, so the next
+# pass can tell "cleared" from "the BIOS ignored it" and never queues twice.
+MARKER = "FlaxTpmClear-7a1f5c2e-3b8d-4e6a-9c41-0f2d6b8e5a93"
+OPS12_PROMPTS = "0 4: User not required\n5 3: User required\n6 4: User not required\n22 3: User required\n"
+CLEARED12 = "owned=0 tpm=1.2 enabled=0 active=0"
+
+
+def _marker(tmp):
+    d = os.path.join(str(tmp), "efivars")
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, MARKER), "wb") as f:
+        f.write(b"\x07\x00\x00\x00sce")
+    return d
+
+
+def _sce_ran(tmp):
+    return os.path.exists(os.path.join(str(tmp), "sce.calls"))
+
+
+def test_tpm12_sce_clear_queued_sets_the_marker_and_exits_10(tmp_path):
+    p, req = _run(_ppi(str(tmp_path), ops=OPS12_PROMPTS), OWNED12,
+                  sce=(0, "SCE-QUEUED token=94 hii=492F03E4"))
+    assert p.returncode == 10 and "TPM-QUEUED op=sce token=94 hii=492F03E4" in p.stdout
+    with open(str(tmp_path / "efivars" / MARKER), "rb") as f:
+        assert f.read(4) == b"\x07\x00\x00\x00"           # NV + BS + RT
+    assert req == "96"                                    # PPI untouched
+
+
+def test_tpm12_sce_failure_is_a_fail_and_leaves_no_marker(tmp_path):
+    p, _ = _run(_ppi(str(tmp_path), ops=OPS12_PROMPTS), OWNED12,
+                sce=(1, "SCE-FAIL reason=sce-import-rc13"))
+    assert p.returncode == 0 and "TPM-FAIL reason=sce-import-rc13" in p.stdout
+    assert os.listdir(str(tmp_path / "efivars")) == []
+
+
+def test_tpm12_no_sce_without_a_marker_slot(tmp_path):
+    ro = tmp_path / "ro"
+    ro.mkdir()
+    ro.chmod(0o555)
+    try:
+        p, _ = _run(_ppi(str(tmp_path), ops=OPS12_PROMPTS), OWNED12,
+                    sce=(0, "SCE-QUEUED token=94 hii=492F03E4"), efivars=str(ro))
+    finally:
+        ro.chmod(0o755)
+    if os.geteuid() == 0:
+        return   # root ignores the mode bits; nothing to prove here
+    assert p.returncode == 0 and "TPM-SKIP reason=efivar-marker-not-writable" in p.stdout
+    assert not _sce_ran(tmp_path)
+
+
+def test_tpm12_still_owned_after_sce_clear_fails_and_never_requeues(tmp_path):
+    _marker(tmp_path)
+    p, _ = _run(_ppi(str(tmp_path), ops=OPS12_PROMPTS), OWNED12,
+                sce=(0, "SCE-QUEUED token=94 hii=492F03E4"))
+    assert p.returncode == 0 and "TPM-FAIL reason=still-owned-after-sce-clear" in p.stdout
+    assert not _sce_ran(tmp_path)
+    assert os.path.exists(str(tmp_path / "efivars" / MARKER))   # kept: stays a FAIL
+
+
+def test_tpm12_sce_cleared_and_disabled_queues_op_6_once(tmp_path):
+    _marker(tmp_path)
+    p, req = _run(_ppi(str(tmp_path), ops=OPS12_PROMPTS), CLEARED12)
+    assert "TPM-CLEARED-AT-BOOT sce" in p.stdout
+    assert p.returncode == 10 and "TPM-QUEUED op=6" in p.stdout and req == "6"
+    assert not os.path.exists(str(tmp_path / "efivars" / MARKER))
+
+
+def test_tpm12_sce_cleared_and_enabled_is_clean(tmp_path):
+    _marker(tmp_path)
+    p, req = _run(_ppi(str(tmp_path), ops=OPS12_PROMPTS), CLEAN12)
+    assert p.returncode == 0 and "TPM-CLEARED-AT-BOOT sce" in p.stdout and "TPM-CLEAN" in p.stdout
+    assert req == "96" and not os.path.exists(str(tmp_path / "efivars" / MARKER))
+
+
+def test_tpm12_enable_that_did_not_take_fails_and_never_requeues(tmp_path):
+    p, req = _run(_ppi(str(tmp_path), ops=OPS12_PROMPTS, response="6 0: Success"), CLEARED12)
+    assert p.returncode == 0 and "TPM-FAIL reason=still-disabled-after-enable" in p.stdout and req == "96"
+
+
+def test_tpm12_enabled_after_op_6_is_clean(tmp_path):
+    p, req = _run(_ppi(str(tmp_path), ops=OPS12_PROMPTS, response="6 0: Success"), CLEAN12)
+    assert p.returncode == 0 and "TPM-CLEAN" in p.stdout and req == "96"
+
+
+def test_tpm12_disabled_without_our_clear_is_left_alone(tmp_path):
+    # An operator- or vendor-disabled TPM we did not clear is not ours to turn on.
+    p, req = _run(_ppi(str(tmp_path), ops=OPS12_PROMPTS), CLEARED12)
+    assert p.returncode == 0 and "TPM-CLEAN" in p.stdout and req == "96"
+
+
+def test_tpm12_op5_clear_at_boot_also_gets_the_enable(tmp_path):
+    p, req = _run(_ppi(str(tmp_path), ops=OPS12_PROMPTS, response="5 0: Success"), CLEARED12)
+    assert p.returncode == 10 and "TPM-QUEUED op=6" in p.stdout and req == "6"
+
+
+def test_tpm12_enable_needing_the_console_is_a_skip(tmp_path):
+    _marker(tmp_path)
+    p, req = _run(_ppi(str(tmp_path), ops="6 3: User required\n"), CLEARED12)
+    assert p.returncode == 0 and "TPM-SKIP reason=op6-needs-console-confirmation:3:" in p.stdout
+    assert req == "96"
+
+
+def test_tpm2_never_takes_the_sce_route(tmp_path):
+    p, _ = _run(_ppi(str(tmp_path), ops=OPS_NEEDS_USER), OWNED,
+                sce=(0, "SCE-QUEUED token=94 hii=492F03E4"))
+    assert p.returncode == 0 and "reason=op5-needs-console-confirmation" in p.stdout
+    assert not _sce_ran(tmp_path)

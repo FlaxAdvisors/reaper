@@ -416,7 +416,8 @@ ps_done
 # apply_pxe_payloads boot.ipxe.j2). staylive/liveboot exits long before here.
 #
 # Same gate, same reason: a TPM a previous OS left owned (Windows/BitLocker)
-# is cleared by the BIOS through the standard PPI request (tpm_clear.sh). The
+# is cleared by the BIOS through the standard PPI request, or on TPM 1.2
+# Leopards through a BIOS setup write (tpm_clear.sh, tpm_sce.py). The
 # BIOS only does that on a boot, so a queued clear turns the power-off at the
 # end of this run into a reboot; the next inventory pass confirms it and
 # powers off as usual. Both helpers put their progress on the SOL banner
@@ -433,7 +434,7 @@ if [ "$action" == "inventory" ] && [ "$flaxwipe" == "1" ]; then
     ./tpm_clear.sh > $logdir/tpmclear.txt 2>&1
     if [ $? -eq 10 ]; then
         tpmq=1
-        ps_done "clear queued -- this run REBOOTS instead of powering off, so the BIOS can clear it"
+        ps_done "$(grep -m1 -oE '^TPM-QUEUED op=[^ ]*' $logdir/tpmclear.txt) -- this run REBOOTS instead of powering off, so the BIOS can run it"
     elif grep -q '^TPM-FAIL' $logdir/tpmclear.txt; then
         ps_fail "$(grep -m1 '^TPM-FAIL' $logdir/tpmclear.txt | cut -d' ' -f2)"
     else
