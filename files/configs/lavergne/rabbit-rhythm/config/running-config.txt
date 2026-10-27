@@ -366,7 +366,8 @@ interface Ethernet27/1
    shutdown
 !
 interface Ethernet28/1
-   shutdown
+   description rabbit-muddy
+   switchport access vlan 33
 !
 interface Ethernet29/1
    speed forced 25gfull
