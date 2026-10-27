@@ -386,3 +386,7 @@ apply_triage_compose_node_config: ovh-bare-tp
 # 172.16-33/16.
 apply_docker_pool_base: "10.250.0.0/16"
 apply_docker_bip: "10.251.0.1/24"
+
+# Per-vid iPXE overrides for the howlin/c2g/muddy pools (operator 2026-10-27):
+# drop override/mac-<mac>.ipxe into /srv/pxe/v<vid>/ on the active bang.
+apply_pxe_payloads_override_vids: [31, 32, 33]

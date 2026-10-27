@@ -82,3 +82,9 @@ apply_pxe_payloads_pxe_phase_default: inventoryoff
 # in the inventory entry (e.g. eindhoven vid 31 picks menu-ubuntu for
 # integration work).
 apply_pxe_payloads_pxe_menu_default: menu-live
+
+# Vids that get a /srv/pxe/v<vid>/override/ directory for hand-placed,
+# semi-temporary per-vid boot overrides (override/mac-<mac>.ipxe, tried by
+# menu.ipxe before the site-wide /srv/pxe/ipxe/mac-<mac>.ipxe). Never copied
+# between bangs; the role only creates the directory.
+apply_pxe_payloads_override_vids: []

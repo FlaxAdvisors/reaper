@@ -20,6 +20,11 @@ isset ${hostname} && chain --replace --autofree ${menu-dir}hostname-${hostname}.
 # if SMBIOS UUID variable is set and script is present
 # isset ${uuid} && chain --replace --autofree ${menu-dir}uuid-${uuid}.ipxe ||
 
+# Per-vid override: <menu-url>/override/mac-010203040506.ipxe, i.e.
+# /srv/pxe/v<vid>/override/ (dirs created for apply_pxe_payloads_override_vids).
+# Semi-temporary hand-placed files; wins over the site-wide one below.
+chain --replace --autofree override/mac-${mac:hexraw}.ipxe ||
+
 # Boot <menu-url>/<menu-dir>/mac-010203040506.ipxe if script is present
 chain --replace --autofree ${menu-dir}mac-${mac:hexraw}.ipxe ||
 
