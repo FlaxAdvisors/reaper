@@ -322,6 +322,10 @@
       After=network-online.target wicked.service
       Wants=network-online.target
       Before=dnsmasq.service kea-dhcp6.service
+      # A wicked restart flushes these addresses (bang-gouda 2026-10-21: v6
+      # PXE silently dead from then on). PartOf re-runs us on every wicked
+      # restart/stop; WantedBy=wicked.service brings us back on its start.
+      PartOf=wicked.service
 
       [Service]
       Type=oneshot
@@ -329,7 +333,7 @@
       RemainAfterExit=yes
 
       [Install]
-      WantedBy=multi-user.target
+      WantedBy=multi-user.target wicked.service
   register: _v6_addrs_unit
   tags: [v6_addrs]
 
@@ -339,6 +343,14 @@
     name: bang-v6-addrs.service
     enabled: true
     daemon_reload: "{{ _v6_addrs_unit is changed }}"
+  tags: [v6_addrs]
+
+# `enabled: true` leaves an already-enabled unit's links alone; a changed
+# [Install] section (the wicked.service hook) needs them rebuilt.
+- name: Re-link bang-v6-addrs.service after a unit change
+  become: true
+  ansible.builtin.command: systemctl reenable bang-v6-addrs.service
+  when: _v6_addrs_unit is changed
   tags: [v6_addrs]
 
 # Run the script directly rather than restart the unit: a oneshot that is
