@@ -39,6 +39,18 @@ server {
         return 200 "#!ipxe\nchain http://bang.{{ bang_lab_domain }}/v$vlan/boot.ipxe\n";
     }
 
+    # The menu chain: boot.ipxe chains http://bang/menu.ipxe, and menu.ipxe
+    # fetches boot.ipxe.cfg, ipxe/<mac|hostname>.ipxe and override/mac-*.ipxe
+    # RELATIVE to that URL. Serve each from the arrival VLAN's tree first
+    # (/v<vid>/ipxe is a symlink to the shared /srv/pxe/ipxe; /v<vid>/override
+    # is the per-vid override dir), then any root copy (eindhoven's 2024
+    # hand-placed files). Without this a fresh site 404s on menu.ipxe.
+    location ~ ^/(menu\.ipxe|boot\.ipxe\.cfg|ipxe/.+|override/.+)$ {
+        root {{ apply_bang_services_pxe_root }};
+        default_type text/plain;
+        try_files /v$vlan$uri $uri =404;
+    }
+
     # Per-VLAN content tree. Each /v<vid>/ holds the family's boot.ipxe,
     # vmlinuz, initrd.img, kickstart, and any installer image.
     location ~ ^/v[0-9]+/ {

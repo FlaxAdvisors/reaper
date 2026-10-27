@@ -191,14 +191,24 @@
   loop: "{{ apply_pxe_payloads_vids }}"
   tags: [pxe_files]
 
+- name: Shared per-host menu dir /srv/pxe/ipxe (every v<vid>/ipxe links here)
+  become: true
+  ansible.builtin.file:
+    path: "{{ apply_pxe_payloads_pxe_root }}/ipxe"
+    state: directory
+    owner: flax
+    group: users
+    mode: "0775"   # operators drop mac-/hold-mac-/hostname-*.ipxe here (as at eindhoven)
+  tags: [pxe_files]
+
 - name: Per-vid override dir /srv/pxe/v<vid>/override (hand-placed mac-<mac>.ipxe; contents never managed)
   become: true
   ansible.builtin.file:
     path: "{{ apply_pxe_payloads_pxe_root }}/v{{ item }}/override"
     state: directory
-    owner: root
-    group: root
-    mode: "0755"
+    owner: flax
+    group: users
+    mode: "0775"
   loop: "{{ apply_pxe_payloads_override_vids }}"
   tags: [pxe_files]
 
