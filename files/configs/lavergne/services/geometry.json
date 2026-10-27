@@ -1,62 +1,17 @@
 [
-    {
-        "ou": "16L",
-        "port": "et25b1"
-    },
-    {
-        "ou": "16C",
-        "port": "et25b2"
-    },
-    {
-        "ou": "16R",
-        "port": "et25b3"
-    },
-    {
-        "ou": "20L",
-        "port": "et29b1"
-    },
-    {
-        "ou": "22L",
-        "port": "et29b2"
-    },
-    {
-        "ou": "24L",
-        "port": "et29b3"
-    },
-    {
-        "ou": "26L",
-        "port": "et29b4"
-    },
-    {
-        "ou": "20C",
-        "port": "et30b1"
-    },
-    {
-        "ou": "22C",
-        "port": "et30b2"
-    },
-    {
-        "ou": "24C",
-        "port": "et30b3"
-    },
-    {
-        "ou": "26C",
-        "port": "et30b4"
-    },
-    {
-        "ou": "20R",
-        "port": "et31b1"
-    },
-    {
-        "ou": "22R",
-        "port": "et31b2"
-    },
-    {
-        "ou": "24R",
-        "port": "et31b3"
-    },
-    {
-        "ou": "26R",
-        "port": "et31b4"
-    }
+  {"port": "et25b1", "ou": "16L", "switch": "rabbit-rhythm"},
+  {"port": "et25b2", "ou": "16C", "switch": "rabbit-rhythm"},
+  {"port": "et25b3", "ou": "16R", "switch": "rabbit-rhythm"},
+  {"port": "et29b1", "ou": "20L", "switch": "rabbit-rhythm"},
+  {"port": "et29b2", "ou": "22L", "switch": "rabbit-rhythm"},
+  {"port": "et29b3", "ou": "24L", "switch": "rabbit-rhythm"},
+  {"port": "et29b4", "ou": "26L", "switch": "rabbit-rhythm"},
+  {"port": "et30b1", "ou": "20C", "switch": "rabbit-rhythm"},
+  {"port": "et30b2", "ou": "22C", "switch": "rabbit-rhythm"},
+  {"port": "et30b3", "ou": "24C", "switch": "rabbit-rhythm"},
+  {"port": "et30b4", "ou": "26C", "switch": "rabbit-rhythm"},
+  {"port": "et31b1", "ou": "20R", "switch": "rabbit-rhythm"},
+  {"port": "et31b2", "ou": "22R", "switch": "rabbit-rhythm"},
+  {"port": "et31b3", "ou": "24R", "switch": "rabbit-rhythm"},
+  {"port": "et31b4", "ou": "26R", "switch": "rabbit-rhythm"}
 ]
