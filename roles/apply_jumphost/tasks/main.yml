@@ -2,6 +2,19 @@
 # Applies jump host network config and authorized_keys.
 # Connects directly via Tailscale as flax user — no ProxyJump.
 
+# A site whose bang network must never be restarted wholesale sets
+# apply_jumphost_allowed: false (lavergne: wlan0 is bang-rhythm's only WAN and
+# tailscale path; `reaper push <site> <switch>` stages this role on the bangs).
+- name: Refuse where a whole-network restart is unsafe
+  ansible.builtin.assert:
+    that: apply_jumphost_allowed | default(true)
+    fail_msg: >-
+      apply_jumphost is disabled for {{ site_name }} (apply_jumphost_allowed: false):
+      it installs every ifcfg and restarts network, which drops wlan0/tailscale.
+      Bring bang interfaces up one at a time with wicked ifup; push switches with
+      playbooks/apply_config.yml, not `reaper push`.
+    quiet: true
+
 - name: Assemble authorized_keys from files/ssh/flax/keys/*.pub
   delegate_to: localhost
   ansible.builtin.assemble:

@@ -12,3 +12,8 @@ device_role: collect_jumphost
 # watchdog still runs). The follow-up flips this to true; primary is pre-set.
 jumphost_wan_failover_wan_failover_enabled: false
 jumphost_wan_failover_primary_iface: corp
+
+# Review C1 (2026-10-27): apply_jumphost (also staged by `reaper push lavergne
+# <switch>`) installs every ifcfg and runs `systemctl restart network`, which
+# bounces wlan0 -- bang-rhythm's only WAN/tailscale path. The role refuses here.
+apply_jumphost_allowed: false
