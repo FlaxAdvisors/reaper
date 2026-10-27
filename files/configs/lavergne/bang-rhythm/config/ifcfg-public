@@ -1,5 +1,5 @@
 BOOTPROTO='none'
 STARTMODE='hotplug'
-ZONE=external
+ZONE='external'
 ETHERDEVICE='mgmt'
 VLAN_ID='2'

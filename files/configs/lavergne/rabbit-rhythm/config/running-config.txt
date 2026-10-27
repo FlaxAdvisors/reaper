@@ -34,22 +34,39 @@ vlan 10
 vlan 12
    name c2g
 !
+vlan 14
+   name muddy
+!
+vlan 31
+   name post-howlin
+!
+vlan 32
+   name post-c2g
+!
 vlan 102
    name harvester102
 !
 vlan 200
    name vlan200
 !
+management api http-commands
+   no shutdown
+   !
+   vrf default
+      no shutdown
+!
 interface Ethernet1/1
+   description bang-rhythm
    speed forced 25gfull
    switchport trunk native vlan 6
-   switchport trunk allowed vlan 4,6,8,10,12
+   switchport trunk allowed vlan 4,6,8,10,12,14,31-32
    switchport mode trunk
 !
 interface Ethernet1/2
+   description bang-blues
    speed forced 25gfull
    switchport trunk native vlan 6
-   switchport trunk allowed vlan 4,6,8,10,12,102-200
+   switchport trunk allowed vlan 4,6,8,10,12,14,31-32,102-200
    switchport mode trunk
 !
 interface Ethernet1/3
@@ -65,24 +82,27 @@ interface Ethernet1/4
    switchport mode trunk
 !
 interface Ethernet2/1
-   switchport trunk allowed vlan 4,6,8,10,12
-   switchport mode trunk
+   switchport access vlan 10
 !
 interface Ethernet3/1
    switchport trunk allowed vlan 2-20,102-200
    switchport mode trunk
 !
 interface Ethernet4/1
-   switchport trunk allowed vlan 2-20,102-200
-   switchport mode trunk
+   no error-correction encoding
+   switchport access vlan 4
 !
 interface Ethernet5/1
+   switchport access vlan 8
 !
 interface Ethernet6/1
+   switchport access vlan 8
 !
 interface Ethernet7/1
+   switchport access vlan 8
 !
 interface Ethernet8/1
+   switchport access vlan 8
 !
 interface Ethernet9/1
 !
@@ -135,7 +155,7 @@ interface Ethernet12/4
    switchport access vlan 8
 !
 interface Ethernet13/1
-   speed forced 25gfull
+   speed forced 100gfull
    switchport access vlan 8
 !
 interface Ethernet13/2

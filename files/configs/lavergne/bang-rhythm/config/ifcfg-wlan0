@@ -1,6 +1,6 @@
-BOOTPROTO='none'
+BOOTPROTO='dhcp'
 STARTMODE='hotplug'
-ZONE=external
+ZONE='external'
 WIRELESS_ESSID='SLS-LVQ-GUEST-2G'
 WIRELESS_AUTH_MODE='psk'
 WIRELESS_MODE='managed'

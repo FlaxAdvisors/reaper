@@ -1,4 +1,4 @@
-BOOTPROTO='none'
+BOOTPROTO='dhcp'
 STARTMODE='hotplug'
 ZONE='external'
 WIRELESS_ESSID='SLS-LVQ-GUEST-2G'
