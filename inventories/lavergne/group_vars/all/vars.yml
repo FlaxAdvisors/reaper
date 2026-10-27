@@ -1,17 +1,388 @@
 ---
+# Lavergne rebuilt as an eindhoven site (reaper-devel spec
+# docs/superpowers/specs/2026-10-27-lavergne-eindhoven-rebuild-design.md).
+# This file started as a copy of inventories/eindhoven/group_vars/all/vars.yml;
+# comments describing eindhoven history (edam rack, 2026-09 decisions) were kept
+# where the setting they justify is kept unchanged.
 site_name: lavergne
+
+# Absolute path for collected config output. playbook_dir is the playbooks/ directory;
+# go one level up to land in the repo root's files/configs/ tree.
 config_output_dir: "{{ playbook_dir }}/../files/configs"
+
+# Inventory hostnames match ~/.ssh/config Host aliases (rabbit-lorax, turtle-lorax).
+# ProxyJump through bang-lorax is configured in ~/.ssh/config — no inline proxy needed.
+# StrictHostKeyChecking is disabled because lab devices don't have stable host keys.
 ansible_ssh_common_args: >-
   -o StrictHostKeyChecking=no
   -o UserKnownHostsFile=/dev/null
+
 site_jumphosts:
   - { name: bang-rhythm, ts_ip: "{{ bang_rhythm_ts_ip }}" }
   - { name: bang-blues,  ts_ip: "{{ bang_blues_ts_ip }}"  }
+
+bang_lab_domain: lvq.lab
+
+# Per-site core infra (spec 2026-10-27-lavergne-eindhoven-rebuild): rabbit-rhythm
+# carries triage, rabbit-blues the post rack; turtle-rhythm is the Cumulus mgmt/corp switch.
 primary_rabbit: rabbit-rhythm
 primary_turtle: turtle-rhythm
 turtle_type: cumulus
+
+# Kernel console arg presets. Use these names in the vlans: array below
+# instead of typing `console=ttyS0,...` strings — fewer typos, easy bulk
+# edits, and a single place to fix if a baud convention changes.
+console_zeroslow: "console=ttyS0,57600n8"
+console_zerofast: "console=ttyS0,115200n8"
+console_oneslow:  "console=ttyS1,57600n8"
+console_onefast:  "console=ttyS1,115200n8"
+
+# Master VLAN list — single source of truth for keepalived, dnsmasq, nginx,
+# and per-VLAN /srv/pxe/v<vid>/boot.ipxe content. Adding a new device-type
+# VLAN is a one-entry append here; re-run apply_bang_services.yml.
+#
+# `console:` references one of the four presets above. For wedge VLANs the
+# value is currently unused (Arista EOS install via ONIE doesn't take a kernel
+# console arg from us) but is kept populated so the data shape stays uniform.
+# pool_guard: BMC pool exclusion on vids 16/17 (Part 3 E) -- ON since 2026-09-28 (operator go after Part 2 hold, classify hold and link-up boot grace were seen live on et8b3)
+vlans:
+  - { vid: 16, family: leopard,      phase: triage, parent: mezz, cidr: 172.16.0.0/16, gateway_vip: 172.16.0.10, console: "{{ console_zerofast }}", pool_guard: true }
+  - { vid: 17, family: tiogapass,    phase: triage, parent: mezz, cidr: 172.17.0.0/16, gateway_vip: 172.17.0.10, console: "{{ console_zerofast }}", pool_guard: true }
+  - { vid: 18, family: wedge100s,    phase: triage, parent: mezz, cidr: 172.18.0.0/16, gateway_vip: 172.18.0.10, console: "{{ console_zeroslow }}" }
+  - { vid: 19, family: wedge400,     phase: triage, parent: mezz, cidr: 172.19.0.0/16, gateway_vip: 172.19.0.10, console: "{{ console_zeroslow }}" }
+  - { vid: 20, family: yv3,          phase: triage, parent: mezz, cidr: 172.20.0.0/16, gateway_vip: 172.20.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 21, family: brycecanyon,  phase: triage, parent: mezz, cidr: 172.21.0.0/16, gateway_vip: 172.21.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 22, family: lightning,    phase: triage, parent: mezz, cidr: 172.22.0.0/16, gateway_vip: 172.22.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 23, family: grandcanyon,  phase: triage, parent: mezz, cidr: 172.23.0.0/16, gateway_vip: 172.23.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 24, family: leopard,      phase: post,   parent: mezz, cidr: 172.24.0.0/16, gateway_vip: 172.24.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 25, family: tiogapass,    phase: post,   parent: mezz, cidr: 172.25.0.0/16, gateway_vip: 172.25.0.10, console: "{{ console_zerofast }}" }
+  # vids 26/27 carry switch OOB-mgmt on the turtle <-> bang `mgmt` path, as at
+  # eindhoven (eth0 there). Not monitored by flax; open pool so OOB gear gets an
+  # address. Reservations still win over the pool when one exists.
+  - { vid: 26, family: wedge100s,    phase: post,   parent: mgmt, cidr: 172.26.0.0/16, gateway_vip: 172.26.0.10, console: "{{ console_zeroslow }}", dhcp_mode: pool }
+  - { vid: 27, family: wedge400,     phase: post,   parent: mgmt, cidr: 172.27.0.0/16, gateway_vip: 172.27.0.10, console: "{{ console_zeroslow }}", dhcp_mode: pool }
+  - { vid: 28, family: yv3,          phase: post,   parent: mezz, cidr: 172.28.0.0/16, gateway_vip: 172.28.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 29, family: brycecanyon,  phase: post,   parent: mezz, cidr: 172.29.0.0/16, gateway_vip: 172.29.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 30, family: lightning,    phase: post,   parent: mezz, cidr: 172.30.0.0/16, gateway_vip: 172.30.0.10, console: "{{ console_zerofast }}" }
+  # vids 31/32/33 = the howlin / c2g / muddy racks (rabbit-howlin, rabbit-c2g,
+  # rabbit-muddy behind rabbit-rhythm). All three take eindhoven vid 32's posture:
+  # open pool (172.<vid>.0.50-.200), deliberately ABSENT from
+  # flax_role_post_vid_by_family so flax-classify never steers or sweeps them,
+  # no pxe: override (phase=post -> flax live image). family: tiogapass only sets
+  # the fallback PXE console. Parent is mezz (they arrive through rabbits), unlike
+  # eindhoven's 32 on eth0.
+  - { vid: 31, family: tiogapass,    phase: post,   parent: mezz, cidr: 172.31.0.0/16, gateway_vip: 172.31.0.10, console: "{{ console_zerofast }}", dhcp_mode: pool }
+  - { vid: 32, family: tiogapass,    phase: post,   parent: mezz, cidr: 172.32.0.0/16, gateway_vip: 172.32.0.10, console: "{{ console_zerofast }}", dhcp_mode: pool }
+  - { vid: 33, family: tiogapass,    phase: post,   parent: mezz, cidr: 172.33.0.0/16, gateway_vip: 172.33.0.10, console: "{{ console_zerofast }}", dhcp_mode: pool }
+
+# Mgmt VIP (VLAN 4 native on eth0). Carried by the same vrrp_instance.
+bang_mgmt_vip: 192.168.88.10
+bang_mgmt_cidr: 192.168.88.10/24
+bang_mgmt_iface: mgmt
+bang_wan_iface: corp
+
+# Dynamic DHCP pool for laptops/on-site tooling on the mgmt VLAN.
+# Consumed by roles/apply_bang_services/templates/dnsmasq.conf.j2.
+# Omitting this var falls back to the legacy static-only range
+# (current behaviour at lavergne). Not a role default — deliberately
+# scoped to mgmt-VLAN, not per-DUT-VLAN ranges.
+mgmt_guest_pool:
+  start: 192.168.88.200
+  end:   192.168.88.249
+  lease: 8h
+
+# Enable RA-stateless on the mgmt VLAN. LL-only (no prefix), no v6 default
+# route. See docs/superpowers/specs/2026-05-11-mgmt-vlan-dhcpv6-ra-stateless-design.md
+mgmt_v6_ra_stateless: true
+
+# Same RA-stateless treatment on every lab-data VLAN in `vlans:` below.
+# Suppresses dnsmasq "no address range available for DHCPv6 request via
+# eth1.<vid>" log spam (OpenBMC BMCs SOLICIT v6 alongside their v4 DISCOVER
+# on link-up; without an RA there's nowhere for them to land). Stateful
+# DHCPv6 with a v6 leases table is still the long-term plan (see TODO.md)
+# — this is the noise-suppressing prerequisite, not a replacement.
+lab_data_v6_ra_stateless: true
+
+# Arista ZTP bootfile-name URL for switches tagged set:arista-ztp in
+# bmc-reservations.conf. Live config on bang-gouda uses the mgmt VIP
+# literal rather than the FQDN — captured here so a re-render doesn't
+# strip the hand-added line. Switch to bang.{{ bang_lab_domain }} once
+# we've confirmed EOS resolves the FQDN through dnsmasq during ZTP.
+arista_ztp_url: "http://192.168.88.10/arista-ztp.conf"
+
+# Reservation-only DHCP on lab-data VLANs (vid 16-31). Pool removed;
+# unknown MACs get denied and reaper-leased's denial watcher picks them
+# up from the dnsmasq journal (log-dhcp required) to trigger FDB+LL
+# discovery. See docs/superpowers/specs/2026-05-12-reservation-only-lab-data-design.md
+# Lavergne and braintree keep the pool form until their own cutover specs.
+reservation_only_dhcp: true
+
+# Per-vlan L3 SVI hostname → IP suffix map. Consumed by lab-hosts.j2 to
+# render switch SVI A records (172.<vid>.0.<suffix>) for every vlan in
+# vlans:. Switches don't have these SVIs configured yet — DNS records
+# resolve but ping fails until the eindhoven switch SVI follow-up lands.
+switch_host_suffix:
+  rabbit-rhythm: 3
+  rabbit-blues: 4
+  turtle-rhythm: 5
+  rabbit-howlin: 6
+  rabbit-c2g: 7
+  rabbit-muddy: 8
+
+# Per-host static IP suffix on every VLAN. bang-rhythm = .1 (master, prio 110),
+# bang-blues = .2 (backup, prio 90). Used by keepalived role to compute priorities.
+bang_host_suffix:
+  bang-rhythm: 1
+  bang-blues:  2
+
+bang_vrrp_priority:
+  bang-rhythm: 110
+  bang-blues:  90
+
+# apply_keepalived defaults this to bang-gouda, so lavergne must pin
+# its own master here; the var only resolves when the
+# apply_keepalived role is in the play. Pinned in group_vars so
+# thin single-role playbooks (apply_triage_compose.yml etc.) whose
+# tasks/handlers gate restart on master vs backup don't fail with
+# 'apply_keepalived_master_host is undefined'.
+apply_keepalived_master_host: bang-rhythm
+
+# Triage UI/API stack runs only on the VIP master — the SOL websocket
+# listener requires single-instance per fleet. notify_master.sh and
+# notify_backup.sh (apply_keepalived) start/stop the stack on VIP
+# transitions; apply_triage_compose handles the initial up/down at
+# deploy time.
+apply_keepalived_compose_stacks:
+  - /etc/flax/triage/docker-compose-prod.yml
+
+# ── flax-stack / Kea / Postgres-HA wiring (2026-06-20 eindhoven migration) ──
+# Mirrors braintree. Secrets live in this site's encrypted vault.yml.
+# Kea DHCP cutover flipped 2026-06-21: dnsmasq drops to DNS+TFTP-only;
+# kea-dhcp4/6 + radvd own DHCP (VIP-exclusive via keepalived); flax-reconcile
+# becomes the sole switch writer (neuters legacy reaper-leased writes).
+bang_dhcp_server: kea
+bang_reconcile: flax
+apply_flax_stack_postgres_superuser_password: "{{ vault_flax_stack_postgres_superuser_password }}"
+apply_flax_stack_db_passwords: "{{ vault_flax_stack_db_passwords }}"
+
+# Postgres HA: bang-rhythm primary, bang-blues streaming standby. Each bang allows
+# the OTHER as the replicator role over its mgmt IP. apply_flax_stack_is_primary
+# is per-host (host_vars/bang-blues.yml sets it false → standby gates OFF alembic).
+apply_flax_stack_peers:
+  - { name: bang-rhythm, ip: 192.168.88.21 }
+  - { name: bang-blues,  ip: 192.168.88.22 }
+
+apply_flax_switch_sense_db_password: "{{ vault_flax_stack_db_passwords.flax_switch_sense }}"
+apply_flax_observe_db_password: "{{ vault_flax_stack_db_passwords.flax_observe }}"
+apply_flax_classify_db_password: "{{ vault_flax_stack_db_passwords.flax_classify }}"
+apply_flax_discover_db_password: "{{ vault_flax_stack_db_passwords.flax_discover }}"
+apply_flax_reconcile_db_password: "{{ vault_flax_stack_db_passwords.flax_reconcile }}"
+apply_flax_post_db_password: "{{ vault_flax_stack_db_passwords.flax_post }}"
+# Post-UI Wave 3 (PWR/IDNT/INV/POP action buttons). Pins eindhoven's post
+# image explicitly (was tracking the role default). 0.9.113 = main + the
+# post-UI-actions branch. Viewer unit gains creds-bmc/opt-flax-bin/export/
+# node_config mounts; image adds nmap/jq/curl for the ghost helpers.
+apply_flax_post_image_tag: "0.9.186"  # 0.9.186 = a blade already on at first sight gets its boot markers when iPXE came up to the ipxe-seen budget after tftp (was a fixed 120 s)
+
+# Core flax services pinned to the SAME build as flax_post (2026-09-11). Until
+# now each ran the tag of its own last change (classify 0.9.104, observe
+# 0.9.87, reconcile 0.9.83, switch-sense 0.9.41, discover 0.9.46, console
+# 0.9.123) and the role defaults lagged too, so a routine apply could move a
+# service by accident. One tag for the whole bundle; bump them together.
+apply_flax_classify_image_tag: "0.9.169"  # 0.9.169 = Part 2 A triage hold + materializer deletes-first; 0.9.167 = one tag for every flax service (build-and-deploy 6a); no code change for this service (flax_post INV modal only); 0.9.166 = one tag for every flax service (build-and-deploy 6a); no code change for this service (flax_discover de-latch only; 0.9.165 = migration 035 image, comments only in flax_classify); 0.9.164 = one tag for every flax service (build-and-deploy 6a); no code change for this service (identity gate is flax_post-only); one tag for every flax service (D11), no code change for this service; 0.9.162 = post Rule 2b (spec 2026-09-19-post-replace-on-confirmed-bmc): a comms-confirmed new BMC evicts the slot's departed post reservations on the first pass (its host NIC only with it, never the current blade's); the sticky-slot purge sticks (et28b3 double reservation); log-only duplicate-ipv4 WARNING; one tag for every flax service (D11)
+apply_flax_observe_image_tag: "0.9.184"  # 0.9.184 = a missed ssh login no longer names the vendor: patient second try, then an unknown vendor re-asked every 60 s instead of a latched ami_legacy (observe-only roll); 0.9.182 = serial-rewritten sentinel: fru_fw overwrote a latched serial -> forget the port identity as for a pulled blade (observe-only roll); 0.9.173 = SDR cache stamp: Get SDR Repository Info (raw 0x0a 0x20) detects a renumbered SDR and discards the cached reading (et7b3 1805 W while off, TODO-09-28 item 7); 0.9.172 = observe BMC load (spec 2026-09-28-observe-bmc-load): cached single HSC sensor, vendor-paired IPMI login, ssh serial latched, SOL heartbeat from /etc/flax/soltriage; 0.9.171 = CLEANUP 3: a BMC kind probed right after the BMC appears is re-probed once it settles (observe-only roll); 0.9.169 = Part 2 B identity hold + serial confirmation; 0.9.167 = one tag for every flax service (build-and-deploy 6a); no code change for this service (flax_post INV modal only); 0.9.166 = one tag for every flax service (build-and-deploy 6a); no code change for this service (flax_discover de-latch only; 0.9.165 = migration 035 image, comments only in flax_classify); 0.9.164 = one tag for every flax service (build-and-deploy 6a); no code change for this service (identity gate is flax_post-only); one tag for every flax service (D11), no code change for this service; 0.9.162 = FRU ID 0 only (spec 2026-09-14-fru-id0-only): blade serial + board from the baseboard FRU block only, the family map picks the field (leopard = Chassis Serial, else Product Serial); LAN reads are fru print 0; no_serial clears chassis_sn; an IPMI-branch latch is re-read once per start (chassis_sn_relatched / chassis_sn_cleared events); previously: 0.9.161 = phosphor falls back to ssh power when the IPMI power+SDR read returns unknown (et7b2 SDR stall); 0.9.160 = bmc_vendor phase 2: power/watts transport chosen by vendor capability (phosphor reads power+SDR over IPMI -> real watts; ssh power fallback when no IPv4 bmc_ip or SOL live; serial source unchanged; unknown vendor keeps legacy kind routing); 0.9.159 = bmc_vendor phase 1: probe emits a firmware-vendor class (ami_legacy|facebook|phosphor|unknown) beside the frozen bmc_kind, resolved.bmc_vendor, /etc/flax/bmc_vendor.json export (routes nothing yet); 0.9.158 = flax_post only; 0.9.157 = wait 2 s after the bare :22 port probe before ssh (dropbear refused the back-to-back ssh, relabelling OpenBMCs redfish); 0.9.156 = re-check a redfish kind every 300 s (booting OpenBMCs stuck as "Ami Redfish") + LAN FRU fallback for product_name; 0.9.154 = `ipmitool fru print 0` + product_name retry; observe only, other core services stay on 0.9.132
+apply_flax_reconcile_image_tag: "0.9.169"  # 0.9.169 = Part 2 C grace triggers (link-up, bmcmac found); 0.9.168 = Part 1 C boot grace (reconcile-only roll; other services stay 0.9.167, identical code); 0.9.167 = one tag for every flax service (build-and-deploy 6a); no code change for this service (flax_post INV modal only); 0.9.166 = one tag for every flax service (build-and-deploy 6a); no code change for this service (flax_discover de-latch only; 0.9.165 = migration 035 image, comments only in flax_classify); 0.9.164 = one tag for every flax service (build-and-deploy 6a); no code change for this service (identity gate is flax_post-only); one tag for every flax service (D11), no code change for this service; one tag for every flax service (build-and-deploy §6a, D11); no code change for this service since 0.9.132
+apply_flax_switch_sense_image_tag: "0.9.167"  # 0.9.167 = one tag for every flax service (build-and-deploy 6a); no code change for this service (flax_post INV modal only); 0.9.166 = one tag for every flax service (build-and-deploy 6a); no code change for this service (flax_discover de-latch only; 0.9.165 = migration 035 image, comments only in flax_classify); 0.9.164 = one tag for every flax service (build-and-deploy 6a); no code change for this service (identity gate is flax_post-only); one tag for every flax service (D11), no code change for this service; one tag for every flax service (build-and-deploy §6a, D11); no code change for this service since 0.9.132
+apply_flax_discover_image_tag: "0.9.167"  # 0.9.167 = one tag for every flax service (build-and-deploy 6a); no code change for this service (flax_post INV modal only); 0.9.166 = flax_discover de-latch: a LIVE reading (port link up, or the switch MAC table holds the MAC) whose product_name maps to a DIFFERENT known family breaks the latched family at once (the BMC MAC is the mezz card's, so a moved card dragged its old family and VLAN onto the new blade; et9b2/et9b3); one MAC sighted at two ports is settled by the switch MAC table (switch_facts), neither written if it cannot; flax-state-delta.md entry 4; 0.9.164 = one tag for every flax service (build-and-deploy 6a); no code change for this service (identity gate is flax_post-only); one tag for every flax service (D11), no code change for this service; one tag for every flax service (build-and-deploy §6a, D11); no code change since 0.9.132; the D4 tiogapass.txt line ships as config
+apply_flax_stack_flax_control_image_tag: "0.9.159"  # LIVE tag; 0.9.162 has no console change and was not rolled (a flax_stack roll bounces postgres); previously: 0.9.159 = console serves bmc_vendor in the per-port row (hand-rolled 2026-09-18 per build-and-deploy §7, --no-deps, postgres untouched); only flax_control change since 0.9.132; previously: LIVE tag; 0.9.133/0.9.134 carry only post changes and were not rolled to core (a flax_stack roll bounces postgres)
+# SOL console (flax-post-sol Node relay + flax_post/web SOL modal), 2026-07-10.
+apply_flax_post_sol_image_tag: "0.9.119"  # 0.9.119 = mark always relaunches SOL; auto-relaunch on ipmitool drop messages; browser client reconnects forever + idle indicator
+apply_flax_post_ladder_ports: ""  # every slot: the engine power-on was proven on et8b4 2026-09-11 and every guard held on the other 46 for 3 h
+
+# NIC firmware: pinned to 'detect' 2026-09-06. The role default is 'enforce'
+# (the only one of the three agents that ships armed) -- see
+# roles/apply_flax_post/defaults/main.yml.
+#
+# Post nodes already have their Mellanox cards flashed IN BAND: post.sh runs
+# ./update_mellanox.sh on the live ISO for every Leopard/Tioga Pass chassis,
+# from that script's own embedded FWREL/FWMAP (14_32_1912). flax_post/nicd is
+# a SECOND flasher for the same cards, over SSH, from a separate source of
+# truth (/etc/flax/nic-firmware-versions.json). Nothing keeps the two maps in
+# step, and nothing arbitrates between them.
+#
+# nicd has never actually flashed here -- its gate (nicd/classify.flash_eligible)
+# additionally requires fw_bmc_phase AND fw_bios_phase == 'up_to_date', and
+# neither holds on the edam rack today. But that is a temporary accident, not a
+# design: bringing BMC to flax-onetree-1.1.1 and BIOS to TPC_P26F -- which is
+# exactly what the current work is doing -- opens the gate and makes nicd a
+# live second writer. Pin it now, while the choice is still ours to make.
+#
+# 'detect' keeps the agent as a reporter (probe + classify into the viewer),
+# which is all it has ever effectively been.
+apply_flax_post_nic_fw_mode: "detect"
+
+# BIOS firmware: pinned to 'detect' 2026-09-06, by operator decision, and this
+# one must NOT be armed until post's BIOS agent reaches triage parity on the
+# post-flash recovery path. It relies on the role default today; pinned here so
+# a future default change cannot arm it silently (which is exactly how
+# apply_flax_post_nic_fw_mode came to be armed).
+#
+# Triage's blade-power-cycle design records the measured behaviour of THIS
+# fleet: a BIOS flash ends with the host powered off, and it "frequently cannot
+# be powered back on" -- the BMC drives POWER_OUT, waits for PS_PWROK, and the
+# power-good watchdog expires after ~8 s. Triage handles that with a
+# needs_power_cycle phase and an i2c 12 V sled cycle (bmc-blade-power-cycle),
+# plus an entity-manager cache clear (bmc-clear-entity-cache).
+#
+# flax_post/biosd has NONE of it, and cannot: it mounts neither /opt/flax/bin
+# (so it cannot call those bins -- the gap triage fixed for itself in 0b0eb2f)
+# nor credentials-bmc.json (so it has no BMC path at all), and there is no
+# needs_power_cycle phase in flax_post.
+#
+# The failure is silent, not loud. biosd/service._reprobe_inflight does
+#     rc, out = deps.run(ip, check_script); if rc != 0: return
+# and its only fault branch requires `current == baseline`, which requires a
+# SUCCESSFUL ssh read. A host that never powers back on therefore never trips
+# FLASH_TIMEOUT_S: the port stays 'flashing' with the registry claim held
+# forever, no fault and no alarm. On a rack whose only post node is et10b3,
+# that is the whole pipeline stopped, needing hands on a customer site.
+#
+# Prerequisites before arming: mount /opt/flax/bin; give biosd credentials-bmc;
+# add needs_power_cycle + the blade cycle; give _reprobe_inflight a wall-clock
+# timeout that fires when the host NEVER answers; port the entity-cache clear.
+apply_flax_post_bios_fw_mode: "detect"
+
+# BMC firmware: pinned to 'detect' 2026-09-06, by operator decision. Like the
+# BIOS pin above this relied on the role default; pin it so it cannot be armed
+# by a default change.
+#
+# Arming this is not just "flash the BMC". flax_post/fwd/enforce.run_node calls
+# client.set_boot_pxe() and client.power_on() BEFORE any flash, and set_boot_pxe
+# PATCHes BootSourceOverrideEnabled=Continuous -- a PERSISTENT boot-order flip,
+# not one-shot. Braintree's vars carry the standing site constraint verbatim:
+# devices that boot from disk are LEFT ALONE, nothing may alter a node's boot
+# order, and "do not arm any of the three without revisiting" it.
+#
+# Post's BMC agent is also behind triage's on the flash path itself. Triage
+# shipped dual-chip management on 2026-09-02 -- it reports BOTH BMC flash chips
+# and refreshes the cold spare from the same artifact (backup_version,
+# backup_state, backup_attempts, backup_write_attempted in bmcfw.json).
+# flax_post/fwd has NO backup handling at all. And per the frontier note the
+# flash -> backup -> power-on path has never been exercised on hardware in
+# either agent; only the in-service backup-only branch has.
+#
+# The one post node's Redfish is currently flapping as well (TCP 443 accepts,
+# GET .../FirmwareInventory/bmc_active intermittently times out; the store row
+# oscillates unreachable <-> needs_update), which is not a BMC to commit to a
+# ~13 minute flash plus activation reboot.
+#
+# Note this also keeps flax_post/biosd disarmed in practice regardless of the
+# pin above: biosd's flash_eligible requires fw_bmc_phase == 'up_to_date', and
+# with the BMC agent in detect the edam rack stays at
+# flax-onetree-1.0.9-202607032146 against target flax-onetree-1.1.1.
+apply_flax_post_fw_mode: "detect"
+
+# BMC firmware manifest: live file hand-managed until 2026-09-28; this is its
+# content + the Part 3 option (post_flash_net_reset).
+bmc_fw_platforms:
+  tiogapass-openbmc:
+    match:
+      product_name: ["(?i)tioga", "(?i)tp[-_ ]?", "(?i)wiwynn.*tp", "(?i)quanta.*tioga"]
+      bmc_kind: openbmc
+    target_version: "flax-onetree-1.1.4"
+    check: { method: redfish-firmware-inventory, id: bmc_active }
+    flash: { method: redfish-update-multipart, artifact: "SXC-Lab_OCP-Updates/OpenBMC/flax-onetree-1.1.4.tar" }
+    auto: true
+    post_flash_net_reset: true   # Part 3 D: clear 00-bmc-eth0.network after a flash (gated by BMC_FW_NETRESET_PORTS)
+
+# Host (BIOS) firmware manifest for the triage bios_fw worker (role default is
+# TPC_P26F). 2026-09-29 operator: TPO_P26F. 2026-10-02 operator: one BIOS for
+# Quanta and Wiwynn again (the Quanta-only F08 entry is gone).
+host_fw_platforms:
+  tiogapass-bios:
+    match:
+      product_name: ["(?i)tioga", "(?i)sv7220g3"]
+    target_version: "TPO_P26F"
+    flash:
+      method: redfish-update-multipart
+      artifact: "SXC-Lab_OCP-Updates/OEM-TP-wiwynn-FW-2021-02-23/tiogapass-bios-TPO_P26F.tar"
+    auto: true
+
+# Role registry (spine migration phase 1) universe for the post role,
+# rendered into /etc/flax/roles.d/post.json by apply_lease_agent. Values
+# match the flax_role_post_* template defaults -- pinned explicitly here so
+# eindhoven's deploy is declarative; other sites fall back to the defaults.
+flax_role_post_switches: ["rabbit-blues"]
+flax_role_post_prefixes: ["turtle"]
+# NO catch_all. The only post switch is rabbit-blues (the ORv2 post rack), plus
+# the turtle-rhythm ports (OOB mgmt) via the prefix claim. Eindhoven's lesson
+# (2026-09-11): With catch_all a
+# rabbit-gouda port absent from geometry.json resolved to post and reconcile
+# steered it into a post VLAN (the et26 column landed on 25 while flax-classify
+# read a stale geometry). Unmatched ports now get NO role: no reservation, no
+# desired_port, nothing steered.
+flax_role_post_catch_all: false
+
+# The qual agent's iperf3 serializer = this site's BACKUP bang (prio 90, .2).
+# Rendered into post.tgz's flax-qual.env as FLAX_IPERF_SERVER.
+post_iperf_server: bang-blues
+
+# No integra role at lavergne (eindhoven's vid-31 customer uplink has no
+# counterpart); an empty map opts out (apply_lease_agent skips integra.json).
+flax_role_integra_ports: {}
+
+# Vid-by-family steering maps, rendered into roles.d/{triage,post}.json.j2's
+# policy.vid.by_family and consumed by flax_classify.vlan_policy.
+# Copied verbatim from eindhoven. Pools 31/32/33 are deliberately absent so
+# classify never steers a family onto them; eindhoven's post `grandcanyon: 31`
+# is therefore dropped (no post vid for grandcanyon at lavergne).
+flax_role_triage_vid_by_family:
+  leopard: 16
+  tiogapass: 17
+  wedge100s: 18
+  wedge400: 19
+  yv3: 20
+  brycecanyon: 21
+  lightning: 22
+  grandcanyon: 23
+flax_role_post_vid_by_family:
+  leopard: 24
+  tiogapass: 25
+  wedge100s: 26
+  wedge400: 27
+  yv3: 28
+  brycecanyon: 29
+  lightning: 30
+
+# Spine-migration phase-3a cutover (2026-07-04, operator green-lit remote flips;
+# physical node-move validation deferred -- no one on-site). Two-key arming:
+# mode=enforce AND the role named; the materializer is the sole kea writer for
+# enforced roles. Rollback = revert these two lines + re-apply --tags flax_classify.
+apply_flax_classify_materializer_mode: "enforce"
+apply_flax_classify_materializer_enforce_roles: "post,triage"
+
+# Kea Postgres backends: kea = libdhcp_pgsql hook (lease+hosts); flax_kea_hook =
+# the run_script discover-hook (INSERT-only into lease_events).
+apply_kea_db_password: "{{ vault_flax_stack_db_passwords.kea }}"
+apply_kea_hook_db_password: "{{ vault_flax_stack_db_passwords.flax_kea_hook }}"
+
+# radvd image tag (radvd is gated on bang_dhcp_server=kea — deploys at cutover).
+apply_radvd_image_tag: "latest"
 
 # Fleet TLS CA private key (PEM). Signs per-host wildcard leaves on the control
 # node only (apply_flax_tls, delegate_to localhost) -- never copied to a bang.
 # Same plaintext across all sites; encrypted separately per site vault.
 apply_flax_tls_ca_key: "{{ vault_flax_tls_ca_key }}"
+
+# Triage UI: the population profile a bang with no /etc/flax/triage-ui/settings.json
+# starts on (a file under /opt/flax/node_config, deployed from
+# files/configs/lavergne/services/node_config/). Seed only -- the UI owns the
+# file once it exists.
+apply_triage_compose_node_config: ovh-bare-tp
+
+# Docker ranges (spec 2026-10-27 §5.1): the role default pool 192.168.100.0/22
+# overlaps lavergne's guest wifi 192.168.100.0/23 -- rhythm's only WAN and
+# tailscale path. Both ranges kept clear of 192.168.88/24, 192.168.100/23 and
+# 172.16-33/16.
+apply_docker_pool_base: "10.250.0.0/16"
+apply_docker_bip: "10.251.0.1/24"
