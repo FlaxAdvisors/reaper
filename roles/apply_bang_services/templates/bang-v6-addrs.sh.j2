@@ -1,0 +1,29 @@
+#!/bin/bash
+# Managed by apply_bang_services. Do not edit.
+#
+# Static IPv6 ULA addresses on this bang's lab-data + mgmt interfaces:
+# fd00:<vid>::<bang_host_suffix>/64 on <parent>.<vid>, fd00:88::<suffix>/64 on
+# the mgmt iface. Two consumers need them:
+#   - UEFI PXE over IPv6: kea-dhcp6 hands lab clients
+#     bootfile-url tftp://[fd00:<vid>::<suffix>]/efi64/ipxe.efi (apply_kea),
+#     and dnsmasq (bind-dynamic) only answers TFTP on an address the iface
+#     actually carries. Without these the firmware's PXEv6 attempt times out
+#     (PXE-E18) before falling back to v4 -- lavergne et31b4 2026-10-27.
+#   - dnsmasq's stateful DHCPv6 range selection (dnsmasq mode), which matches
+#     a SOLICIT's iface against an address in the range's /64.
+# Rendered from the inventory (bang_host_suffix, vlans, bang_mgmt_iface).
+# Idempotent under `ip addr replace`; a missing iface is reported, not fatal.
+
+rc=0
+add() {
+    ip -6 addr replace "$1" dev "$2" || { echo "bang-v6-addrs: $1 on $2 failed" >&2; rc=1; }
+}
+{% if mgmt_v6_ra_stateless | default(false) %}
+add fd00:88::{{ bang_host_suffix[inventory_hostname] }}/64 {{ bang_mgmt_iface }}
+{% endif %}
+{% if lab_data_v6_ra_stateless | default(false) %}
+{% for v in vlans %}
+add fd00:{{ v.vid }}::{{ bang_host_suffix[inventory_hostname] }}/64 {{ v.parent }}.{{ v.vid }}
+{% endfor %}
+{% endif %}
+exit $rc

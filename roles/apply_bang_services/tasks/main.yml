@@ -291,6 +291,64 @@
     state: started
   when: (bang_dhcp_server | default('dnsmasq')) == 'kea'
 
+# === Static v6 ULAs (UEFI PXE over IPv6) ===
+# kea-dhcp6's bootfile-url points at fd00:<vid>::<bang_host_suffix>; this puts
+# that address on every lab vlan iface (and fd00:88::<suffix> on mgmt) so the
+# TFTP fetch has someone to answer it. Both bangs, active-active, like dnsmasq
+# TFTP. dnsmasq is bind-dynamic, so no restart. Was a hand-copied braintree
+# script on bang-gouda only; see the template header.
+- name: Deploy bang-v6-addrs.sh
+  become: true
+  ansible.builtin.template:
+    src: bang-v6-addrs.sh.j2
+    dest: /opt/flax/sbin/bang-v6-addrs.sh
+    owner: root
+    group: root
+    mode: "0755"
+  register: _v6_addrs_script
+  tags: [v6_addrs]
+
+- name: Deploy bang-v6-addrs.service
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/bang-v6-addrs.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by apply_bang_services. Do not edit.
+      [Unit]
+      Description=Assign IPv6 ULA addresses to lab-data and mgmt interfaces
+      After=network-online.target wicked.service
+      Wants=network-online.target
+      Before=dnsmasq.service kea-dhcp6.service
+
+      [Service]
+      Type=oneshot
+      ExecStart=/opt/flax/sbin/bang-v6-addrs.sh
+      RemainAfterExit=yes
+
+      [Install]
+      WantedBy=multi-user.target
+  register: _v6_addrs_unit
+  tags: [v6_addrs]
+
+- name: Enable bang-v6-addrs.service
+  become: true
+  ansible.builtin.systemd:
+    name: bang-v6-addrs.service
+    enabled: true
+    daemon_reload: "{{ _v6_addrs_unit is changed }}"
+  tags: [v6_addrs]
+
+# Run the script directly rather than restart the unit: a oneshot that is
+# already "active (exited)" would not re-run on `started`.
+- name: Apply the v6 addresses now
+  become: true
+  ansible.builtin.command: /opt/flax/sbin/bang-v6-addrs.sh
+  changed_when: _v6_addrs_script is changed
+  tags: [v6_addrs]
+
 # === nginx (HTTP for PXE chain + asset serving) ===
 
 # apache2 historically squatted on :80 with /etc/apache2/conf.d/*.conf

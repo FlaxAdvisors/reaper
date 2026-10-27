@@ -226,7 +226,7 @@ conf-file=/etc/dnsmasq.d/lab-triage-reservations.conf
 # vlan (mnemonic match with the 192.168.88.0/24 v4 prefix). Pool
 # occupies ::100–::1ff per network (256 addrs). The bang carries
 # `<prefix>::<bang_host_suffix>/64` on each iface, statically
-# assigned (see /opt/flax/sbin/bang-v6-addrs.sh) — dnsmasq's range
+# assigned (apply_bang_services bang-v6-addrs.sh.j2) — dnsmasq's range
 # selection matches incoming SOLICITs against the bang's own iface
 # prefix to pick the right pool, so the iface must carry an address
 # in the same /64 the dhcp-range advertises. A plain stateful range
