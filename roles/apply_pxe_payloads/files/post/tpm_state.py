@@ -9,12 +9,19 @@ owned=1 when any of the three hierarchy passwords is set or a persistent key
 exists -- what a previous OS (Windows/BitLocker) leaves behind. A cleared TPM
 reads perm=0x00000000 persistent=0. Platform/vendor NV indices (EK certs)
 survive a clear and are not counted. Exit 2 when the TPM cannot be read.
+
+TPM 1.2 (Leopards, operator 2026-10-27) does not speak the TPM2 command set
+(TPM_rc 0xa, bad ordinal). When the kernel reports tpm_version_major 1, the
+answer comes from its TPM 1.2 sysfs attributes instead:
+  owned=1 tpm=1.2 enabled=1 active=1
+(<sysfs>/owned, or <sysfs>/device/owned on older kernels).
 """
 import os
 import struct
 import sys
 
 DEV = os.environ.get("TPM_DEV", "/dev/tpm0")
+SYSFS = os.environ.get("TPM_SYSFS", "/sys/class/tpm/tpm0")
 BITS = {0: "ownerAuthSet", 1: "endorsementAuthSet", 2: "lockoutAuthSet", 8: "disableClear"}
 
 
@@ -28,7 +35,33 @@ def get_capability(f, cap, prop, count):
     return r[10:]
 
 
+def _read(name):
+    for d in (SYSFS, os.path.join(SYSFS, "device")):
+        try:
+            with open(os.path.join(d, name)) as f:
+                return f.read().strip()
+        except OSError:
+            continue
+    return None
+
+
+def tpm12_state():
+    """'owned=... tpm=1.2 enabled=... active=...', or None when unreadable."""
+    owned = _read("owned")
+    if owned not in ("0", "1"):
+        return None
+    return "owned=%s tpm=1.2 enabled=%s active=%s" % (
+        owned, _read("enabled") or "?", _read("active") or "?")
+
+
 def main():
+    if _read("tpm_version_major") == "1":
+        line = tpm12_state()
+        if line is None:
+            print("owned=? tpm=1.2 error=no-owned-attribute")
+            return 2
+        print(line)
+        return 0
     try:
         with open(DEV, "r+b", buffering=0) as f:
             r = get_capability(f, 6, 0x200, 1)               # TPM_PT_PERMANENT

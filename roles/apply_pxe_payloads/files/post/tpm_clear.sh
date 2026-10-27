@@ -34,8 +34,12 @@ req=$(cat "$PPI/request" 2>/dev/null)
 resp=$(cat "$PPI/response" 2>/dev/null)
 echo "ppi version=$(cat "$PPI/version" 2>/dev/null) request=$req response=$resp"
 
-case "$resp" in
-    "5 0"*) echo "TPM-CLEARED-AT-BOOT $resp"; note "TPM was cleared by the BIOS on this boot" ;;
+# The PPI clear ops this script ever queues: 5 (Clear) for TPM 2.0 and as the
+# TPM 1.2 fallback, 22 (Enable + Activate + Clear + Enable + Activate) for TPM
+# 1.2, because op 5 alone leaves a 1.2 TPM disabled and deactivated.
+resp_op=${resp%% *}; resp_rc=$(echo "$resp" | awk '{sub(/:$/, "", $2); print $2}')   # "5 0: Success" -> 5, 0
+case "$resp_op $resp_rc" in
+    "5 0"|"22 0") echo "TPM-CLEARED-AT-BOOT $resp"; note "TPM was cleared by the BIOS on this boot" ;;
 esac
 
 note "reading TPM ownership"
@@ -49,22 +53,35 @@ esac
 
 # Owned. Guards before queueing, so a BIOS that ignores or refuses the
 # request costs one reboot at most, never a loop.
-if [ "$req" = 5 ]; then
+if [ "$req" = 5 ] || [ "$req" = 22 ]; then
     echo "TPM-FAIL reason=bios-left-the-previous-clear-pending $state"; exit 0
 fi
-case "$resp" in
-    "5 0"*) echo "TPM-FAIL reason=still-owned-after-a-successful-clear $state"; exit 0 ;;
-    "5 "*)  echo "TPM-FAIL reason=bios-refused-clear:${resp// /_} $state"; exit 0 ;;
+case "$resp_op" in
+    5|22)
+        if [ "$resp_rc" = 0 ]; then
+            echo "TPM-FAIL reason=still-owned-after-a-successful-clear $state"; exit 0
+        fi
+        echo "TPM-FAIL reason=bios-refused-clear:${resp// /_} $state"; exit 0 ;;
 esac
-op5=$(awk '$1=="5"{print $2}' "$PPI/tcg_operations" 2>/dev/null)
-if [ "$op5" != "4:" ]; then
-    echo "TPM-SKIP reason=op5-needs-console-confirmation:${op5:-unlisted} $state"; exit 0
+unattended() { [ "$(awk -v op="$1" '$1==op{print $2}' "$PPI/tcg_operations" 2>/dev/null)" = "4:" ]; }
+case "$state" in
+    *" tpm=1.2"*) ops="22 5" ;;
+    *)            ops="5" ;;
+esac
+op=""
+for o in $ops; do
+    if unattended "$o"; then op=$o; break; fi
+done
+if [ -z "$op" ]; then
+    first=${ops%% *}
+    got=$(awk -v op="$first" '$1==op{print $2}' "$PPI/tcg_operations" 2>/dev/null)
+    echo "TPM-SKIP reason=op${first}-needs-console-confirmation:${got:-unlisted} $state"; exit 0
 fi
 
-note "TPM owned by a previous OS -- queueing a BIOS clear (PPI op 5)"
-echo 5 > "$PPI/request" 2>/dev/null
-if [ "$(cat "$PPI/request" 2>/dev/null)" != 5 ]; then
+note "TPM owned by a previous OS -- queueing a BIOS clear (PPI op $op)"
+echo "$op" > "$PPI/request" 2>/dev/null
+if [ "$(cat "$PPI/request" 2>/dev/null)" != "$op" ]; then
     echo "TPM-FAIL reason=ppi-request-not-accepted $state"; exit 0
 fi
-echo "TPM-QUEUED $state"
+echo "TPM-QUEUED op=$op $state"
 exit 10

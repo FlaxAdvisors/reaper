@@ -90,3 +90,52 @@ def test_progress_reaches_the_banner_through_ps_note(tmp_path):
     p, _ = _run(ppi, OWNED, note_log=notes)
     text = open(notes).read()
     assert "reading TPM ownership" in text and "queueing a BIOS clear" in text
+
+
+# TPM 1.2 (Leopards, operator 2026-10-27). tpm_state.py reports it from sysfs as
+# "owned=... tpm=1.2 ...". PPI op 22 (Enable + Activate + Clear + Enable +
+# Activate) is preferred because op 5 alone leaves a 1.2 TPM disabled and
+# deactivated; op 5 is the fallback; either needs "4: User not required".
+OWNED12 = "owned=1 tpm=1.2 enabled=1 active=1"
+CLEAN12 = "owned=0 tpm=1.2 enabled=1 active=1"
+OPS12 = "0 4: User not required\n5 4: User not required\n22 4: User not required\n"
+OPS12_22_NEEDS_USER = "0 4: User not required\n5 4: User not required\n22 3: User required\n"
+OPS12_NONE = "5 3: User required\n22 3: User required\n"
+
+
+def test_tpm12_owned_queues_op_22(tmp_path):
+    p, req = _run(_ppi(str(tmp_path), ops=OPS12), OWNED12)
+    assert p.returncode == 10 and "TPM-QUEUED op=22" in p.stdout and req == "22"
+
+
+def test_tpm12_falls_back_to_op_5_when_22_needs_the_console(tmp_path):
+    p, req = _run(_ppi(str(tmp_path), ops=OPS12_22_NEEDS_USER), OWNED12)
+    assert p.returncode == 10 and "TPM-QUEUED op=5" in p.stdout and req == "5"
+
+
+def test_tpm12_skips_when_no_clear_op_is_unattended(tmp_path):
+    p, req = _run(_ppi(str(tmp_path), ops=OPS12_NONE), OWNED12)
+    assert p.returncode == 0 and "reason=op22-needs-console-confirmation" in p.stdout and req == "96"
+
+
+def test_tpm12_second_pass_reports_the_bios_clear(tmp_path):
+    p, req = _run(_ppi(str(tmp_path), ops=OPS12, response="22 0: Success"), CLEAN12)
+    assert "TPM-CLEARED-AT-BOOT 22 0: Success" in p.stdout and "TPM-CLEAN" in p.stdout
+    assert p.returncode == 0 and req == "96"
+
+
+def test_tpm12_no_loop_when_22_left_pending(tmp_path):
+    p, _ = _run(_ppi(str(tmp_path), ops=OPS12, request="22"), OWNED12)
+    assert p.returncode == 0 and "reason=bios-left-the-previous-clear-pending" in p.stdout
+
+
+def test_tpm12_no_loop_when_22_refused_or_ineffective(tmp_path):
+    p, _ = _run(_ppi(str(tmp_path / "a"), ops=OPS12, response="22 1: BIOS Failure"), OWNED12)
+    assert p.returncode == 0 and "reason=bios-refused-clear" in p.stdout
+    p, _ = _run(_ppi(str(tmp_path / "b"), ops=OPS12, response="22 0: Success"), OWNED12)
+    assert p.returncode == 0 and "reason=still-owned-after-a-successful-clear" in p.stdout
+
+
+def test_tpm2_still_queues_op_5_even_when_22_is_listed(tmp_path):
+    p, req = _run(_ppi(str(tmp_path), ops=OPS12), OWNED)
+    assert p.returncode == 10 and "TPM-QUEUED op=5" in p.stdout and req == "5"
