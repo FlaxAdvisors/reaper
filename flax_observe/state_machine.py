@@ -105,6 +105,10 @@ PING_PACKETS = 1
 PING_WAIT_SECS = 1
 SOL_ACTIVE_DIR = "/etc/flax/soltriage"      # triage server's SOL history dir
 SOL_ACTIVE_MAX_AGE_SECS = 180
+# ami_legacy + live SOL: one power read per this many seconds anyway (operator
+# 2026-10-27). Triage holds SOL on every tile, so a pure skip froze bmcpower for
+# ever; a competing session on an ami_legacy BMC is an accepted cost.
+SOL_POWER_REFRESH_SECS = 180
 INTENTIONAL_FLAP_DIR = "/run/flax/intentional-flap"
 FORGET_PORT_DIR = "/run/flax/forget-port"
 # fru_fw (triage) drops <dir>/<port> after it OVERWROTE a serial this service
@@ -1159,6 +1163,7 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
     _chassis_serial_traditional = getattr(env, "chassis_serial_traditional", None)
     _chassis_serial_openbmc = getattr(env, "chassis_serial_openbmc", None)
     _sol_active = getattr(env, "sol_session_active", _sol_session_active)
+    _monotonic = getattr(env, "monotonic", _time_mod.monotonic)
     _inband_admin = getattr(env, "ensure_inband_admin_configured",
                             _ensure_inband_admin_configured)
 
@@ -1301,6 +1306,24 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
             # live; only link-local-only reach (no IPv4) moves it to ssh.
             if _has_ssh and not bmc_ip:
                 pwr = _bmc_power_status_openbmc(probe_host, creds_used)
+            # ami_legacy: one power read per SOL_POWER_REFRESH_SECS even while
+            # SOL is live (see SOL_POWER_REFRESH_SECS); between reads, skip.
+            elif (not _has_ssh and vendor == _bmc_vendor.AMI_LEGACY
+                    and _sol_active(_internal_port(port))
+                    and _monotonic() - port_state.get("sol_power_refreshed_at", float("-inf"))
+                    >= SOL_POWER_REFRESH_SECS):
+                port_state["sol_power_refreshed_at"] = _monotonic()
+                pwr, watts = _bmc_power_and_sdr_traditional(
+                    bmc_ip, _login, bmc_mac=port_state.get("bmc_mac"),
+                    port=_internal_port(port), cipher=_use_cipher)
+                sn = None
+                emit_event({
+                    "kind": "sol_active_power_refresh",
+                    "switch": switch,
+                    "port": port,
+                    "bmc_ip": bmc_ip,
+                    "power": pwr,
+                })
             # ami_legacy: a 4-8 slot RMCP+ session table -- a competing session evicts the live SOL, so skip.
             elif not _has_ssh and _sol_active(_internal_port(port)):
                 emit_event({
