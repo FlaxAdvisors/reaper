@@ -1,6 +1,9 @@
 BOOTPROTO='dhcp'
 STARTMODE='hotplug'
-ZONE=external
+ZONE='external'
 ETHERDEVICE='mgmt'
 VLAN_ID='2'
-# corp drop (spec 2026-10-27 6.2): renamed from public. bang-blues: DHCP, its live WAN (operator 2026-10-27)
+DHCLIENT_SET_DEFAULT_ROUTE='yes'
+DHCLIENT_ROUTE_PRIORITY='100'
+DHCLIENT_MODIFY_RESOLV_CONF='no'
+DHCLIENT_SET_HOSTNAME='no'
