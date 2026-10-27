@@ -139,3 +139,28 @@ interface Ethernet27/1
    no switchport mode
 interface Ethernet4/1
    no switchport access vlan
+   no shutdown
+interface Ethernet29/1
+   no shutdown
+interface Ethernet29/2
+   no shutdown
+interface Ethernet29/3
+   no shutdown
+interface Ethernet29/4
+   no shutdown
+interface Ethernet30/1
+   no shutdown
+interface Ethernet30/2
+   no shutdown
+interface Ethernet30/3
+   no shutdown
+interface Ethernet30/4
+   no shutdown
+interface Ethernet31/1
+   no shutdown
+interface Ethernet31/2
+   no shutdown
+interface Ethernet31/3
+   no shutdown
+interface Ethernet31/4
+   no shutdown
