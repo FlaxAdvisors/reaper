@@ -18,10 +18,15 @@
     group: root
     mode: "0755"
 
+# A site may carry its own compose at files/configs/<site>/services/triage/
+# (lavergne: no Zone A port lists). It must differ from this role's copy only in
+# the per-site port-list lines (reaper-devel test_triage_compose_site_override.py).
 - name: Stage triage docker-compose-prod.yml
   become: true
+  vars:
+    apply_triage_compose_site_compose: "{{ config_output_dir }}/{{ site_name }}/services/triage/docker-compose-prod.yml"
   ansible.builtin.copy:
-    src: docker-compose-prod.yml
+    src: "{{ apply_triage_compose_site_compose if apply_triage_compose_site_compose is file else 'docker-compose-prod.yml' }}"
     dest: "{{ apply_triage_compose_path }}/{{ apply_triage_compose_compose_file }}"
     owner: root
     group: root
