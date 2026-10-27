@@ -11,7 +11,10 @@
   become: true
   ansible.builtin.systemd:
     name: dnsmasq
-    state: "{{ 'restarted' if inventory_hostname == apply_keepalived_master_host else 'stopped' }}"
+    # KEA mode: dnsmasq is DNS+TFTP only and active-active (tasks/main.yml), so
+    # restart it everywhere. Stopping it on the backup here left bang-edam with
+    # no DNS/TFTP from a 2026-10-21 config push until 2026-10-27.
+    state: "{{ 'restarted' if (inventory_hostname == apply_keepalived_master_host or (bang_dhcp_server | default('dnsmasq')) == 'kea') else 'stopped' }}"
     daemon_reload: true
 
 - name: reload nginx
