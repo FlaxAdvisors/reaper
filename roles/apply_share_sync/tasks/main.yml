@@ -1,0 +1,47 @@
+---
+- name: Resolve the share-sync peer address
+  ansible.builtin.set_fact:
+    apply_share_sync_to_ip: >-
+      {{ (apply_flax_stack_peers | selectattr('name', 'equalto', apply_share_sync_to) | first).ip }}
+  when: inventory_hostname == apply_share_sync_from
+
+- name: Ensure the flax sbin dir exists
+  become: true
+  ansible.builtin.file:
+    path: "{{ apply_share_sync_script | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: inventory_hostname == apply_share_sync_from
+
+- name: Deploy flax-share-sync script
+  become: true
+  ansible.builtin.template:
+    src: flax-share-sync.sh.j2
+    dest: "{{ apply_share_sync_script }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: inventory_hostname == apply_share_sync_from
+
+- name: Deploy flax-share-sync cron (VIP-gated in the script)
+  become: true
+  ansible.builtin.cron:
+    name: flax-share-sync
+    cron_file: "{{ apply_share_sync_cron_file }}"
+    user: root
+    minute: "{{ apply_share_sync_minute }}"
+    hour: "{{ apply_share_sync_hour }}"
+    job: "{{ apply_share_sync_script }}"
+  when: inventory_hostname == apply_share_sync_from
+
+- name: Remove flax-share-sync from bangs that are not the source
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "/etc/cron.d/{{ apply_share_sync_cron_file }}"
+    - "{{ apply_share_sync_script }}"
+  when: inventory_hostname != apply_share_sync_from

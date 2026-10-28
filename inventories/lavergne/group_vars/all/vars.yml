@@ -172,6 +172,11 @@ apply_flax_stack_peers:
   - { name: bang-rhythm, ip: 192.168.88.21 }
   - { name: bang-blues,  ip: 192.168.88.22 }
 
+# /export/share mirror (apply_share_sync.yml): hourly cron on the source only,
+# and it runs only while that bang holds bang_mgmt_vip.
+apply_share_sync_from: bang-rhythm
+apply_share_sync_to: bang-blues
+
 apply_flax_switch_sense_db_password: "{{ vault_flax_stack_db_passwords.flax_switch_sense }}"
 apply_flax_observe_db_password: "{{ vault_flax_stack_db_passwords.flax_observe }}"
 apply_flax_classify_db_password: "{{ vault_flax_stack_db_passwords.flax_classify }}"
