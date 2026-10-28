@@ -18,14 +18,21 @@ LIVE = "live"          # use this cycle's verdict as-is
 HELD = "held"          # keep the latched identity; the BMC is not visible
 EXPIRED = "expired"    # hold ran out: today's path (verdict as-is)
 FLIPPED = "flipped"    # same serial, new BMC mac: adopt it, keep the serial
-SWAPPED = "swapped"    # different blade (or unconfirmed at expiry): forget
+SWAPPED = "swapped"    # different blade (or an unreadable BMC at expiry): forget
 
 
 def decide(*, latched_mac, chassis_sn, new_mac, hold_age, seen_elsewhere,
-           serial_of_new, hold_secs=HOLD_SECS):
+           serial_of_new, new_is_bmc=False, hold_secs=HOLD_SECS):
     """Outcome for one cycle. `latched_mac` is the BMC mac the latched
     chassis_sn belongs to; `new_mac` is this cycle's confirm_roles bmc_mac;
-    `hold_age` seconds since the hold began (0 when it starts now)."""
+    `hold_age` seconds since the hold began (0 when it starts now);
+    `new_is_bmc` whether new_mac probed as a confirmed BMC kind.
+
+    A new_mac that is not a confirmed BMC is held with no expiry: it is the
+    lone host NIC the single-MAC path labels "BMC" while the real BMC is
+    quiet, and adopting it hands the host the BMC's reservation (lavergne
+    2026-10-28: Leopard BMCs mute for a whole inventory pass). A different
+    blade is the committed link-down's job (_forget_identity)."""
     if not latched_mac or not chassis_sn:
         return LIVE
     if new_mac == latched_mac:
@@ -35,6 +42,8 @@ def decide(*, latched_mac, chassis_sn, new_mac, hold_age, seen_elsewhere,
         return HELD if in_window else EXPIRED
     if serial_of_new:
         return FLIPPED if serial_of_new.strip() == chassis_sn.strip() else SWAPPED
+    if not new_is_bmc:
+        return HELD
     return HELD if in_window else SWAPPED
 
 

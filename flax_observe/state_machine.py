@@ -1013,6 +1013,8 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
         latched_mac=prior_latched, chassis_sn=prior_sn, new_mac=new_mac,
         hold_age=hold_age, seen_elsewhere=seen_elsewhere,
         serial_of_new=serial_of_new,
+        new_is_bmc=bool(new_mac) and (bmc_probe_by_mac.get(new_mac) or {}).get(
+            "kind") in CONFIRMED_BMC_KINDS,
         hold_secs=getattr(env, "identity_hold_secs", _idh.HOLD_SECS))
     held = outcome == _idh.HELD
 
