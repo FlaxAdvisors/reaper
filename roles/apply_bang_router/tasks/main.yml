@@ -200,3 +200,59 @@
 
 - name: Flush firewalld handlers before exit
   ansible.builtin.meta: flush_handlers
+
+# WAN default-route metric guard. wicked 0.6.77 drops DHCLIENT_ROUTE_PRIORITY
+# when a hotplug device is re-created: replugging bang-rhythm's wifi dongle
+# (2026-10-28) put wlan0's default route at metric 0, ahead of corp (100).
+- name: WAN route guard -- install
+  when: apply_bang_router_wan_route_metrics | length > 0
+  tags: [wan_route_guard]
+  block:
+    - name: Deploy bang-wan-route-guard
+      become: true
+      ansible.builtin.copy:
+        src: bang-wan-route-guard
+        dest: /usr/local/sbin/bang-wan-route-guard
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Deploy bang-wan-route-guard service + timer
+      become: true
+      ansible.builtin.template:
+        src: "bang-wan-route-guard.{{ item }}.j2"
+        dest: "/etc/systemd/system/bang-wan-route-guard.{{ item }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop: [service, timer]
+
+    - name: Enable and start bang-wan-route-guard.timer
+      become: true
+      ansible.builtin.systemd:
+        name: bang-wan-route-guard.timer
+        enabled: true
+        state: started
+        daemon_reload: true
+
+- name: WAN route guard -- remove where not configured
+  when: apply_bang_router_wan_route_metrics | length == 0
+  tags: [wan_route_guard]
+  block:
+    - name: Stop and disable bang-wan-route-guard.timer
+      become: true
+      ansible.builtin.systemd:
+        name: bang-wan-route-guard.timer
+        enabled: false
+        state: stopped
+      failed_when: false
+
+    - name: Remove bang-wan-route-guard files
+      become: true
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/bang-wan-route-guard.timer
+        - /etc/systemd/system/bang-wan-route-guard.service
+        - /usr/local/sbin/bang-wan-route-guard

@@ -1,0 +1,11 @@
+# Managed by apply_bang_router. Do not edit.
+[Unit]
+Description=Run bang-wan-route-guard every minute
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=60
+AccuracySec=5
+
+[Install]
+WantedBy=timers.target

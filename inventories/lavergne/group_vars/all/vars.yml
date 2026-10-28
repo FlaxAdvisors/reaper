@@ -80,6 +80,11 @@ bang_mgmt_vip: 192.168.88.10
 bang_mgmt_cidr: 192.168.88.10/24
 bang_mgmt_iface: mgmt
 bang_wan_iface: corp
+# corp (VLAN 2 on mgmt, metric 100) is the primary WAN; the guest-wifi dongle on
+# bang-rhythm is the hotplug backup. A replug re-creates wlan0 and wicked loses
+# its route priority (2026-10-28), so the guard holds it at 200. blues has no
+# wlan0: the guard is a no-op there.
+apply_bang_router_wan_route_metrics: ["wlan0:200"]
 
 # Dynamic DHCP pool for laptops/on-site tooling on the mgmt VLAN.
 # Consumed by roles/apply_bang_services/templates/dnsmasq.conf.j2.
