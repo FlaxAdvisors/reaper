@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""tpm_sce.py clear -- schedule a TPM 1.2 clear through the BIOS setup.
+"""tpm_sce.py clear|enable -- TPM 1.2 clear / re-enable through the BIOS setup.
 
 For Quanta Leopards (TPM 1.2), whose BIOS requires a console confirmation for
 every PPI clear op and implements no NoPPIClear flag. Their AMI setup has a
@@ -14,6 +14,11 @@ file error" to any other header) -> dump again and require [05] selected.
 
 SCELNX_64 is not bundled in post.tgz (docs/post-platform-firmware-tooling.md):
 it is fetched from the share's tpm_enabler.v4.tgz, or TPM_SCE_BIN names one.
+
+`enable` (et29b4 2026-10-28): after the clear the BIOS syncs its setup to
+"TPM State = Disabled" and re-applies that on every POST, so PPI op 6 answers
+"6 0: Success" and changes nothing. Writing TPM State = Enabled the same way
+and rebooting brings the TPM back enabled + active.
 
 Prints one line; exit 0 SCE-QUEUED, 3 skip (nothing written), 1 failure.
 """
@@ -34,6 +39,7 @@ KNOWN_HII = {
     "492F03E4": "Quanta Leopard ORv2-DDR4 F06_3B17 + F06_3B22",
 }
 CLEAR = b"[05]TPM Clear"
+ENABLED = b"[01]Enabled"
 
 
 class Skip(Exception):
@@ -59,18 +65,38 @@ def hii(dump):
     return m.group(1).decode().upper() if m else None
 
 
-def find_clear_question(dump):
+def _find(dump, name, option):
     for s, e in _blocks(dump):
         blk = dump[s:e]
-        name = blk.split(b"\n", 1)[0].split(b"=", 1)[1].strip()
-        if name == b"Pending operation" and CLEAR in blk and b"Width\t=01" in blk:
+        if (blk.split(b"\n", 1)[0].split(b"=", 1)[1].strip() == name
+                and option in blk.split(b"Options", 1)[-1] and b"Width\t=01" in blk):
             return blk
     return None
+
+
+def find_clear_question(dump):
+    return _find(dump, b"Pending operation", CLEAR)
+
+
+def find_enable_question(dump):
+    return _find(dump, b"TPM State", ENABLED)
+
+
+def _select(blk, option):
+    """Move the "*" onto `option`, in the Options lines ONLY: the BIOS Default
+    line can read the same "[01]Enabled", and SCE rejects a script whose
+    BIOS Default carries a "*" (rc 13, "Unexpected BIOS Default")."""
+    head, opts = blk.split(b"Options", 1)
+    return head + b"Options" + opts.replace(b"*[", b"[").replace(option, b"*" + option)
 
 
 def selected(blk):
     m = re.search(rb"\*\[([0-9A-Fa-f]+)\]", blk)
     return m.group(1).decode().upper() if m else None
+
+
+def _script(dump, blk, option):
+    return dump[:_blocks(dump)[0][0]] + _select(blk, option) + b"\n"   # byte-identical to et31b4's
 
 
 def build_clear_script(dump):
@@ -80,9 +106,20 @@ def build_clear_script(dump):
     blk = find_clear_question(dump)
     if blk is None:
         raise Skip("no-clear-question")
-    header = dump[:_blocks(dump)[0][0]]
-    blk = blk.replace(b"*[", b"[").replace(CLEAR, b"*" + CLEAR)
-    return header + blk + b"\n"      # byte-identical to the script proven on et31b4
+    return _script(dump, blk, CLEAR)
+
+
+def build_enable_script(dump):
+    crc = hii(dump)
+    if crc not in KNOWN_HII:
+        raise Skip("unknown-hii:%s" % crc)
+    blk = find_enable_question(dump)
+    if blk is None:
+        raise Skip("no-tpm-state-question")
+    if selected(blk) == "01":
+        # Rewriting the value it already holds changes nothing at POST.
+        raise Skip("setup-already-enabled")
+    return _script(dump, blk, ENABLED)
 
 
 def _sce_bin(tmp):
@@ -115,29 +152,37 @@ def _dump(sce, tmp, name):
         return f.read()
 
 
-def clear():
+ACTIONS = {
+    # command: (build the script, find the question again, value it must hold)
+    "clear": (build_clear_script, find_clear_question, "05"),
+    "enable": (build_enable_script, find_enable_question, "01"),
+}
+
+
+def queue(action):
+    build, find, want = ACTIONS[action]
     with tempfile.TemporaryDirectory(prefix="tpmsce.") as tmp:
         sce = _sce_bin(tmp)
         before = _dump(sce, tmp, "before.txt")
-        script = os.path.join(tmp, "clear.txt")
+        script = os.path.join(tmp, action + ".txt")
         with open(script, "wb") as f:
-            f.write(build_clear_script(before))
+            f.write(build(before))
         rc = _run(sce, tmp, "/i", "/s", script)
         if rc != 0:
             raise Fail("sce-import-rc%d" % rc)
-        blk = find_clear_question(_dump(sce, tmp, "after.txt"))
-        if blk is None or selected(blk) != "05":
-            raise Fail("sce-clear-did-not-stick")
+        blk = find(_dump(sce, tmp, "after.txt"))
+        if blk is None or selected(blk) != want:
+            raise Fail("sce-%s-did-not-stick" % action)
         token = re.search(rb"Token\t=([0-9A-Fa-f]+)", blk).group(1).decode()
         return "SCE-QUEUED token=%s hii=%s" % (token, hii(before))
 
 
 def main(argv):
-    if argv[1:] != ["clear"]:
-        print("usage: tpm_sce.py clear")
+    if len(argv) != 2 or argv[1] not in ACTIONS:
+        print("usage: tpm_sce.py clear|enable")
         return 2
     try:
-        print(clear())
+        print(queue(argv[1]))
         return 0
     except Skip as e:
         print("SCE-SKIP reason=%s" % (e if str(e).startswith("sce-") else "sce-%s" % e))

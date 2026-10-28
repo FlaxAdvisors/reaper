@@ -438,7 +438,7 @@ if [ "$action" == "inventory" ] && [ "$flaxwipe" == "1" ]; then
     elif grep -q '^TPM-FAIL' $logdir/tpmclear.txt; then
         ps_fail "$(grep -m1 '^TPM-FAIL' $logdir/tpmclear.txt | cut -d' ' -f2)"
     else
-        ps_done "$(grep -oE '^TPM-(CLEARED-AT-BOOT|CLEAN|SKIP)( reason=[^ ]*)?' $logdir/tpmclear.txt | tr '\n' ' ')"
+        ps_done "$(grep -oE '^TPM-(CLEARED-AT-BOOT|ENABLED-AT-BOOT|CLEAN|SKIP)( reason=[^ ]*)?' $logdir/tpmclear.txt | tr '\n' ' ')"
     fi
 else
     ps_skip diskwipe "flaxwipe=${flaxwipe:-unset} action=$action"

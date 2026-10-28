@@ -33,7 +33,8 @@ def _q(name, token, offset, default, opts):
 # Token 94 is ALSO "Port 4" on this BIOS (et31b4 F06_3B17): selection must be by name.
 DUMP = (HEADER
         + _q("  Port 4", "94", "136", "[01]Enabled", ["[00]Disabled", "*[01]Enabled"])
-        + _q("  TPM State", "93", "01", "[01]Enabled", ["[00]Disabled", "*[01]Enabled"])
+        + _q("  TPM State", "93", "01", "[01]Enabled", ["*[00]Disabled", "[01]Enabled"])
+        + _q("  TCM State", "96", "01", "[01]Enabled", ["*[00]Disabled", "[01]Enabled"])
         + _q("Pending operation", "94", "02", "[00]None", ["*[00]None", "[05]TPM Clear"])
         + _q("Pending operation", "97", "02", "[00]None", ["*[00]None", "[05]TPM Clear"])
         + _q("  Pending operation", "A5", "02", "[00]None", ["*[00]None", "[01]TPM Clear"]))
@@ -86,15 +87,18 @@ if mode == "ignore":
     sys.exit(0)
 d = open(nv, "rb").read()
 new = open(args[2], "rb").read()
-want = re.search(rb"\*\[(..)\]", new.split(b"Setup Question")[1]).group(1)
-i = d.index(b"Setup Question\t= Pending operation\n")
+q = new[new.index(b"Setup Question"):]
+name_line = q.split(b"\n", 1)[0] + b"\n"
+want = re.search(rb"\*\[(..)\]", q.split(b"Options", 1)[1]).group(1)
+i = d.index(name_line)
 j = d.index(b"\n\n", i)
-blk = d[i:j].replace(b"*[", b"[").replace(b"[" + want + b"]", b"*[" + want + b"]")
+head, o2 = d[i:j].split(b"Options", 1)
+blk = head + b"Options" + o2.replace(b"*[", b"[").replace(b"[" + want + b"]", b"*[" + want + b"]")
 open(nv, "wb").write(d[:i] + blk + d[j:]); print("Script file imported successfully.")
 '''
 
 
-def _cli(tmp_path, mode="ok", dump=DUMP):
+def _cli(tmp_path, mode="ok", dump=DUMP, cmd="clear"):
     nv = tmp_path / "nv.txt"
     nv.write_bytes(dump)
     fake = tmp_path / "SCELNX_64"
@@ -103,7 +107,7 @@ def _cli(tmp_path, mode="ok", dump=DUMP):
     log = tmp_path / "log"
     env = dict(os.environ, TPM_SCE_BIN=str(fake), FAKE_SCE_NV=str(nv), FAKE_SCE_MODE=mode,
                FAKE_SCE_LOG=str(log), TMPDIR=str(tmp_path))
-    p = subprocess.run([sys.executable, SCRIPT, "clear"], env=env, stdout=subprocess.PIPE,
+    p = subprocess.run([sys.executable, SCRIPT, cmd], env=env, stdout=subprocess.PIPE,
                        stderr=subprocess.STDOUT, universal_newlines=True, timeout=60)
     return p, nv.read_bytes(), log.read_text() if log.exists() else ""
 
@@ -130,3 +134,51 @@ def test_cli_unknown_bios_is_a_skip_and_writes_nothing(tmp_path):
     p, _, log = _cli(tmp_path, dump=DUMP.replace(b"492F03E4", b"DEADBEEF"))
     assert p.returncode == 3 and "reason=sce-unknown-hii:DEADBEEF" in p.stdout
     assert "/i" not in log
+
+
+# --- enable: TPM State back to Enabled (et29b4 2026-10-28) -------------------
+# After a 1.2 clear the BIOS syncs its setup to "TPM State = Disabled" and
+# re-applies it every POST, overriding PPI op 6 ("6 0: Success", still
+# disabled, two blades of two). Writing TPM State = Enabled through SCE and
+# rebooting brought et29b4 back to enabled=1 active=1.
+
+def test_enable_question_is_tpm_state_not_tcm_state():
+    q = tpm_sce.find_enable_question(DUMP)
+    assert q.startswith(b"Setup Question\t=   TPM State") and b"Token\t=93" in q
+
+
+def test_enable_script_moves_the_star_in_options_only():
+    # The BIOS Default line also reads [01]Enabled: touching it is SCE rc 13
+    # "Unexpected BIOS Default" (et29b4, first try, 2026-10-28).
+    s = tpm_sce.build_enable_script(DUMP)
+    assert s.startswith(HEADER)
+    body = s[len(HEADER):]
+    assert b"BIOS Default\t=[01]Enabled\n" in body
+    assert b"Options\t=[00]Disabled" in body and b"         *[01]Enabled" in body
+    assert body.count(b"*[") == 1
+
+
+def test_enable_when_setup_already_says_enabled_is_a_skip():
+    d = DUMP.replace(b"Options\t=*[00]Disabled\t// Move \"*\" to the desired Option\n         [01]Enabled",
+                     b"Options\t=[00]Disabled\t// Move \"*\" to the desired Option\n         *[01]Enabled", 1)
+    assert tpm_sce.selected(tpm_sce.find_enable_question(d)) == "01"
+    with pytest.raises(tpm_sce.Skip, match="setup-already-enabled"):
+        tpm_sce.build_enable_script(d)
+
+
+def test_clear_script_never_touches_bios_default():
+    d = DUMP.replace(b"BIOS Default\t=[00]None", b"BIOS Default\t=[05]TPM Clear", 1)
+    s = tpm_sce.build_clear_script(d)
+    assert b"BIOS Default\t=[05]TPM Clear\n" in s and b"         *[05]TPM Clear" in s
+
+
+def test_cli_enable_queues_and_verifies(tmp_path):
+    p, nv, log = _cli(tmp_path, cmd="enable")
+    assert p.returncode == 0 and "SCE-QUEUED token=93 hii=492F03E4" in p.stdout
+    assert tpm_sce.selected(tpm_sce.find_enable_question(nv)) == "01"
+    assert tpm_sce.selected(tpm_sce.find_clear_question(nv)) == "00"      # nothing else written
+
+
+def test_cli_enable_unknown_bios_is_a_skip(tmp_path):
+    p, _, log = _cli(tmp_path, cmd="enable", dump=DUMP.replace(b"492F03E4", b"DEADBEEF"))
+    assert p.returncode == 3 and "reason=sce-unknown-hii:DEADBEEF" in p.stdout and "/i" not in log
