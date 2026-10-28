@@ -11,13 +11,54 @@ logger -t keepalived "Acquired MASTER on {{ inventory_hostname }}"
 # Health-dashboard hook — record VRRP transition for textfile collector.
 /opt/flax/sbin/health_hooks/vrrp_state.sh MASTER || true
 
+# At cold boot keepalived can win MASTER before docker.service is up, and every
+# unit below Requires= docker. 2026-10-28 bang-rhythm: dockerd's first start lost
+# a race with the firewall, kea-dhcp4's restart failed with result 'dependency',
+# and nothing retried it (kea-dhcp4 is disabled; only this script starts it), so
+# the lab had no DHCPv4 until a hand start. Wait for docker, then retry.
+wait_for_docker() {
+  local i
+  for i in $(seq 1 60); do
+    systemctl is-active --quiet docker && return 0
+    sleep 2
+  done
+  logger -t keepalived "docker not active after 120s; restarting units anyway"
+}
+
+# keepalived adds the VIPs before running this script. If they are gone we were
+# demoted while waiting (notify_backup has stopped these units): starting them
+# now would put two DHCP servers / two single-writers on the lab.
+holds_vip() {
+  ip -4 addr show dev {{ bang_mgmt_iface }} | grep -qF " {{ bang_mgmt_cidr }} "
+}
+
+restart_unit() {
+  local u=$1 n
+  if ! holds_vip; then
+    logger -t keepalived "VIP {{ bang_mgmt_cidr }} no longer held; not starting $u"
+    return 0
+  fi
+  if ! systemctl cat "$u" >/dev/null 2>&1; then
+    logger -t keepalived "$u not installed; skipped"
+    return 0
+  fi
+  systemctl reset-failed "$u" 2>/dev/null || true
+  for n in 1 2 3 4 5; do
+    systemctl restart "$u" && return 0
+    logger -t keepalived "$u restart failed (attempt $n/5)"
+    [ "$n" -lt 5 ] && sleep 5
+  done
+  logger -t keepalived "$u restart failed after 5 attempts"
+}
+
+wait_for_docker
+
 {% if (bang_dhcp_server | default('dnsmasq')) == 'kea' %}
 # Kea owns DHCP. dnsmasq is DNS+TFTP-only and runs active-active (enabled by
 # apply_bang_services), so we do NOT manage it here. Promote the VIP-exclusive
 # Kea trio instead.
 for u in kea-dhcp4 kea-dhcp6 radvd; do
-  systemctl reset-failed "$u" 2>/dev/null || true
-  systemctl restart "$u" || logger -t keepalived "$u restart failed (acceptable if not yet installed)"
+  restart_unit "$u"
 done
 {% else %}
 # Promote dnsmasq on this host (VIP-exclusive DHCP). A fresh restart picks up
@@ -39,8 +80,7 @@ fi
 # holds the VIP; reset-failed first clears any boot-time gate failure (the VIP
 # wasn't yet held when systemd autostarted them at cold boot).
 for u in flax-switch-sense flax-observe flax-classify flax-discover flax-reconcile flax-post flax-post-observe flax-post-fwd flax-post-biosd flax-post-nicd flax-post-sol flax-post-nginx; do
-  systemctl reset-failed "$u" 2>/dev/null || true
-  systemctl restart "$u" || logger -t keepalived "$u restart failed (acceptable if not yet installed)"
+  restart_unit "$u"
 done
 
 {# keepalived.service has ProtectHome=yes (masks /home AND /root) plus
