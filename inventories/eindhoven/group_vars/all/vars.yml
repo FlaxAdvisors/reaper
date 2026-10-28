@@ -308,6 +308,18 @@ bmc_fw_platforms:
     flash: { method: redfish-update-multipart, artifact: "SXC-Lab_OCP-Updates/OpenBMC/flax-onetree-1.1.4.tar" }
     auto: true
     post_flash_net_reset: true   # Part 3 D: clear 00-bmc-eth0.network after a flash (gated by BMC_FW_NETRESET_PORTS)
+  # Quanta Leopards (operator 2026-10-27): report-only. triage bmc_fw reads the
+  # BMC version over IPMI (`mc info`, ami_legacy -C 3) once per link session
+  # and reports at_target / off_target; it never flashes them. 14.00 is the
+  # fleet version (metal Socflash f06_1250_1400.bin, SXC Quanta_Leopard-DDR4_BMC_14).
+  # updatable:false also keeps post's fwd from ever flashing one; its check.id
+  # is not bmc_active, so fwd's onetree match never picks it.
+  leopard-ami:
+    match:
+      product_name: ["(?i)leopard"]
+    target_version: "14.00"
+    check: { method: ipmi-mc-info, id: ipmi_fw_rev }
+    updatable: false
 
 # Host (BIOS) firmware manifest for the triage bios_fw worker (role default is
 # TPC_P26F). 2026-09-29 operator: TPO_P26F. 2026-10-02 operator: one BIOS for
@@ -321,6 +333,15 @@ host_fw_platforms:
       method: redfish-update-multipart
       artifact: "SXC-Lab_OCP-Updates/OEM-TP-wiwynn-FW-2021-02-23/tiogapass-bios-TPO_P26F.tar"
     auto: true
+  # Quanta Leopards (operator 2026-10-27): report-only. post flashes F06_3B22
+  # (update_quanta_leopard.sh); triage bios_fw only reads the version the BIOS
+  # wrote into the BMC at POST (`mc getsysinfo system_fw_version`) and reports
+  # at_target / off_target. No flash entry: bios_fw never flashes these.
+  leopard-bios:
+    match:
+      product_name: ["(?i)leopard"]
+    target_version: "F06_3B22"
+    check: { method: ipmi-sysinfo }
 
 # Role registry (spine migration phase 1) universe for the post role,
 # rendered into /etc/flax/roles.d/post.json by apply_lease_agent. Values
