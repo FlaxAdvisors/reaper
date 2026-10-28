@@ -18,6 +18,13 @@
       "user": "${KEA_DB_USER}", "password": "${KEA_DB_PASSWORD}"
     },
     "valid-lifetime": 4000, "renew-timer": 1000, "rebind-timer": 2000,
+{#  Leases are found by MAC, not client-id (operator 2026-10-28). The triage live
+    image's DHCP client sends an RFC 4361 client-id (type 255, IAID + DUID-LLT) whose
+    DUID timestamp is new on every boot, so each reboot inside valid-lifetime was a
+    "new client": its reserved address was still leased to the previous boot and it
+    landed on a pool address (lavergne et29b4: .29.4 -> .0.53/.54/.62/.68/.70).
+    Reservations are hw-address already; client classes do not read option 61. #}
+    "match-client-id": false,
     "expired-leases-processing": {
       "reclaim-timer-wait-time": 10, "flush-reclaimed-timer-wait-time": 25,
       "hold-reclaimed-time": 3600, "max-reclaim-leases": 100, "max-reclaim-time": 250
