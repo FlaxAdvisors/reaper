@@ -109,11 +109,12 @@ interface Ethernet2/1
    switchport access vlan 31
 !
 interface Ethernet3/1
-   shutdown
+   description rabbit-blues
+   switchport trunk allowed vlan 4,24-30
+   switchport mode trunk
 !
 interface Ethernet4/1
-   description rabbit-blues
-   no error-correction encoding
+   shutdown
    switchport trunk allowed vlan 4,24-30
    switchport mode trunk
 !
