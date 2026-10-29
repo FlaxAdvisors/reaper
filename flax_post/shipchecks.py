@@ -12,6 +12,9 @@ of "To be filled by O.E.M." must not "match" the same text in dmidecode.
 """
 import re
 
+# The engine-owned Qualify steps this module judges, in pipeline order.
+SHIP_CHECKS = ("smbios-serial", "tpm-state")
+
 _PLACEHOLDERS = {"to be filled by o.e.m.", "default string", "not specified", "n/a", "unknown", "-"}
 
 
