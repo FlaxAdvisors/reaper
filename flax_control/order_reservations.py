@@ -9,9 +9,15 @@ for rack b of a multi-rack order). Every other row is someone else's:
   - upsert refuses (Conflict, nothing written) when the MAC already has a row
     under ANY other source -- triage, post, manual, legacy-import, an untagged
     legacy row, or a sibling rack of the same order -- or when the IP is held
-    by another identifier in the same subnet. The checks and the write share
-    one transaction, and the ON CONFLICT DO UPDATE carries its own source guard,
-    so a row that turned foreign between check and write is still not touched.
+    by another identifier in the same subnet under another source. An IP held
+    by another MAC under the SAME source (a blade swap / RMA in that slot) is
+    superseded: that row is deleted and the new one inserted.
+    The checks, the delete and the write run in one explicit transaction (the
+    pool is autocommit, so conn.transaction() is what makes them atomic), and
+    the ON CONFLICT DO UPDATE carries its own source guard, so a row that
+    turned foreign between check and write is still not touched. Not covered:
+    a concurrent classify INSERT for the same MAC in another subnet (that would
+    need an advisory lock shared with classify).
   - delete_source / list_source match the source by equality, never a prefix,
     so closing rack "" of an order never touches rack "/b".
 
@@ -78,6 +84,9 @@ def _check_values(ipv4, hostname, vid) -> str:
         raise BadValue(f"bad ipv4: {ipv4!r}") from None
     if not isinstance(hostname, str) or not _HOSTNAME.fullmatch(hostname):
         raise BadValue(f"bad hostname: {hostname!r}")
+    # the spec's addressing contract: vid N lives in 172.N.0.0/16
+    if ipaddress.IPv4Address(ip) not in ipaddress.IPv4Network(f"172.{vid}.0.0/16"):
+        raise BadValue(f"ipv4 {ip} is not in 172.{vid}.0.0/16")
     return ip
 
 
@@ -89,14 +98,24 @@ SELECT COALESCE((user_context::jsonb) ->> 'source', '') AS owner_source
    AND dhcp_identifier_type = 0
 """
 
-# Any other identifier holding this IP in this subnet.
+# Any other identifier holding this IP in this subnet, with its owner.
 _IP_HOLDER_SQL = """
-SELECT encode(dhcp_identifier, 'hex') AS holder_mac
+SELECT encode(dhcp_identifier, 'hex') AS holder_mac,
+       COALESCE((user_context::jsonb) ->> 'source', '') AS holder_source
   FROM kea.hosts
  WHERE dhcp4_subnet_id = %(vid)s
    AND ipv4_address = (%(ipv4)s::inet - inet '0.0.0.0')::bigint
    AND NOT (dhcp_identifier = decode(%(mac_hex)s, 'hex')
             AND dhcp_identifier_type = 0)
+"""
+
+# A same-source row holding the IP under another MAC: superseded by this upsert.
+_SUPERSEDE_SQL = """
+DELETE FROM kea.hosts
+ WHERE dhcp_identifier = decode(%(holder_hex)s, 'hex')
+   AND dhcp_identifier_type = 0
+   AND dhcp4_subnet_id = %(vid)s
+   AND (user_context::jsonb) ->> 'source' = %(source)s
 """
 
 _UPSERT_SQL = """
@@ -127,22 +146,26 @@ ON CONFLICT (dhcp_identifier, dhcp_identifier_type, dhcp4_subnet_id)
 def upsert(*, source: str, mac: str, ipv4: str, hostname: str, vid: int) -> None:
     """Create or update the order reservation for `mac` in subnet `vid`.
     Raises BadSource/BadMac/BadValue before any DB access, Conflict when the
-    MAC or IP is someone else's (the transaction rolls back, nothing written)."""
+    MAC or IP is someone else's (the transaction rolls back, nothing written).
+    A same-source row holding the IP under another MAC is deleted first."""
     _check_source(source)
     mac_hex = _mac_hex(mac)
     ip = _check_values(ipv4, hostname, vid)
     args = {"mac_hex": mac_hex, "ipv4": ip, "hostname": hostname, "vid": vid,
             "source": source, "user_context": json.dumps({"source": source})}
-    with get_pool().connection() as conn:
+    with get_pool().connection() as conn, conn.transaction():
         owners = sorted({r[0] for r in conn.execute(_OWNER_SQL, args).fetchall()}
                         - {source})
         if owners:
             raise Conflict(f"mac {mac_hex} already reserved by source "
                            + ", ".join(repr(o) for o in owners))
-        holders = sorted({r[0] for r in conn.execute(_IP_HOLDER_SQL, args).fetchall()})
-        if holders:
+        holders = conn.execute(_IP_HOLDER_SQL, args).fetchall()
+        foreign = sorted({m for m, src in holders if src != source})
+        if foreign:
             raise Conflict(f"ip {ip} in subnet {vid} already held by "
-                           + ", ".join(holders))
+                           + ", ".join(foreign))
+        for m in sorted({m for m, _ in holders}):
+            conn.execute(_SUPERSEDE_SQL, {**args, "holder_hex": m})
         if conn.execute(_UPSERT_SQL, args).rowcount != 1:
             raise Conflict(f"mac {mac_hex} subnet {vid} row changed owner "
                            "during upsert; nothing written")
