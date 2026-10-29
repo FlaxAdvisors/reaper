@@ -3,7 +3,9 @@
 Never used in production. The real run_discover runs against a canned mgmt-switch
 FDB synthesised from the geometry (locally-administered 02:... MACs, BMC = host+2),
 an in-memory Kea and an always-up BMC. C37's host MAC is held by a "manual" Kea
-row, so C37 fails its reserve rung and everything else passes.
+row, so C37 fails its reserve rung and everything else passes. One stray MAC
+sits on the first mgmt port no slot or uplink claims, so the unexpected-MAC
+alert renders too.
 """
 import subprocess
 
@@ -34,6 +36,11 @@ def canned_fdb(g) -> tuple[str, set[str]]:
                     refuse.add(host.replace(":", ""))
             elif name.startswith("iom"):
                 rows.append((_mac(d.ou, d.col, 0x20 + int(name[3:])), l.port))
+    claimed = {l.port for d in g.devices for l in d.links.values() if l.switch in mgmt}
+    claimed |= {p for s in g.switches if s.id in mgmt for p in s.uplink_ports}
+    stray = next((p for p in range(1, 49) if p not in claimed), None)
+    if stray is not None:
+        rows.append(("02:fa:ff:ff:00:01", stray))
     lines = ["  No.    Vlan  MacAddress         Port        Type",
              "-----  ------  -----------------  ----------  -------"]
     for i, (mac, port) in enumerate(rows, 1):
