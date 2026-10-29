@@ -3,7 +3,15 @@ import json
 import re
 from dataclasses import dataclass, field
 
-KIND_ROLES = {"compute-tp": "host+bmc", "bc-head-tp": "host+bmc", "bc-jbod": "ioms"}
+# what each kind exposes on the rack network (addressing.py turns these into IPs).
+# A geometry device may override with its own "endpoints" (e.g. a Yosemite sled
+# with 4 cards: {"bmc": 1, "hosts": 4}).
+KIND_ENDPOINTS = {"compute-tp": {"bmc": 1, "hosts": 1},
+                  "bc-head-tp": {"bmc": 1, "hosts": 1},
+                  "bc-jbod": {"ioms": 2}}
+_EP_KEYS = ("hosts", "bmc", "ioms")
+MAX_COL = 5
+COL_ALIAS = {"L": 1, "C": 2, "R": 3}
 
 _LINK_RE = re.compile(r"^([A-Za-z]+):(\d+)(?:/(\d+))?$")
 
@@ -42,11 +50,12 @@ class Device:
     pos: str
     ou: int                 # bottom OU
     h: int
-    col: str | None         # L / C / R, None = full width
+    col: int | None         # 1..5 (L/C/R = 1/2/3), None = full width (addressed as 1)
     kind: str
     part: str
     links: dict[str, Link] = field(default_factory=dict)
     pop: str | None = None
+    endpoints: dict[str, int] = field(default_factory=dict)   # {hosts, bmc, ioms}, all keys
 
 
 @dataclass
@@ -75,6 +84,37 @@ class Geometry:
     @property
     def kea_source(self) -> str:
         return f"order:{self.order}" + (f"/{self.rack}" if self.rack else "")
+
+
+def parse_col(col, ctx: str = "device") -> int | None:
+    """Column alias L/C/R or an int 1..5 -> int; None (full width) stays None."""
+    if col is None:
+        return None
+    if isinstance(col, str) and col in COL_ALIAS:
+        return COL_ALIAS[col]
+    if isinstance(col, int) and not isinstance(col, bool) and 1 <= col <= MAX_COL:
+        return col
+    raise GeometryError(f"{ctx}: bad col {col!r} (want L/C/R or 1..{MAX_COL})")
+
+
+def parse_endpoints(kind: str, ep, ctx: str) -> dict[str, int]:
+    """The kind's endpoints, or the device's own override, with every key present."""
+    if ep is None:
+        ep = KIND_ENDPOINTS[kind]
+    if not isinstance(ep, dict) or set(ep) - set(_EP_KEYS):
+        raise GeometryError(f"{ctx}: bad endpoints {ep!r} (keys {', '.join(_EP_KEYS)})")
+    out = {k: ep.get(k, 0) for k in _EP_KEYS}
+    if any(not isinstance(v, int) or isinstance(v, bool) or v < 0 for v in out.values()):
+        raise GeometryError(f"{ctx}: endpoints must be non-negative ints, got {ep!r}")
+    if out["hosts"] > 9:
+        raise GeometryError(f"{ctx}: {out['hosts']} hosts (max 9 cards per device)")
+    if out["bmc"] > 1:
+        raise GeometryError(f"{ctx}: bmc must be 0 or 1, got {out['bmc']}")
+    if out["bmc"] + out["ioms"] > 9:
+        raise GeometryError(f"{ctx}: bmc + ioms = {out['bmc'] + out['ioms']} (max 9)")
+    if not any(out.values()):
+        raise GeometryError(f"{ctx}: no endpoints")
+    return out
 
 
 def _req(d: dict, key: str, ctx: str):
@@ -110,14 +150,13 @@ def parse_geometry(data: dict) -> Geometry:
     for x in data.get("devices", []):
         pos = _req(x, "pos", "device")
         kind = _req(x, "kind", pos)
-        if kind not in KIND_ROLES:
+        if kind not in KIND_ENDPOINTS:
             raise GeometryError(f"{pos}: unknown kind {kind!r}")
         if pos in seen:
             raise GeometryError(f"duplicate device pos {pos}")
         seen.add(pos)
-        col = x.get("col")
-        if col is not None and col not in ("L", "C", "R"):
-            raise GeometryError(f"{pos}: bad col {col!r}")
+        col = parse_col(x.get("col"), pos)
+        endpoints = parse_endpoints(kind, x.get("endpoints"), pos)
         links = {k: parse_link(v) for k, v in x.get("links", {}).items()}
         for name, l in links.items():
             # two devices on one mgmt-switch port would match the same MACs and the
@@ -132,7 +171,8 @@ def parse_geometry(data: dict) -> Geometry:
             ports[l] = f"{pos} {name}"
         devices.append(Device(
             pos=pos, ou=int(_req(x, "ou", pos)), h=int(_req(x, "h", pos)), col=col,
-            kind=kind, part=_req(x, "part", pos), links=links, pop=x.get("pop")))
+            kind=kind, part=_req(x, "part", pos), links=links, pop=x.get("pop"),
+            endpoints=endpoints))
 
     return Geometry(
         order=order, customer=_req(data, "customer", "geometry"),

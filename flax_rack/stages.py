@@ -18,7 +18,7 @@ from typing import Callable
 
 from .creds import Creds
 from .discover import match
-from .geometry import KIND_ROLES, Geometry
+from .geometry import Geometry
 from .kea_client import KeaClient, KeaError
 from .orderdb import OrderDB
 
@@ -99,8 +99,14 @@ def run_discover(ctx) -> None:
                     mac = dm.host_mac
                 elif a.role == "bmc":
                     mac = dm.bmc_mac
-                else:
+                elif a.role.startswith("iom") and int(a.role[3:]) <= len(dm.iom_macs):
                     mac = dm.iom_macs[int(a.role[3:]) - 1]
+                else:
+                    mac = None
+                if not mac:
+                    # endpoint the matcher did not fill (e.g. an iomN with no mgmt link)
+                    return RungResult("fail", {"error": f"{a.role}: no MAC matched",
+                                               "reserved": done})
                 try:
                     ctx.kea.upsert(source(ctx), mac, a.ip, a.name, g.vid)
                 except KeaError as e:
@@ -112,7 +118,7 @@ def run_discover(ctx) -> None:
             continue
 
         def reachable():
-            if KIND_ROLES[d.kind] == "host+bmc":
+            if d.endpoints["bmc"]:
                 ip = next(a.ip for a in addrs[d.pos] if a.role == "bmc")
                 return reach(ip, creds(ctx).bmc, runner=ctx.runner)
             # IOMs have no IPMI: ping only

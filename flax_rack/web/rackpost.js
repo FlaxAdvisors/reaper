@@ -4,8 +4,12 @@
 // Plan 1 has rungs only in Discover; the other phases render empty/grey.
 
 const POLL_MS = 5000;
-const COLS = ['L', 'C', 'R'];
-const COLNAME = { L: 'left', C: 'center', R: 'right' };
+// geometry cols are ints 1..5 (L/C/R = 1/2/3); a group of rows is drawn with
+// max(3, highest col used in it) columns so an L/C/R rack looks as before.
+const COLNAME = { 1: 'left', 2: 'center', 3: 'right' };
+const COLTAG = { 1: 'L', 2: 'C', 3: 'R' };
+const colHead = (c, n) => (n <= 3 ? COLNAME[c] : `col ${c}`);
+const emptyLabel = (c, ou) => (COLTAG[c] ? COLTAG[c] + pad(ou) : `col${c} · ${pad(ou)}`);
 const RGB = { discover: '163,113,247', firmware: '88,166,255', qualify: '210,153,34',
               deploy: '57,197,207', done: '63,185,80', fault: '248,81,73', grey: '110,118,129' };
 const KIND = { 'bc-head-tp': 'BC head' };
@@ -57,14 +61,7 @@ function buildLayout(s) {
       rows.push({ key: 'dev-' + d.pos, family: 'dev', layout: ioms.length > 1 ? 'two' : 'full', ou: d.ou, top, cells });
     }
   }
-  for (const r of Object.values(lcr)) {
-    r.cells = COLS.map((c) => {
-      const d = r.byCol[c];
-      if (!d) return { key: c + pad(r.ou), empty: true, label: c + pad(r.ou) };
-      return { key: d.pos, dev: d, label: `${d.pos}${d.links.mezz0 ? ' · ' + d.links.mezz0 : ''}`, kindLabel: KIND[d.kind] };
-    });
-    rows.push(r);
-  }
+  for (const r of Object.values(lcr)) rows.push(r);
   rows.sort((a, b) => b.top - a.top || b.ou - a.ou);
   const groups = [];
   let g = null;
@@ -75,9 +72,23 @@ function buildLayout(s) {
       continue;
     }
     const gap = g && r.top < g.bottom - 1 ? `┄ ${span(g.bottom - 1, r.top + 1)} ┄` : '';
-    g = { family: r.family, top: r.top, bottom: r.ou, rows: [r], gap,
-          heads: r.family === 'sw' ? ['switches'] : ['left', 'center', 'right'] };
+    g = { family: r.family, top: r.top, bottom: r.ou, rows: [r], gap };
     groups.push(g);
+  }
+  for (const x of groups) {
+    const n = Math.max(3, ...x.rows.filter((r) => r.byCol).flatMap((r) => Object.keys(r.byCol).map(Number)));
+    const cols = Array.from({ length: n }, (_, i) => i + 1);
+    x.heads = x.family === 'sw' ? ['switches'] : cols.map((c) => colHead(c, n));
+    x.style = x.family !== 'sw' && n > 3 ? `grid-template-columns:46px repeat(${n},1fr)` : '';
+    for (const r of x.rows) {
+      if (!r.byCol) continue;
+      r.style = x.style;
+      r.cells = cols.map((c) => {
+        const d = r.byCol[c];
+        if (!d) return { key: 'e' + c + '-' + pad(r.ou), empty: true, label: emptyLabel(c, r.ou) };
+        return { key: d.pos, dev: d, label: `${d.pos}${d.links.mezz0 ? ' · ' + d.links.mezz0 : ''}`, kindLabel: KIND[d.kind] };
+      });
+    }
   }
   for (const x of groups) x.range = span(x.top, x.bottom);
   return groups;
@@ -223,7 +234,7 @@ function App() {
       return cl.join(' ');
     },
     tileStyle(c) { return (!c.empty && this.sel === c.dev.pos) ? `background:rgba(${RGB[this.phaseKey(c.dev)] || RGB.discover},.12)` : ''; },
-    colName(d) { return d ? (COLNAME[d.col] || 'full') : ''; },
+    colName(d) { return !d ? '' : d.col ? (COLNAME[d.col] || `col ${d.col}`) : 'full'; },
 
     // ---- drawer ----
     open(c) {

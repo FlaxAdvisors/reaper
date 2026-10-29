@@ -64,9 +64,9 @@
     <div v-for="g in layout">
       <div class="gap" v-if="g.gap">{{g.gap}}</div>
       <div class="group">
-        <div class="group-h" :class="g.family"><span class="g-range">{{g.range}}</span>
+        <div class="group-h" :class="g.family" :style="g.style"><span class="g-range">{{g.range}}</span>
           <span class="col-h" v-for="h in g.heads">{{h}}</span></div>
-        <div class="row" v-for="row in g.rows" :class="row.layout">
+        <div class="row" v-for="row in g.rows" :class="row.layout" :style="row.style || ''">
           <span class="ou-label">{{row.label}}</span>
 
           <!-- switch -->
@@ -121,7 +121,7 @@
       <span class="d-status" :style="statusStyle(selDev)">{{statusText(selDev)}}</span>
       <span class="x" @click="close()">✕</span>
     </div>
-    <div class="d-sub">OU {{selDev?.ou}} {{colName(selDev)}} · {{selDev?.pos}} · {{selDev?.names?.host || selDev?.names?.iom1 || ''}} · {{selDev?.kind}} {{selDev?.part}}</div>
+    <div class="d-sub">OU {{selDev?.ou}} {{colName(selDev)}} · {{selDev?.pos}} · {{selDev?.names?.host || selDev?.names?.host1 || selDev?.names?.iom1 || ''}} · {{selDev?.kind}} {{selDev?.part}}</div>
 
     <div class="actions">
       <button disabled title="Plan 2">PWR</button><button disabled title="Plan 2">SOL</button>

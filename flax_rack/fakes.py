@@ -14,11 +14,8 @@ from .kea_client import KeaConflict
 from .stages import OrderContext
 
 FAIL_POS = "C37"
-_COL = {"L": 1, "C": 2, "R": 3, None: 0}
-
-
 def _mac(ou: int, col, n: int) -> str:
-    return f"02:fa:{ou:02x}:{_COL[col]:02x}:00:{n:02x}"
+    return f"02:fa:{ou:02x}:{col or 0:02x}:00:{n:02x}"
 
 
 def canned_fdb(g) -> tuple[str, set[str]]:
