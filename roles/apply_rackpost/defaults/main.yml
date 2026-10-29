@@ -13,3 +13,9 @@ apply_rackpost_post_static:
   - rack.css
   - petite-vue.iife.js
   - flax-logo.svg
+# flax_post modules the Qualify rungs import (population judge + qual client).
+apply_rackpost_post_modules:
+  - __init__.py
+  - version.py
+  - population.py
+  - qualclient.py

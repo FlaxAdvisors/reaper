@@ -42,6 +42,17 @@
   loop: "{{ apply_rackpost_post_static }}"
   notify: Restart flax-rackpost
 
+- name: Deploy shared flax_post modules
+  become: true
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../flax_post/{{ item }}"
+    dest: "{{ apply_rackpost_dest_dir }}/flax_post/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ apply_rackpost_post_modules }}"
+  notify: Restart flax-rackpost
+
 - name: Install rackpost wrapper
   become: true
   ansible.builtin.template:
