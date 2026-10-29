@@ -2,7 +2,7 @@
 # Order server for customer racks. Loopback-only: reached via the post.* nginx
 # vhosts (apply_bang_services nginx-lab-ui + apply_flax_stack TLS vhost).
 apply_rackpost_bind: 127.0.0.1
-apply_rackpost_port: 8450
+apply_rackpost_port: 8452
 apply_rackpost_root: /export/nodes
 apply_rackpost_dest_dir: /opt/flax/rackpost
 apply_rackpost_wrapper: /opt/flax/bin/rackpost

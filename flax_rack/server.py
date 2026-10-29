@@ -554,7 +554,7 @@ def default_context_factory(rack_dir: Path, g: Geometry, db: OrderDB):
     return OrderContext(rack_dir, g, db, KeaClient(), load_creds)
 
 
-def make_server(orders_root: Path, *, port=8450, bind="127.0.0.1", static_dirs=None,
+def make_server(orders_root: Path, *, port=8452, bind="127.0.0.1", static_dirs=None,
                 context_factory=default_context_factory) -> ThreadingHTTPServer:
     srv = ThreadingHTTPServer((bind, port), _Handler)
     srv.daemon_threads = True

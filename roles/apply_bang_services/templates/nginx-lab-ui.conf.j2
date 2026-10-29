@@ -3,7 +3,7 @@
 #
 #   http://triage.{{ inventory_hostname }}.{{ bang_lab_domain }}  -> triage API + UI (:5555) and its SOL/power relay (:5559)
 #   http://post.{{ inventory_hostname }}.{{ bang_lab_domain }}    -> post rack viewer (:8446) and its SOL relay (:8448);
-#                                                                 rackpost order server (:8450) at /<prefix>/ and /rackpost/
+#                                                                 rackpost order server (:8452) at /<prefix>/ and /rackpost/
 #   http://view.{{ inventory_hostname }}.{{ bang_lab_domain }}    -> post fleet viewer (:8799, loopback-only)
 #   http://console.{{ inventory_hostname }}.{{ bang_lab_domain }} -> flax-control console (:8000)
 #   ...and the same four under the VRRP name: http://<svc>.bang.{{ bang_lab_domain }}
@@ -76,7 +76,7 @@ server {
 
     # rackpost order server: per-rack pages /<prefix>/ (e.g. /rr101/) and /rackpost/.
     location ~ ^/[a-z]{2}[0-9]{3}[a-z]?/ {
-        proxy_pass         http://127.0.0.1:8450;
+        proxy_pass         http://127.0.0.1:8452;
         proxy_http_version 1.1;
         proxy_set_header   Host              $host;
         proxy_set_header   X-Real-IP         $remote_addr;
@@ -85,7 +85,7 @@ server {
         proxy_read_timeout 30s;
     }
     location /rackpost/ {
-        proxy_pass         http://127.0.0.1:8450;
+        proxy_pass         http://127.0.0.1:8452;
         proxy_http_version 1.1;
         proxy_set_header   Host              $host;
         proxy_set_header   X-Real-IP         $remote_addr;

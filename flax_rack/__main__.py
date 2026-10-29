@@ -127,7 +127,7 @@ def main(argv=None) -> int:
         sub.add_parser(name, help=f"{name} serving of this order dir").set_defaults(fn=_enable)
     p = sub.add_parser("serve", help="run the HTTP daemon")
     p.add_argument("--root", default="/export/nodes")
-    p.add_argument("--port", type=int, default=8450)
+    p.add_argument("--port", type=int, default=8452)
     p.add_argument("--bind", default="127.0.0.1")
     p.set_defaults(fn=_serve)
     sub.add_parser("discover", help="run Discover for this order dir").set_defaults(fn=_discover)
