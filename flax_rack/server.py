@@ -3,7 +3,13 @@
 A dir under the orders root is served when it holds geometry.json AND .rackpost.
 Its URL prefix is the geometry network.prefix without the trailing '-' (rr101-,
 rr101b-). Two dirs claiming the same prefix, or the same (order, rack), are BOTH
-refused and listed as conflicts on /rackpost/ -- never served by a guess.
+refused and listed as conflicts on /rackpost/ -- never served by a guess. So are
+two dirs on the same vid (each rack owns its 172.<vid>.0.0/16).
+
+geometry.json is the hand-corrected authority: a request for a rack whose file
+mtime differs from the one its Geometry was parsed at rescans, and the rack
+adopts the freshly parsed geometry (or stops being served if it no longer
+parses or now conflicts). Nothing is adopted from an older scan.
 
 Stages run in daemon threads under one lock per rack dir (RackLock: a thread lock
 plus a flock on <dir>/.stage.lock, so a CLI `discover` and the daemon exclude each
@@ -65,6 +71,14 @@ class Scan:
     racks: dict[str, Path]                       # url_prefix -> rack dir
     conflicts: list[dict]                        # {"key", "dirs", "error"}
     geoms: dict[Path, Geometry] = field(default_factory=dict)
+    mtimes: dict[Path, int | None] = field(default_factory=dict)   # read BEFORE parsing
+
+
+def _geo_mtime(d: Path):
+    try:
+        return (d / "geometry.json").stat().st_mtime_ns
+    except OSError:
+        return None
 
 
 class Registry:
@@ -72,7 +86,7 @@ class Registry:
         self.root = Path(orders_root)
 
     def scan(self) -> Scan:
-        conflicts, found = [], []
+        conflicts, found, mtimes = [], [], {}
         try:
             dirs = sorted(p for p in self.root.iterdir() if p.is_dir())
         except OSError as e:
@@ -80,6 +94,7 @@ class Registry:
         for d in dirs:
             if not ((d / "geometry.json").is_file() and (d / ".rackpost").exists()):
                 continue
+            mtimes[d] = _geo_mtime(d)
             try:
                 g = load_geometry(d / "geometry.json")
                 plan_addresses(g)                # a colliding plan is not servable
@@ -94,7 +109,8 @@ class Registry:
             found.append((d, g))
         bad: set[Path] = set()
         keys = (("prefix", lambda g: g.url_prefix),
-                ("order", lambda g: g.order + (f"/{g.rack}" if g.rack else "")))
+                ("order", lambda g: g.order + (f"/{g.rack}" if g.rack else "")),
+                ("vid", lambda g: str(g.vid)))
         for label, keyf in keys:
             by: dict[str, list[Path]] = {}
             for d, g in found:
@@ -105,7 +121,8 @@ class Registry:
                                       "error": "claimed by more than one dir; none served"})
                     bad.update(ds)
         ok = [(d, g) for d, g in found if d not in bad]
-        return Scan({g.url_prefix: d for d, g in ok}, conflicts, {d: g for d, g in ok})
+        return Scan({g.url_prefix: d for d, g in ok}, conflicts, {d: g for d, g in ok},
+                    {d: mtimes[d] for d, _ in ok})
 
 
 # ---------------------------------------------------------------- per-rack state
@@ -145,12 +162,12 @@ class RackLock:
 
 
 class Rack:
-    def __init__(self, rack_dir: Path, g: Geometry):
+    def __init__(self, rack_dir: Path, g: Geometry, mtime=None):
         self.dir = rack_dir
         self.g = g
         self.db = OrderDB(rack_dir / "order.db")
         self.lock = RackLock(rack_dir)
-        self.mtime = self._mtime()
+        self.mtime = mtime
         self.db.init(g)
         # a 'running' row left by a previous daemon is interrupted -- unless another
         # process (a CLI discover) holds the stage lock right now
@@ -162,17 +179,11 @@ class Rack:
             finally:
                 self.lock.release()
 
-    def _mtime(self):
-        try:
-            return (self.dir / "geometry.json").stat().st_mtime_ns
-        except OSError:
-            return None
-
-    def refresh(self, g: Geometry) -> None:
-        m = self._mtime()
-        if m != self.mtime:
-            self.mtime, self.g = m, g
-            self.db.init(g)
+    def adopt(self, g: Geometry, mtime) -> None:
+        """Take a geometry parsed from the file at `mtime` (a stage already running
+        keeps the Geometry it started with)."""
+        self.g, self.mtime = g, mtime
+        self.db.init(g)
 
 
 def _seen(d, slot, mgmt_ids) -> dict:
@@ -274,7 +285,9 @@ class App:
     def rack(self, prefix: str) -> Rack | None:
         s = self._scan
         d = s.racks.get(prefix)
-        if d is None or not ((d / ".rackpost").exists() and (d / "geometry.json").is_file()):
+        if d is None or not ((d / ".rackpost").exists() and (d / "geometry.json").is_file()) \
+                or _geo_mtime(d) != s.mtimes.get(d):
+            # unknown, disabled, or geometry.json edited since that scan parsed it
             s = self.rescan()
             d = s.racks.get(prefix)
             if d is None:
@@ -282,9 +295,9 @@ class App:
         with self._mu:
             r = self._racks.get(d)
             if r is None:
-                r = self._racks[d] = Rack(d, s.geoms[d])
-            elif d in s.geoms:
-                r.refresh(s.geoms[d])
+                r = self._racks[d] = Rack(d, s.geoms[d], s.mtimes[d])
+            elif r.mtime != s.mtimes[d]:
+                r.adopt(s.geoms[d], s.mtimes[d])
         return r
 
     # -- actions --
@@ -461,8 +474,11 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(200, p.read_bytes(), ctype)
 
     def _body(self) -> dict | None:
-        n = int(self.headers.get("Content-Length") or 0)
-        if n > _MAX_BODY:
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return None
+        if not 0 <= n <= _MAX_BODY:
             return None
         raw = self.rfile.read(n) if n else b"{}"
         try:
@@ -510,6 +526,11 @@ class _Handler(BaseHTTPRequestHandler):
             if rest == "api/state":
                 return self._json(200, rack_state(r))
             return self._json(404, {"error": "not found"})
+        # CSRF: a cross-site form can only send a "simple" Content-Type; JSON
+        # forces a preflight this server never answers
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            return self._json(415, {"error": "Content-Type must be application/json"})
         body = self._body()
         if body is None:
             return self._json(400, {"error": "body must be a JSON object"})
@@ -526,7 +547,8 @@ def default_context_factory(rack_dir: Path, g: Geometry, db: OrderDB):
     from .creds import load_creds
     from .kea_client import KeaClient
     from .stages import OrderContext
-    return OrderContext(rack_dir, g, db, KeaClient(), load_creds())
+    # creds load lazily (first switch/BMC rung): Close needs Kea only
+    return OrderContext(rack_dir, g, db, KeaClient(), load_creds)
 
 
 def make_server(orders_root: Path, *, port=8450, bind="127.0.0.1", static_dirs=None,

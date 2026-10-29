@@ -2,6 +2,8 @@
 
 Close deletes the order's Kea rows through flax-control FIRST; the order is marked
 closed only after that succeeds, so a failure leaves it open and Close re-runnable.
+Close needs Kea only: `creds` may be a zero-arg loader, called the first time a
+Discover rung needs the switch or BMC login, so missing creds never block Close.
 """
 import subprocess
 from dataclasses import dataclass, field
@@ -12,6 +14,8 @@ from flax_rungs.result import RungResult
 from flax_rungs.sonic import FdbEntry, read_fdb
 
 from .addressing import plan_addresses
+from typing import Callable
+
 from .creds import Creds
 from .discover import match
 from .geometry import KIND_ROLES, Geometry
@@ -27,12 +31,19 @@ class OrderContext:
     g: Geometry
     db: OrderDB
     kea: KeaClient
-    creds: Creds
+    creds: Creds | Callable[[], Creds]
     runner: object = field(default=subprocess.run)
 
 
 def source(ctx) -> str:
     return ctx.g.kea_source
+
+
+def creds(ctx) -> Creds:
+    """The switch/BMC logins, loaded on first use (raises CredsError)."""
+    if callable(ctx.creds):
+        ctx.creds = ctx.creds()
+    return ctx.creds
 
 
 def _rung(ctx, pos, rung, fn) -> RungResult:
@@ -54,7 +65,7 @@ def run_discover(ctx) -> None:
         _rung(ctx, "_rack", "switch-fdb",
               lambda: RungResult("fail", {"error": "no mgmt switch with mgmt_ip in geometry"}))
         return
-    user, pw = ctx.creds.sonic
+    user, pw = creds(ctx).sonic
     r = _rung(ctx, "_rack", "switch-fdb",
               lambda: read_fdb(sw.mgmt_ip, user, pw, runner=ctx.runner))
     if r.verdict != "pass":
@@ -97,7 +108,7 @@ def run_discover(ctx) -> None:
         def reachable():
             if KIND_ROLES[d.kind] == "host+bmc":
                 ip = next(a.ip for a in addrs[d.pos] if a.role == "bmc")
-                return reach(ip, ctx.creds.bmc, runner=ctx.runner)
+                return reach(ip, creds(ctx).bmc, runner=ctx.runner)
             # IOMs have no IPMI: ping only
             res = {a.role: ping(a.ip, runner=ctx.runner) for a in addrs[d.pos]}
             return RungResult("pass" if all(res.values()) else "fail", {"ping": res})

@@ -60,8 +60,9 @@ def _serve(a) -> int:
 
 
 def _order_ctx(confirm=None):
-    """(context, held stage lock) for the order dir in cwd; exits on a refusal."""
-    from .creds import CredsError
+    """(context, held stage lock) for the order dir in cwd; exits on a refusal.
+    Creds are not read here (they load on Discover's first switch/BMC rung), so
+    Close works with Kea alone."""
     from .server import RackLock, default_context_factory
     d = Path.cwd()
     g = load_geometry(d / "geometry.json")
@@ -74,16 +75,19 @@ def _order_ctx(confirm=None):
         sys.exit("a stage is already running for this rack")
     try:
         return default_context_factory(d, g, db), lock
-    except CredsError as e:
+    except BaseException:
         lock.release()
-        sys.exit(str(e))
+        raise
 
 
 def _discover(a) -> int:
+    from .creds import CredsError
     from .stages import run_discover
     ctx, lock = _order_ctx()
     try:
         run_discover(ctx)
+    except CredsError as e:
+        sys.exit(str(e))
     finally:
         lock.release()
     for (pos, rung), r in sorted(ctx.db.latest_runs().items()):
