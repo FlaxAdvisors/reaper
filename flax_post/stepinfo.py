@@ -217,6 +217,8 @@ def _qualify(rec, row, step, status):
         if pop.get("verdict") == "red":
             notes.append("a red population fails the run: the blade goes back to triage, the profile is not relaxed")
         return rows, notes
+    if step in ("smbios-serial", "tpm-state"):
+        return _ship_check(row, step)
     if step == "console":
         rows = [["capture", "sol.txt artifact for this run" if status == "done" else "none"]]
         if qs.get("summary", {}).get("reason"):
@@ -241,6 +243,40 @@ def _qualify(rec, row, step, status):
     if arts:
         rows.append(["artifacts", ", ".join(arts)])
     return rows, notes
+
+
+_ONOFF = {"1": "on", "0": "off"}
+_YNQ = {"1": "yes", "0": "no"}
+
+
+def _ship_check(row, step):
+    """smbios-serial / tpm-state: the engine's verdict from row["checks"]."""
+    c = (row.get("checks") or {}).get(step)
+    if not c:
+        return [["result", "not judged yet"]], []
+    if step == "smbios-serial":
+        dmi = c.get("dmi_serials") or {}
+        rows = [["FRU 0 serial", ", ".join(c.get("fru0_serials") or []) or "none"],
+                ["SMBIOS system", dmi.get("System") or "none"],
+                ["SMBIOS chassis", dmi.get("Chassis") or "none"],
+                ["SMBIOS base board", dmi.get("Base Board") or "none"]]
+        notes = ["the BIOS must copy the FRU 0 ship serial into SMBIOS; Post only checks -- a fail goes back to triage"]
+    else:
+        f = c.get("fields") or {}
+        dev = c.get("device")
+        rows = [["TPM device", "present" if dev else ("absent" if dev is False else "unknown")],
+                ["version", c.get("version") or ""], ["owned", _YNQ.get(f.get("owned"), f.get("owned") or "")]]
+        if c.get("version") == "1.2":
+            rows += [["enabled", _YNQ.get(f.get("enabled"), f.get("enabled") or "")],
+                     ["active", _YNQ.get(f.get("active"), f.get("active") or "")]]
+        elif c.get("version") == "2.0":
+            rows += [["storage hierarchy", _ONOFF.get(f.get("shEnable"), "unread")],
+                     ["endorsement hierarchy", _ONOFF.get(f.get("ehEnable"), "unread")]]
+        rows.append(["state line", c.get("raw") or ""])
+        notes = ["Post only checks; a fail goes back to triage, whose wipe pass turns the TPM on, enables it and clears it"]
+    if c.get("reason"):
+        rows.append(["reason", c["reason"]])
+    return [r for r in rows if r[1] != ""], notes
 
 
 _QUAL_HINTS = {
