@@ -72,6 +72,10 @@ def run_discover(ctx) -> None:
         return
     fdb = [FdbEntry(**e) for e in r.detail["fdb"]]
     m = match(g, fdb, sw.id)
+    # MACs on ports no slot claims: the other half of a mis-cabled device's 'missing'
+    _rung(ctx, "_rack", "slot-match", lambda: RungResult("pass", {
+        "unexpected": [{"port": p, "mac": mac} for p, mac in m.unexpected],
+        "count": len(m.unexpected)}))
     addrs: dict[str, list] = {}
     for a in plan_addresses(g):
         addrs.setdefault(a.pos, []).append(a)
@@ -83,6 +87,8 @@ def run_discover(ctx) -> None:
             {"status": dm.status, "note": dm.note, "host_mac": dm.host_mac,
              "bmc_mac": dm.bmc_mac, "iom_macs": dm.iom_macs})).verdict == "pass"
         if not ok:
+            # never show a MAC this run did not see
+            ctx.db.set_macs(d.pos, host_mac=None, bmc_mac=None, iom_macs=[])
             continue
         ctx.db.set_macs(d.pos, host_mac=dm.host_mac, bmc_mac=dm.bmc_mac, iom_macs=dm.iom_macs)
 

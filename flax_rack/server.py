@@ -233,6 +233,8 @@ def rack_state(r: Rack) -> dict:
         names.setdefault(a.pos, {})[a.role] = a.name
     mgmt = {s.id for s in g.switches if s.role == "mgmt"}
     profiles = set(PROFILES)
+    unexpected = ((by_pos.get("_rack", {}).get("slot-match") or {}).get("detail") or {}) \
+        .get("unexpected") or []
     devices = []
     for d in g.devices:
         x = dbdev.get(d.pos, {})
@@ -263,6 +265,7 @@ def rack_state(r: Rack) -> dict:
         "stage_running": r.lock.locked(), "phases": list(PHASES),
         "discover_rungs": list(DISCOVER_RUNGS), "profiles": sorted(profiles),
         "switches": switches, "devices": devices, "rack_runs": rack_runs,
+        "unexpected": [{"port": u["port"], "mac": _fmt_mac(u["mac"])} for u in unexpected],
         "events": db.events(30)}
 
 

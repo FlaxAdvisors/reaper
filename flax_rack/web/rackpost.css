@@ -31,6 +31,11 @@ a.tile{display:block;color:inherit;text-decoration:none}
 .ctx .ro{font-family:ui-monospace,monospace;color:var(--text);font-size:.78rem;text-transform:none;letter-spacing:0;font-weight:400;
   border:1px solid var(--line);border-radius:6px;padding:.3rem .45rem;background:var(--bg)}
 .closebtn{background:none;border:1px solid rgba(248,81,73,.5);color:var(--red);border-radius:6px;padding:.3rem .6rem;font-weight:600;cursor:pointer;font-size:.72rem}
+.discbtn{background:none;border:1px solid rgba(163,113,247,.55);color:var(--violet);border-radius:6px;padding:.3rem .6rem;font-weight:600;cursor:pointer;font-size:.72rem}
+.discbtn:disabled{opacity:.35;cursor:default}
+.hdr-msg{font-size:.68rem;color:var(--muted)}
+.unexp{margin:0 0 .8rem 54px}
+.unexp .ab-b{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
 .closed-chip{font-size:.68rem;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:.1rem .5rem}
 .ctx-at.run{color:var(--violet)}
 

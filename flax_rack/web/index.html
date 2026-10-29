@@ -43,6 +43,9 @@
         <label>Customer <span class="ro">{{s.customer || '—'}}</span></label>
         <label>Order <span class="ro">{{s.order || '—'}}</span></label>
         <label>vid <span class="ro">{{s.vid || '—'}}</span></label>
+        <button class="discbtn" v-if="s.order" :disabled="s.stage_running || !!s.closed_at" @click="discover()"
+                :title="s.closed_at ? 'order is closed' : s.stage_running ? 'a stage is running' : 'run Discover for this rack: switch FDB → slot match → Kea reserve → BMC reach'">Discover</button>
+        <span class="hdr-msg" v-if="hdrMsg">{{hdrMsg}}</span>
         <span class="closed-chip" v-if="s.closed_at" :title="'closed ' + s.closed_at">closed</span>
         <button class="closebtn" v-else-if="s.order" @click="openClose()"
                 title="release this rack's reservations, mark the order closed">Close order…</button>
@@ -52,6 +55,12 @@
 
   <!-- ================= rack (populated OUs only) ================= -->
   <div class="rack" :class="{withdrawer: !!selDev}">
+    <!-- MACs on mgmt ports no slot claims: the other half of a mis-cabled device's 'missing' -->
+    <div class="alert-box bad unexp" v-if="(s.unexpected || []).length">
+      <div class="ab-h">{{s.unexpected.length}} unexpected MAC{{s.unexpected.length===1?'':'s'}}<span class="ab-tag"> · !</span></div>
+      <div class="ab-b">on mgmt-switch ports no slot claims (a device cabled to the wrong port shows missing on its own slot):
+        <span class="lk bad" v-for="u in s.unexpected">port {{u.port}} · {{u.mac}}</span></div>
+    </div>
     <div v-for="g in layout">
       <div class="gap" v-if="g.gap">{{g.gap}}</div>
       <div class="group">

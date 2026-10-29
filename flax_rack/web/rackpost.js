@@ -92,7 +92,7 @@ function App() {
   return {
     s: { switches: [], devices: [], phases: ['discover', 'firmware', 'qualify', 'deploy', 'done'], profiles: [], rack_runs: {}, events: [] },
     live: null, sel: selFromHash(), filter: null, q: '',
-    actionMsg: null, closing: false, confirmText: '', closeMsg: null, busy: false,
+    actionMsg: null, hdrMsg: null, closing: false, confirmText: '', closeMsg: null, busy: false,
     metricList: [
       { key: 'discover', label: 'discover', title: 'devices in Discover' },
       { key: 'firmware', label: 'firmware', title: 'Plan 2' },
@@ -257,6 +257,11 @@ function App() {
     async setPop(d, value) {
       try { await api('api/pop', { pos: d.pos, profile: value === d.pop_default ? null : value }); }
       catch (e) { this.actionMsg = 'POP: ' + e.message; }
+      await this.refresh();
+    },
+    async discover() {
+      try { await api('api/stage/discover', {}); this.hdrMsg = 'discover started'; }
+      catch (e) { this.hdrMsg = 'discover: ' + e.message; }
       await this.refresh();
     },
     async retry() {
