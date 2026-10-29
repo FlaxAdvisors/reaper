@@ -105,6 +105,8 @@ def parse_geometry(data: dict) -> Geometry:
 
     devices = []
     seen = set()
+    mgmt = {s.id for s in switches if s.role == "mgmt"}
+    ports: dict[Link, str] = {}       # mgmt (switch, port, lane) -> "pos link"
     for x in data.get("devices", []):
         pos = _req(x, "pos", "device")
         kind = _req(x, "kind", pos)
@@ -116,11 +118,21 @@ def parse_geometry(data: dict) -> Geometry:
         col = x.get("col")
         if col is not None and col not in ("L", "C", "R"):
             raise GeometryError(f"{pos}: bad col {col!r}")
+        links = {k: parse_link(v) for k, v in x.get("links", {}).items()}
+        for name, l in links.items():
+            # two devices on one mgmt-switch port would match the same MACs and the
+            # second reserve would silently move the first one's reservation.
+            # ToR links are not matched in Plan 1, and the BOM seed repeats them
+            # (RRORD-101: L37/C37/R37 all pcie0 A:8/4), so they are not checked here.
+            if l.switch not in mgmt:
+                continue
+            if l in ports:
+                raise GeometryError(f"{ports[l]} and {pos} {name} share switch port "
+                                    f"{l.switch}:{l.port}" + (f"/{l.lane}" if l.lane else ""))
+            ports[l] = f"{pos} {name}"
         devices.append(Device(
             pos=pos, ou=int(_req(x, "ou", pos)), h=int(_req(x, "h", pos)), col=col,
-            kind=kind, part=_req(x, "part", pos),
-            links={k: parse_link(v) for k, v in x.get("links", {}).items()},
-            pop=x.get("pop")))
+            kind=kind, part=_req(x, "part", pos), links=links, pop=x.get("pop")))
 
     return Geometry(
         order=order, customer=_req(data, "customer", "geometry"),
