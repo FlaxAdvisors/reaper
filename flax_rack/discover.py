@@ -1,7 +1,9 @@
 """Match mgmt-switch FDB entries to geometry slots.
 
 Conservative by design: a port whose MACs do not fit its slot is reported
-ambiguous/unexpected, never guessed into a reservation.
+ambiguous/unexpected, never guessed into a reservation. The one derivation: a
+host+bmc port with a single MAC is taken as the BMC of a powered-off node and
+its host MAC is BMC-2 (BMC = host+2 is a hard rule on this platform).
 """
 import re
 from dataclasses import dataclass, field
@@ -44,6 +46,11 @@ def _port_macs(fdb: list[FdbEntry]) -> dict[int, list[str]]:
 def _match_host_bmc(pos: str, macs: list[str]) -> DeviceMatch:
     if not macs:
         return DeviceMatch(pos, "missing", note="no MAC on port")
+    if len(macs) == 1 and int(macs[0], 16) >= 2:
+        # powered-off node (or host MAC aged out): only the BMC talks. BMC = host+2
+        # is a hard rule on this platform, so the host is derived (controller ruling)
+        return DeviceMatch(pos, "found", host_mac=f"{int(macs[0], 16) - 2:012x}",
+                           bmc_mac=macs[0], note="host derived (host MAC not seen)")
     if len(macs) == 2 and int(macs[1], 16) == int(macs[0], 16) + 2:
         return DeviceMatch(pos, "found", host_mac=macs[0], bmc_mac=macs[1])
     return DeviceMatch(pos, "ambiguous",
