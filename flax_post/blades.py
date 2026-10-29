@@ -12,6 +12,7 @@ import os
 from . import geometry
 from .consume import _link_value
 from .nicd.classify import aggregate as _nic_aggregate
+from .shipchecks import SHIP_CHECKS
 
 SWITCH = "rabbit-edam"
 PHASES = ("Discover", "Firmware", "Qualify", "Done")
@@ -100,7 +101,8 @@ PHASE_STEPS = {
     "Firmware": ("bmc-checked", "bmc-updated", "bios-checked", "bios-updated",
                  "mlx-checked", "mlx-updated"),
     "Qualify": ("agent-reachable", "sdr-pre", "sel-pre", "sel-clear", "tooling",
-                "inventory", "fio", "population-check", "iperf", "mem-pre",
+                "inventory", "fio", "population-check", "smbios-serial", "tpm-state",
+                "iperf", "mem-pre",
                 "cpu-mem-stress", "mem-post", "sdr-post", "sel-post", "console"),
     "Done": ("identify", "power-off", "done"),
 }
@@ -328,6 +330,14 @@ def _qualify_steps(st):
     popv = (st.get("pop") or {}).get("verdict")
     if popv in _POP_MAP:
         out["population-check"] = _POP_MAP[popv]
+    # smbios-serial / tpm-state: engine-owned too, read from their own slice.
+    # A run with a verdict that never judged them predates them: skip, not a hole.
+    checks = st.get("checks") or {}
+    for name in SHIP_CHECKS:
+        if name in checks:
+            out[name] = _QUAL_MAP.get((checks[name] or {}).get("status"), "pending")
+        elif _predates(st, name):
+            out[name] = "skip"
     # agent-reachable is a ladder rung AND the first Qualify step; the agent
     # never writes a qual step for it, so its fault has to come from the slice.
     if ((st.get("ladder") or {}).get("fault") or {}).get("rung") == "agent-reachable":
@@ -338,6 +348,12 @@ def _qualify_steps(st):
 _POP_MAP = {"green": "done", "red": "fault", "grey": "pending"}
 
 
+def _predates(st, name) -> bool:
+    """A ship check this run's verdict was reached without (it shipped later)."""
+    return (bool((st.get("done") or {}).get("verdict")) and name not in (st.get("checks") or {})
+            and name not in ((st.get("qual") or {}).get("steps") or {}))
+
+
 def _step_notes(st) -> dict:
     """{step: short text} for skipped Qualify steps, from the agent's summary.reason.
     Rendered INLINE next to the step; timing faults are deliberately not here
@@ -345,7 +361,7 @@ def _step_notes(st) -> dict:
     Also: a latched Discover/Firmware step absent from the verdict snapshot
     ("not in this run", see _latched_steps)."""
     qsteps = (st.get("qual") or {}).get("steps") or {}
-    notes = {}
+    notes = {name: "added since this run" for name in SHIP_CHECKS if _predates(st, name)}
     snap = (st.get("done") or {}).get("steps") if (st.get("done") or {}).get("verdict") else None
     if isinstance(snap, dict):
         for p in LATCHED_PHASES:

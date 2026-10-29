@@ -17,7 +17,9 @@ from .. import actions
 from .. import blades
 from .. import blocklist
 from .. import population
+from .. import shipchecks
 from .. import state as _state
+from ..version import __version__
 from ..qualclient import QualClient, QualUnreachable
 
 log = logging.getLogger("flax-post.host_qual")
@@ -171,15 +173,45 @@ def _battery_done(qual) -> bool:
     return ((qual or {}).get("overall") or {}).get("status") == "done"
 
 
-def qualify_verdict(status, pop) -> "str | None":
-    """pass = node battery passed AND population green; fail = either failed; else None."""
+def qualify_verdict(status, pop, checks=None) -> "str | None":
+    """pass = node battery passed AND population green AND (when given) every
+    ship check passed; fail = any of them failed; else None. checks=None keeps
+    the old two-input rule."""
     node = (status or {}).get("verdict")
     popv = (pop or {}).get("verdict")
-    if node == "fail" or popv == "red":
+    cs = [((checks or {}).get(n) or {}).get("status") for n in shipchecks.SHIP_CHECKS]
+    if node == "fail" or popv == "red" or (checks is not None and "fail" in cs):
         return "fail"
-    if node == "pass" and popv == "green":
+    if node == "pass" and popv == "green" and (checks is None or all(c == "pass" for c in cs)):
         return "pass"
     return None
+
+
+def ship_checks(store, bmc_mac, run_id, inventory_terminal) -> dict:
+    """{smbios-serial: {...}, tpm-state: {...}} judged from this run's inventory
+    artifacts (spec 2026-10-29); pending until the inventory stage is terminal.
+    A failed or skipped inventory is terminal: its missing artifacts fail."""
+    if not inventory_terminal:
+        return {n: {"status": "pending", "reason": ""} for n in shipchecks.SHIP_CHECKS}
+    art = lambda name: store.get_artifact(bmc_mac, run_id, "inventory", name)
+    out = {"smbios-serial": shipchecks.smbios_serial(art("ipmitool-fru"), art("dmidecode")),
+           "tpm-state": shipchecks.tpm_state(art("tpmstate"))}
+    for c in out.values():
+        c["checker"] = "flax-post " + __version__
+    return out
+
+
+def _store_check_evidence(store, target, run_id, checks) -> None:
+    """Each judged ship check is recorded once per run as its own stage's
+    `check` artifact (checker version + the state it saw)."""
+    for name, c in checks.items():
+        if c["status"] == "pending" or not run_id:
+            continue
+        if any(a["name"] == "check" for a in store.list_artifacts(target["bmc_mac"], run_id, name)):
+            continue
+        store.write_artifact(target["bmc_mac"], run_id, name, "check", "raw",
+                             shipchecks.evidence_text(name, c),
+                             serial=target.get("serial"), order_no=target.get("order_no"))
 
 
 def _power_reading(res) -> str:
@@ -215,7 +247,7 @@ def run_done(target, verdict, *, identify=actions.run_identify, power=actions.ru
     return done
 
 
-def build_result(target, live, qual, pop, done, now=time.time) -> dict:
+def build_result(target, live, qual, pop, done, now=time.time, checks=None) -> dict:
     """The durable record of one finished run (spec 2026-09-11 §3). Artifact lists
     are dropped from the steps: post_artifact is the store for those."""
     steps = {}
@@ -230,7 +262,8 @@ def build_result(target, live, qual, pop, done, now=time.time) -> dict:
     holes, clean = {}, None
     if isinstance(snap.get("Discover"), dict) and isinstance(snap.get("Firmware"), dict):
         holes = blades.run_holes({"Discover": snap["Discover"], "Firmware": snap["Firmware"],
-                                  "Qualify": blades._qualify_steps({"qual": qual or {}, "pop": pop or {}})})
+                                  "Qualify": blades._qualify_steps({"qual": qual or {}, "pop": pop or {},
+                                                                    "checks": checks or {}})})
         clean = (done or {}).get("verdict") == "pass" and not holes
     lad = live.get("ladder") or {}
     return {"run_id": (qual or {}).get("run_id"), "verdict": (done or {}).get("verdict"),
@@ -240,7 +273,7 @@ def build_result(target, live, qual, pop, done, now=time.time) -> dict:
             "fw": {"bmc": live.get("fw_bmc") or {}, "bios": live.get("fw_bios") or {},
                    "nic": live.get("fw_nic") or {}},
             "qual": {"overall": (qual or {}).get("overall") or {}, "steps": steps},
-            "pop": pop or {}, "done": done or {},
+            "pop": pop or {}, "checks": checks or {}, "done": done or {},
             # the boot timeline: engine power-on and each boot mark (epoch)
             "ladder": {"power_on_at": lad.get("power_on_at"), "marks": lad.get("marks") or {},
                        "human_power_on": bool(lad.get("human_power_on"))}}
@@ -338,9 +371,22 @@ def poll_target(target, *, make_client=_default_make_client, store=_state,
                            baseboard=(live.get("ladder") or {}).get("bmc_fru"))
     steps["population-check"] = {"status": {"green": "pass", "red": "fail", "grey": "pending"}[pop["verdict"]]}
     store.set_state(target["port"], pop=pop)
+    # smbios-serial + tpm-state: engine-owned like population-check, with their
+    # own slice so the result survives a later rewrite of qual.steps
+    checks = ship_checks(store, target["bmc_mac"], run_id,
+                         (steps.get("inventory") or {}).get("status") in _TERMINAL) \
+        if hasattr(store, "get_artifact") else None
+    for name, c in (checks or {}).items():
+        steps[name] = {"status": c["status"], "summary": {"reason": c["reason"]}}
+    if checks is not None:
+        store.set_state(target["port"], checks=checks)
+        try:
+            _store_check_evidence(store, target, run_id, checks)
+        except Exception:
+            log.exception("ship check evidence store failed for %s", target.get("port"))
     qual = {"run_id": run_id, "agent": {"reachable": True, "ver": health.get("agent_ver")},
             "overall": status, "steps": steps}
-    verdict = qualify_verdict(status, pop)
+    verdict = qualify_verdict(status, pop, checks)
     if verdict is not None:
         # Once per run: the Done tail (identify + power off) and the durable
         # post_node record both happen the FIRST time this run reaches a verdict.
@@ -364,7 +410,7 @@ def poll_target(target, *, make_client=_default_make_client, store=_state,
                     qual["steps"] = steps
                 if hasattr(store, "update_result"):
                     try:
-                        store.update_result(target["bmc_mac"], build_result(target, live, qual, pop, done))
+                        store.update_result(target["bmc_mac"], build_result(target, live, qual, pop, done, checks=checks))
                     except Exception:
                         log.exception("update_result failed for %s", target.get("port"))
         else:
@@ -383,7 +429,7 @@ def poll_target(target, *, make_client=_default_make_client, store=_state,
             if hasattr(store, "record_result"):
                 try:
                     store.record_result(target["bmc_mac"],
-                                        build_result(target, live, qual, pop, done),
+                                        build_result(target, live, qual, pop, done, checks=checks),
                                         serial=target.get("serial"),
                                         order_no=target.get("order_no"),
                                         last_port=target["port"])
@@ -404,7 +450,7 @@ def restart_target(target, *, make_client=_default_make_client, store=_state) ->
         return {"ok": False, "reason": "unreachable"}
     old_run = ids.get("old_run_id")
     store.purge_run(target["bmc_mac"], old_run)
-    store.set_state(target["port"], qual={}, pop={}, done={})
+    store.set_state(target["port"], qual={}, pop={}, checks={}, done={})
     client.restart_ack()
     return {"ok": True, "new_run_id": ids.get("new_run_id")}
 

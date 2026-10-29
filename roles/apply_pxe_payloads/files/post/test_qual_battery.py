@@ -216,3 +216,22 @@ def test_battery_skip_stage_still_passes_overall():
     b.run()
     assert b.status()["verdict"] == "pass" and b.status()["status"] == "done"
     assert b.stage("fio")["status"] == "skip"
+
+
+def test_inv_cmds_capture_tpmstate_read_only():
+    # flax_post's tpm-state rung judges this capture; post only CHECKS the TPM
+    hits = [c for c in qual_battery._INV_CMDS if c[0] == "tpmstate"]
+    assert len(hits) == 1
+    name, argv, kind = hits[0]
+    assert argv == ["sh", "-c", qual_battery.TPMSTATE_SH] and kind == "raw"
+    for want in ("/sys/class/tpm/tpm0", "device=present", "device=absent", "python3 ./tpm_state.py"):
+        assert want in qual_battery.TPMSTATE_SH
+    for never in ("tpm_clear", "tpm_sce", "ppi/request", "efivars"):
+        assert never not in qual_battery.TPMSTATE_SH
+
+
+def test_tpmstate_script_reports_absent_device(tmp_path):
+    import subprocess
+    sh = qual_battery.TPMSTATE_SH.replace("/sys/class/tpm/tpm0", str(tmp_path / "nope"))
+    r = subprocess.run(["sh", "-c", sh], capture_output=True, text=True)
+    assert (r.returncode, r.stdout) == (0, "device=absent\n")

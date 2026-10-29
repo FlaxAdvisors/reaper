@@ -651,14 +651,14 @@ def _occupant_reset_fields(row, old, serial, mac, now) -> dict:
         born_at = (row.get("ladder") or {}).get("since")
     if born_at is None or born_at > now:
         born_at = now
-    return {"done": {}, "qual": {}, "pop": {}, "power_last": None, "power_on": None,
+    return {"done": {}, "qual": {}, "pop": {}, "checks": {}, "power_last": None, "power_on": None,
             "occupant": {"serial": serial, "bmc_mac": mac, "since": now, "last_read": now},
             "occupant_candidate": None,
             "ladder": _ladder.occupant_reset(born_at, now),
             "ladder_reset_at": now, "ladder_reset_kind": "occupant", "ladder_reset_born_at": born_at}
 
 
-_LATCH_SLICES = ("done", "qual", "pop")
+_LATCH_SLICES = ("done", "qual", "pop", "checks")
 # How long after the worker's own `chassis power on` an observed off->on is
 # still the ENGINE's. The power-on action itself (powertriage) can take the
 # full 120s, and `prior` is read once at the start of each pass, so

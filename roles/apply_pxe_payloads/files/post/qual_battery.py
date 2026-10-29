@@ -152,6 +152,11 @@ def _tooling(runner):
     return {"verdict": "pass" if rc == 0 else "fail", "summary": {}, "artifacts": {"tooling": ("raw", out)}}
 
 
+# Is there a TPM, and tpm_state.py's one line if so. Only READS: the clear and
+# enable belong to triage's wipe pass (tpm_clear.sh); post only checks.
+TPMSTATE_SH = ("if [ -d /sys/class/tpm/tpm0 ]; then echo device=present; python3 ./tpm_state.py; "
+               "else echo device=absent; fi; exit 0")
+
 # (artifact-name, argv, kind) -- the post.sh inventory collection set, reused verbatim.
 _INV_CMDS = [
     ("dmidecode", ["dmidecode"], "raw"), ("hwinfo", ["hwinfo"] + HWINFO_FLAGS, "raw"),
@@ -167,6 +172,7 @@ _INV_CMDS = [
     ("ipmitool-sensor", ["ipmitool", "sensor", "list", "all"], "raw"),
     ("dimmsum", ["./dimmsum"], "raw"), ("lsnet", ["./lsnet"], "raw"),   # bundled ghost bins
     ("alldisks", ["./alldisks", "-v"], "raw"), ("bootorder", ["./bootorder"], "raw"),
+    ("tpmstate", ["sh", "-c", TPMSTATE_SH], "raw"),   # read-only, for flax_post's tpm-state rung
 ]
 
 
