@@ -118,14 +118,15 @@ if mode == "ignore":
     sys.exit(0)
 d = open(nv, "rb").read()
 new = open(args[2], "rb").read()
-q = new[new.index(b"Setup Question"):]
-name_line = q.split(b"\n", 1)[0] + b"\n"
-want = re.search(rb"\*\[(..)\]", q.split(b"Options", 1)[1]).group(1)
-i = d.index(name_line)
-j = d.index(b"\n\n", i)
-head, o2 = d[i:j].split(b"Options", 1)
-blk = head + b"Options" + o2.replace(b"*[", b"[").replace(b"[" + want + b"]", b"*[" + want + b"]")
-open(nv, "wb").write(d[:i] + blk + d[j:]); print("Script file imported successfully.")
+for q in new.split(b"Setup Question")[1:]:     # every question, found by name + token
+    key = b"Setup Question" + q.split(b"\n", 2)[0] + b"\n" + q.split(b"\n", 2)[1] + b"\n"
+    want = re.search(rb"\*\[(..)\]", q.split(b"Options", 1)[1]).group(1)
+    i = d.index(key)
+    j = d.index(b"\n\n", i)
+    head, o2 = d[i:j].split(b"Options", 1)
+    blk = head + b"Options" + o2.replace(b"*[", b"[").replace(b"[" + want + b"]", b"*[" + want + b"]")
+    d = d[:i] + blk + d[j:]
+open(nv, "wb").write(d); print("Script file imported successfully.")
 '''
 
 
@@ -221,4 +222,59 @@ def test_cli_enable_queues_and_verifies(tmp_path):
 
 def test_cli_enable_unknown_bios_is_a_skip(tmp_path):
     p, _, log = _cli(tmp_path, cmd="enable", bios="F06_3B99")
+    assert p.returncode == 3 and "reason=sce-unknown-bios:F06_3B99" in p.stdout and log == ""
+
+
+# --- on: Security Device Support (operator 2026-10-29) --------------------
+# F06_3B22 lists it three times (tokens 91/92/95, all offset 06; et30b3 dump).
+SDS_OFF = ["*[00]Disable", "[01]Enable"]
+SDS_ON = ["[00]Disable", "*[01]Enable"]
+
+
+def _sds_dump(t91=SDS_OFF, t92=SDS_OFF, t95=SDS_OFF):
+    return (HEADER
+            + _q("  Security Device Support", "91", "06", "[01]Enable", t91)
+            + _q("  Security Device Support", "92", "06", "[01]Enable", t92)
+            + _q("  TPM State", "93", "01", "[01]Enabled", ["[00]Disabled", "*[01]Enabled"])
+            + _q("  Security Device Support", "95", "06", "[01]Enable", t95)
+            + _q("  Security Device Support", "99", "07", "[01]Enable", SDS_OFF))   # other shape
+
+
+def test_on_script_writes_every_copy_of_the_exact_shape():
+    s = tpm_sce.build_on_script(_sds_dump(), BIOS)
+    assert s.startswith(HEADER)
+    body = s[len(HEADER):]
+    assert body.count(b"Setup Question") == 3 and b"Token\t=99" not in body
+    assert body.count(b"         *[01]Enable") == 3 and b"TPM State" not in body
+
+
+def test_on_when_every_copy_is_already_on_is_a_skip():
+    with pytest.raises(tpm_sce.Skip, match="setup-already-on"):
+        tpm_sce.build_on_script(_sds_dump(SDS_ON, SDS_ON, SDS_ON), BIOS)
+
+
+def test_on_writes_when_only_one_copy_is_off():
+    s = tpm_sce.build_on_script(_sds_dump(SDS_ON, SDS_OFF, SDS_ON), BIOS)
+    assert s[len(HEADER):].count(b"Setup Question") == 3
+
+
+def test_on_without_the_question_is_a_skip():
+    with pytest.raises(tpm_sce.Skip, match="no-security-device-question"):
+        tpm_sce.build_on_script(DUMP, BIOS)
+
+
+def test_cli_on_queues_and_verifies_all_copies(tmp_path):
+    p, nv, log = _cli(tmp_path, cmd="on", dump=_sds_dump())
+    assert p.returncode == 0 and "SCE-QUEUED token=91,92,95 bios=F06_3B22" in p.stdout
+    assert [tpm_sce.selected(b) for b in tpm_sce.find_on_questions(nv)] == ["01", "01", "01"]
+    assert b"Token\t=99\t// Do NOT change this line\nOffset\t=07\nWidth\t=01\nBIOS Default\t=[01]Enable\nOptions\t=*[00]Disable" in nv
+
+
+def test_cli_on_that_did_not_stick_is_a_failure(tmp_path):
+    p, _, _ = _cli(tmp_path, mode="ignore", cmd="on", dump=_sds_dump())
+    assert p.returncode == 1 and "reason=sce-on-did-not-stick" in p.stdout
+
+
+def test_cli_on_unknown_bios_is_a_skip_and_runs_nothing(tmp_path):
+    p, _, log = _cli(tmp_path, cmd="on", dump=_sds_dump(), bios="F06_3B99")
     assert p.returncode == 3 and "reason=sce-unknown-bios:F06_3B99" in p.stdout and log == ""

@@ -415,11 +415,12 @@ ps_done
 # only where the VLAN's PXE config passes flaxwipe=1 (triage VLANs by default;
 # apply_pxe_payloads boot.ipxe.j2). staylive/liveboot exits long before here.
 #
-# Same gate, same reason: a TPM a previous OS left owned (Windows/BitLocker)
-# is cleared by the BIOS through the standard PPI request, or on TPM 1.2
-# Leopards through a BIOS setup write (tpm_clear.sh, tpm_sce.py). The
-# BIOS only does that on a boot, so a queued clear turns the power-off at the
-# end of this run into a reboot; the next inventory pass confirms it and
+# Same gate, same reason: the TPM is brought to on + cleared + enabled from
+# whatever a previous OS (Windows/BitLocker) or a BIOS flash left it in, by the
+# BIOS through the standard PPI requests, or on TPM 1.2 Leopards through BIOS
+# setup writes (tpm_clear.sh, tpm_sce.py). The BIOS only does that on a boot,
+# so a queued step turns the power-off at the end of this run into a reboot;
+# the next inventory pass confirms it (and may queue the next step) and
 # powers off as usual. Both helpers put their progress on the SOL banner
 # through the exported ps_note.
 flaxwipe=$(sed -n 's/^.*flaxwipe=\([01]\).*$/\1/p' /proc/cmdline)
@@ -438,7 +439,7 @@ if [ "$action" == "inventory" ] && [ "$flaxwipe" == "1" ]; then
     elif grep -q '^TPM-FAIL' $logdir/tpmclear.txt; then
         ps_fail "$(grep -m1 '^TPM-FAIL' $logdir/tpmclear.txt | cut -d' ' -f2)"
     else
-        ps_done "$(grep -oE '^TPM-(CLEARED-AT-BOOT|ENABLED-AT-BOOT|CLEAN|SKIP)( reason=[^ ]*)?' $logdir/tpmclear.txt | tr '\n' ' ')"
+        ps_done "$(grep -oE '^TPM-(ON-AT-BOOT|CLEARED-AT-BOOT|ENABLED-AT-BOOT|CLEAN|SKIP)( reason=[^ ]*)?' $logdir/tpmclear.txt | tr '\n' ' ')"
     fi
 else
     ps_skip diskwipe "flaxwipe=${flaxwipe:-unset} action=$action"
@@ -449,7 +450,7 @@ fi
 # TPM clear is not finished, and the BMC would keep a 180 s identify blinking
 # through the reboot, so only the confirming pass after the clear lights it.
 if [ "$tpmq" = 1 ]; then
-    ps_skip ident "rebooting for the TPM clear -- the next inventory pass identifies"
+    ps_skip ident "rebooting for the BIOS TPM step -- the next inventory pass identifies"
 else
     ps_begin ident "chassis identify 180"
     bmc_gate "chassis identify" && ipmitool chassis identify 180
@@ -522,8 +523,14 @@ fi
 # A queued TPM clear only runs on a boot: reboot, and say why, so the extra
 # boot (and any reset the BIOS adds while clearing) does not read as a crash.
 if [ "$tpmq" = 1 ]; then
-    ps_skip poweroff "rebooting for the BIOS TPM clear instead"
-    ps_finish REBOOTING "TPM CLEAR: rebooting so the BIOS clears the TPM a previous OS left owned. The BIOS may reset once more while it clears. Inventory then runs again, confirms the clear, and powers off. Not a crash. $donemsg"
+    tpmop=$(grep -m1 -oE '^TPM-QUEUED op=[^ ]*' $logdir/tpmclear.txt | cut -d= -f2)
+    case "$tpmop" in
+        on)                tpmwhat="turns the TPM device on in its setup" ;;
+        1|sce-enable)      tpmwhat="enables the TPM" ;;
+        *)                 tpmwhat="clears the TPM a previous OS left owned" ;;
+    esac
+    ps_skip poweroff "rebooting for the BIOS TPM step (op=$tpmop) instead"
+    ps_finish REBOOTING "TPM: rebooting so the BIOS $tpmwhat. The BIOS may reset once more while it does. Inventory then runs again, confirms it (one more step may follow), and powers off. Not a crash. $donemsg"
     ps_flush
     systemctl reboot || reboot -f
     exit 0

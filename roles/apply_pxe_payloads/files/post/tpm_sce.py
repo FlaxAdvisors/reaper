@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""tpm_sce.py clear|enable -- TPM 1.2 clear / re-enable through the BIOS setup.
+"""tpm_sce.py clear|enable|on -- TPM 1.2 clear / re-enable / device-on through the BIOS setup.
 
 For Quanta Leopards (TPM 1.2), whose BIOS requires a console confirmation for
 every PPI clear op and implements no NoPPIClear flag. Their AMI setup has a
@@ -24,6 +24,12 @@ it is fetched from the share's tpm_enabler.v4.tgz, or TPM_SCE_BIN names one.
 "TPM State = Disabled" and re-applies that on every POST, so PPI op 6 answers
 "6 0: Success" and changes nothing. Writing TPM State = Enabled the same way
 and rebooting brings the TPM back enabled + active.
+
+`on` (operator 2026-10-29): a blade with no TPM device at all may have setup
+"Security Device Support = Disable", which hides the TPM from the OS. The
+Leopard builds list that question three times (tokens 91/92/95, all offset 06);
+every copy of the exact shape is written to Enable in one script, and all must
+read Enable afterwards. All already Enable -> skip: no module fitted.
 
 Prints one line; exit 0 SCE-QUEUED, 3 skip (nothing written), 1 failure.
 """
@@ -50,6 +56,8 @@ ENABLED = b"[01]Enabled"
 # The exact question each action writes, as those builds dump it.
 CLEAR_Q = (b"Pending operation", b"02", b"[00]None", [b"[00]None", CLEAR])
 ENABLE_Q = (b"TPM State", b"01", b"[01]Enabled", [b"[00]Disabled", ENABLED])
+ON = b"[01]Enable"
+ON_Q = (b"Security Device Support", b"06", ON, [b"[00]Disable", ON])
 
 
 class Skip(Exception):
@@ -85,15 +93,21 @@ def _options(blk):
     return [o.split(b"\t//")[0].strip().lstrip(b"*") for o in opts if o.strip()]
 
 
-def _find(dump, shape):
+def _find_all(dump, shape):
     name, offset, default, options = shape
+    found = []
     for s, e in _blocks(dump):
         blk = dump[s:e]
         if (blk.split(b"\n", 1)[0].split(b"=", 1)[1].strip() == name
                 and _field(blk, b"Offset") == offset and _field(blk, b"Width") == b"01"
                 and _field(blk, b"BIOS Default") == default and _options(blk) == options):
-            return blk
-    return None
+            found.append(blk)
+    return found
+
+
+def _find(dump, shape):
+    found = _find_all(dump, shape)
+    return found[0] if found else None
 
 
 def find_clear_question(dump):
@@ -102,6 +116,10 @@ def find_clear_question(dump):
 
 def find_enable_question(dump):
     return _find(dump, ENABLE_Q)
+
+
+def find_on_questions(dump):
+    return _find_all(dump, ON_Q)
 
 
 def _select(blk, option):
@@ -117,8 +135,9 @@ def selected(blk):
     return m.group(1).decode().upper() if m else None
 
 
-def _script(dump, blk, option):
-    return dump[:_blocks(dump)[0][0]] + _select(blk, option) + b"\n"   # byte-identical to et31b4's
+def _script(dump, blk, option, more=()):
+    body = b"".join(_select(b, option) + b"\n" for b in (blk,) + tuple(more))
+    return dump[:_blocks(dump)[0][0]] + body   # one question: byte-identical to et31b4's
 
 
 def bios_version():
@@ -153,6 +172,16 @@ def build_enable_script(dump, bios):
     return _script(dump, blk, ENABLED)
 
 
+def build_on_script(dump, bios):
+    _known(bios)
+    blks = find_on_questions(dump)
+    if not blks:
+        raise Skip("no-security-device-question")
+    if all(selected(b) == "01" for b in blks):
+        raise Skip("setup-already-on")
+    return _script(dump, blks[0], ON, blks[1:])
+
+
 def _sce_bin(tmp):
     if os.environ.get("TPM_SCE_BIN"):
         return os.environ["TPM_SCE_BIN"]
@@ -183,10 +212,15 @@ def _dump(sce, tmp, name):
         return f.read()
 
 
+def _one(find):
+    return lambda dump: [b for b in [find(dump)] if b is not None]
+
+
 ACTIONS = {
-    # command: (build the script, find the question again, value it must hold)
-    "clear": (build_clear_script, find_clear_question, "05"),
-    "enable": (build_enable_script, find_enable_question, "01"),
+    # command: (build the script, find the question(s) again, value each must hold)
+    "clear": (build_clear_script, _one(find_clear_question), "05"),
+    "enable": (build_enable_script, _one(find_enable_question), "01"),
+    "on": (build_on_script, find_on_questions, "01"),
 }
 
 
@@ -203,16 +237,16 @@ def queue(action):
         rc = _run(sce, tmp, "/i", "/s", script)
         if rc != 0:
             raise Fail("sce-import-rc%d" % rc)
-        blk = find(_dump(sce, tmp, "after.txt"))
-        if blk is None or selected(blk) != want:
+        blks = find(_dump(sce, tmp, "after.txt"))
+        if not blks or any(selected(b) != want for b in blks):
             raise Fail("sce-%s-did-not-stick" % action)
-        token = re.search(rb"Token\t=([0-9A-Fa-f]+)", blk).group(1).decode()
+        token = ",".join(re.search(rb"Token\t=([0-9A-Fa-f]+)", b).group(1).decode() for b in blks)
         return "SCE-QUEUED token=%s bios=%s hii=%s" % (token, bios, hii(before))
 
 
 def main(argv):
     if len(argv) != 2 or argv[1] not in ACTIONS:
-        print("usage: tpm_sce.py clear|enable")
+        print("usage: tpm_sce.py clear|enable|on")
         return 2
     try:
         print(queue(argv[1]))
