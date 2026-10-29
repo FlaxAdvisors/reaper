@@ -6,7 +6,9 @@ ansible_ssh_common_args: >-
   -o UserKnownHostsFile=/dev/null
 device_role: collect_jumphost
 
-# Eindhoven has a single WAN uplink (wlan0); the dual-WAN failover
-# daemon's primary/backup assertion would fail. Run only the wlan0
-# self-recovery watchdog from the jumphost_wan_failover role.
+# Eindhoven has two WAN paths: corp eth0.2 (metric 100) is primary, guest
+# wifi wlan0 (metric 200) is backup. The metrics are static (ifcfg
+# DHCLIENT_ROUTE_PRIORITY, held by apply_bang_router's route guard), so the
+# dual-WAN failover daemon stays off; only the wlan0 self-recovery watchdog
+# from the jumphost_wan_failover role runs.
 jumphost_wan_failover_wan_failover_enabled: false

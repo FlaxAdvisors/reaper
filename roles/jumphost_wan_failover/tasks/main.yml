@@ -34,10 +34,11 @@
   ansible.builtin.meta: flush_handlers
 
 # Dual-WAN failover (eth0.2 ⇄ wlan0 route-metric swap) is gated by
-# jumphost_wan_failover_wan_failover_enabled. Single-WAN-path sites
-# (braintree, eindhoven) set that false and get only the wlan0 watchdog
-# below. The firewalld asserts here are wan-failover prerequisites
-# (require both primary AND backup in 'external'), not watchdog ones.
+# jumphost_wan_failover_wan_failover_enabled. Sites without the
+# metric-swap daemon (braintree, eindhoven, lavergne) set that false and
+# get only the wlan0 watchdog below. The firewalld asserts here are
+# wan-failover prerequisites (require both primary AND backup in
+# 'external'), not watchdog ones.
 - name: Wan-failover daemon — firewalld preconditions + unit deploy
   when: jumphost_wan_failover_wan_failover_enabled
   block:
