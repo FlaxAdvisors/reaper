@@ -29,11 +29,17 @@
 # et29b4 2026-10-28). A blade an older pass left that way (response "6 0", still
 # disabled) is healed once the same way. A TPM we did not clear is left alone.
 #
+# TPM 2.0 (TiogaPass, operator 2026-10-29): clear AND enable, like the Leopards.
+# After our op 5 clear, a TPM whose storage or endorsement hierarchy is off
+# (tpm_state.py shEnable=0/ehEnable=0, what the BIOS's "TPM disabled" leaves) gets
+# PPI op 1 (Enable) + one reboot, unattended only. The BIOS's "1 <rc>" response
+# is the memory between passes: still disabled after it -> TPM-FAIL, never re-queued.
+#
 # Report lines on stdout (post.sh keeps them as tpmclear.txt):
 #   TPM-CLEARED-AT-BOOT <ppi response|sce> the BIOS ran our clear on this boot
-#   TPM-ENABLED-AT-BOOT sce                the BIOS ran our re-enable on this boot
+#   TPM-ENABLED-AT-BOOT sce|<ppi response> the BIOS ran our re-enable on this boot
 #   TPM-CLEAN <state>                      nothing to do
-#   TPM-QUEUED op=<n|sce|sce-enable ...> <state>  queued; reboot to run it    (exit 10)
+#   TPM-QUEUED op=<5|22|1|sce|sce-enable ...> <state>  queued; reboot to run it (exit 10)
 #   TPM-SKIP reason=<why>
 #   TPM-FAIL reason=<why> <state>          not re-queued; look at the node
 # Always exit 0 except the queued case.
@@ -109,6 +115,34 @@ case "$state" in
         if [ "$disabled" = 1 ] && { [ "$just_cleared" = 1 ] || [ "$resp_op" = 6 ]; }; then
             note "TPM 1.2 left disabled by the clear -- setting TPM State = Enabled in the BIOS setup (SCE)"
             sce_queue "$SCE_ENABLE_CMD" "$EMARKER" sce-enable
+        fi
+        # TPM 2.0 (TiogaPass): disabled = storage/endorsement hierarchy off.
+        # Our clear that leaves it so is followed by PPI op 1 (Enable), once:
+        # the BIOS's "1 <rc>" answer is the memory, like op 5's for the clear.
+        tpm2_off=0
+        case "$state" in
+            *" tpm=1.2"*) ;;
+            *" shEnable=0"*|*" ehEnable=0"*) tpm2_off=1 ;;
+        esac
+        if [ "$resp_op" = 1 ]; then
+            if [ "$tpm2_off" = 1 ]; then
+                echo "TPM-FAIL reason=still-disabled-after-enable:${resp// /_} $state"; exit 0
+            fi
+            [ "$resp_rc" = 0 ] && { echo "TPM-ENABLED-AT-BOOT $resp"; note "TPM was enabled by the BIOS on this boot"; }
+        elif [ "$tpm2_off" = 1 ] && [ "$just_cleared" = 1 ]; then
+            if [ "$req" = 1 ]; then
+                echo "TPM-FAIL reason=bios-left-the-previous-enable-pending $state"; exit 0
+            fi
+            if ! unattended 1; then
+                got=$(awk '$1==1{print $2}' "$PPI/tcg_operations" 2>/dev/null)
+                echo "TPM-FAIL reason=disabled-after-clear-op1-needs-console-confirmation:${got:-unlisted} $state"; exit 0
+            fi
+            note "TPM 2.0 left disabled after the clear -- queueing a BIOS enable (PPI op 1)"
+            echo 1 > "$PPI/request" 2>/dev/null
+            if [ "$(cat "$PPI/request" 2>/dev/null)" != 1 ]; then
+                echo "TPM-FAIL reason=ppi-enable-request-not-accepted $state"; exit 0
+            fi
+            echo "TPM-QUEUED op=1 $state"; exit 10
         fi
         echo "TPM-CLEAN $state"; exit 0 ;;
     owned=1*) ;;

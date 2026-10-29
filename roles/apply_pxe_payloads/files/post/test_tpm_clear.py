@@ -317,3 +317,62 @@ def test_tpm2_never_takes_the_sce_route(tmp_path):
                 sce=(0, "SCE-QUEUED token=94 hii=492F03E4"))
     assert p.returncode == 0 and "reason=op5-needs-console-confirmation" in p.stdout
     assert not _sce_ran(tmp_path)
+
+
+# TPM 2.0 clear AND enable (TiogaPass, operator 2026-10-29): after our op 5 clear
+# a TPM whose storage/endorsement hierarchy is off gets PPI op 1, once.
+ON2 = CLEAN + " startup=0x80000006 shEnable=1 ehEnable=1 phEnable=0"
+OFF2 = CLEAN + " startup=0x80000000 shEnable=0 ehEnable=0 phEnable=0"
+OPS2_ENABLE = OPS_UNATTENDED + "1 4: User not required\n"
+OPS2_ENABLE_PROMPTS = OPS_UNATTENDED + "1 3: User required\n"
+
+
+def test_tpm2_cleared_and_enabled_is_clean(tmp_path):
+    p, req = _run(_ppi(str(tmp_path), response="5 0: Success", ops=OPS2_ENABLE), ON2)
+    assert p.returncode == 0 and "TPM-CLEARED-AT-BOOT 5 0" in p.stdout and "TPM-CLEAN" in p.stdout
+    assert req == "96"
+
+
+def test_tpm2_cleared_and_disabled_queues_op_1(tmp_path):
+    p, req = _run(_ppi(str(tmp_path), response="5 0: Success", ops=OPS2_ENABLE), OFF2)
+    assert p.returncode == 10 and "TPM-QUEUED op=1 " in p.stdout and req == "1"
+
+
+def test_tpm2_enabled_after_op_1_is_reported(tmp_path):
+    p, req = _run(_ppi(str(tmp_path), response="1 0: Success", ops=OPS2_ENABLE), ON2)
+    assert p.returncode == 0 and "TPM-ENABLED-AT-BOOT 1 0: Success" in p.stdout
+    assert "TPM-CLEAN" in p.stdout and req == "96"
+
+
+def test_tpm2_still_disabled_after_op_1_fails_and_never_requeues(tmp_path):
+    p, req = _run(_ppi(str(tmp_path), response="1 0: Success", ops=OPS2_ENABLE), OFF2)
+    assert p.returncode == 0 and "TPM-FAIL reason=still-disabled-after-enable" in p.stdout
+    assert req == "96"
+
+
+def test_tpm2_enable_left_pending_fails(tmp_path):
+    p, req = _run(_ppi(str(tmp_path), request="1", response="5 0: Success", ops=OPS2_ENABLE), OFF2)
+    assert p.returncode == 0 and "reason=bios-left-the-previous-enable-pending" in p.stdout
+
+
+def test_tpm2_enable_that_would_prompt_is_a_fail_not_a_queue(tmp_path):
+    p, req = _run(_ppi(str(tmp_path), response="5 0: Success", ops=OPS2_ENABLE_PROMPTS), OFF2)
+    assert p.returncode == 0 and "reason=disabled-after-clear-op1-needs-console-confirmation:3:" in p.stdout
+    assert req == "96"
+
+
+def test_tpm2_disabled_without_our_clear_is_left_alone(tmp_path):
+    p, req = _run(_ppi(str(tmp_path), ops=OPS2_ENABLE), OFF2)
+    assert p.returncode == 0 and "TPM-CLEAN" in p.stdout and req == "96"
+
+
+def test_tpm2_without_startup_fields_is_not_judged_disabled(tmp_path):
+    p, req = _run(_ppi(str(tmp_path), response="5 0: Success", ops=OPS2_ENABLE), CLEAN)
+    assert p.returncode == 0 and "TPM-CLEAN" in p.stdout and req == "96"
+
+
+def test_tpm12_state_never_takes_the_tpm2_enable(tmp_path):
+    # A 1.2 line never carries shEnable; the guard is the tpm=1.2 tag regardless.
+    p, req = _run(_ppi(str(tmp_path), response="5 0: Success", ops=OPS2_ENABLE),
+                  "owned=0 tpm=1.2 enabled=1 active=1 shEnable=0")
+    assert "op=1" not in p.stdout and req == "96"

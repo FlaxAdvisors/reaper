@@ -48,3 +48,46 @@ def test_tpm2_keeps_the_raw_path():
     import tempfile
     p = _run(_sysfs(tempfile.mkdtemp(), version="2"))
     assert p.returncode == 2 and p.stdout.startswith("owned=? error=") and "tpm=1.2" not in p.stdout
+
+
+def _tpm2_main(monkeypatch, capsys, startup, prop=0x201):
+    """main() on the TPM 2.0 path with get_capability stubbed: PERMANENT=0,
+    no persistent handles, STARTUP_CLEAR=startup (None = the read fails)."""
+    import importlib.util
+    import struct
+    import tempfile
+    spec = importlib.util.spec_from_file_location("tpm_state_t", SCRIPT)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    dev = os.path.join(tempfile.mkdtemp(), "tpm0dev")
+    open(dev, "wb").close()
+    monkeypatch.setattr(m, "DEV", dev)
+    monkeypatch.setattr(m, "SYSFS", _sysfs(tempfile.mkdtemp(), version="2"))
+
+    def cap(f, c, p, n):
+        if c == 1:
+            return struct.pack(">BII", 0, 1, 0)
+        if p == 0x201:
+            if startup is None:
+                raise IOError("TPM rc=0x1c4")
+            return struct.pack(">BIIII", 0, 6, 1, prop, startup)
+        return struct.pack(">BIIII", 0, 6, 1, 0x200, 0)
+    monkeypatch.setattr(m, "get_capability", cap)
+    assert m.main() == 0
+    return capsys.readouterr().out.strip()
+
+
+def test_tpm2_reports_hierarchy_enables(monkeypatch, capsys):
+    out = _tpm2_main(monkeypatch, capsys, 0x80000006)
+    assert out.startswith("owned=0 perm=0x00000000 ")
+    assert out.endswith(" persistent=0 startup=0x80000006 shEnable=1 ehEnable=1 phEnable=0")
+
+
+def test_tpm2_disabled_reads_as_sh_eh_off(monkeypatch, capsys):
+    out = _tpm2_main(monkeypatch, capsys, 0x80000000)
+    assert "shEnable=0 ehEnable=0" in out
+
+
+def test_tpm2_startup_read_failure_or_wrong_property_omits_the_fields(monkeypatch, capsys):
+    assert "startup=" not in _tpm2_main(monkeypatch, capsys, None)
+    assert "startup=" not in _tpm2_main(monkeypatch, capsys, 0x6, prop=0x202)
