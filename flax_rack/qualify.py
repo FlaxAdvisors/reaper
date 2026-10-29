@@ -260,8 +260,8 @@ def _host_lookup(ctx, R, lr, pos, host_ip, user, pw, art, cmd, parse):
     text = _artifact(ctx, lr, pos, "inventory", art)
     res = parse(text) if text else None
     if not res:
-        rc, out = R.host_run(host_ip, user, pw, cmd, runner=ctx.runner)
-        res = parse(out) if rc == 0 else None
+        rc, out, _ = R.host_run(host_ip, user, pw, cmd, runner=ctx.runner)
+        res = parse(out) if rc == 0 else None   # stdout only; stderr is ssh noise
     return res
 
 

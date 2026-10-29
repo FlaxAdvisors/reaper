@@ -38,9 +38,9 @@ def _start(server, ports, user, pw, runner) -> tuple[bool, str, dict]:
     for net, (ip, p) in ports.items():
         script = (f"iperf3 -s -D -B {shlex.quote(ip)} -p {p} >/dev/null 2>&1\nsleep 1\n"
                   + _find(ip, p))
-        rc, out = hostssh.run(server["host_ip"], user, pw, script, runner=runner)
+        rc, out, err = hostssh.run(server["host_ip"], user, pw, script, runner=runner)
         if rc != 0 or not _pids(out):
-            return False, f"{net} {ip}:{p} rc={rc} {out.strip()[-120:]}", pids
+            return False, f"{net} {ip}:{p} rc={rc} {hostssh.tail(out, err, 120)}", pids
         pids[net] = _pids(out)
     return True, "", pids
 
@@ -52,8 +52,8 @@ def _stop(server, ports, user, pw, runner):
 
 
 def _speed(client, ifname, user, pw, runner) -> float | None:
-    rc, out = hostssh.run(client["host_ip"], user, pw,
-                          f"ethtool {shlex.quote(ifname)}\n", runner=runner)
+    rc, out, _ = hostssh.run(client["host_ip"], user, pw,
+                             f"ethtool {shlex.quote(ifname)}\n", runner=runner)
     m = re.search(r"Speed:\s*(\d+)\s*Mb/s", out)
     return int(m.group(1)) * 1e6 if m else None
 
@@ -61,15 +61,15 @@ def _speed(client, ifname, user, pw, runner) -> float | None:
 def _bps(client, cip, sip, p, reverse, seconds, streams, user, pw, runner):
     script = (f"iperf3 -c {shlex.quote(sip)} -p {p} -B {shlex.quote(cip)} "
               f"-t {seconds} -P {streams} -J{' -R' if reverse else ''}\n")
-    rc, out = hostssh.run(client["host_ip"], user, pw, script,
-                          timeout=seconds + 30, runner=runner)
-    try:
-        j = json.loads(out[out.index("{"):])
+    rc, out, err = hostssh.run(client["host_ip"], user, pw, script,
+                               timeout=seconds + 30, runner=runner)
+    try:                    # stdout only; ssh/sudo noise is on stderr
+        j, _ = json.JSONDecoder().raw_decode(out[out.index("{"):])
         if j.get("error"):
             return None, str(j["error"])
         return float(j["end"]["sum_received"]["bits_per_second"]), ""
-    except (ValueError, KeyError, TypeError):
-        return None, f"no iperf result (rc={rc}): {out.strip()[-120:]}"
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return None, f"no iperf result (rc={rc}): {hostssh.tail(out, err, 120)}"
 
 
 def _client(client, sports, server, user, pw, seconds, streams, runner):

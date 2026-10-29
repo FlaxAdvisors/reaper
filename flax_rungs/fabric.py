@@ -44,12 +44,14 @@ def apply(host_ip: str, user: str, pw: str, assigns: dict[str, str], *,
         lines.append(f"ip link set {q} up && ip addr replace {c} dev {q} "
                      f"&& ip -4 -o addr show dev {q} | grep -qF {shlex.quote(' ' + cidr.split('/')[0] + '/')} "
                      f"&& echo OK {q} || echo FAIL {q}")
-    rc, out = hostssh.run(host_ip, user, pw, "\n".join(lines) + "\n", runner=runner)
+    rc, out, err = hostssh.run(host_ip, user, pw, "\n".join(lines) + "\n", runner=runner)
     ok = {ln.split()[1] for ln in out.splitlines() if ln.startswith("OK ")}
     bad = [i for i in assigns if i not in ok]
     detail = dict(assigns)
     if rc != 0 or bad:
         detail["error"] = (f"fabric addressing failed on {', '.join(bad) or 'all ports'}"
                            + (f" (rc={rc})" if rc else ""))
+        if err.strip():
+            detail["stderr"] = err.strip()[-400:]
         return RungResult("fail", detail)
     return RungResult("pass", detail)

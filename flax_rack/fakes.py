@@ -246,4 +246,4 @@ class FakeRungs:
         return {"firmware": "2.61" if head else "2.66", "aux": "0x00 0x00 0x00 0x00"}
 
     def host_run(self, host_ip, user, pw, script, *, runner=None):
-        return 0, ""
+        return 0, "", ""

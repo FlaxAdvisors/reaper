@@ -48,11 +48,11 @@ def launch(host_ip, user, password, *, stages=ORDER_STAGES, runner=None,
            client_factory=QualClient) -> RungResult:
     kw = {"runner": runner} if runner else {}
     script = launch_script(stages)
-    rc, out = hostssh.run(host_ip, user, password, script, timeout=60, **kw)
-    tail = (out or "").strip()[-400:]
+    rc, out, err = hostssh.run(host_ip, user, password, script, timeout=60, **kw)
     if rc != 0:
-        return RungResult("fail", {"error": f"agent launch rc={rc}", "output": tail})
-    if _ACTIVE not in (out or ""):
+        return RungResult("fail", {"error": f"agent launch rc={rc}",
+                                   "output": hostssh.tail(out, err)})
+    if _ACTIVE not in out:
         return RungResult("pass", {"mode": "fresh", "stages": stages})
     # Already running from an earlier Qualify. An agent reads FLAX_QUAL_STAGES only at
     # process start, so if its stage list differs from the request (e.g. a full default
@@ -73,14 +73,14 @@ def launch(host_ip, user, password, *, stages=ORDER_STAGES, runner=None,
         return RungResult("pass", {"mode": "restart", "stages": stages,
                                    "old_run_id": ids.get("old_run_id"),
                                    "new_run_id": ids.get("new_run_id")})
-    rc, out = hostssh.run(host_ip, user, password, _STOP_SH, timeout=45, **kw)
+    rc, out, err = hostssh.run(host_ip, user, password, _STOP_SH, timeout=45, **kw)
     if rc != 0:
         return RungResult("fail", {"error": f"agent stop rc={rc}",
-                                   "output": (out or "").strip()[-400:]})
-    rc, out = hostssh.run(host_ip, user, password, script, timeout=60, **kw)
-    if rc != 0 or _ACTIVE in (out or ""):
+                                   "output": hostssh.tail(out, err)})
+    rc, out, err = hostssh.run(host_ip, user, password, script, timeout=60, **kw)
+    if rc != 0 or _ACTIVE in out:
         return RungResult("fail", {"error": f"agent relaunch rc={rc}",
-                                   "output": (out or "").strip()[-400:]})
+                                   "output": hostssh.tail(out, err)})
     return RungResult("pass", {"mode": "relaunch-stage-mismatch", "stages": stages,
                                "had_stages": have})
 
