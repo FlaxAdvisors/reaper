@@ -1,0 +1,188 @@
+<!-- flax_rack/web/index.html: rack-order console (rack-v3 layout). Served at /<prefix>/;
+     every URL below is relative, so one file serves every rack. -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>rackpost</title>
+  <link rel="icon" href="static/flax-logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="static/rack.css">
+  <link rel="stylesheet" href="static/rackpost.css">
+  <script src="static/petite-vue.iife.js" defer></script>
+  <script type="module" src="static/rackpost.js"></script>
+</head>
+<body>
+<div id="app" v-scope="App()" @vue:mounted="mounted()">
+
+  <!-- ================= header ================= -->
+  <div class="top">
+    <div class="toprow">
+      <div class="tl">
+        <img class="flogo" src="static/flax-logo.svg" alt="flax" onerror="this.style.display='none'">
+        <div class="metrics">
+          <div v-for="m in metricList" class="metric" :class="[m.key, {on: filter===m.key}]" @click="toggle(m.key)"
+               :title="m.title"><b>{{counts[m.key]}}</b><span>{{m.label}}</span></div>
+        </div>
+      </div>
+      <div class="tr">
+        <span class="live" :class="{off:live===false, wait:live===null}">
+          <i class="live-dot"></i><span>{{live ? 'live' : live===false ? 'offline' : 'connecting'}}</span><span class="live-ver mono">rackpost {{s.version || '?'}}</span>
+        </span>
+        <span class="title">{{s.prefix || '…'}} · {{s.customer || '?'}} rack{{s.rack ? ' ' + s.rack : ''}}</span>
+      </div>
+    </div>
+    <div class="toprow sub">
+      <div class="tl">
+        <div class="search">
+          <input name="rp-search" autocomplete="off" placeholder="search pos / MAC…" v-model="q">
+          <span class="hint" v-if="q">{{matchCount}} match{{matchCount===1?'':'es'}}</span>
+        </div>
+        <span class="ctx-at" :class="{run: s.stage_running}" :title="eventsTitle()">{{stageText()}}</span>
+      </div>
+      <div class="tr"><div class="ctx">
+        <label>Customer <span class="ro">{{s.customer || '—'}}</span></label>
+        <label>Order <span class="ro">{{s.order || '—'}}</span></label>
+        <label>vid <span class="ro">{{s.vid || '—'}}</span></label>
+        <span class="closed-chip" v-if="s.closed_at" :title="'closed ' + s.closed_at">closed</span>
+        <button class="closebtn" v-else-if="s.order" @click="openClose()"
+                title="release this rack's reservations, mark the order closed">Close order…</button>
+      </div></div>
+    </div>
+  </div>
+
+  <!-- ================= rack (populated OUs only) ================= -->
+  <div class="rack" :class="{withdrawer: !!selDev}">
+    <div v-for="g in layout">
+      <div class="gap" v-if="g.gap">{{g.gap}}</div>
+      <div class="group">
+        <div class="group-h" :class="g.family"><span class="g-range">{{g.range}}</span>
+          <span class="col-h" v-for="h in g.heads">{{h}}</span></div>
+        <div class="row" v-for="row in g.rows" :class="row.layout">
+          <span class="ou-label">{{row.label}}</span>
+
+          <!-- switch -->
+          <div class="tile sw" v-if="row.sw">
+            <div class="t-head"><span class="t-port">SW {{row.sw.id}}</span>
+              <span class="kind">{{swKind(row.sw)}}</span>
+              <span class="watt" :class="row.sw.fdb_count!=null ? 'on' : 'unk'" v-if="row.sw.mgmt_ip"
+                    :title="'FDB entries seen by the last switch-fdb read'">fdb {{row.sw.fdb_count ?? '—'}}</span>
+              <span class="dot" :class="swDot(row.sw)" :style="row.sw.mgmt_ip ? '' : 'margin-left:auto'"></span></div>
+            <div class="links">
+              <span class="lk" v-if="row.sw.mgmt_ip" :class="swDot(row.sw)==='done' ? 'ok' : swDot(row.sw)==='fault' ? 'bad' : ''"
+                    :title="swTitle(row.sw)">{{row.sw.mgmt_ip}}</span>
+              <span class="lk" v-if="row.sw.uplink_ports.length" title="uplink ports (not matched)">uplink {{row.sw.uplink_ports.join(',')}}</span>
+            </div>
+          </div>
+
+          <!-- devices / IOMs / empty cubbies -->
+            <div class="tile" v-for="cell in (row.cells || [])" :class="wrapCls(cell)" :style="tileStyle(cell)" @click="open(cell)">
+              <div class="t-head">
+                <span class="t-port">{{cell.label}}</span>
+                <span class="kind" v-if="cell.kindLabel">{{cell.kindLabel}}</span>
+                <span class="watt unk" v-if="!cell.empty" title="power: Plan 2">—</span>
+                <span class="dot" :class="cell.empty ? 'grey' : dotCls(cell.dev)"></span>
+              </div>
+              <div v-if="!cell.empty">
+                <div class="t-row"><span class="k">MAC</span>
+                  <span v-if="cellMac(cell)" class="v">{{cellMac(cell)}}</span><span v-else class="skel"></span></div>
+                <div class="t-row"><span class="k">SN</span><span class="skel" style="width:60%"></span></div>
+                <div class="t-row"><span class="k">POP</span>
+                  <select class="popsel" :class="{ovr: cell.dev.pop_overridden}" :title="popTitle(cell.dev)"
+                          :disabled="!!s.closed_at" @click.stop @change="setPop(cell.dev, $event.target.value)">
+                    <option v-for="p in s.profiles" :value="p" :selected="p===cell.dev.pop">{{p}}</option>
+                  </select><span class="popv" title="POP verdict: Plan 2">·</span></div>
+                <div class="links">
+                  <span class="lk" v-for="c in chips(cell)" :class="c.state" :title="c.title">{{c.label}}</span>
+                </div>
+                <div class="bars">
+                  <div class="bar"><span class="seg" v-for="c in phaseSegs(cell.dev)" :class="c"></span></div>
+                  <div class="bar steps"><span class="seg" v-for="c in stepSegs(cell.dev)" :class="c"></span></div>
+                </div>
+              </div>
+            </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= detail drawer (docked, non-modal) ================= -->
+  <div class="drawer" v-if="selDev">
+    <div class="d-head">
+      <span class="d-sn">— no serial yet —</span>
+      <span class="d-status" :style="statusStyle(selDev)">{{statusText(selDev)}}</span>
+      <span class="x" @click="close()">✕</span>
+    </div>
+    <div class="d-sub">OU {{selDev?.ou}} {{colName(selDev)}} · {{selDev?.pos}} · {{selDev?.names?.host || selDev?.names?.iom1 || ''}} · {{selDev?.kind}} {{selDev?.part}}</div>
+
+    <div class="actions">
+      <button disabled title="Plan 2">PWR</button><button disabled title="Plan 2">SOL</button>
+      <button disabled title="Plan 2">INV</button><button disabled title="Plan 2">POP</button>
+      <button disabled title="Plan 2">IDNT</button>
+      <button :disabled="s.stage_running || !!s.closed_at" @click="retry()"
+              title="re-run Discover for this rack order">RETRY</button>
+    </div>
+    <p class="action-msg" v-if="actionMsg">{{actionMsg}}</p>
+
+    <div class="section-l">addresses</div>
+    <div class="facets">
+      <template v-for="a in addrRows(selDev)">
+        <span class="lbl">{{a.role}}</span><span class="mono" :title="a.name">{{a.mac || '⋯'}} · {{a.ip}}</span>
+        <span :class="a.cls">{{a.mark}}</span>
+      </template>
+      <span class="lbl">POP</span>
+      <span><select class="popsel" :class="{ovr: selDev?.pop_overridden}" :disabled="!!s.closed_at"
+                    @change="setPop(selDev, $event.target.value)">
+          <option v-for="p in s.profiles" :value="p" :selected="p===selDev?.pop">{{p}}</option></select>
+        <span class="note">default from BOM {{selDev?.part}}{{selDev?.pop_overridden ? ' = ' + selDev?.pop_default : ''}}</span></span>
+      <span class="no">{{selDev?.pop_overridden ? 'override' : ''}}</span>
+    </div>
+
+    <div class="section-l">links (BOM → seen)</div>
+    <div class="ha">
+      <span class="h">port</span><span class="h">expected</span><span class="h">seen</span>
+      <template v-for="l in linkRows(selDev)">
+        <span>{{l.name}}</span><span>{{l.expected}}</span><span :class="l.state">{{l.seen}}</span>
+      </template>
+    </div>
+
+    <div class="section-l">pipeline</div>
+    <div class="checklist">
+      <div class="phase" v-for="p in s.phases" :class="{bad: phaseState(selDev,p)==='fault'}">
+        <div class="phase-h"><span class="dot" :class="phaseDot(selDev,p)"></span>{{p}}
+          <span class="pct">{{phasePct(selDev,p)}}</span></div>
+        <div class="steps" v-if="stepEntries(selDev,p).length">
+          <div class="step" v-for="st in stepEntries(selDev,p)" :class="st.state" :title="st.title">
+            <span class="si">{{stepIcon(st.state)}}</span>{{st.name}}<span class="note" v-if="st.note"> · {{st.note}}</span></div>
+        </div>
+        <div class="steps" v-else><div class="step pending"><span class="si">·</span>later plan</div></div>
+      </div>
+    </div>
+
+    <div class="section-l">alerts</div>
+    <div class="alert-grid">
+      <div class="alert-box" v-for="f in faults(selDev)" :class="{bad: f.bad}">
+        <div class="ab-h">{{f.rung}}<span class="ab-tag" v-if="f.bad"> · !</span></div>
+        <div class="ab-b">{{f.text}}</div></div>
+      <div class="alert-box" v-if="!faults(selDev).length"><div class="ab-h">rungs</div>
+        <div class="ab-b pending-note">no faults</div></div>
+    </div>
+  </div>
+
+  <!-- ================= close-order modal (typed confirm) ================= -->
+  <div class="m-scrim" v-if="closing" @click="closing=false">
+    <div class="m-box" @click.stop>
+      <div class="m-h"><span class="m-title">Close order {{s.order}}{{s.rack ? ' rack ' + s.rack : ''}}</span>
+        <span class="x" @click="closing=false">✕</span></div>
+      <div class="m-b">
+        <p class="m-sub">Releases every Kea reservation of this rack (source
+          <span class="mono">order:{{s.order}}{{s.rack ? '/' + s.rack : ''}}</span>) and marks it closed.
+          Stages can no longer run. Type the order id to confirm.</p>
+        <input class="confirm-in" name="rp-confirm" autocomplete="off" v-model="confirmText" :placeholder="s.order">
+        <button class="press danger" :disabled="confirmText!==s.order || busy" @click="doClose()">Close order</button>
+        <p class="action-msg" v-if="closeMsg">{{closeMsg}}</p>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

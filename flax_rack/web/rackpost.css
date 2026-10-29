@@ -1,0 +1,55 @@
+/* flax_rack/web/rackpost.css: rack-order additions on top of flax_post's rack.css
+   (loaded unmodified before this file). Layout per mockup rack-v3. */
+:root{--cyan:#39c5cf}
+.metric.deploy b{color:var(--cyan)} .dot.deploy{background:var(--cyan)}
+.seg.cur.deploy{background:var(--cyan)}
+
+/* rows: switches / full-width devices span the rack; a JBOD row holds one tile per IOM */
+.row.full{grid-template-columns:46px 1fr}
+.row.two{grid-template-columns:46px 1fr 1fr}
+.group-h.sw{grid-template-columns:46px 1fr}
+.tile.sw{min-height:auto;cursor:default}
+a.tile{display:block;color:inherit;text-decoration:none}
+.kind{font-size:.66rem;text-transform:uppercase;letter-spacing:.5px;color:var(--dim);margin-left:.3rem;white-space:nowrap}
+.gap{font-family:ui-monospace,monospace;font-size:.62rem;color:var(--dim);margin:-.2rem 0 .5rem 54px}
+.rack.withdrawer{margin-right:580px}
+
+/* link chips: P0→A / P1→B / mgmt; ok = seen as expected, bad = not, dev = differs from BOM */
+.links{display:flex;gap:4px;margin-top:.45rem;flex-wrap:wrap}
+.lk{font-family:ui-monospace,monospace;font-size:.66rem;padding:.02rem .3rem;border-radius:3px;border:1px solid var(--border);color:var(--muted)}
+.lk.ok{color:var(--green);border-color:rgba(63,185,80,.35)} .lk.bad{color:var(--red);border-color:rgba(248,81,73,.45)}
+.lk.dev{color:var(--amber);border-color:rgba(210,153,34,.45)}
+
+/* per-tile population: amber when overridden from the BOM default */
+.popsel{background:var(--bg);border:1px solid var(--line);border-radius:5px;color:var(--text);font-family:ui-monospace,monospace;font-size:.72rem;padding:.05rem .25rem;max-width:150px}
+.popsel.ovr{border-color:var(--amber);color:var(--amber)}
+.popsel:disabled{opacity:.6}
+.popv{font-size:.72rem;color:var(--dim)}
+.t-row .popsel{min-width:0}
+
+/* header: read-only order context + Close */
+.ctx .ro{font-family:ui-monospace,monospace;color:var(--text);font-size:.78rem;text-transform:none;letter-spacing:0;font-weight:400;
+  border:1px solid var(--line);border-radius:6px;padding:.3rem .45rem;background:var(--bg)}
+.closebtn{background:none;border:1px solid rgba(248,81,73,.5);color:var(--red);border-radius:6px;padding:.3rem .6rem;font-weight:600;cursor:pointer;font-size:.72rem}
+.closed-chip{font-size:.68rem;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:.1rem .5rem}
+.ctx-at.run{color:var(--violet)}
+
+/* drawer */
+.drawer{top:88px;height:calc(100% - 88px)}
+.actions button:disabled{opacity:.35;cursor:default}
+.actions button:disabled:hover{background:var(--panel2)}
+.facets .bad{color:var(--red)}
+.facets .note{color:var(--dim);font-size:.72rem}
+.ha{display:grid;grid-template-columns:auto 1fr 1fr;gap:.2rem .6rem;font-size:.76rem;font-family:ui-monospace,monospace}
+.ha .h{color:var(--dim);font-family:system-ui;font-size:.64rem;text-transform:uppercase;letter-spacing:.4px}
+.ha .ok{color:var(--green)} .ha .bad{color:var(--red)} .ha .dev{color:var(--amber)} .ha .dimv{color:var(--dim)}
+.phase.bad{border-color:rgba(248,81,73,.45)}
+.step{cursor:default}
+
+/* close modal */
+.confirm-in{width:100%;margin-bottom:.6rem;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--text);
+  padding:.4rem .55rem;font-family:ui-monospace,monospace;font-size:.85rem}
+.press.danger{color:var(--red);border-color:var(--red);background:rgba(248,81,73,.1)}
+
+/* /rackpost/ index */
+.rack.index .tile{min-height:auto}
