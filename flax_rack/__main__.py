@@ -24,7 +24,8 @@ def _import_bom(a) -> int:
     print(f"wrote {out}: {len(geo['devices'])} devices, {len(geo['switches'])} switches")
     for c in contradictions:
         print(f"contradiction: {c}")
-    print("seed only: set rack tag, mgmt_ip, uplink_ports and iperf_server by hand")
+    print("seed only: set rack tag, mgmt_ip, uplink_ports, iperf_server and any replaced"
+          " switch model (the BOM names the original) by hand")
     return 0
 
 

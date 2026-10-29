@@ -17,7 +17,7 @@ _TITLES = [
     (re.compile(r"^Celestica switch\s*-\s*([A-Z])$"), "switch-mgmt"),
     (re.compile(r"^Wedge 100\s*-\s*([A-Z])$"), "switch-tor"),
 ]
-_SW_MODEL = {"switch-mgmt": ("mgmt", "dell-n3248te"), "switch-tor": ("tor", "wedge100s")}
+_SW_ROLE = {"switch-mgmt": "mgmt", "switch-tor": "tor"}
 _PCIE = re.compile(r"^PCIe P(\d)\s*:\s*SW ([A-Z]) P(\d+)$")
 _SWPORT = re.compile(r"^SW ([A-Z]) P(\d+)$")
 _NIC = re.compile(r"^NIC P(\d)$")
@@ -28,6 +28,12 @@ _COLRANGE = {"L": (2, 9), "C": (10, 17), "R": (18, 25)}  # sheet columns B-I, J-
 
 def _txt(v):
     return re.sub(r"\s+", " ", str(v).replace("\xa0", " ")).strip() if v is not None else ""
+
+
+def _sw_model(title):
+    """The model as the BOM names it ("Celestica switch - C" -> "celestica",
+    "Wedge 100 - A" -> "wedge100"). A swapped-in replacement is a hand edit."""
+    return re.sub(r"[^a-z0-9]", "", re.sub(r"\bswitch\b", "", title.rsplit("-", 1)[0].lower()))
 
 
 def _cable_guide(ws):
@@ -71,16 +77,16 @@ def import_bom(xlsx_path, *, order, customer, site, vid, prefix):
             for rx, kind in _TITLES:
                 m = rx.match(t)
                 if m:
-                    titles.append((r, c, kind, m.groups()))
+                    titles.append((r, c, kind, m.groups(), t))
 
     switches, devices, contradictions = [], [], []
-    for r, c, kind, g in titles:
+    for r, c, kind, g, title in titles:
         top = ou_label(r)
         if top is None:
             continue
         if kind.startswith("switch"):
-            role, model = _SW_MODEL[kind]
-            switches.append({"id": g[0], "role": role, "ou": top, "model": model,
+            switches.append({"id": g[0], "role": _SW_ROLE[kind], "ou": top,
+                             "model": _sw_model(title),
                              "nos": "sonic", "mgmt_ip": None,
                              "uplink_ports": []})
             continue
