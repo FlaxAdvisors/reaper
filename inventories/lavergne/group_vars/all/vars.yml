@@ -191,7 +191,7 @@ apply_flax_post_db_password: "{{ vault_flax_stack_db_passwords.flax_post }}"
 # image explicitly (was tracking the role default). 0.9.113 = main + the
 # post-UI-actions branch. Viewer unit gains creds-bmc/opt-flax-bin/export/
 # node_config mounts; image adds nmap/jq/curl for the ghost helpers.
-apply_flax_post_image_tag: "0.9.186"  # 0.9.186 = a blade already on at first sight gets its boot markers when iPXE came up to the ipxe-seen budget after tftp (was a fixed 120 s)
+apply_flax_post_image_tag: "0.9.189"  # 0.9.189 = Post Qualify smbios-serial + tpm-state rungs (FRU 0 serial in SMBIOS; TPM present, unowned, enabled), each stored as a check artifact with the checker version; 0.9.186 = 0.9.186 = a blade already on at first sight gets its boot markers when iPXE came up to the ipxe-seen budget after tftp (was a fixed 120 s)
 
 # Core flax services pinned to the SAME build as flax_post (2026-09-11). Until
 # now each ran the tag of its own last change (classify 0.9.104, observe
