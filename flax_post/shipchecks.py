@@ -91,11 +91,13 @@ def tpm_state(text) -> dict:
     if not lines:
         out["reason"] = "no tpmstate artifact"
         return out
-    if lines[0].startswith("device="):
-        out["device"] = lines.pop(0) == "device=present"
-        if out["device"] is False:
-            out["reason"] = "no TPM device"
-            return out
+    if not lines[0].startswith("device="):
+        out["reason"] = "unreadable: no device line"
+        return out
+    out["device"] = lines.pop(0) == "device=present"
+    if not out["device"]:
+        out["reason"] = "no TPM device"
+        return out
     if not lines:
         out["reason"] = "unreadable: no state line"
         return out
@@ -107,7 +109,10 @@ def tpm_state(text) -> dict:
     elif f["owned"] == "1":
         out["reason"] = "owned (not cleared)"
     elif out["version"] == "1.2":
-        if f.get("enabled") != "1":
+        # tpm_clear.sh fixes only a read 0; anything else is not a "disabled"
+        if f.get("enabled") not in ("0", "1") or f.get("active") not in ("0", "1"):
+            out["reason"] = "TPM 1.2 enable state unreadable"
+        elif f.get("enabled") != "1":
             out["reason"] = "TPM 1.2 disabled"
         elif f.get("active") != "1":
             out["reason"] = "TPM 1.2 inactive"
