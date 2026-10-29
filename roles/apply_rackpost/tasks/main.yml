@@ -52,12 +52,14 @@
     mode: "0755"
 
 # Only the BOM importer needs it; the daemon is stdlib.
+# Vendored under the deploy dir (not root's --user site) so `rackpost import-bom`
+# works for any operator, not only root; the wrapper puts vendor/ on PYTHONPATH.
 - name: Install openpyxl for import-bom
   become: true
   ansible.builtin.pip:
     name: openpyxl
     executable: pip3.11
-    extra_args: --user
+    extra_args: "--target {{ apply_rackpost_dest_dir }}/vendor"
 
 - name: Deploy flax-rackpost systemd unit
   become: true
