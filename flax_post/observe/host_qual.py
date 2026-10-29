@@ -19,6 +19,7 @@ from .. import blocklist
 from .. import population
 from .. import shipchecks
 from .. import state as _state
+from ..version import __version__
 from ..qualclient import QualClient, QualUnreachable
 
 log = logging.getLogger("flax-post.host_qual")
@@ -193,8 +194,24 @@ def ship_checks(store, bmc_mac, run_id, inventory_terminal) -> dict:
     if not inventory_terminal:
         return {n: {"status": "pending", "reason": ""} for n in shipchecks.SHIP_CHECKS}
     art = lambda name: store.get_artifact(bmc_mac, run_id, "inventory", name)
-    return {"smbios-serial": shipchecks.smbios_serial(art("ipmitool-fru"), art("dmidecode")),
-            "tpm-state": shipchecks.tpm_state(art("tpmstate"))}
+    out = {"smbios-serial": shipchecks.smbios_serial(art("ipmitool-fru"), art("dmidecode")),
+           "tpm-state": shipchecks.tpm_state(art("tpmstate"))}
+    for c in out.values():
+        c["checker"] = "flax-post " + __version__
+    return out
+
+
+def _store_check_evidence(store, target, run_id, checks) -> None:
+    """Each judged ship check is recorded once per run as its own stage's
+    `check` artifact (checker version + the state it saw)."""
+    for name, c in checks.items():
+        if c["status"] == "pending" or not run_id:
+            continue
+        if any(a["name"] == "check" for a in store.list_artifacts(target["bmc_mac"], run_id, name)):
+            continue
+        store.write_artifact(target["bmc_mac"], run_id, name, "check", "raw",
+                             shipchecks.evidence_text(name, c),
+                             serial=target.get("serial"), order_no=target.get("order_no"))
 
 
 def _power_reading(res) -> str:
@@ -363,6 +380,10 @@ def poll_target(target, *, make_client=_default_make_client, store=_state,
         steps[name] = {"status": c["status"], "summary": {"reason": c["reason"]}}
     if checks is not None:
         store.set_state(target["port"], checks=checks)
+        try:
+            _store_check_evidence(store, target, run_id, checks)
+        except Exception:
+            log.exception("ship check evidence store failed for %s", target.get("port"))
     qual = {"run_id": run_id, "agent": {"reachable": True, "ver": health.get("agent_ver")},
             "overall": status, "steps": steps}
     verdict = qualify_verdict(status, pop, checks)

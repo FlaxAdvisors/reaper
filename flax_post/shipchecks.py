@@ -125,3 +125,19 @@ def tpm_state(text) -> dict:
     if not out["reason"]:
         out["status"] = "pass"
     return out
+
+
+def evidence_text(name, c) -> str:
+    """The stored record of one ship check: what judged it and what it saw, so
+    the run's artifacts prove the state was checked (operator 2026-10-29)."""
+    lines = ["check: %s" % name, "checked by: %s" % (c.get("checker") or "unknown"),
+             "status: %s" % c.get("status"), "reason: %s" % (c.get("reason") or "")]
+    if name == "smbios-serial":
+        lines.append("FRU 0 serials: %s" % (", ".join(c.get("fru0_serials") or []) or "none"))
+        for k, v in (c.get("dmi_serials") or {}).items():
+            lines.append("SMBIOS %s: %s" % (k, v if v is not None else "none"))
+    else:
+        dev = c.get("device")
+        lines += ["device: %s" % ("present" if dev else "absent" if dev is False else "unknown"),
+                  "version: %s" % (c.get("version") or "unknown"), "state line: %s" % (c.get("raw") or "")]
+    return "\n".join(lines) + "\n"

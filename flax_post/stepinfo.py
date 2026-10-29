@@ -276,6 +276,7 @@ def _ship_check(row, step):
         notes = ["Post only checks; a fail goes back to triage, whose wipe pass turns the TPM on, enables it and clears it"]
     if c.get("reason"):
         rows.append(["reason", c["reason"]])
+    rows.append(["checked by", c.get("checker") or ""])
     return [r for r in rows if r[1] != ""], notes
 
 
