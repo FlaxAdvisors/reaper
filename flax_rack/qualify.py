@@ -179,7 +179,8 @@ def fw_versions(dmidecode: str | None, mc: dict | None) -> RungResult:
     b = parse_bios(dmidecode or "")
     mc = mc or {}
     detail = {"bios_version": b["version"], "bios_date": b["date"],
-              "bmc_firmware": mc.get("firmware"), "bmc_aux": mc.get("aux")}
+              "bmc_firmware": mc.get("firmware"), "bmc_aux": mc.get("aux"),
+              "bmc_cipher": mc.get("cipher")}
     missing = [w for w, v in (("BIOS version (dmidecode)", b["version"]),
                               ("BMC firmware (mc info)", mc.get("firmware"))) if not v]
     if missing:

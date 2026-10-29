@@ -47,7 +47,9 @@ def set_boot_pxe(bmc_ip: str, creds: list[tuple[str, str]], *, enable: bool = Tr
         if code.startswith("2"):
             return RungResult("pass", {"method": "redfish", "user": user, "enable": enable})
         last = f"http {code}" if code else "no reply"
+    info = {}
     if enable and bmc.bootdev_pxe(bmc_ip, ipmi_creds if ipmi_creds is not None else creds,
-                                  runner=runner):
-        return RungResult("pass", {"method": "ipmitool", "enable": True, "redfish": last})
+                                  info=info, runner=runner):
+        return RungResult("pass", {"method": "ipmitool", "enable": True, "redfish": last,
+                                   "cipher": info.get("cipher")})
     return RungResult("fail", {"error": last or "no Redfish credentials", "enable": enable})

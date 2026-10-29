@@ -13,31 +13,38 @@ def ping(ip: str, *, runner=subprocess.run) -> bool:
     return p.returncode == 0
 
 
-def reach(ip: str, creds: list[tuple[str, str]], *, cipher: int = 17,
+# lanplus cipher suites, in order: 17 (TiogaPass/OpenBMC), then 3 (Leopard). A wrong
+# suite looks exactly like a dead BMC, so reads try both before giving up.
+CIPHERS = (17, 3)
+
+
+def reach(ip: str, creds: list[tuple[str, str]], *, ciphers=CIPHERS,
           tries: int = 3, runner=subprocess.run) -> RungResult:
     up = ping(ip, runner=runner)
-    detail = {"ping": up, "power": None, "user": None}
+    detail = {"ping": up, "power": None, "user": None, "cipher": None}
     if not up:
         detail["error"] = "no ping reply"
         return RungResult("fail", detail)
     last = ""
     for user, pw in creds:
-        env = dict(os.environ)
-        env["IPMI_PASSWORD"] = pw          # -E reads it; never -P (argv)
-        argv = ["ipmitool", "-I", "lanplus", "-C", str(cipher), "-H", ip,
-                "-U", user, "-E", "chassis", "power", "status"]
-        for _ in range(tries):             # RAKP is flaky on some BMCs
-            try:
-                p = runner(argv, capture_output=True, text=True, timeout=20, env=env)
-            except (subprocess.TimeoutExpired, OSError) as e:
-                last = str(e)
-                continue
-            if "Chassis Power" in (p.stdout or ""):
-                detail["power"] = "on" if "is on" in p.stdout else "off"
-                detail["user"] = user
-                return RungResult("pass", detail)
-            last = (p.stderr or p.stdout or f"rc={p.returncode}").strip()
-    detail["error"] = last or "no BMC credentials"
+        for cipher in ciphers:
+            env = dict(os.environ)
+            env["IPMI_PASSWORD"] = pw      # -E reads it; never -P (argv)
+            argv = ["ipmitool", "-I", "lanplus", "-C", str(cipher), "-H", ip,
+                    "-U", user, "-E", "chassis", "power", "status"]
+            for _ in range(tries):         # RAKP is flaky on some BMCs
+                try:
+                    p = runner(argv, capture_output=True, text=True, timeout=20, env=env)
+                except (subprocess.TimeoutExpired, OSError) as e:
+                    last = str(e)
+                    continue
+                if "Chassis Power" in (p.stdout or ""):
+                    detail["power"] = "on" if "is on" in p.stdout else "off"
+                    detail["user"], detail["cipher"] = user, cipher
+                    return RungResult("pass", detail)
+                last = (p.stderr or p.stdout or f"rc={p.returncode}").strip()
+    detail["error"] = (last or "no BMC credentials") + \
+        (f" (ciphers {'/'.join(map(str, ciphers))})" if creds else "")
     return RungResult("fail", detail)
 
 
@@ -53,33 +60,53 @@ def _ipmi(ip: str, user: str, pw: str, args: list[str], *, cipher: int = 17,
         return None
 
 
-def power_status(ip: str, creds: list[tuple[str, str]], *, runner=subprocess.run):
-    """'on' / 'off', or None when no credential got an answer."""
+def _session(ip: str, creds, *, runner):
+    """(user, pw, cipher, power) of the first credential x cipher whose `chassis power
+    status` answers, else None. Writes only ever use this pair: a write is never
+    retried on a second cipher (a timed-out first try may have acted)."""
     for user, pw in creds:
-        p = _ipmi(ip, user, pw, ["chassis", "power", "status"], runner=runner)
-        if p is not None and "Chassis Power" in (p.stdout or ""):
-            return "on" if "is on" in p.stdout else "off"
+        for cipher in CIPHERS:
+            p = _ipmi(ip, user, pw, ["chassis", "power", "status"], cipher=cipher,
+                      runner=runner)
+            if p is not None and "Chassis Power" in (p.stdout or ""):
+                return user, pw, cipher, ("on" if "is on" in p.stdout else "off")
     return None
 
 
+def power_status(ip: str, creds: list[tuple[str, str]], *, info: dict | None = None,
+                 runner=subprocess.run):
+    """'on' / 'off', or None when no credential x cipher got an answer. `info`, when
+    given, gets {"user", "cipher"} of the pair that answered."""
+    s = _session(ip, creds, runner=runner)
+    if s is None:
+        return None
+    if info is not None:
+        info.update(user=s[0], cipher=s[2])
+    return s[3]
+
+
+def _write(ip, creds, args, *, info, runner) -> bool:
+    s = _session(ip, creds, runner=runner)
+    if s is None:
+        return False
+    user, pw, cipher, _ = s
+    if info is not None:
+        info.update(user=user, cipher=cipher)
+    p = _ipmi(ip, user, pw, args, cipher=cipher, runner=runner)
+    return p is not None and p.returncode == 0
+
+
 def power_action(ip: str, creds: list[tuple[str, str]], action: str, *,
-                 runner=subprocess.run) -> bool:
-    """action: 'on' | 'cycle' | 'off'; True when a credential's ipmitool exited 0."""
-    for user, pw in creds:
-        p = _ipmi(ip, user, pw, ["chassis", "power", action], runner=runner)
-        if p is not None and p.returncode == 0:
-            return True
-    return False
+                 info: dict | None = None, runner=subprocess.run) -> bool:
+    """action: 'on' | 'cycle' | 'off'; True when ipmitool exited 0 on the pair that
+    answered a status read (never sent on a second pair)."""
+    return _write(ip, creds, ["chassis", "power", action], info=info, runner=runner)
 
 
-def bootdev_pxe(ip: str, creds: list[tuple[str, str]], *, runner=subprocess.run) -> bool:
-    for user, pw in creds:
-        p = _ipmi(ip, user, pw,
-                  ["chassis", "bootdev", "pxe", "options=efiboot,persistent"],
-                  runner=runner)
-        if p is not None and p.returncode == 0:
-            return True
-    return False
+def bootdev_pxe(ip: str, creds: list[tuple[str, str]], *, info: dict | None = None,
+                runner=subprocess.run) -> bool:
+    return _write(ip, creds, ["chassis", "bootdev", "pxe", "options=efiboot,persistent"],
+                  info=info, runner=runner)
 
 
 def parse_mc_info(text: str) -> dict:
@@ -101,9 +128,11 @@ def parse_mc_info(text: str) -> dict:
 
 
 def mc_info(ip: str, creds: list[tuple[str, str]], *, runner=subprocess.run) -> dict | None:
-    """Out-of-band `mc info` with the first credential that answers; None if none did."""
+    """Out-of-band `mc info` with the first credential x cipher that answers (its
+    cipher is in the result); None if none did."""
     for user, pw in creds:
-        p = _ipmi(ip, user, pw, ["mc", "info"], runner=runner)
-        if p is not None and p.returncode == 0 and "Firmware Revision" in (p.stdout or ""):
-            return parse_mc_info(p.stdout)
+        for cipher in CIPHERS:
+            p = _ipmi(ip, user, pw, ["mc", "info"], cipher=cipher, runner=runner)
+            if p is not None and p.returncode == 0 and "Firmware Revision" in (p.stdout or ""):
+                return {**parse_mc_info(p.stdout), "cipher": cipher}
     return None
