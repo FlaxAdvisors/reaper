@@ -39,3 +39,44 @@ def reach(ip: str, creds: list[tuple[str, str]], *, cipher: int = 17,
             last = (p.stderr or p.stdout or f"rc={p.returncode}").strip()
     detail["error"] = last or "no BMC credentials"
     return RungResult("fail", detail)
+
+
+def _ipmi(ip: str, user: str, pw: str, args: list[str], *, cipher: int = 17,
+          runner=subprocess.run):
+    env = dict(os.environ)
+    env["IPMI_PASSWORD"] = pw              # -E reads it; never -P (argv)
+    argv = ["ipmitool", "-I", "lanplus", "-C", str(cipher), "-H", ip,
+            "-U", user, "-E"] + args
+    try:
+        return runner(argv, capture_output=True, text=True, timeout=30, env=env)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+
+
+def power_status(ip: str, creds: list[tuple[str, str]], *, runner=subprocess.run):
+    """'on' / 'off', or None when no credential got an answer."""
+    for user, pw in creds:
+        p = _ipmi(ip, user, pw, ["chassis", "power", "status"], runner=runner)
+        if p is not None and "Chassis Power" in (p.stdout or ""):
+            return "on" if "is on" in p.stdout else "off"
+    return None
+
+
+def power_action(ip: str, creds: list[tuple[str, str]], action: str, *,
+                 runner=subprocess.run) -> bool:
+    """action: 'on' | 'cycle' | 'off'; True when a credential's ipmitool exited 0."""
+    for user, pw in creds:
+        p = _ipmi(ip, user, pw, ["chassis", "power", action], runner=runner)
+        if p is not None and p.returncode == 0:
+            return True
+    return False
+
+
+def bootdev_pxe(ip: str, creds: list[tuple[str, str]], *, runner=subprocess.run) -> bool:
+    for user, pw in creds:
+        p = _ipmi(ip, user, pw,
+                  ["chassis", "bootdev", "pxe", "options=efiboot,persistent"],
+                  runner=runner)
+        if p is not None and p.returncode == 0:
+            return True
+    return False
