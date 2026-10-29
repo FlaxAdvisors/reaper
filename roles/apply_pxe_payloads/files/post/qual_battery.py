@@ -16,7 +16,8 @@ _MAP = {"pass": "pass", "fail": "fail", "skip": "skip"}
 
 
 class Battery(object):
-    def __init__(self, runner=None, stages=None, mac="", serial=""):
+    def __init__(self, runner=None, stages=None, mac="", serial="", error=None):
+        self.error = error                  # set when the stage selection is invalid: runs nothing
         self._runner = runner or qual_stages.RUNNER
         self._stages = stages if stages is not None else DEFAULT_STAGES
         self.mac = mac
@@ -26,7 +27,7 @@ class Battery(object):
 
     def _reset(self):
         self.run_id = uuid.uuid4().hex
-        self.state = "running"
+        self.state = "fault" if self.error else "running"
         self.verdict = None
         self.current = None
         self._steps = [{"name": s["name"], "status": "pending", "verdict": None,
@@ -35,6 +36,8 @@ class Battery(object):
 
     def run(self):
         my_run_id = self.run_id
+        if self.error:
+            return
         for i, s in enumerate(self._stages):
             with self._lock:
                 if self.state == "reset_pending" or self.run_id != my_run_id:
@@ -66,6 +69,10 @@ class Battery(object):
     # --- contract snapshots ---
     def health(self):
         with self._lock:
+            if self.error:
+                return {"ok": False, "error": self.error, "mac": self.mac, "serial": self.serial,
+                        "run_id": self.run_id, "state": self.state,
+                        "agent_ver": qual_stages.AGENT_VER}
             return {"ok": True, "mac": self.mac, "serial": self.serial,
                     "run_id": self.run_id, "state": self.state, "agent_ver": qual_stages.AGENT_VER}
 
@@ -351,3 +358,16 @@ DEFAULT_STAGES = [
     {"name": "mem-post", "fn": _mem}, {"name": "sdr-post", "fn": _sdr},
     {"name": "sel-post", "fn": _sel},
 ]
+
+
+def select_stages(names):
+    """None/"" -> DEFAULT_STAGES (loose-node behaviour, unchanged); else the named stages
+    in DEFAULT order. An unknown name raises ValueError(name): no silent skip."""
+    if not names or not names.strip():
+        return DEFAULT_STAGES
+    want = [n.strip() for n in names.split(",") if n.strip()]
+    known = {s["name"] for s in DEFAULT_STAGES}
+    for n in want:
+        if n not in known:
+            raise ValueError(n)
+    return [s for s in DEFAULT_STAGES if s["name"] in want]

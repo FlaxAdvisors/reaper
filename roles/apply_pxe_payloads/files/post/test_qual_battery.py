@@ -235,3 +235,35 @@ def test_tpmstate_script_reports_absent_device(tmp_path):
     sh = qual_battery.TPMSTATE_SH.replace("/sys/class/tpm/tpm0", str(tmp_path / "nope"))
     r = subprocess.run(["sh", "-c", sh], capture_output=True, text=True)
     assert (r.returncode, r.stdout) == (0, "device=absent\n")
+
+
+_ORDER = "sdr-pre,sel-pre,sel-clear,tooling,inventory,fio,mem-pre,cpu-mem-stress,mem-post,sdr-post,sel-post"
+
+
+def test_select_stages_default_unchanged():
+    assert qual_battery.select_stages(None) is qual_battery.DEFAULT_STAGES
+    assert qual_battery.select_stages("") is qual_battery.DEFAULT_STAGES
+    assert len(qual_battery.select_stages(None)) == 12
+
+
+def test_select_stages_order_mode_drops_iperf_keeps_default_order():
+    got = [s["name"] for s in qual_battery.select_stages(_ORDER)]
+    assert len(got) == 11 and "iperf" not in got
+    shuffled = ",".join(reversed(_ORDER.split(",")))
+    assert [s["name"] for s in qual_battery.select_stages(shuffled)] == got
+
+
+def test_select_stages_unknown_name_raises():
+    import pytest
+    with pytest.raises(ValueError) as e:
+        qual_battery.select_stages("fio,bogus")
+    assert str(e.value) == "bogus"
+
+
+def test_battery_with_error_reports_health_and_runs_nothing():
+    b = Battery(runner=lambda a, t: (0, ""), stages=[], error="unknown stage bogus")
+    assert b.health()["ok"] is False and b.health()["error"] == "unknown stage bogus"
+    b.run()
+    assert b.state == "fault" and b.verdict is None
+    b.request_restart(); b.ack_restart()
+    assert b.state == "fault"

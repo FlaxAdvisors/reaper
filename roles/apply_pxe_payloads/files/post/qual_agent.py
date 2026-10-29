@@ -3,6 +3,7 @@
 in a supervisor thread (re-running after a /restart ack), and serve the contract.
 Launched by post.sh on postaction=postautomate. Stdlib only.
 """
+import os
 import re
 import threading
 import time
@@ -35,7 +36,12 @@ def _supervisor(battery):
 def main(serve_fn=qual_server.serve, battery=None):
     if battery is None:
         mac, serial = node_identity(qual_stages.RUNNER)
-        battery = qual_battery.Battery(mac=mac, serial=serial)
+        try:
+            stages = qual_battery.select_stages(os.environ.get("FLAX_QUAL_STAGES"))
+            battery = qual_battery.Battery(mac=mac, serial=serial, stages=stages)
+        except ValueError as e:             # bad FLAX_QUAL_STAGES: /health says so, nothing runs
+            battery = qual_battery.Battery(mac=mac, serial=serial, stages=[],
+                                           error="unknown stage %s" % e)
     threading.Thread(target=_supervisor, args=(battery,), daemon=True).start()
     httpd = serve_fn(battery)
     httpd.serve_forever()
