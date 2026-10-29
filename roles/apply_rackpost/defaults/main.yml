@@ -1,0 +1,15 @@
+---
+# Order server for customer racks. Loopback-only: reached via the post.* nginx
+# vhosts (apply_bang_services nginx-lab-ui + apply_flax_stack TLS vhost).
+apply_rackpost_bind: 127.0.0.1
+apply_rackpost_port: 8450
+apply_rackpost_root: /export/nodes
+apply_rackpost_dest_dir: /opt/flax/rackpost
+apply_rackpost_wrapper: /opt/flax/bin/rackpost
+# flax_rack needs python >= 3.7; bang-gouda's system python3 is 3.6.
+apply_rackpost_python: python3.11
+# Only these flax_post static files are shared with the post rack viewer.
+apply_rackpost_post_static:
+  - rack.css
+  - petite-vue.iife.js
+  - flax-logo.svg

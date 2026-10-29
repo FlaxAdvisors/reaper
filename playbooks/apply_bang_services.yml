@@ -87,6 +87,12 @@
       tags: [post_fleet_viewer]
       when: inventory_hostname in (apply_post_fleet_viewer_hosts | default(['bang-gouda']))
 
+    - name: Apply role apply_rackpost   # customer rack order server (post.<host>/<prefix>/); per-site host list
+      ansible.builtin.import_role:
+        name: apply_rackpost
+      tags: [rackpost]
+      when: inventory_hostname in (apply_rackpost_hosts | default(['bang-gouda']))
+
     - name: Apply role apply_flax_classify
       ansible.builtin.import_role:
         name: apply_flax_classify

@@ -1,0 +1,78 @@
+---
+# rackpost order server. Layout under {{ apply_rackpost_dest_dir }} mirrors the
+# repo so flax_rack/server.py finds flax_post/web/static relative to itself.
+# Plain copy, NOT template: the code carries literal braces.
+
+- name: Create rackpost directories
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /opt/flax/bin
+    - "{{ apply_rackpost_dest_dir }}"
+    - "{{ apply_rackpost_dest_dir }}/flax_post"
+    - "{{ apply_rackpost_dest_dir }}/flax_post/web"
+    - "{{ apply_rackpost_dest_dir }}/flax_post/web/static"
+
+- name: Deploy flax_rack and flax_rungs
+  become: true
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../{{ item }}/"
+    dest: "{{ apply_rackpost_dest_dir }}/{{ item }}/"
+    owner: root
+    group: root
+    mode: preserve
+  loop:
+    - flax_rack
+    - flax_rungs
+  notify: Restart flax-rackpost
+
+- name: Deploy shared flax_post static files
+  become: true
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../flax_post/web/static/{{ item }}"
+    dest: "{{ apply_rackpost_dest_dir }}/flax_post/web/static/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ apply_rackpost_post_static }}"
+  notify: Restart flax-rackpost
+
+- name: Install rackpost wrapper
+  become: true
+  ansible.builtin.template:
+    src: rackpost.sh.j2
+    dest: "{{ apply_rackpost_wrapper }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+# Only the BOM importer needs it; the daemon is stdlib.
+- name: Install openpyxl for import-bom
+  become: true
+  ansible.builtin.pip:
+    name: openpyxl
+    executable: pip3.11
+    extra_args: --user
+
+- name: Deploy flax-rackpost systemd unit
+  become: true
+  ansible.builtin.template:
+    src: flax-rackpost.service.j2
+    dest: /etc/systemd/system/flax-rackpost.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-rackpost
+
+- name: Enable + start flax-rackpost
+  become: true
+  ansible.builtin.systemd:
+    name: flax-rackpost
+    enabled: true
+    state: started
+    daemon_reload: true

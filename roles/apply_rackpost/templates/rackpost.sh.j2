@@ -1,0 +1,3 @@
+#!/bin/sh
+# Managed by apply_rackpost. cwd is the caller's (rackpost enable works in an order dir).
+PYTHONPATH={{ apply_rackpost_dest_dir }} exec {{ apply_rackpost_python }} -m flax_rack "$@"
