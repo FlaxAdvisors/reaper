@@ -8,6 +8,13 @@ plus the report-only firmware rung fw-versions (stage "firmware").
 Then rack-level, after every device thread: lldp-<wedge> (pos "_rack"), ha-path,
 fabric-addr and iperf-mesh per device.
 
+Identity first: a device is only booted when its latest Discover `reserve` and
+`bmc-reach` passed and order.db holds its host MAC (else pxe-live fails "discover
+first"); pxe-live then requires the live image's BOOTIF MAC to be that host MAC.
+The battery poll deadline is explicit: the CLI's --agent-deadline, else the device's
+geometry agent_deadline_s, else AGENT_DEADLINE_S. On a timeout the agent is stopped so
+stress cannot overlap the iperf mesh, and a node whose stop failed sits the mesh out.
+
 A device whose pxe-live fails gets `skip` (with the reason) for every later rung;
 the rack carries on. `positions` re-runs only those devices' per-device rungs, then
 the rack-level ones for them plus the iperf server (whose fabric addresses are
@@ -34,12 +41,14 @@ STAGE = "qualify"
 FW_STAGE = "firmware"
 AGENT_STAGES = tuple(agent.ORDER_STAGES.split(","))
 MAX_PARALLEL = 8
+AGENT_DEADLINE_S = 3600     # battery poll deadline unless the CLI or geometry sets one
 _SEG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,127}")
 
 
 def real_rungs():
     return SimpleNamespace(
         boot_live=liveboot.boot_live, launch=agent.launch, poll=agent.poll,
+        stop_agent=agent.stop,
         read_lldp=sonic.read_lldp, apply_fabric=fabric.apply, mesh=iperf.mesh,
         mc_info=bmc.mc_info, host_run=hostssh.run)
 
@@ -189,9 +198,25 @@ def fw_versions(dmidecode: str | None, mc: dict | None) -> RungResult:
     return RungResult("pass", detail)
 
 
-def _device(ctx, R, d, ips, cr):
+def discover_gate(lr, dev_row) -> str | None:
+    """Why this device may not be booted yet (None = Discover proved it): its latest
+    reserve and bmc-reach must be pass and order.db must hold its host MAC."""
+    v = {r: (lr.get((dev_row["pos"], r)) or {}).get("verdict") for r in ("reserve", "bmc-reach")}
+    bad = [f"{r} {v[r] or 'not run'}" for r in v if v[r] != "pass"]
+    if not bad and not dev_row.get("host_mac"):
+        bad.append("no host MAC matched")
+    return ("discover first: " + ", ".join(bad)) if bad else None
+
+
+def _device(ctx, R, d, ips, cr, dev_row, lr, agent_deadline_s=None):
     pos = d.pos
     per_dev = ["agent-launch", "agent-stages", *AGENT_STAGES, "pop"]
+    why = discover_gate(lr, dev_row)
+    if why:                                 # never power-cycle an unproven BMC IP
+        _record(ctx, pos, "pxe-live", RungResult("fail", {"error": why}))
+        _skip(ctx, pos, per_dev, "pxe-live failed")
+        _skip(ctx, pos, ["fw-versions"], "pxe-live failed", FW_STAGE)
+        return
     if d.endpoints["hosts"] > 1:
         _record(ctx, pos, "pxe-live", RungResult("fail", {
             "error": f"{d.endpoints['hosts']}-host devices are not qualified yet "
@@ -204,7 +229,8 @@ def _device(ctx, R, d, ips, cr):
         r = _record(ctx, pos, "pxe-live", RungResult("fail", {"error": "no BMC to boot it with"}))
     else:
         r = _rung(ctx, pos, "pxe-live",
-                  lambda: R.boot_live(bmc_ip, host_ip, cr, runner=ctx.runner), STAGE)
+                  lambda: R.boot_live(bmc_ip, host_ip, cr, expect_mac=dev_row["host_mac"],
+                                      runner=ctx.runner), STAGE)
     if r.verdict != "pass":
         _skip(ctx, pos, per_dev, "pxe-live failed")
         _skip(ctx, pos, ["fw-versions"], "pxe-live failed", FW_STAGE)
@@ -220,13 +246,27 @@ def _device(ctx, R, d, ips, cr):
     got: dict[str, RungResult] = {}
 
     def poll():
-        got.update(R.poll(host_ip))
+        dl, by = ((agent_deadline_s, "cli") if agent_deadline_s else
+                  (d.agent_deadline_s, "geometry") if d.agent_deadline_s else
+                  (AGENT_DEADLINE_S, "default"))
+        sized = {"deadline_s": dl, "deadline_by": by}
+        got.update(R.poll(host_ip, deadline_s=dl))
+        if any(x.detail.get("error") == "timeout" for x in got.values()):
+            # the battery may still be running fio/stress: stop it before the mesh
+            st = R.stop_agent(host_ip, user, pw, runner=ctx.runner)
+            sized["agent_stop"] = ("stopped" if st.verdict == "pass"
+                                   else st.detail.get("error") or "stop failed")
         if "agent" in got:
-            return RungResult("fail", dict(got.pop("agent").detail))
+            return RungResult("fail", {**got.pop("agent").detail, **sized})
         names = list(got)
         run_id = next((x.detail.get("run_id") for x in got.values() if x.detail.get("run_id")),
                       None)
-        detail = {"run_id": run_id, "stages": names}
+        detail = {"run_id": run_id, "stages": names, **sized}
+        if "agent_stop" in sized:
+            detail["error"] = (f"battery timed out after {dl}s; agent "
+                               + ("stopped" if sized["agent_stop"] == "stopped"
+                                  else f"NOT stopped: {sized['agent_stop']}"))
+            return RungResult("fail", detail)
         if names != list(AGENT_STAGES):
             missing = [n for n in AGENT_STAGES if n not in got]
             extra = [n for n in names if n not in AGENT_STAGES]
@@ -270,6 +310,10 @@ def _rack_level(ctx, R, targets, ips, cr):
     lr = ctx.db.latest_runs()
     live = {d.pos for d in g.devices if d.endpoints.get("hosts")
             and (lr.get((d.pos, "pxe-live")) or {}).get("verdict") == "pass"}
+    # a battery that timed out and could not be stopped is still loading the node
+    busy = {p for p in live if ((lr.get((p, "agent-stages")) or {}).get("detail") or {})
+            .get("agent_stop") not in (None, "stopped")}
+    live -= busy
     srv = g.iperf_server
     scope = list(targets)
     srv_dev = next((d for d in g.devices if d.pos == srv), None)
@@ -279,7 +323,9 @@ def _rack_level(ctx, R, targets, ips, cr):
     for d in scope:
         if d.pos not in live:
             _skip(ctx, d.pos, [r for r in ("ha-path", "fabric-addr", "iperf-mesh")
-                               if r in device_rungs(d)], "pxe-live did not pass")
+                               if r in device_rungs(d)],
+                  "qual agent still running (stop failed)" if d.pos in busy
+                  else "pxe-live did not pass")
     user, pw = cr.host if cr.host else ("", "")
 
     # -- wedge LLDP -> HA path -> fabric addressing
@@ -346,6 +392,8 @@ def _rack_level(ctx, R, targets, ips, cr):
         why = "no iperf_server in geometry.json"
     elif srv_dev is None or not srv_dev.endpoints.get("hosts"):
         why = f"server {srv} not ready: not a host-bearing device of this rack"
+    elif srv in busy:
+        why = f"server {srv} not ready: its qual agent is still running (stop failed)"
     elif srv not in live:
         why = f"server {srv} not ready: its pxe-live did not pass"
     server = None
@@ -367,7 +415,8 @@ def _rack_level(ctx, R, targets, ips, cr):
 
 
 # ---------------------------------------------------------------- stage
-def run_qualify(ctx, *, positions: list[str] | None = None) -> None:
+def run_qualify(ctx, *, positions: list[str] | None = None,
+                agent_deadline_s: int | None = None) -> None:
     if ctx.db.closed_at():
         raise RuntimeError("order is closed")
     g = ctx.g
@@ -385,9 +434,13 @@ def run_qualify(ctx, *, positions: list[str] | None = None) -> None:
     for a in plan_addresses(g):               # the one address formula (host octet included)
         ips.setdefault(a.pos, {})[a.role] = a.ip
     ctx.db.add_event("qualify", f"qualify started: {', '.join(d.pos for d in targets) or 'none'}")
+    lr = ctx.db.latest_runs()               # Discover's verdicts, read before anything runs
+    rows = {x["pos"]: x for x in ctx.db.devices()}
     with ThreadPoolExecutor(max_workers=max(1, min(MAX_PARALLEL, len(targets))),
                             thread_name_prefix=f"qualify-{g.url_prefix}") as ex:
-        futs = {d.pos: ex.submit(_device, ctx, R, d, ips.get(d.pos, {}), cr) for d in targets}
+        futs = {d.pos: ex.submit(_device, ctx, R, d, ips.get(d.pos, {}), cr,
+                                 rows.get(d.pos) or {"pos": d.pos}, lr, agent_deadline_s)
+                for d in targets}
     for pos, f in futs.items():
         if f.exception() is not None:       # recording itself failed; the rack carries on
             ctx.db.add_event("error", f"qualify {pos}: {type(f.exception()).__name__}: "

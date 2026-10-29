@@ -134,9 +134,12 @@ class FakeRungs:
     """Stand-ins for flax_rack.qualify.real_rungs(): every node boots, every battery
     stage passes, LLDP shows each pcieN port where the geometry cables it."""
 
-    def __init__(self, g, *, fail_pxe=(), iperf_fail=None, delay_s=0.0):
+    def __init__(self, g, *, fail_pxe=(), iperf_fail=None, delay_s=0.0, wrong_host=(),
+                 poll_timeout=(), stop_fail=()):
         from .addressing import plan_addresses
         self.g, self.fail_pxe, self.delay_s = g, set(fail_pxe), delay_s
+        self.wrong_host, self.poll_timeout = set(wrong_host), set(poll_timeout)
+        self.stop_fail = set(stop_fail)
         self.iperf_fail = IPERF_FAIL if iperf_fail is None else iperf_fail
         self.pos_of = {a.ip: a.pos for a in plan_addresses(g)}
         self.calls = []
@@ -154,11 +157,16 @@ class FakeRungs:
                 out[ifn] = f"02:fb:{d.ou:02x}:{d.col or 0:02x}:00:{k:02x}"
         return out
 
-    def boot_live(self, bmc_ip, host_ip, creds, *, runner=None):
+    def boot_live(self, bmc_ip, host_ip, creds, *, expect_mac=None, runner=None):
         from flax_rungs.result import RungResult
         pos = self.pos_of.get(host_ip)
-        self.calls.append(("boot_live", pos))
+        self.calls.append(("boot_live", pos, expect_mac))
         self._pause()
+        if not expect_mac:
+            return RungResult("fail", {"error": "no discovered host MAC (discover first)"})
+        if pos in self.wrong_host:
+            return RungResult("fail", {"error": f"wrong host at {host_ip}: BOOTIF "
+                                                f"02:fa:ff:ff:00:99 != discovered {expect_mac}"})
         if pos in self.fail_pxe:
             return RungResult("fail", {"error": "no ssh within 900s",
                                        "last": {"power": "on", "ping": False, "ssh": "rc=255"}})
@@ -170,12 +178,29 @@ class FakeRungs:
         self.calls.append(("launch", self.pos_of.get(host_ip)))
         return RungResult("pass", {"mode": "fresh"})
 
-    def poll(self, host_ip):
+    def stop_agent(self, host_ip, user, pw, *, runner=None):
+        from flax_rungs.result import RungResult
+        pos = self.pos_of.get(host_ip)
+        self.calls.append(("stop_agent", pos))
+        if pos in self.stop_fail:
+            return RungResult("fail", {"error": "agent stop rc=255"})
+        return RungResult("pass", {"stopped": True})
+
+    def poll(self, host_ip, *, deadline_s):
         from flax_rungs.agent import ORDER_STAGES
         from flax_rungs.result import RungResult
         pos = self.pos_of[host_ip]
-        self.calls.append(("poll", pos))
+        self.calls.append(("poll", pos, deadline_s))
         self._pause()
+        if pos in self.poll_timeout:            # inventory done, stress still running
+            d = self.g.device(pos)
+            out = {}
+            for n in ORDER_STAGES.split(","):
+                done = n in ("sdr-pre", "sel-pre", "sel-clear", "tooling")
+                out[n] = RungResult("pass" if done else "fail",
+                                    {"stage": n, "run_id": f"fake{d.ou:02d}{d.col or 0}",
+                                     **({} if done else {"error": "timeout"})})
+            return out
         d = self.g.device(pos)
         run_id = f"fake{d.ou:02d}{d.col or 0}"
         head = d.kind.startswith("bc-head")

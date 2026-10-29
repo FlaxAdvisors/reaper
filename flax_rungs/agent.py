@@ -44,6 +44,17 @@ _STOP_SH = (
 )
 
 
+def stop(host_ip, user, password, *, runner=None) -> RungResult:
+    """Stop a running battery (e.g. after a poll timeout, so stress cannot overlap the
+    iperf mesh). Bounded: fails when the unit is still active 20 s later."""
+    kw = {"runner": runner} if runner else {}
+    rc, out, err = hostssh.run(host_ip, user, password, _STOP_SH, timeout=45, **kw)
+    if rc != 0:
+        return RungResult("fail", {"error": f"agent stop rc={rc}",
+                                   "output": hostssh.tail(out, err)})
+    return RungResult("pass", {"stopped": True})
+
+
 def launch(host_ip, user, password, *, stages=ORDER_STAGES, runner=None,
            client_factory=QualClient) -> RungResult:
     kw = {"runner": runner} if runner else {}
@@ -86,17 +97,19 @@ def launch(host_ip, user, password, *, stages=ORDER_STAGES, runner=None,
 
 
 def _collect(client, name, st, run_id) -> RungResult:
-    arts = {}
+    arts, lost = {}, []
     for a in (st.get("artifacts") or []):
         try:
             arts[a["name"]] = client.stage_artifact(name, a["name"])
         except QualUnreachable:
-            pass
+            lost.append(a["name"])
     detail = {"stage": name, "run_id": run_id, "summary": st.get("summary") or {}}
+    if lost:
+        detail["unfetched_artifacts"] = lost
     return RungResult(st.get("verdict") or st.get("status"), detail, arts)
 
 
-def poll(host_ip, *, client_factory=QualClient, deadline_s=3600, poll_s=20,
+def poll(host_ip, *, deadline_s: int, client_factory=QualClient, poll_s=20,
          sleep=time.sleep, clock=time.monotonic) -> dict:
     client = client_factory(f"http://{host_ip}:{AGENT_PORT}")
     end = clock() + deadline_s

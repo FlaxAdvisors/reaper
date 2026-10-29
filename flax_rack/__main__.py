@@ -104,7 +104,9 @@ def _qualify(a) -> int:
     from .qualify import device_rungs, qualify_passed, run_qualify
     ctx, lock = _order_ctx()
     try:
-        run_qualify(ctx, positions=a.pos or None)
+        if a.agent_deadline is not None and a.agent_deadline <= 0:
+            raise ValueError("--agent-deadline must be a positive number of seconds")
+        run_qualify(ctx, positions=a.pos or None, agent_deadline_s=a.agent_deadline)
     except (CredsError, ValueError) as e:
         sys.exit(str(e))
     finally:
@@ -163,6 +165,9 @@ def main(argv=None) -> int:
     p = sub.add_parser("qualify", help="run Qualify for this order dir (or some positions)")
     p.add_argument("--pos", action="extend", nargs="+", metavar="P",
                    help="only these positions (--pos L37 C37 or repeated)")
+    p.add_argument("--agent-deadline", type=int, metavar="S", dest="agent_deadline",
+                   help="battery poll deadline in seconds for every node (default: the "
+                        "device's geometry agent_deadline_s, else 3600)")
     p.set_defaults(fn=_qualify)
     p = sub.add_parser("close", help="release this rack's reservations and close it")
     p.add_argument("--confirm", required=True, metavar="ORDER")
