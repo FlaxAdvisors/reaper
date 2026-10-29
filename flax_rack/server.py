@@ -370,7 +370,14 @@ class App:
         return self._start_stage(r, "discover", run_discover)
 
     def start_qualify(self, r: Rack, body: dict):
+        # Qualify power-cycles nodes, clears SELs and runs stress for hours: the
+        # rack-wide form needs the typed order id (like Close), a positions run an
+        # explicit {"confirm": true}.
         pos = body.get("positions")
+        if pos is None and body.get("confirm") != r.g.order:
+            return 400, {"error": "type the order id to confirm a rack-wide Qualify"}
+        if pos is not None and body.get("confirm") is not True:
+            return 400, {"error": "confirm the positions to re-qualify"}
         if pos is not None:
             hosts = {d.pos for d in r.g.devices if d.endpoints.get("hosts")}
             if not (isinstance(pos, list) and pos and all(isinstance(p, str) for p in pos)):
@@ -565,6 +572,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")   # artifacts are node-written
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         self.wfile.write(body)

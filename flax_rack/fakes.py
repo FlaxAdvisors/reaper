@@ -9,8 +9,9 @@ alert renders too.
 
 Qualify runs against FakeRungs (below): every node live-boots and passes its battery
 and POP (profiles written to a temp dir matching the canned macinv), LLDP shows every
-pcieN port where the geometry cables it, and C37's wedge-B iperf is slow -- the one
-Qualify fault. The fixture's wedges get fake mgmt_ips so their LLDP can be "read".
+pcieN port where the geometry cables it, and C37's wedge-B iperf is slow. (C37's failed
+reserve also stops Qualify booting it -- pxe-live "discover first" -- so in the UI the
+Qualify fault shown is that gate.) The fixture's wedges get fake mgmt_ips so their LLDP can be "read".
 """
 import subprocess
 

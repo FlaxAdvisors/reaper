@@ -45,7 +45,7 @@
         <label>vid <span class="ro">{{s.vid || '—'}}</span></label>
         <button class="discbtn" v-if="s.order" :disabled="s.stage_running || !!s.closed_at" @click="discover()"
                 :title="s.closed_at ? 'order is closed' : s.stage_running ? 'a stage is running' : 'run Discover for this rack: switch FDB → slot match → Kea reserve → BMC reach'">Discover</button>
-        <button class="discbtn qualbtn" v-if="s.order" :disabled="s.stage_running || !!s.closed_at" @click="qualify()"
+        <button class="discbtn qualbtn" v-if="s.order" :disabled="s.stage_running || !!s.closed_at" @click="openQualify()"
                 :class="{passed: s.qualify?.passed}"
                 :title="s.closed_at ? 'order is closed' : s.stage_running ? 'a stage is running' : qualifyTitle()">Qualify{{s.qualify?.passed ? ' ✓' : ''}}</button>
         <span class="hdr-msg" v-if="hdrMsg">{{hdrMsg}}</span>
@@ -210,6 +210,22 @@
             <td class="mono">{{r.rule}}</td><td>{{r.ok ? '✓' : '✕'}}</td><td>{{r.found}}</td></tr>
         </table>
         <p class="m-sub" v-else>no rules evaluated</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= rack-wide Qualify modal (typed confirm) ================= -->
+  <div class="m-scrim" v-if="qualifying" @click="qualifying=false">
+    <div class="m-box" @click.stop>
+      <div class="m-h"><span class="m-title">Qualify order {{s.order}}{{s.rack ? ' rack ' + s.rack : ''}}</span>
+        <span class="x" @click="qualifying=false">✕</span></div>
+      <div class="m-b">
+        <p class="m-sub">Power-cycles all {{qualHosts().length}} host-bearing nodes into the live image
+          ({{qualHosts().map((d) => d.pos).join(', ')}}), clears their SELs and runs the stress battery,
+          then the iperf mesh. It holds this rack for hours and cannot be cancelled.
+          Only devices whose Discover passed are booted. Type the order id to confirm.</p>
+        <input class="confirm-in" name="rp-qconfirm" autocomplete="off" v-model="qualText" :placeholder="s.order">
+        <button class="press danger" :disabled="qualText!==s.order" @click="doQualify()">Qualify rack</button>
       </div>
     </div>
   </div>

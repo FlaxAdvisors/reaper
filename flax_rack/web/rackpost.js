@@ -116,6 +116,7 @@ function App() {
     s: { switches: [], devices: [], phases: ['discover', 'firmware', 'qualify', 'deploy', 'done'], profiles: [], rack_runs: {}, events: [] },
     live: null, sel: selFromHash(), filter: null, q: '', popOpen: null, now: Date.now(),
     actionMsg: null, hdrMsg: null, closing: false, confirmText: '', closeMsg: null, busy: false,
+    qualifying: false, qualText: '',
     metricList: [
       { key: 'discover', label: 'discover', title: 'devices in Discover' },
       { key: 'firmware', label: 'firmware', title: 'devices with firmware versions read (report only)' },
@@ -128,7 +129,7 @@ function App() {
     async mounted() {
       document.addEventListener('keydown', (e) => {
         if (e.key !== 'Escape') return;
-        if (this.closing) this.closing = false; else if (this.popOpen) this.popOpen = null; else this.close();
+        if (this.qualifying) this.qualifying = false; else if (this.closing) this.closing = false; else if (this.popOpen) this.popOpen = null; else this.close();
       });
       await this.refresh(); setInterval(() => this.refresh(), POLL_MS);
     },
@@ -367,11 +368,21 @@ function App() {
       catch (e) { this.actionMsg = 'discover: ' + e.message; }
       await this.refresh();
     },
+    // Qualify power-cycles nodes, clears SELs and runs stress: the rack-wide run takes
+    // the typed order id (like Close); a drawer (per-node) run a plain confirm naming it.
+    qualHosts() { return (this.s.devices || []).filter((d) => (d.qualify_rungs || []).length); },
+    openQualify() { this.qualifying = true; this.qualText = ''; },
+    async doQualify() {
+      this.qualifying = false;
+      try { await api('api/stage/qualify', { confirm: this.qualText }); this.hdrMsg = 'qualify started'; }
+      catch (e) { this.hdrMsg = 'qualify: ' + e.message; }
+      await this.refresh();
+    },
     async qualify(pos) {
-      const body = pos ? { positions: [pos] } : {};
-      const say = (m) => { if (pos) this.actionMsg = m; else this.hdrMsg = m; };
-      try { await api('api/stage/qualify', body); say(`qualify started${pos ? ' for ' + pos : ''}`); }
-      catch (e) { say('qualify: ' + e.message); }
+      if (!window.confirm(`Re-qualify ${pos}? It is power-cycled into the live image, its SEL is ` +
+                          'cleared and it runs the stress battery.')) return;
+      try { await api('api/stage/qualify', { positions: [pos], confirm: true }); this.actionMsg = `qualify started for ${pos}`; }
+      catch (e) { this.actionMsg = 'qualify: ' + e.message; }
       await this.refresh();
     },
     openInv(d) { const u = this.invUrl(d); if (u) window.open(u, '_blank', 'noopener'); },
