@@ -1,4 +1,4 @@
-"""SONiC mgmt-switch reads: FDB (show mac) and interface status."""
+"""SONiC switch reads: FDB (show mac), interface status, LLDP table."""
 import re
 import subprocess
 from dataclasses import asdict, dataclass
@@ -67,3 +67,48 @@ def read_fdb(host, user, password, *, runner=subprocess.run) -> RungResult:
     return RungResult("pass", {"fdb": [asdict(e) for e in entries],
                                "count": len(entries)},
                       {"show-mac.txt": text})
+
+
+@dataclass
+class LldpEntry:
+    local_iface: str
+    remote_device: str    # the neighbour's system name (may be "localhost")
+    remote_port: str      # RemotePortID: the neighbour port's MAC on the live image
+    remote_descr: str = ""   # RemotePortDescr: the neighbour's ifname
+
+
+def wedge_iface(port: int, lane: int | None) -> str:
+    """wedge100s front port P (1-based) lane L (1-based) -> EthernetN, 4 lanes per port."""
+    return f"Ethernet{(port - 1) * 4 + (lane - 1 if lane else 0)}"
+
+
+def parse_show_lldp_table(text: str) -> list[LldpEntry]:
+    """Columns are cut at the dash ruler under the header (names may hold spaces)."""
+    starts = None
+    out = []
+    for line in text.splitlines():
+        if starts is None:
+            if line.startswith("LocalPort"):
+                starts = []
+            continue
+        if not starts:
+            # first ruler line: one dash run per column
+            starts = [m.start() for m in re.finditer(r"-+", line)]
+            continue
+        if not line.strip() or set(line.strip()) <= {"-"} \
+                or line.startswith("Total entries"):
+            continue
+        cells = [line[a:b].strip() for a, b in zip(starts, starts[1:] + [None])]
+        if len(cells) >= 5 and cells[0].startswith("Ethernet"):
+            out.append(LldpEntry(cells[0], cells[1], cells[2], cells[4]))
+    return out
+
+
+def read_lldp(host, user, password, *, runner=subprocess.run) -> RungResult:
+    try:
+        text = ssh_run(host, user, password, "show lldp table", runner=runner)
+    except RemoteError as e:
+        return RungResult("fail", {"error": str(e)})
+    entries = parse_show_lldp_table(text)
+    return RungResult("pass", {"lldp": [asdict(e) for e in entries]},
+                      {"show-lldp-table.txt": text})
