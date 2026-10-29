@@ -58,3 +58,19 @@ a.tile{display:block;color:inherit;text-decoration:none}
 
 /* /rackpost/ index */
 .rack.index .tile{min-height:auto}
+
+/* Qualify: header button, POP verdict, firmware groups (same palette as INV), artifacts */
+.qualbtn{border-color:rgba(210,153,34,.55);color:var(--amber)}
+.qualbtn.passed{border-color:rgba(63,185,80,.55);color:var(--green)}
+.popv{cursor:pointer;margin-left:.3rem}
+.popv.ok{color:var(--green)} .popv.bad{color:var(--red);font-weight:700}
+.watt.bad{color:var(--red);background:rgba(248,81,73,.13)}
+.fwv{font-family:ui-monospace,monospace;font-size:.7rem;padding-left:.3rem;border-left:3px solid var(--line)}
+.fwv.grp-0{border-left-color:var(--accent)} .fwv.grp-1{border-left-color:var(--green)}
+.fwv.grp-2{border-left-color:var(--amber)} .fwv.grp-3{border-left-color:var(--violet)}
+.fwv.grp-4{border-left-color:var(--red)} .fwv.grp-5{border-left-color:#39c5cf}
+.fwv.grp-6{border-left-color:#f0883e} .fwv.grp-7{border-left-color:#db61a2}
+.fwv.grp-8{border-left-color:var(--grey)}
+.step .art{margin-left:.35rem;font-family:ui-monospace,monospace;font-size:.66rem;color:var(--accent);text-decoration:none}
+.step .art:hover{text-decoration:underline}
+.pop-tbl td:nth-child(2),.pop-tbl td:nth-child(3){width:2.5rem;text-align:center}

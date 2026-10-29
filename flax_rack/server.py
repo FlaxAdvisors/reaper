@@ -11,6 +11,10 @@ mtime differs from the one its Geometry was parsed at rescans, and the rack
 adopts the freshly parsed geometry (or stops being served if it no longer
 parses or now conflicts). Nothing is adopted from an older scan.
 
+Artifacts saved by Qualify are served read-only at
+/<prefix>/artifacts/<pos>/<run>/<stage>/<name>.txt, path-checked like static files.
+A BmcPoller thread per served rack (started by `serve`) keeps each tile's power chip.
+
 Stages run in daemon threads under one lock per rack dir (RackLock: a thread lock
 plus a flock on <dir>/.stage.lock, so a CLI `discover` and the daemon exclude each
 other too). Different racks run in parallel. A stage's exception lands in that
@@ -35,26 +39,25 @@ from .addressing import plan_addresses
 from .geometry import Geometry, load_geometry
 from .kea_client import KeaError
 from .orderdb import OrderDB
+from .poller import INTERVAL_S, BmcPoller
+from .qualify import AGENT_STAGES, device_rungs, pop_default, qualify_passed, run_qualify
 from .stages import close_order, run_discover
 from .version import __version__
 
 PHASES = ("discover", "firmware", "qualify", "deploy", "done")
 DISCOVER_RUNGS = ("switch-fdb", "slot-match", "reserve", "bmc-reach")
+FIRMWARE_RUNGS = ("fw-versions",)
 # v1 hand-written profile names (spec 5.4); a geometry `pop` or an override may add others
 PROFILES = ("f4-compute-tp", "f4-bc-head-tp", "f4-bc-head-25g", "f4-bc-jbod", "ovh-bare-tp")
 _PROFILE_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 _PREFIX_RE = re.compile(r"[a-z]{2}[0-9]{3}[a-z]?")      # the nginx location regex
 _STATIC_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+_ART_SEG_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,127}")
 _MAX_BODY = 64 * 1024
 
 WEB = Path(__file__).resolve().parent / "web"
 POST_STATIC = Path(__file__).resolve().parent.parent / "flax_post" / "web" / "static"
 DEFAULT_STATIC = [WEB, POST_STATIC]
-
-
-def pop_default(g: Geometry, d) -> str:
-    """The BOM default: geometry `pop` if set, else <customer>-<kind> (f4-compute-tp)."""
-    return d.pop or f"{g.customer.lower()}-{d.kind}"
 
 
 def _fmt_mac(m):
@@ -167,6 +170,7 @@ class Rack:
         self.g = g
         self.db = OrderDB(rack_dir / "order.db")
         self.lock = RackLock(rack_dir)
+        self.stage = None                        # name of the stage this daemon runs
         self.mtime = mtime
         self.db.init(g)
         # a 'running' row left by a previous daemon is interrupted -- unless another
@@ -186,12 +190,30 @@ class Rack:
         self.db.init(g)
 
 
-def _seen(d, slot, mgmt_ids) -> dict:
-    """Per link: what Discover saw. Only the mgmt-switch links are checked in Plan 1."""
+def _seen_ha(name, ha) -> dict:
+    """A pcieN link as Qualify's ha-path saw it on the wedges."""
+    if ha is None:
+        return {"state": "", "text": ""}
+    if ha["status"] != "done":
+        return {"state": "", "text": ha["status"]}
+    if ha["verdict"] == "skip":
+        return {"state": "", "text": "skipped"}
+    row = next((x for x in (ha["detail"] or {}).get("links") or [] if x.get("link") == name), None)
+    if row is None:
+        return {"state": "bad", "text": (ha["detail"] or {}).get("error") or "not checked"}
+    if not row.get("seen"):
+        return {"state": "bad", "text": "not seen on any wedge"}
+    text = row["seen"] + (f" · {row['ifname']}" if row.get("ifname") else "")
+    ok = (row.get("expected") or "").startswith(row["seen"] + " ")
+    return {"state": "ok" if ok else "bad", "text": text}
+
+
+def _seen(d, slot, mgmt_ids, ha=None) -> dict:
+    """Per link: what Discover saw on the mgmt switch; pcieN links from Qualify's ha-path."""
     out = {}
     for name, l in d.links.items():
         if l.switch not in mgmt_ids:
-            out[name] = {"state": "", "text": ""}
+            out[name] = _seen_ha(name, ha) if name.startswith("pcie") else {"state": "", "text": ""}
         elif slot is None:
             out[name] = {"state": "", "text": "not run"}
         elif slot["status"] != "done":
@@ -215,8 +237,11 @@ def _seen(d, slot, mgmt_ids) -> dict:
 
 def _trim(run: dict) -> dict:
     r = dict(run)
-    if isinstance(r.get("detail"), dict) and "fdb" in r["detail"]:
-        r["detail"] = {k: v for k, v in r["detail"].items() if k != "fdb"}
+    if isinstance(r.get("detail"), dict) and ({"fdb", "lldp"} & set(r["detail"])):
+        r["detail"] = {k: v for k, v in r["detail"].items() if k not in ("fdb", "lldp")}
+    # only saved-file paths are links; Discover's inline switch text is not sent
+    r["artifacts"] = {k: v for k, v in (r.get("artifacts") or {}).items()
+                      if isinstance(v, str) and v.startswith("artifacts/")}
     return r
 
 
@@ -245,13 +270,16 @@ def rack_state(r: Rack) -> dict:
         devices.append({
             "pos": d.pos, "ou": d.ou, "h": d.h, "col": d.col, "kind": d.kind, "part": d.part,
             "links": {k: _link_str(l) for k, l in d.links.items()},
-            "link_seen": _seen(d, runs.get("slot-match"), mgmt),
+            "link_seen": _seen(d, runs.get("slot-match"), mgmt, runs.get("ha-path")),
             "pop": ovr or default, "pop_default": default, "pop_overridden": bool(ovr),
             "host_mac": _fmt_mac(x.get("host_mac")), "bmc_mac": _fmt_mac(x.get("bmc_mac")),
             "iom_macs": [_fmt_mac(m) for m in x.get("iom_macs") or []],
             "addrs": addrs.get(d.pos, {}), "names": names.get(d.pos, {}),
+            "bmc_live": x.get("bmc_live") or {"reachable": None, "power": None, "at": None},
+            "qualify_rungs": device_rungs(d),
             "runs": runs})
     rack_runs = by_pos.get("_rack", {})
+    passed, not_passed = qualify_passed(db, g)
     fdb = rack_runs.get("switch-fdb")
     switches = []
     for s in g.switches:
@@ -262,8 +290,11 @@ def rack_state(r: Rack) -> dict:
     return {
         "order": g.order, "customer": g.customer, "vid": g.vid, "site": g.site, "rack": g.rack,
         "prefix": g.url_prefix, "version": __version__, "closed_at": db.closed_at(),
-        "stage_running": r.lock.locked(), "phases": list(PHASES),
-        "discover_rungs": list(DISCOVER_RUNGS), "profiles": sorted(profiles),
+        "stage_running": r.lock.locked(), "stage": r.stage if r.lock.locked() else None,
+        "phases": list(PHASES), "discover_rungs": list(DISCOVER_RUNGS),
+        "firmware_rungs": list(FIRMWARE_RUNGS), "agent_stages": list(AGENT_STAGES),
+        "qualify": {"passed": passed, "not_passed": not_passed},
+        "poll_interval_s": INTERVAL_S, "profiles": sorted(profiles),
         "switches": switches, "devices": devices, "rack_runs": rack_runs,
         "unexpected": [{"port": u["port"], "mac": _fmt_mac(u["mac"])} for u in unexpected],
         "events": db.events(30)}
@@ -278,6 +309,7 @@ class App:
         self._mu = threading.Lock()
         self._scan = Scan({}, [])
         self._racks: dict[Path, Rack] = {}
+        self._pollers: dict[Path, BmcPoller] = {}
 
     def rescan(self) -> Scan:
         s = self.registry.scan()
@@ -304,31 +336,94 @@ class App:
         return r
 
     # -- actions --
-    def start_discover(self, r: Rack):
+    def _start_stage(self, r: Rack, name: str, fn, **kw):
         if r.db.closed_at():
             return 409, {"error": "order is closed"}
         if not r.lock.acquire():
-            return 409, {"error": "a stage is already running for this rack"}
+            return 409, {"error": f"a stage ({r.stage or 'cli'}) is already running for this rack"}
+        r.stage = name
         g, db = r.g, r.db
 
         def work():
             try:
-                run_discover(self.factory(r.dir, g, db))
+                fn(self.factory(r.dir, g, db), **kw)
             except Exception as e:           # noqa: BLE001 -- logged, never fatal
                 try:
-                    db.add_event("error", f"discover: {type(e).__name__}: {e}")
+                    db.add_event("error", f"{name}: {type(e).__name__}: {e}")
                 except Exception:            # noqa: BLE001
                     pass
             finally:
+                r.stage = None
                 r.lock.release()
 
         try:
-            db.add_event("discover", "discover started")
-            threading.Thread(target=work, name=f"discover-{g.url_prefix}", daemon=True).start()
+            if name == "discover":
+                db.add_event("discover", "discover started")
+            threading.Thread(target=work, name=f"{name}-{g.url_prefix}", daemon=True).start()
         except BaseException:
+            r.stage = None
             r.lock.release()
             raise
-        return 202, {"started": "discover"}
+        return 202, {"started": name, **kw}
+
+    def start_discover(self, r: Rack):
+        return self._start_stage(r, "discover", run_discover)
+
+    def start_qualify(self, r: Rack, body: dict):
+        pos = body.get("positions")
+        if pos is not None:
+            hosts = {d.pos for d in r.g.devices if d.endpoints.get("hosts")}
+            if not (isinstance(pos, list) and pos and all(isinstance(p, str) for p in pos)):
+                return 400, {"error": "positions must be a non-empty list of positions"}
+            bad = sorted(set(pos) - hosts)
+            if bad:
+                return 400, {"error": f"not a host-bearing position: {', '.join(bad)}"}
+            return self._start_stage(r, "qualify", run_qualify, positions=sorted(set(pos)))
+        return self._start_stage(r, "qualify", run_qualify)
+
+    # -- BMC pollers: one per served rack; a disabled/vanished rack's poller stops --
+    def start_pollers(self, interval_s=INTERVAL_S) -> threading.Thread:
+        self._poll_stop = threading.Event()
+
+        def supervise():
+            while True:
+                try:
+                    self.sync_pollers(interval_s)
+                except Exception:            # noqa: BLE001
+                    pass
+                if self._poll_stop.wait(interval_s):
+                    break
+            for p in list(self._pollers.values()):
+                p.stop()
+
+        t = threading.Thread(target=supervise, name="bmc-poller-supervisor", daemon=True)
+        t.start()
+        return t
+
+    def sync_pollers(self, interval_s=INTERVAL_S) -> None:
+        s = self.rescan()
+        served = set(s.racks.values())
+        for d, p in list(self._pollers.items()):
+            if d not in served:
+                p.stop()
+                del self._pollers[d]
+        for prefix, d in s.racks.items():
+            if d in self._pollers:
+                continue
+            r = self.rack(prefix)
+            if r is None:
+                continue
+            p = BmcPoller(lambda r=r: self.factory(r.dir, r.g, r.db), interval_s,
+                          name=f"bmc-poller-{prefix}")
+            self._pollers[d] = p
+            p.start()
+
+    def stop_pollers(self) -> None:
+        ev = getattr(self, "_poll_stop", None)
+        if ev is not None:
+            ev.set()
+        for p in list(self._pollers.values()):
+            p.stop()
 
     def set_pop(self, r: Rack, body: dict):
         pos, profile = body.get("pos"), body.get("profile")
@@ -376,6 +471,20 @@ class App:
                                "closed_at": _closed_at(d)})
         return {"version": __version__, "orders": [orders[k] for k in sorted(orders)],
                 "conflicts": s.conflicts}
+
+    def artifact_file(self, r: Rack, rest: str) -> Path | None:
+        """artifacts/<pos>/<run>/<stage>/<name>.txt inside the order dir, nothing else."""
+        segs = rest.split("/")
+        if len(segs) != 5 or segs[0] != "artifacts" or not segs[4].endswith(".txt") \
+                or not all(_ART_SEG_RE.fullmatch(x) and ".." not in x for x in segs[1:]):
+            return None
+        base = (r.dir / "artifacts").resolve()
+        p = (r.dir / rest).resolve()
+        try:
+            p.relative_to(base)
+        except ValueError:                       # a symlink out of the order dir
+            return None
+        return p if p.is_file() else None
 
     def static_file(self, name: str) -> Path | None:
         if not _STATIC_RE.fullmatch(name) or ".." in name:
@@ -528,6 +637,11 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._static(rest[len("static/"):])
             if rest == "api/state":
                 return self._json(200, rack_state(r))
+            if rest.startswith("artifacts/"):
+                p = app.artifact_file(r, rest)
+                if p is None:
+                    return self._json(404, {"error": "not found"})
+                return self._send(200, p.read_bytes(), "text/plain; charset=utf-8")
             return self._json(404, {"error": "not found"})
         # CSRF: a cross-site form can only send a "simple" Content-Type; JSON
         # forces a preflight this server never answers
@@ -541,6 +655,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(*app.set_pop(r, body))
         if rest == "api/stage/discover":
             return self._json(*app.start_discover(r))
+        if rest == "api/stage/qualify":
+            return self._json(*app.start_qualify(r, body))
         if rest == "api/close":
             return self._json(*app.close(r, body))
         return self._json(404, {"error": "not found"})

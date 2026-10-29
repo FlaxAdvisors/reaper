@@ -45,6 +45,9 @@
         <label>vid <span class="ro">{{s.vid || '—'}}</span></label>
         <button class="discbtn" v-if="s.order" :disabled="s.stage_running || !!s.closed_at" @click="discover()"
                 :title="s.closed_at ? 'order is closed' : s.stage_running ? 'a stage is running' : 'run Discover for this rack: switch FDB → slot match → Kea reserve → BMC reach'">Discover</button>
+        <button class="discbtn qualbtn" v-if="s.order" :disabled="s.stage_running || !!s.closed_at" @click="qualify()"
+                :class="{passed: s.qualify?.passed}"
+                :title="s.closed_at ? 'order is closed' : s.stage_running ? 'a stage is running' : qualifyTitle()">Qualify{{s.qualify?.passed ? ' ✓' : ''}}</button>
         <span class="hdr-msg" v-if="hdrMsg">{{hdrMsg}}</span>
         <span class="closed-chip" v-if="s.closed_at" :title="'closed ' + s.closed_at">closed</span>
         <button class="closebtn" v-else-if="s.order" @click="openClose()"
@@ -88,7 +91,7 @@
               <div class="t-head">
                 <span class="t-port">{{cell.label}}</span>
                 <span class="kind" v-if="cell.kindLabel">{{cell.kindLabel}}</span>
-                <span class="watt unk" v-if="!cell.empty" title="power: Plan 2">—</span>
+                <span class="watt" v-if="!cell.empty && power(cell)" :class="power(cell).cls" :title="power(cell).title">{{power(cell).t}}</span>
                 <span class="dot" :class="cell.empty ? 'grey' : dotCls(cell.dev)"></span>
               </div>
               <div v-if="!cell.empty">
@@ -99,7 +102,10 @@
                   <select class="popsel" :class="{ovr: cell.dev.pop_overridden}" :title="popTitle(cell.dev)"
                           :disabled="!!s.closed_at" @click.stop @change="setPop(cell.dev, $event.target.value)">
                     <option v-for="p in s.profiles" :value="p" :selected="p===cell.dev.pop">{{p}}</option>
-                  </select><span class="popv" title="POP verdict: Plan 2">·</span></div>
+                  </select><span class="popv" :class="popMark(cell.dev).cls" :title="popMark(cell.dev).title"
+                          @click.stop="openPop(cell.dev)">{{popMark(cell.dev).t}}</span></div>
+                <div class="t-row" v-if="fwText(cell.dev)"><span class="k">FW</span>
+                  <span class="v fwv" :class="fwCls(cell.dev)" :title="fwTitle(cell.dev)">{{fwText(cell.dev)}}</span></div>
                 <div class="links">
                   <span class="lk" v-for="c in chips(cell)" :class="c.state" :title="c.title">{{c.label}}</span>
                 </div>
@@ -124,9 +130,13 @@
     <div class="d-sub">OU {{selDev?.ou}} {{colName(selDev)}} · {{selDev?.pos}} · {{selDev?.names?.host || selDev?.names?.host1 || selDev?.names?.iom1 || ''}} · {{selDev?.kind}} {{selDev?.part}}</div>
 
     <div class="actions">
-      <button disabled title="Plan 2">PWR</button><button disabled title="Plan 2">SOL</button>
-      <button disabled title="Plan 2">INV</button><button disabled title="Plan 2">POP</button>
-      <button disabled title="Plan 2">IDNT</button>
+      <button disabled title="later plan">PWR</button><button disabled title="later plan">SOL</button>
+      <button :disabled="!invUrl(selDev)" @click="openInv(selDev)"
+              title="the inventory stage's macinv (detail form when present)">INV</button>
+      <button :disabled="!popRun(selDev)" @click="openPop(selDev)" title="POP rules of the last Qualify">POP</button>
+      <button disabled title="later plan">IDNT</button>
+      <button :disabled="s.stage_running || !!s.closed_at || !(selDev?.qualify_rungs || []).length" @click="qualify(selDev?.pos)"
+              title="re-run Qualify for this node only (then the rack-level rungs)">QUAL</button>
       <button :disabled="s.stage_running || !!s.closed_at" @click="retry()"
               title="re-run Discover for this rack order">RETRY</button>
     </div>
@@ -146,6 +156,16 @@
       <span class="no">{{selDev?.pop_overridden ? 'override' : ''}}</span>
     </div>
 
+    <template v-if="fwOf(selDev)">
+      <div class="section-l">firmware (report only)</div>
+      <div class="facets">
+        <span class="lbl">BIOS</span><span class="mono fwv" :class="fwCls(selDev)">{{fwOf(selDev)?.bios_version}}</span>
+        <span class="no">{{fwOf(selDev)?.bios_date}}</span>
+        <span class="lbl">BMC</span><span class="mono fwv" :class="fwCls(selDev)">{{fwOf(selDev)?.bmc_firmware}}</span>
+        <span class="no">{{fwOf(selDev)?.bmc_aux || ''}}</span>
+      </div>
+    </template>
+
     <div class="section-l">links (BOM → seen)</div>
     <div class="ha">
       <span class="h">port</span><span class="h">expected</span><span class="h">seen</span>
@@ -161,7 +181,8 @@
           <span class="pct">{{phasePct(selDev,p)}}</span></div>
         <div class="steps" v-if="stepEntries(selDev,p).length">
           <div class="step" v-for="st in stepEntries(selDev,p)" :class="st.state" :title="st.title">
-            <span class="si">{{stepIcon(st.state)}}</span>{{st.name}}<span class="note" v-if="st.note"> · {{st.note}}</span></div>
+            <span class="si">{{stepIcon(st.state)}}</span>{{st.name}}<span class="note" v-if="st.note"> · {{st.note}}</span>
+            <a class="art" v-for="a in st.arts" :href="a.url" target="_blank" rel="noopener" :title="a.url">{{a.name}}</a></div>
         </div>
         <div class="steps" v-else><div class="step pending"><span class="si">·</span>later plan</div></div>
       </div>
@@ -174,6 +195,22 @@
         <div class="ab-b">{{f.text}}</div></div>
       <div class="alert-box" v-if="!faults(selDev).length"><div class="ab-h">rungs</div>
         <div class="ab-b pending-note">no faults</div></div>
+    </div>
+  </div>
+
+  <!-- ================= POP rules modal ================= -->
+  <div class="m-scrim" v-if="popDev" @click="popOpen=null">
+    <div class="m-box" @click.stop>
+      <div class="m-h"><span class="m-title">POP {{popDev?.pos}} · {{popRun(popDev)?.detail?.profile}}</span>
+        <span class="x" @click="popOpen=null">✕</span></div>
+      <div class="m-b">
+        <p class="m-sub" v-if="popRun(popDev)?.detail?.error">{{popRun(popDev)?.detail?.error}}</p>
+        <table class="inv-tbl pop-tbl" v-if="(popRun(popDev)?.detail?.results || []).length">
+          <tr v-for="r in (popRun(popDev)?.detail?.results || [])" :class="{blocked: !r.ok}">
+            <td class="mono">{{r.rule}}</td><td>{{r.ok ? '✓' : '✕'}}</td><td>{{r.found}}</td></tr>
+        </table>
+        <p class="m-sub" v-else>no rules evaluated</p>
+      </div>
     </div>
   </div>
 

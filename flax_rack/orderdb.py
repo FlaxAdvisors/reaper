@@ -11,7 +11,8 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS device(
   pos TEXT PRIMARY KEY, kind TEXT, host_mac TEXT, bmc_mac TEXT,
-  iom_macs TEXT NOT NULL DEFAULT '[]', pop_override TEXT);
+  iom_macs TEXT NOT NULL DEFAULT '[]', pop_override TEXT,
+  bmc_reachable INTEGER, bmc_power TEXT, bmc_at TEXT);
 CREATE TABLE IF NOT EXISTS run(
   id INTEGER PRIMARY KEY, pos TEXT NOT NULL, stage TEXT NOT NULL, rung TEXT NOT NULL,
   status TEXT NOT NULL, verdict TEXT, detail TEXT, artifacts TEXT,
@@ -20,6 +21,9 @@ CREATE INDEX IF NOT EXISTS run_pos_rung ON run(pos, rung, id);
 CREATE TABLE IF NOT EXISTS event(
   id INTEGER PRIMARY KEY, ts TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL);
 """
+# columns added after Plan 1 shipped: an existing order.db gains them on init
+_ADDED = (("device", "bmc_reachable", "INTEGER"), ("device", "bmc_power", "TEXT"),
+          ("device", "bmc_at", "TEXT"))
 
 
 def _now() -> str:
@@ -57,6 +61,10 @@ class OrderDB:
     def init(self, g) -> None:
         with closing(self._conn()) as c, c:
             c.executescript(_SCHEMA)
+            for table, col, typ in _ADDED:
+                have = {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}
+                if col not in have:
+                    c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
             for k, v in (("order", g.order), ("customer", g.customer),
                          ("geometry", json.dumps(dataclasses.asdict(g)))):
                 c.execute("INSERT OR REPLACE INTO meta(k,v) VALUES(?,?)", (k, v))
@@ -73,6 +81,13 @@ class OrderDB:
 
     def set_pop(self, pos, profile) -> None:
         cur = self._exec("UPDATE device SET pop_override=? WHERE pos=?", (profile, pos))
+        if cur.rowcount == 0:
+            raise KeyError(pos)
+
+    def set_bmc_live(self, pos, reachable: bool, power: str | None, at: str) -> None:
+        """The BMC poller's last look (not a rung run: never creates a run row)."""
+        cur = self._exec("UPDATE device SET bmc_reachable=?, bmc_power=?, bmc_at=? WHERE pos=?",
+                         (int(bool(reachable)), power, at, pos))
         if cur.rowcount == 0:
             raise KeyError(pos)
 
@@ -95,6 +110,7 @@ class OrderDB:
         return {(r["pos"], r["rung"]): {
             "stage": r["stage"], "status": r["status"], "verdict": r["verdict"],
             "detail": json.loads(r["detail"]) if r["detail"] else None,
+            "artifacts": json.loads(r["artifacts"]) if r["artifacts"] else {},
             "started_at": r["started_at"], "finished_at": r["finished_at"]} for r in rows}
 
     def run_count(self, pos, rung) -> int:
@@ -109,7 +125,10 @@ class OrderDB:
     def devices(self) -> list[dict]:
         return [{"pos": r["pos"], "kind": r["kind"], "host_mac": r["host_mac"],
                  "bmc_mac": r["bmc_mac"], "iom_macs": json.loads(r["iom_macs"]),
-                 "pop_override": r["pop_override"]}
+                 "pop_override": r["pop_override"],
+                 "bmc_live": {"reachable": None if r["bmc_reachable"] is None
+                              else bool(r["bmc_reachable"]),
+                              "power": r["bmc_power"], "at": r["bmc_at"]}}
                 for r in self._all("SELECT * FROM device ORDER BY pos")]
 
     def add_event(self, kind, text) -> None:

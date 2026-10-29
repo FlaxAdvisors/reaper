@@ -33,6 +33,7 @@ class OrderContext:
     kea: KeaClient
     creds: Creds | Callable[[], Creds]
     runner: object = field(default=subprocess.run)
+    rungs: object = None        # Qualify's rung functions (None = the real flax_rungs ones)
 
 
 def source(ctx) -> str:
@@ -46,8 +47,8 @@ def creds(ctx) -> Creds:
     return ctx.creds
 
 
-def _rung(ctx, pos, rung, fn) -> RungResult:
-    rid = ctx.db.start_run(pos, STAGE, rung)
+def _rung(ctx, pos, rung, fn, stage=STAGE) -> RungResult:
+    rid = ctx.db.start_run(pos, stage, rung)
     try:
         r = fn()
     except Exception as e:           # a rung never leaves its row 'running'

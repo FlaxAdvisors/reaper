@@ -1,7 +1,8 @@
 // flax_rack/web/rackpost.js: petite-vue app for one rack order (layout = mockup rack-v3).
 // Polls api/state (relative: the page lives at /<prefix>/) every 5 s. Only the
 // populated OUs are drawn; a dashed marker stands for each run of skipped OUs.
-// Plan 1 has rungs only in Discover; the other phases render empty/grey.
+// Phases with rungs: discover, firmware (fw-versions, report only), qualify (the
+// device's qualify_rungs from the server). deploy/done render empty/grey (Plan 3/4).
 
 const POLL_MS = 5000;
 // geometry cols are ints 1..5 (L/C/R = 1/2/3); a group of rows is drawn with
@@ -33,13 +34,24 @@ function stepState(run) {
   return { pass: 'done', skip: 'skip', fail: 'fault' }[run.verdict] || 'unknown';
 }
 
-function stepNote(run) {
+const gbit = (b) => (b == null ? '?' : (b / 1e9).toFixed(b < 1e10 ? 2 : 1));
+
+function stepNote(run, name) {
   if (!run) return '';
   if (run.status === 'interrupted') return 'interrupted';
   const d = run.detail || {};
   if (run.verdict === 'fail') return d.error || [d.status, d.note].filter(Boolean).join(' ') || 'fail';
+  if (run.verdict === 'skip') return d.reason || 'skipped';
+  if (name === 'fw-versions') return `BIOS ${d.bios_version} · BMC ${d.bmc_firmware}`;
+  if (name === 'pop') return d.profile || '';
+  if (name === 'iperf-mesh') {
+    if (d.served) return `served ${d.served.length}`;
+    return ['mgmt', 'A', 'B'].filter((n) => d[n]).map((n) => `${n} ${gbit(d[n].tx_bps)}/${gbit(d[n].rx_bps)}G`).join(' · ');
+  }
+  if (name === 'fabric-addr') return Object.values(d).filter((x) => typeof x === 'string').join(' ');
+  if (name === 'pxe-live' && d.ssh_after_s != null) return `ssh after ${d.ssh_after_s}s`;
   if (d.power) return 'power ' + d.power;
-  if (d.count != null) return d.count + ' MACs';
+  if (d.count != null) return d.count + (name && name.startsWith('lldp') ? ' neighbours' : ' MACs');
   return '';
 }
 
@@ -102,23 +114,26 @@ function selFromHash() {
 function App() {
   return {
     s: { switches: [], devices: [], phases: ['discover', 'firmware', 'qualify', 'deploy', 'done'], profiles: [], rack_runs: {}, events: [] },
-    live: null, sel: selFromHash(), filter: null, q: '',
+    live: null, sel: selFromHash(), filter: null, q: '', popOpen: null, now: Date.now(),
     actionMsg: null, hdrMsg: null, closing: false, confirmText: '', closeMsg: null, busy: false,
     metricList: [
       { key: 'discover', label: 'discover', title: 'devices in Discover' },
-      { key: 'firmware', label: 'firmware', title: 'Plan 2' },
-      { key: 'qualify', label: 'qualify', title: 'Plan 3' },
+      { key: 'firmware', label: 'firmware', title: 'devices with firmware versions read (report only)' },
+      { key: 'qualify', label: 'qualify', title: 'devices in Qualify' },
       { key: 'deploy', label: 'deploy', title: 'Plan 4' },
       { key: 'done', label: 'done', title: 'Plan 4' },
       { key: 'alert', label: 'alerts', title: 'devices with a failed rung' },
     ],
 
     async mounted() {
-      document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { this.closing ? (this.closing = false) : this.close(); } });
+      document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape') return;
+        if (this.closing) this.closing = false; else if (this.popOpen) this.popOpen = null; else this.close();
+      });
       await this.refresh(); setInterval(() => this.refresh(), POLL_MS);
     },
     async refresh() {
-      try { this.s = await api('api/state'); this.live = true; document.title = `${this.s.prefix} rackpost`; }
+      try { this.s = await api('api/state'); this.live = true; this.now = Date.now(); document.title = `${this.s.prefix} rackpost`; }
       catch (e) { this.live = false; console.error(e); }
     },
 
@@ -127,17 +142,28 @@ function App() {
 
     // ---- per-device pipeline (null-safe: petite-vue may evaluate during teardown) ----
     steps(d, phase) {
-      if (!d || phase !== 'discover') return {};
+      if (!d) return {};
       const runs = d.runs || {}, rr = this.s.rack_runs || {};
       const out = {};
-      for (const rung of this.s.discover_rungs || []) out[rung] = rung === 'switch-fdb' ? rr[rung] : runs[rung];
+      if (phase === 'discover') {
+        for (const rung of this.s.discover_rungs || []) out[rung] = rung === 'switch-fdb' ? rr[rung] : runs[rung];
+      } else if (phase === 'firmware') {
+        if (!(d.qualify_rungs || []).length) return {};
+        for (const rung of this.s.firmware_rungs || []) out[rung] = runs[rung];
+      } else if (phase === 'qualify') {
+        for (const rung of d.qualify_rungs || []) out[rung] = runs[rung];
+      }
       return out;
     },
     stepEntries(d, phase) {
       return Object.entries(this.steps(d, phase)).map(([name, run]) => ({
-        name, run, state: stepState(run), note: stepNote(run),
+        name, run, state: stepState(run), note: stepNote(run, name),
+        arts: Object.entries((run && run.artifacts) || {}).map(([n, url]) => ({ name: n, url })),
         title: run ? `${run.status}${run.verdict ? ' · ' + run.verdict : ''} · ${run.finished_at || run.started_at}` : 'not run' }));
     },
+    hasRuns(d, phase) { return this.stepEntries(d, phase).some((x) => x.run); },
+    // the phase whose steps the tile's second bar shows: the latest one with a run
+    curPhase(d) { return this.hasRuns(d, 'qualify') ? 'qualify' : 'discover'; },
     phaseState(d, p) {
       const v = this.stepEntries(d, p).map((x) => x.state);
       if (v.includes('fault')) return 'fault';
@@ -147,13 +173,15 @@ function App() {
     },
     phaseSegs(d) { return !d ? [] : this.s.phases.map((p) => this.phaseState(d, p)); },
     stepSegs(d) {
-      return this.stepEntries(d, 'discover').map((x) => (x.state === 'done' || x.state === 'skip') ? 'done'
+      if (!d) return [];
+      return this.stepEntries(d, this.curPhase(d)).map((x) => (x.state === 'done' || x.state === 'skip') ? 'done'
         : x.state === 'fault' ? 'fault' : x.state === 'cur' ? 'cur' : '');
     },
-    faulted(d) { return this.phaseState(d, 'discover') === 'fault'; },
+    faulted(d) { return !!d && ['discover', 'firmware', 'qualify'].some((p) => this.phaseState(d, p) === 'fault'); },
     phaseKey(d) {
       if (!d) return 'grey';
       if (this.faulted(d)) return 'fault';
+      if (this.hasRuns(d, 'qualify')) return this.phaseState(d, 'qualify') === 'done' ? 'done' : 'qualify';
       return Object.keys(d.runs || {}).length ? 'discover' : 'grey';
     },
     dotCls(d) { return this.phaseKey(d); },
@@ -165,29 +193,84 @@ function App() {
     stepIcon(st) { return { done: '✓', cur: '◉', fault: '✕', pending: '·', skip: '–', unknown: '?' }[st] || '·'; },
     statusText(d) {
       if (!d) return '';
-      const bad = this.stepEntries(d, 'discover').find((x) => x.state === 'fault');
-      if (bad) return `discover · ${bad.name}`;
-      const cur = this.stepEntries(d, 'discover').find((x) => x.state !== 'done' && x.state !== 'skip');
-      return cur ? `discover · ${cur.name}` : 'discover ✓';
+      for (const p of ['discover', 'firmware', 'qualify']) {
+        const bad = this.stepEntries(d, p).find((x) => x.state === 'fault');
+        if (bad) return `${p} · ${bad.name}`;
+      }
+      const p = this.curPhase(d);
+      const cur = this.stepEntries(d, p).find((x) => x.state !== 'done' && x.state !== 'skip');
+      return cur ? `${p} · ${cur.name}` : `${p} ✓`;
     },
     statusStyle(d) { const c = RGB[this.phaseKey(d)] || RGB.discover; return `background:rgba(${c},.15);color:rgb(${c})`; },
     faults(d) {
       if (!d) return [];
-      return this.stepEntries(d, 'discover').filter((x) => x.state === 'fault' || x.state === 'unknown')
+      return ['discover', 'firmware', 'qualify'].flatMap((p) => this.stepEntries(d, p))
+        .filter((x) => x.state === 'fault' || x.state === 'unknown')
         .map((x) => ({ rung: x.name, text: x.note, bad: x.state === 'fault' }));
+    },
+    popRun(d) { return d && (d.runs || {}).pop; },
+    popMark(d) {
+      const r = this.popRun(d);
+      if (!r || r.status !== 'done') return { t: '·', cls: '', title: 'POP not run yet (Qualify)' };
+      const x = r.detail || {};
+      if (r.verdict === 'pass') return { t: '✓', cls: 'ok', title: `POP ${x.profile}: every rule found` };
+      if (r.verdict === 'skip') return { t: '–', cls: '', title: 'POP skipped: ' + (x.reason || '') };
+      return { t: '✕', cls: 'bad', title: 'POP: ' + (x.error || 'fail') };
+    },
+    openPop(d) { if (this.popRun(d) && this.popRun(d).detail) this.popOpen = d.pos; },
+    get popDev() { return this.popOpen ? (this.s.devices.find((d) => d.pos === this.popOpen) || null) : null; },
+
+    // ---- firmware versions (report only): equal versions share a colour, like INV ----
+    fwOf(d) {
+      const r = d && (d.runs || {})['fw-versions'];
+      return r && r.verdict === 'pass' && r.detail ? r.detail : null;
+    },
+    fwKey(f) { return `${f.bios_version}|${f.bmc_firmware}`; },
+    get fwGroups() {
+      const keys = [...new Set((this.s.devices || []).map((d) => this.fwOf(d)).filter(Boolean).map((f) => this.fwKey(f)))].sort();
+      return Object.fromEntries(keys.map((k, i) => [k, 'grp-' + (i % 9)]));
+    },
+    fwText(d) { const f = this.fwOf(d); return f ? `${f.bios_version} · ${f.bmc_firmware}` : ''; },
+    fwCls(d) { const f = this.fwOf(d); return f ? this.fwGroups[this.fwKey(f)] : ''; },
+    fwTitle(d) {
+      const f = this.fwOf(d);
+      return f ? `BIOS ${f.bios_version} (${f.bios_date}) · BMC ${f.bmc_firmware}${f.bmc_aux ? ' aux ' + f.bmc_aux : ''} · report only` : '';
+    },
+
+    // ---- BMC power chip from the poller (stale after 3 intervals -> grey ?) ----
+    power(c) {
+      const d = c.dev;
+      if (!(d.addrs || {}).bmc) return null;
+      const b = d.bmc_live || {}, iv = (this.s.poll_interval_s || 60) * 1000;
+      if (!b.at) return { t: '?', cls: 'unk', title: 'BMC not polled yet' };
+      const age = this.now - Date.parse(b.at);
+      if (age > 3 * iv) return { t: '?', cls: 'unk', title: `stale: last BMC poll ${b.at}` };
+      if (b.reachable === false) return { t: 'bmc ✕', cls: 'bad', title: `BMC ${d.addrs.bmc} no ping reply · ${b.at}` };
+      if (!b.power) return { t: '?', cls: 'unk', title: `BMC answers ping, no power reading · ${b.at}` };
+      return { t: b.power, cls: b.power === 'on' ? 'on' : 'off', title: `chassis power ${b.power} · ${b.at}` };
     },
 
     // ---- header ----
     get counts() {
       const ds = this.s.devices || [];
-      return { discover: ds.length, firmware: 0, qualify: 0, deploy: 0, done: 0,
+      return { discover: ds.length, firmware: ds.filter((d) => this.hasRuns(d, 'firmware')).length,
+               qualify: ds.filter((d) => this.hasRuns(d, 'qualify')).length, deploy: 0, done: 0,
                alert: ds.filter((d) => this.faulted(d)).length };
     },
     toggle(f) { this.filter = this.filter === f ? null : f; },
-    inFilter(d, f) { return f === 'alert' ? this.faulted(d) : f === 'discover'; },
+    inFilter(d, f) {
+      if (f === 'alert') return this.faulted(d);
+      if (f === 'firmware' || f === 'qualify') return this.hasRuns(d, f);
+      return f === 'discover';
+    },
+    qualifyTitle() {
+      const q = this.s.qualify || {};
+      const base = 'run Qualify: live boot → battery → POP per node, then wedge LLDP → HA path → fabric addresses → iperf mesh';
+      return q.passed ? base + ' · rack passed' : (q.not_passed || []).length ? `${base} · not passed: ${q.not_passed.join(', ')}` : base;
+    },
     stageText() {
       if (this.s.closed_at) return 'closed ' + new Date(this.s.closed_at).toLocaleString();
-      if (this.s.stage_running) return 'discover running…';
+      if (this.s.stage_running) return `${this.s.stage || 'stage'} running…`;
       const e = (this.s.events || [])[0];
       return e ? `${e.text} · ${new Date(e.ts).toLocaleTimeString()}` : 'no stage run yet';
     },
@@ -195,12 +278,16 @@ function App() {
 
     // ---- tiles ----
     swKind(sw) { return `${SWKIND[sw.role] || sw.role} · ${sw.model} · ${sw.nos}`; },
+    swRun(sw) { return (this.s.rack_runs || {})[sw.role === 'tor' ? 'lldp-' + sw.id : 'switch-fdb']; },
     swDot(sw) {
-      if (!sw.mgmt_ip) return 'grey';
-      const r = (this.s.rack_runs || {})['switch-fdb'];
-      return !r ? 'grey' : r.status === 'running' ? 'discover' : r.verdict === 'pass' ? 'done' : 'fault';
+      const r = this.swRun(sw);
+      if (!sw.mgmt_ip && !r) return 'grey';
+      return !r ? 'grey' : r.status === 'running' ? (sw.role === 'tor' ? 'qualify' : 'discover') : r.verdict === 'pass' ? 'done' : 'fault';
     },
-    swTitle(sw) { const r = (this.s.rack_runs || {})['switch-fdb']; return r ? `switch-fdb ${r.verdict || r.status} · ${stepNote(r)}` : 'switch-fdb not run'; },
+    swTitle(sw) {
+      const n = sw.role === 'tor' ? 'lldp-' + sw.id : 'switch-fdb', r = this.swRun(sw);
+      return r ? `${n} ${r.verdict || r.status} · ${stepNote(r, n)}` : `${n} not run`;
+    },
     cellMac(c) { return c.iom ? (c.dev.iom_macs || [])[c.idx] : c.dev.bmc_mac; },
     popTitle(d) {
       if (!d) return '';
@@ -212,7 +299,7 @@ function App() {
       const out = [];
       for (const n of names) {
         const st = (seen[n] || {}).state || '';
-        const title = `${n}: BOM ${d.links[n]} · seen ${(seen[n] || {}).text || 'not checked (Plan 2)'}`;
+        const title = `${n}: BOM ${d.links[n]} · seen ${(seen[n] || {}).text || 'not checked yet'}`;
         const m = /^pcie(\d+)$/.exec(n);
         if (m) out.push({ label: `P${m[1]}→${d.links[n].split(':')[0]}`, state: st, title });
         else if (st) out.push({ label: st === 'ok' ? 'mgmt ✓' : 'mgmt ✕', state: st, title });
@@ -262,7 +349,7 @@ function App() {
       const seen = d.link_seen || {};
       return Object.keys(d.links).sort().map((n) => ({
         name: n, expected: d.links[n],
-        seen: (seen[n] || {}).text || (d.links[n].startsWith('C:') ? 'not run' : '— Plan 2'),
+        seen: (seen[n] || {}).text || 'not run',
         state: (seen[n] || {}).state || 'dimv' }));
     },
     async setPop(d, value) {
@@ -279,6 +366,18 @@ function App() {
       try { await api('api/stage/discover', {}); this.actionMsg = 'discover started'; }
       catch (e) { this.actionMsg = 'discover: ' + e.message; }
       await this.refresh();
+    },
+    async qualify(pos) {
+      const body = pos ? { positions: [pos] } : {};
+      const say = (m) => { if (pos) this.actionMsg = m; else this.hdrMsg = m; };
+      try { await api('api/stage/qualify', body); say(`qualify started${pos ? ' for ' + pos : ''}`); }
+      catch (e) { say('qualify: ' + e.message); }
+      await this.refresh();
+    },
+    openInv(d) { const u = this.invUrl(d); if (u) window.open(u, '_blank', 'noopener'); },
+    invUrl(d) {
+      const a = ((d && (d.runs || {}).inventory) || {}).artifacts || {};
+      return a['macinv-v'] || a.macinv || null;
     },
 
     // ---- close order ----

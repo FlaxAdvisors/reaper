@@ -80,3 +80,30 @@ def bootdev_pxe(ip: str, creds: list[tuple[str, str]], *, runner=subprocess.run)
         if p is not None and p.returncode == 0:
             return True
     return False
+
+
+def parse_mc_info(text: str) -> dict:
+    """`ipmitool mc info` -> {"firmware": "Firmware Revision", "aux": "Aux Firmware Rev Info"
+    (its indented continuation lines joined by spaces)}; None for what is absent."""
+    fw, aux, in_aux = None, [], False
+    for line in text.splitlines():
+        if line[:1] not in (" ", "\t") and ":" in line:
+            k, _, v = line.partition(":")
+            k, v = k.strip(), v.strip()
+            in_aux = k == "Aux Firmware Rev Info"
+            if k == "Firmware Revision":
+                fw = v or None
+            elif in_aux and v:
+                aux.append(v)
+        elif in_aux and line.strip():
+            aux.append(line.strip())
+    return {"firmware": fw, "aux": " ".join(aux) or None}
+
+
+def mc_info(ip: str, creds: list[tuple[str, str]], *, runner=subprocess.run) -> dict | None:
+    """Out-of-band `mc info` with the first credential that answers; None if none did."""
+    for user, pw in creds:
+        p = _ipmi(ip, user, pw, ["mc", "info"], runner=runner)
+        if p is not None and p.returncode == 0 and "Firmware Revision" in (p.stdout or ""):
+            return parse_mc_info(p.stdout)
+    return None

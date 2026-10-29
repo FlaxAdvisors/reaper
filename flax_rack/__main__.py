@@ -1,4 +1,5 @@
-"""python -m flax_rack: rack-order CLI (import-bom, enable/disable, serve, discover, close).
+"""python -m flax_rack: rack-order CLI (import-bom, enable/disable, serve, discover, qualify,
+close).
 
 Order-dir commands act on the current directory (one dir per rack).
 """
@@ -50,12 +51,14 @@ def _serve(a) -> int:
     else:
         from .server import default_context_factory as factory
     srv = make_server(Path(a.root), port=a.port, bind=a.bind, context_factory=factory)
+    srv.app.start_pollers()
     print(f"flax-rackpost: serving {a.root} on {a.bind}:{a.port}", flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        srv.app.stop_pollers()
         srv.server_close()
     return 0
 
@@ -96,6 +99,32 @@ def _discover(a) -> int:
     return 0
 
 
+def _qualify(a) -> int:
+    from .creds import CredsError
+    from .qualify import device_rungs, qualify_passed, run_qualify
+    ctx, lock = _order_ctx()
+    try:
+        run_qualify(ctx, positions=a.pos or None)
+    except (CredsError, ValueError) as e:
+        sys.exit(str(e))
+    finally:
+        lock.release()
+    lr = ctx.db.latest_runs()
+    for d in ctx.g.devices:
+        if a.pos and d.pos not in a.pos:
+            continue
+        for rung in device_rungs(d) + ["fw-versions"]:
+            r = lr.get((d.pos, rung))
+            if r:
+                det = r["detail"] or {}
+                why = det.get("error") or det.get("reason") or ""
+                print(f"{d.pos:8s} {rung:14s} {r['verdict'] or r['status']}"
+                      + (f"  {why}" if why else ""))
+    ok, bad = qualify_passed(ctx.db, ctx.g)
+    print("qualify: rack passed" if ok else f"qualify: not passed: {', '.join(bad)}")
+    return 0 if ok else 1
+
+
 def _close(a) -> int:
     from .kea_client import KeaError
     from .stages import close_order
@@ -131,6 +160,10 @@ def main(argv=None) -> int:
     p.add_argument("--bind", default="127.0.0.1")
     p.set_defaults(fn=_serve)
     sub.add_parser("discover", help="run Discover for this order dir").set_defaults(fn=_discover)
+    p = sub.add_parser("qualify", help="run Qualify for this order dir (or some positions)")
+    p.add_argument("--pos", action="extend", nargs="+", metavar="P",
+                   help="only these positions (--pos L37 C37 or repeated)")
+    p.set_defaults(fn=_qualify)
     p = sub.add_parser("close", help="release this rack's reservations and close it")
     p.add_argument("--confirm", required=True, metavar="ORDER")
     p.set_defaults(fn=_close)
