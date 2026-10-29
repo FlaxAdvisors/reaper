@@ -37,27 +37,52 @@ def launch_script(stages: str) -> str:
     )
 
 
+_STOP_SH = (
+    "systemctl stop flax-qual-agent\n"
+    "for i in $(seq 1 20); do systemctl is-active --quiet flax-qual-agent || exit 0; sleep 1; done\n"
+    "echo 'flax-qual-agent still active after stop'; exit 3\n"
+)
+
+
 def launch(host_ip, user, password, *, stages=ORDER_STAGES, runner=None,
            client_factory=QualClient) -> RungResult:
     kw = {"runner": runner} if runner else {}
-    rc, out = hostssh.run(host_ip, user, password, launch_script(stages), timeout=60, **kw)
+    script = launch_script(stages)
+    rc, out = hostssh.run(host_ip, user, password, script, timeout=60, **kw)
     tail = (out or "").strip()[-400:]
     if rc != 0:
         return RungResult("fail", {"error": f"agent launch rc={rc}", "output": tail})
     if _ACTIVE not in (out or ""):
-        return RungResult("pass", {"mode": "launched", "stages": stages})
-    # Already running from an earlier Qualify: use the agent's restart contract so the
-    # new run is fresh (restart -> ack). The running process keeps the stage list it
-    # was started with; poll() reports whatever stages the agent actually has.
+        return RungResult("pass", {"mode": "fresh", "stages": stages})
+    # Already running from an earlier Qualify. An agent reads FLAX_QUAL_STAGES only at
+    # process start, so if its stage list differs from the request (e.g. a full default
+    # list would run iperf against the bang) it is stopped and launched fresh; if it
+    # matches, the agent's restart contract (restart -> ack) gives a fresh run.
     client = client_factory(f"http://{host_ip}:{AGENT_PORT}")
+    want = stages.split(",")
     try:
-        ids = client.restart()
-        client.restart_ack()
-    except QualUnreachable as e:
-        return RungResult("fail", {"error": f"agent active but restart failed: {e}"})
-    return RungResult("pass", {"mode": "restarted", "stages": stages,
-                               "old_run_id": ids.get("old_run_id"),
-                               "new_run_id": ids.get("new_run_id")})
+        have = [s["name"] for s in client.stages()]
+    except (QualUnreachable, KeyError, TypeError):
+        have = None                         # can't tell: don't trust it, relaunch
+    if have == want:
+        try:
+            ids = client.restart()
+            client.restart_ack()
+        except QualUnreachable as e:
+            return RungResult("fail", {"error": f"agent active but restart failed: {e}"})
+        return RungResult("pass", {"mode": "restart", "stages": stages,
+                                   "old_run_id": ids.get("old_run_id"),
+                                   "new_run_id": ids.get("new_run_id")})
+    rc, out = hostssh.run(host_ip, user, password, _STOP_SH, timeout=45, **kw)
+    if rc != 0:
+        return RungResult("fail", {"error": f"agent stop rc={rc}",
+                                   "output": (out or "").strip()[-400:]})
+    rc, out = hostssh.run(host_ip, user, password, script, timeout=60, **kw)
+    if rc != 0 or _ACTIVE in (out or ""):
+        return RungResult("fail", {"error": f"agent relaunch rc={rc}",
+                                   "output": (out or "").strip()[-400:]})
+    return RungResult("pass", {"mode": "relaunch-stage-mismatch", "stages": stages,
+                               "had_stages": have})
 
 
 def _collect(client, name, st, run_id) -> RungResult:
