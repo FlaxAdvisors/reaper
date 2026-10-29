@@ -740,6 +740,46 @@ def page_post_delete_reservation(mac_hex: str):
     return RedirectResponse(url="/reservations", status_code=303)
 
 
+from . import order_reservations  # noqa: E402
+
+# rackpost's Kea writes (customer-rack orders). Fenced to order:* sources in
+# order_reservations; 400 = malformed input (no DB touched), 409 = the MAC or
+# IP belongs to another source (nothing written). See flax-api-delta.md.
+_ORDER_BAD = (order_reservations.BadSource, order_reservations.BadMac,
+              order_reservations.BadValue)
+_ORDER_FIELDS = ("source", "mac", "ipv4", "hostname", "vid")
+
+
+@app.post("/api/v1/order-reservations")
+def api_order_reservation_upsert(body=Body(...)):
+    if not isinstance(body, dict) or any(k not in body for k in _ORDER_FIELDS):
+        return JSONResponse({"error": "body needs " + ", ".join(_ORDER_FIELDS)},
+                            status_code=400)
+    try:
+        order_reservations.upsert(**{k: body[k] for k in _ORDER_FIELDS})
+    except _ORDER_BAD as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except order_reservations.Conflict as exc:
+        return JSONResponse({"error": str(exc)}, status_code=409)
+    return JSONResponse({"ok": True})
+
+
+@app.get("/api/v1/order-reservations")
+def api_order_reservations_list(source: str = ""):
+    try:
+        return JSONResponse({"rows": order_reservations.list_source(source)})
+    except _ORDER_BAD as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+@app.delete("/api/v1/order-reservations")
+def api_order_reservations_delete(source: str = ""):
+    try:
+        return JSONResponse({"deleted": order_reservations.delete_source(source)})
+    except _ORDER_BAD as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+
 from . import aliases as aliases_mod  # noqa: E402
 
 
