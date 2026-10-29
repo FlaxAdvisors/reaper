@@ -14,6 +14,9 @@ MAX_COL = 5
 COL_ALIAS = {"L": 1, "C": 2, "R": 3}
 
 _LINK_RE = re.compile(r"^([A-Za-z]+):(\d+)(?:/(\d+))?$")
+# a pos becomes a directory name (artifacts/<pos>/ under a root daemon) and part of
+# Kea hostnames: no dots, slashes or spaces
+_POS_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,31}")
 
 
 class GeometryError(Exception):
@@ -150,6 +153,8 @@ def parse_geometry(data: dict) -> Geometry:
     for x in data.get("devices", []):
         pos = _req(x, "pos", "device")
         kind = _req(x, "kind", pos)
+        if not isinstance(pos, str) or not _POS_RE.fullmatch(pos):
+            raise GeometryError(f"bad device pos {pos!r} (want [A-Za-z0-9][A-Za-z0-9_-]{{0,31}})")
         if kind not in KIND_ENDPOINTS:
             raise GeometryError(f"{pos}: unknown kind {kind!r}")
         if pos in seen:
