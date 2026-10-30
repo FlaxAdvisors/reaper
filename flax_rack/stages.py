@@ -120,8 +120,14 @@ def close_order(ctx) -> dict:
     the close stands."""
     from . import archive, process_report       # archive -> report -> deploy -> stages
     first = ctx.db.closed_at() is None
-    # internal, every pass: before anything leaves the order (raises -> order stays open)
-    process_report.write(ctx.dir, ctx.g, ctx.db)
+    # internal, every pass: before anything leaves the order. Not written -> Close stops
+    # here: nothing archived, nothing released, the order stays OPEN
+    try:
+        process_report.write(ctx.dir, ctx.g, ctx.db)
+    except Exception as e:
+        ctx.db.add_event("error", f"close: process report not written ({type(e).__name__}: "
+                                  f"{e}); nothing archived or released, order stays open")
+        raise
     at = ctx.db.closed_at() or archive.now()    # a re-close keeps the first close time
     p = archive.payload(ctx.g, ctx.db, ctx.dir, closed_at=at)
     counts = ctx.kea.archive(p)                 # raises KeaError -> order stays open

@@ -17,8 +17,8 @@ when the SEL was not read (no IPMI session, or `sel elist` failed: SEL not read 
 SEL clean), else `pass`. The in-band half never decides it: a host that does not answer
 is a row (`inband: false`) beside a SEL that was read.
 
-Transients (operator 2026-10-30): a threshold event (Upper/Lower Non-critical / Critical /
-Non-recoverable going high/low) whose `Asserted` line has a `Deasserted` line for the
+Transients (operator 2026-10-30): a threshold event (Upper/Lower Non-critical / Critical
+going high/low; never Non-recoverable, never a non-threshold event) whose `Asserted` line has a `Deasserted` line for the
 same sensor + event within TRANSIENT_S is benign: both lines are listed in
 detail["sel_transients"], never in sel_nonbenign. An Asserted line with no such
 Deasserted (and a lone Deasserted) stays red. Read-only: nothing here
@@ -84,8 +84,8 @@ def first_boot(bootorder_text: str) -> tuple[str | None, str | None, bool]:
     return bid, line, bool(line and _NET_BOOT.search(line))
 
 
-_THRESHOLD = re.compile(r"^(?:Upper|Lower) (?:Non-critical|Critical|Non-recoverable) "
-                        r"going (?:high|low)$", re.I)
+# Non-recoverable (thermtrip class) is never a transient, nor any non-threshold event
+_THRESHOLD = re.compile(r"^(?:Upper|Lower) (?:Non-critical|Critical) going (?:high|low)$", re.I)
 
 
 def _sel_at(date: str, clock: str) -> datetime.datetime | None:

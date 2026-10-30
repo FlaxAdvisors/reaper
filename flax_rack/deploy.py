@@ -25,10 +25,12 @@ a reason, who, when -- stored in order.db) lets a device through when every rung
 not passed is named in it; any other failed/unmeasured rung still blocks. A waiver is
 carried by the request that uses it (never inherited from an earlier Deploy).
 
-Reinstall guard: a target whose latest `install` passed is only reinstalled (its disks
-wiped) with reinstall=<order id>; else the run is refused and `from_phase="firstboot"`
-(skip install: SOL, Hdd boot, installed-OS proof, then the rest) is the way on. A
-firstboot run needs each target's latest install (or firstboot) passed.
+Reinstall guard: a target with an installed OS (an install or first boot passed in ANY
+pass -- Start fresh resets verdicts, not the disk -- or this pass's Discover found it up
+on its installed OS) is only reinstalled (its disks wiped) with reinstall=<order id>;
+else the run is refused and `from_phase="firstboot"` (skip install: SOL, Hdd boot,
+installed-OS proof, then the rest) is the way on. A firstboot run needs that same
+installed-OS evidence for each target.
 
 A device failing a phase (fail or unmeasured on its rung) gets `skip` ("failed in phase
 <p>" / "not measured in phase <p>" / "cancelled") on the later phases' rungs; the rest
@@ -112,11 +114,16 @@ def deploy_rungs(d) -> list[str]:
 
 def deploy_why(lr, g) -> dict[str, str]:
     """pos -> why it is not deployed (absent = deployed): its first Deploy rung (step
-    order) whose latest run is not pass."""
+    order) whose latest run is not pass. An install not run in this pass is no blocker
+    when this pass's firstboot passed (a Deploy from firstboot of a disk installed in an
+    earlier pass: the first boot proved the installed OS)."""
     out = {}
     for d in g.devices:
         for r in deploy_rungs(d):
             v = (lr.get((d.pos, r)) or {}).get("verdict")
+            if r == "install" and v is None \
+                    and (lr.get((d.pos, "firstboot")) or {}).get("verdict") == "pass":
+                continue
             if v != "pass":
                 out[d.pos] = not_passed(r, v)
                 break
@@ -189,10 +196,30 @@ def check_waivers(g, waive, targets: list[str]) -> dict[str, dict]:
     return out
 
 
-def plan(lr, g, *, positions=None, from_phase="install", reinstall=None, waive=None):
+def installed_positions(db, lr=None) -> set[str]:
+    """Positions whose disk holds an installed OS: an install (or first boot) passed in
+    ANY pass, or this pass's Discover found the node up on it. A fact about the disk,
+    not a verdict: Start fresh does not forget it (the reinstall guard rests on it)."""
+    lr = db.latest_runs() if lr is None else lr
+    return db.ever_passed(("install", "firstboot")) | _installed_now(lr)
+
+
+def _installed_now(lr) -> set[str]:
+    """This pass's evidence: a passed install / first boot, or Discover's installed-OS
+    probe (power-on / host-ssh passed with installed_os)."""
+    return {pos for (pos, rung), r in lr.items() if r.get("verdict") == "pass" and (
+        rung in ("install", "firstboot")
+        or (rung in ("power-on", "host-ssh") and (r.get("detail") or {}).get("installed_os")))}
+
+
+def plan(lr, g, *, positions=None, from_phase="install", reinstall=None, waive=None,
+         installed=None):
     """(target devices, waivers, {pos: why} of the other host devices not passed). Raises
     GateError when the run may not start: unknown position, the gate (with the waivers),
-    or a passed install without reinstall=<order id>."""
+    or an installed disk (`installed`: installed_positions(db), across passes; this pass's
+    runs when None) without reinstall=<order id>."""
+    if installed is None:
+        installed = _installed_now(lr)
     if from_phase not in FROM_PHASES:
         raise GateError(f"from must be one of {', '.join(FROM_PHASES)}")
     hosts = [d for d in g.devices if d.endpoints.get("hosts")]
@@ -214,8 +241,7 @@ def plan(lr, g, *, positions=None, from_phase="install", reinstall=None, waive=N
     tset = {d.pos for d in targets}
     incomplete = {d.pos: why for d in hosts if d.pos not in tset and (why := gate_why(lr, d))}
     if from_phase == "install":
-        done = [d.pos for d in targets
-                if (lr.get((d.pos, "install")) or {}).get("verdict") == "pass"]
+        done = [d.pos for d in targets if d.pos in installed]
         if done and reinstall != g.order:
             raise GateError(
                 f"already installed: {', '.join(done)}; a reinstall wipes their disks -- "
@@ -223,9 +249,7 @@ def plan(lr, g, *, positions=None, from_phase="install", reinstall=None, waive=N
                 f"from firstboot (CLI --from firstboot)")
     else:
         # a first boot of a never-installed disk boots whatever is on it, then fails slowly
-        none = [d.pos for d in targets
-                if not any((lr.get((d.pos, r)) or {}).get("verdict") == "pass"
-                           for r in ("install", "firstboot"))]
+        none = [d.pos for d in targets if d.pos not in installed]
         if none:
             raise GateError(f"no passed install recorded for {', '.join(none)}; deploy them "
                             "from install")
@@ -757,7 +781,8 @@ def run_deploy(ctx, *, positions: list[str] | None = None, from_phase: str = "in
     g = ctx.g
     lr = ctx.db.latest_runs()
     targets, waivers, incomplete = plan(lr, g, positions=positions, from_phase=from_phase,
-                                        reinstall=reinstall, waive=waive)
+                                        reinstall=reinstall, waive=waive,
+                                        installed=installed_positions(ctx.db, lr))
     who = clean_who(who)
     cr = creds(ctx)
     R = ctx.rungs or real_rungs()

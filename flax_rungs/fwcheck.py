@@ -203,8 +203,9 @@ def _ev(state, headline, rows, notes, arts=None, verdict=None, **extra) -> RungR
     return RungResult(verdict, d, arts or {})
 
 
-def skipped(why: str) -> tuple[RungResult, RungResult]:
-    r = RungResult("skip", {"headline": why, "reason": why, "rows": [], "notes": []})
+def skipped(why: str, na: bool = False) -> tuple[RungResult, RungResult]:
+    """Both rows of a pair skipped; na: the reader does not apply to this endpoint."""
+    r = RungResult("skip", {"headline": why, "reason": why, "rows": [], "notes": [], "na": na})
     return r, r
 
 

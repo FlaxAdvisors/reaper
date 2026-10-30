@@ -26,9 +26,12 @@ eth0 neighbour, unknown = no fresh snapshot; the site turtle itself is not read)
 LinkPoller: one thread per served rack. Each tick starts a read for every switch that
 has none in flight (a slow ssh never piles up; other switches still update), keeps
 the snapshots in memory (a restarted daemon rebuilds them within one poll: nothing
-stale carried over), and appends each state change to order.db `link_event` plus an
-event `link <pos> <link>: <old> → <new>`. A link whose switch has not been read yet in
-this process is not logged (a restart does not log ok → unknown → ok).
+stale carried over), and appends each state change to order.db `link_event`. The
+order's event log gets at most one line per switch per poll (link_summary), and only
+for changes into or out of down/wrong/unknown: ok <-> up is identity evidence aging
+(an FDB entry), not a link change. A link whose switch has not been read yet in this
+process is not logged (a restart does not log ok → unknown → ok). A wedge's mgmt IP is
+the geometry's, else the lease Discover last proved in any pass (switch_ips).
 """
 import re
 import threading
@@ -80,8 +83,9 @@ def device_macs(db) -> dict[str, set[str]]:
     for x in db.devices():
         out[x["pos"]] = {m for m in (x.get("host_mac"), x.get("bmc_mac"),
                                      *(x.get("iom_macs") or [])) if m}
-    # an IOM's last seen MAC (order.db iom_macs stays empty until both IOMs are found)
-    for (key, _), det in db.last_passed(("bmc-mac-seen",)).items():
+    # an IOM's last seen MAC (order.db iom_macs stays empty until both IOMs are found);
+    # any pass: a MAC is a fact about the hardware, Start fresh does not hide it
+    for (key, _), det in db.last_passed(("bmc-mac-seen",), all_passes=True).items():
         pos = key.split(".")[0]
         if pos in out and key != pos and det.get("iom_mac"):
             out[pos].add(det["iom_mac"].replace(":", "").lower())
@@ -252,16 +256,34 @@ def presence(links: dict) -> str:
     return "unknown"
 
 
+GREEN = frozenset(("ok", "up"))
+_SUMMARY_MAX = 4
+
+
+def link_summary(sw, changes, error=None) -> str:
+    """One event line for a switch's link changes [(pos, link, old, new)] in one poll."""
+    n = len(changes)
+    if all(c[3] == "unknown" for c in changes):
+        return (f"switch {sw} not read: {n} link(s) unknown"
+                + (f" ({error})" if error else ""))
+    if all(c[2] == "unknown" for c in changes) and all(c[3] in GREEN for c in changes):
+        return f"switch {sw} read again: {n} link(s) back"
+    shown = "; ".join(f"{p} {l} {o} → {w}" for p, l, o, w in changes[:_SUMMARY_MAX])
+    more = f"; +{n - _SUMMARY_MAX} more" if n > _SUMMARY_MAX else ""
+    return f"links on switch {sw}: {shown}{more}"
+
+
 def switch_ips(ctx) -> dict[str, str | None]:
-    """Switch id -> its SONiC mgmt IP: geometry mgmt_ip, else Discover's lease."""
-    runs = None
+    """Switch id -> its SONiC mgmt IP: geometry mgmt_ip, else the lease Discover last
+    proved in ANY pass (a fact about the switch: Start fresh does not hide it)."""
+    leased = None
     out = {}
     for s in ctx.g.switches:
         ip = s.mgmt_ip
         if not ip:
-            if runs is None:
-                runs = ctx.db.latest_runs()
-            ip = (((runs.get((f"_sw-{s.id}", "host-leased")) or {}).get("detail")) or {}).get("ip")
+            if leased is None:
+                leased = ctx.db.last_passed(("host-leased",), all_passes=True)
+            ip = (leased.get((f"_sw-{s.id}", "host-leased")) or {}).get("ip")
         out[s.id] = ip
     return out
 
@@ -345,14 +367,18 @@ class LinkPoller(threading.Thread):
             pass
 
     def log_transitions(self, ctx) -> dict:
-        """Evaluate now; append each changed (pos, link) to link_event + an event."""
+        """Evaluate now; append each changed (pos, link) to link_event, and at most one
+        order event per switch summarising its changes into/out of a non-green state
+        (ok <-> up is identity evidence aging, e.g. an FDB entry: link_event only)."""
         with self._log_mu:
             g, db = ctx.g, ctx.db
             with self._mu:
                 snaps, attempted = dict(self._snaps), set(self._attempted)
+                errors = dict(self._errors)
             res = evaluate(g, snaps, device_macs(db), device_names(g), self.clock())
             if self._last is None:
                 self._last = db.last_link_states()
+            by_sw: dict[str, list] = {}
             for pos, links in res.items():
                 for link, v in links.items():
                     if v["switch"] not in attempted:
@@ -361,8 +387,11 @@ class LinkPoller(threading.Thread):
                     if old == v["state"]:
                         continue
                     db.add_link_event(pos, link, v["state"], v["text"])
-                    db.add_event("link", f"link {pos} {link}: {old} → {v['state']}")
                     self._last[(pos, link)] = v["state"]
+                    if not {old, v["state"]} <= GREEN:
+                        by_sw.setdefault(v["switch"], []).append((pos, link, old, v["state"]))
+            for sw, ch in by_sw.items():
+                db.add_event("link", link_summary(sw, ch, errors.get(sw)))
             return res
 
     def run(self) -> None:

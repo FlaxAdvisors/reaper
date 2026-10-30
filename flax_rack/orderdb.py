@@ -168,16 +168,27 @@ class OrderDB:
             "artifacts": json.loads(r["artifacts"]) if r["artifacts"] else {},
             "started_at": r["started_at"], "finished_at": r["finished_at"]} for r in rows}
 
-    def last_passed(self, rungs) -> dict:
+    def last_passed(self, rungs, *, all_passes=False) -> dict:
         """{(pos, rung): detail} of the latest PASSING run of each of `rungs` (what was
-        last seen, e.g. an IOM's MAC/serial while it is silent now)."""
+        last seen, e.g. an IOM's MAC/serial while it is silent now). all_passes=True
+        looks across every pass: a fact about the hardware (a switch's lease, a MAC)
+        is not a verdict, and Start fresh does not hide it."""
         rungs = list(rungs)
+        scope = "" if all_passes else f"id > {_RUN_AFTER} AND "
         rows = self._all(
-            "SELECT pos, rung, detail FROM run WHERE id IN (SELECT MAX(id) FROM run WHERE "
-            f"id > {_RUN_AFTER} AND verdict='pass' AND rung IN ({','.join('?' * len(rungs))}) GROUP BY pos, rung)",
+            f"SELECT pos, rung, detail FROM run WHERE id IN (SELECT MAX(id) FROM run WHERE {scope}"
+            f"verdict='pass' AND rung IN ({','.join('?' * len(rungs))}) GROUP BY pos, rung)",
             rungs)
         return {(r["pos"], r["rung"]): json.loads(r["detail"]) if r["detail"] else {}
                 for r in rows}
+
+    def ever_passed(self, rungs) -> set[str]:
+        """The positions with a passed run of any of `rungs` in ANY pass (e.g. an install:
+        the disk was written, whatever this pass has judged so far)."""
+        rungs = list(rungs)
+        return {r["pos"] for r in self._all(
+            "SELECT DISTINCT pos FROM run WHERE verdict='pass' AND rung IN "
+            f"({','.join('?' * len(rungs))})", rungs)}
 
     def latest_run_id(self, pos, rung) -> int | None:
         """The id of (pos, rung)'s latest run row (the one latest_runs() shows)."""
@@ -303,10 +314,11 @@ class OrderDB:
         return r[0]["v"] if r else None
 
     def set_components(self, pos, rows: list[dict], source_run: int) -> None:
-        """Replace pos's component rows (one transaction) with `rows` ({kind, model,
-        serial, slot}) read from run `source_run` (the inventory run they came from)."""
+        """Replace pos's component rows of this pass (one transaction) with `rows` ({kind,
+        model, serial, slot}) read from run `source_run` (the inventory run they came
+        from). An earlier pass's rows stay: the history."""
         with closing(self._conn()) as c, c:
-            c.execute("DELETE FROM component WHERE pos=?", (pos,))
+            c.execute(f"DELETE FROM component WHERE pos=? AND source_run > {_RUN_AFTER}", (pos,))
             c.executemany(
                 "INSERT INTO component(pos,kind,model,serial,slot,source_run) VALUES(?,?,?,?,?,?)",
                 [(pos, r["kind"], r.get("model"), r.get("serial"), r.get("slot"), source_run)

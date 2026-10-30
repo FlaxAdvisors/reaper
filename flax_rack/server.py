@@ -37,7 +37,8 @@ POST api/fresh {"confirm": <order id>, "reason": "..."} starts a new pass (Start
 the runs, waivers and CSVs so far leave the tiles, gates and reports; nothing is
 deleted), refused like a stage start while one runs or the daemon drains. GET
 api/report/process.html (re)writes and serves the internal process report (every
-attempt of every pass; Close writes it too, before archiving).
+attempt of every pass; Close writes it too, before archiving, and a closed order's GET
+serves that copy unchanged).
 
 Serial consoles come from the shared flax-post-sol relay (flax_rungs.sol): GET
 /rackpost/api/sol-targets lists every open served rack's host BMCs in the relay's feed
@@ -77,8 +78,8 @@ from flax_rungs.pxeboot import PXE_DIR
 from . import devview, process_report, report
 from .addressing import plan_addresses
 from .deploy import (_REASON_MAX, FROM_PHASES, PHASES as DEPLOY_PHASES, GateError, clean_who, deploy_rungs,
-                     deploy_why, gate_blockers, gate_why, ha_mode_of, plan as deploy_plan,
-                     run_deploy, sweep_interrupted_installs)
+                     deploy_why, gate_blockers, gate_why, ha_mode_of, installed_positions,
+                     plan as deploy_plan, run_deploy, sweep_interrupted_installs)
 from .done import DONE_RUNGS, done_rungs, run as run_done, targets as done_targets
 from .discover_ladder import DISCOVER_STEPS, OLD_DISCOVER_RUNGS, wanted as stage_positions
 from .firmware import run_firmware
@@ -258,6 +259,8 @@ class Rack:
 # reservation / reader, or the node was already up -- live image or installed OS): "n/a",
 # drawn green. Any other skip
 # (cancelled, an earlier step or phase failed or was not measured) is "upstream": neutral.
+# The producer says so (detail "na", set where the rung decides it does not apply);
+# _NA_SKIP reads only rows written before that flag existed (2026-10-30).
 _NA_SKIP = re.compile(r"(an IOM has no host|no BMC \(|no firmware reader for kind|"
                       r"switch endpoints are discovered|a switch has no |"
                       r"already in the live image|up on its installed OS)")
@@ -265,6 +268,8 @@ _NA_SKIP = re.compile(r"(an IOM has no host|no BMC \(|no firmware reader for kin
 
 def _skip_reason(run: dict) -> str:
     d = run.get("detail") or {}
+    if "na" in d:
+        return "n/a" if d["na"] else "upstream"
     return "n/a" if _NA_SKIP.match(d.get("reason") or d.get("headline") or "") else "upstream"
 
 
@@ -322,8 +327,10 @@ def rack_state(r: Rack) -> dict:
         .get("unexpected") or []
     waivers = db.waivers()
     last: dict[str, dict] = {}
-    for (k, rung), det in db.last_passed(("bmc-mac-seen", "serial")).items():
+    # last seen in ANY pass: a MAC / serial is a fact about the hardware, not a verdict
+    for (k, rung), det in db.last_passed(("bmc-mac-seen", "serial"), all_passes=True).items():
         last.setdefault(k, {})[rung] = det
+    inst = installed_positions(db, raw)
     lm = getattr(r, "linkmon", None)
     now = time.time()
     live = linkmon.evaluate(g, lm.snapshots() if lm else {}, linkmon.device_macs(db),
@@ -331,9 +338,6 @@ def rack_state(r: Rack) -> dict:
     devices = []
     for d in g.devices:
         x = dbdev.get(d.pos, {})
-        if not any(k == d.pos or k.startswith(f"{d.pos}.iom") for k in by_pos):
-            # MACs Discover recorded in an earlier pass: not on the tile until it runs again
-            x = {**x, "host_mac": None, "bmc_mac": None, "iom_macs": []}
         default = pop_default(g, d)
         ovr = x.get("pop_override")
         profiles.update(p for p in (default, ovr) if p)
@@ -360,6 +364,8 @@ def rack_state(r: Rack) -> dict:
             # Deploy: its rungs, the gate (None = may enter), the Qualify rungs a waiver
             # would have to name, and its latest recorded waiver (active = still needed)
             "deploy_rungs": deploy_rungs(d),
+            # an installed OS on its disk (any pass): Deploy's reinstall guard
+            "installed": d.pos in inst,
             "deploy_gate": gate_why(raw, d) if deploy_rungs(d) else None,
             "gate_blockers": gate_blockers(raw, d) if deploy_rungs(d) else [],
             "waiver": _waiver_view(waivers.get(d.pos), raw, d),
@@ -606,8 +612,9 @@ class App:
         if r.db.closed_at():
             return 409, {"error": "order is closed"}
         try:
-            deploy_plan(r.db.latest_runs(), r.g, positions=kw.get("positions"), from_phase=frm,
-                        reinstall=rein, waive=waive)
+            lr = r.db.latest_runs()
+            deploy_plan(lr, r.g, positions=kw.get("positions"), from_phase=frm,
+                        reinstall=rein, waive=waive, installed=installed_positions(r.db, lr))
         except GateError as e:
             return 409, {"error": str(e)}
         kw.update(from_phase=frm, reinstall=rein, waive=waive, who=clean_who(by or who))
@@ -662,9 +669,14 @@ class App:
         return 200, {"pass": _pass_view(r.db), "renamed": out["renamed"]}
 
     def process_report(self, r: Rack) -> bytes:
-        """Rewrite the process report now; its HTML with links resolved from the rack
-        root (the file links artifacts relative to the order dir)."""
-        text = process_report.write(r.dir, r.g, r.db).read_text()
+        """Rewrite the process report now (a closed order: the one Close wrote, served
+        as is); its HTML with links resolved from the rack root (the file links
+        artifacts relative to the order dir)."""
+        stored = r.dir / process_report.HTML
+        if r.db.closed_at() and stored.is_file():
+            text = stored.read_text()
+        else:
+            text = process_report.write(r.dir, r.g, r.db).read_text()
         return text.replace("<head>", '<head><base href="../../">', 1).encode()
 
     def report_file(self, r: Rack, name: str) -> tuple[Path, str] | None:

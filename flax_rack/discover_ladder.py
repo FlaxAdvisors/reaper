@@ -132,6 +132,8 @@ def ev(verdict, headline, rows=(), notes=(), arts=None, **extra) -> RungResult:
         d.setdefault("error", headline)
     if verdict in ("skip", UNMEASURED):
         d.setdefault("reason", headline)
+    if verdict == "skip":                   # na: the step does not apply to this endpoint
+        d["na"] = bool(d.get("na"))
     return RungResult(verdict, d, arts or {})
 
 
@@ -261,8 +263,8 @@ class Walk:
             self.blocked = name
         return r
 
-    def skip(self, name, why) -> RungResult:
-        r = run_step(self.ctx, self.key, name, lambda: ev("skip", why))
+    def skip(self, name, why, na=False) -> RungResult:
+        r = run_step(self.ctx, self.key, name, lambda: ev("skip", why, na=na))
         self.res[name] = r
         return r
 
@@ -517,7 +519,10 @@ _PROBE = liveboot._PROBE
 
 def _probe(ctx, env, host_ip):
     user, pw = env.cr.host
-    rc, out, err = env.R.host_run(host_ip, user, pw, _PROBE, timeout=20, runner=ctx.runner)
+    # no sudo: the probe reads /proc only, and an installed node's flax user may not have
+    # NOPASSWD yet (a sudo prompt would read as "not the live image" and cycle it)
+    rc, out, err = env.R.host_run(host_ip, user, pw, _PROBE, timeout=20, sudo=False,
+                                  runner=ctx.runner)
     return rc, out, err, env.R.wall()
 
 
@@ -615,7 +620,7 @@ def _installed_os(ctx, env, host_ip) -> dict | None:
     (VERSION_ID 24.04, no BOOTIF=, / on an internal disk), else None."""
     user, pw = env.cr.host
     rc, out, _err = env.R.host_run(host_ip, user, pw, install._PROBE, timeout=20,
-                                   runner=ctx.runner)
+                                   sudo=False, runner=ctx.runner)  # as install's own probe
     if rc != 0:
         return None
     p = install.parse_probe(out)
@@ -662,7 +667,7 @@ def _marker(ctx, env, st, host_ip, step, key) -> RungResult:
     if st.installed:
         return ev("skip", "up on its installed OS: no live boot to mark",
                   [["evidence", _MARK_SRC[key]]],
-                  ["the node was not booted by Discover (it runs its installed OS)"])
+                  ["the node was not booted by Discover (it runs its installed OS)"], na=True)
     if st.live:
         ts = (st.proof or {}).get(key)
         rows = [["seen at", _t(ts) or "not seen"], ["kernel booted at", _t(st.kernel_boot)],
@@ -675,7 +680,7 @@ def _marker(ctx, env, st, host_ip, step, key) -> RungResult:
         return ev("skip", "already in the live image; this boot's markers are not in the logs",
                   rows, ["the node was already on when Discover looked and its boot could not be "
                          "bracketed by the logs (rotated, or older than the tail read): the "
-                         "markers are unknown; BOOTIF at ssh still proves the device"])
+                         "markers are unknown; BOOTIF at ssh still proves the device"], na=True)
     since = {"tftp": st.power_at, "ipxe": st.marks.get("tftp"),
              "iso": st.marks.get("ipxe")}[key]
     seen = {}
@@ -912,7 +917,7 @@ def _iom_ladder(ctx, env, d, n, ip) -> Walk:
     w.step("bmc-pinged", pinged)
     w.step("serial", serial, gate=False)
     for s in HOST_STEPS:
-        w.skip(s, "an IOM has no host")
+        w.skip(s, "an IOM has no host", na=True)
     w.step("bmc-ready", ready)
     w.mac = mac
     return w
@@ -940,6 +945,8 @@ def _rollup(ctx, pos, walks: dict[str, Walk], extra_of=None, steps=DISCOVER_STEP
         else:
             head = "; ".join(f"{k} {r.detail.get('headline')}" for k, r in res.items() if r)
         extra = (extra_of or (lambda s: {}))(step)
+        if verdict == "skip":               # n/a only when every endpoint's skip is
+            extra = {**extra, "na": all(r.detail.get("na") for r in res.values() if r)}
         run_step(ctx, pos, step, lambda: ev(verdict, head, rows,
                                             ["the device's step rolls up its endpoints' own ladders"],
                                             endpoints={k: r.verdict for k, r in res.items() if r},
@@ -1135,33 +1142,33 @@ def _switch_ladder(ctx, env, s, turtles, prev):
         identify()
     if ep.get("bmc"):
         w.step("bmc-mac-seen", lambda: mac_seen("bmc"))
-        w.skip("bmc-reserved", no_res)
+        w.skip("bmc-reserved", no_res, na=True)
         w.step("bmc-leased", lambda: _leased(ctx, R, "BMC", info["role"]["bmc"], None,
                                              BMC_LEASE_WAIT_S, dynamic=True))
         w.step("bmc-pinged", lambda: pinged("bmc"))
     else:
         for st_ in ("bmc-mac-seen", "bmc-reserved", "bmc-leased", "bmc-pinged"):
-            w.skip(st_, f"no BMC ({s.model} endpoints: {', '.join(ep) or 'none'})")
+            w.skip(st_, f"no BMC ({s.model} endpoints: {', '.join(ep) or 'none'})", na=True)
     w.step("serial", serial, gate=False)
     for st_ in ("power-on", "tftp-seen", "ipxe-seen"):
-        w.skip(st_, no_boot)
+        w.skip(st_, no_boot, na=True)
     # the SONiC half walks on after a BMC-half fault (only a turtle fault stops it);
     # bmc-ready then waits on the BMC half again
     bmc_block = w.blocked
     if w.blocked != "switchportlink":
         w.blocked = None
     w.step("host-mac-seen", lambda: mac_seen("sonic"))
-    w.skip("host-reserved", no_res)
+    w.skip("host-reserved", no_res, na=True)
     w.step("host-leased", lambda: _leased(ctx, R, "SONiC", info["role"]["sonic"], None,
                                           BMC_LEASE_WAIT_S, dynamic=True))
-    w.skip("live-iso-seen", no_boot)
+    w.skip("live-iso-seen", no_boot, na=True)
     w.step("host-pinged", lambda: pinged("sonic"))
     w.step("host-ssh", sonic_ssh)
     w.blocked = bmc_block
     if ep.get("bmc"):
         w.step("bmc-ready", ready)
     else:
-        w.skip("bmc-ready", f"no BMC ({s.model})")
+        w.skip("bmc-ready", f"no BMC ({s.model})", na=True)
     return w
 
 
@@ -1245,10 +1252,11 @@ def run_discover(ctx, *, positions: list[str] | None = None) -> None:
     except Exception as e:                  # noqa: BLE001 -- each switch says so
         turtles, terr = {}, f"{type(e).__name__}: {e}"
         ctx.db.add_event("discover", f"site switches not read: {terr}")
-    lr = ctx.db.latest_runs()
+    # the leases last proved in any pass (a switch's IP is a fact, not a verdict)
+    leased = ctx.db.last_passed(("host-leased", "bmc-leased"), all_passes=True)
 
     def prev_ips(s):
-        return [((lr.get((f"_sw-{s.id}", r)) or {}).get("detail") or {}).get("ip")
+        return [(leased.get((f"_sw-{s.id}", r)) or {}).get("ip")
                 for r in ("host-leased", "bmc-leased")]
 
     if positions is not None:

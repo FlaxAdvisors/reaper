@@ -294,6 +294,7 @@ class FakeRungs:
         self.bond_fail: set[str] = set()
         self.hatest_fail: set[str] = set()
         self.installed: set[str] = set()       # up on its installed OS (after a first boot)
+        self.sudo_prompt: set[str] = set()     # host_run with sudo asks for a password
         self.fabric_down: set[str] = set()     # fabric ports admin-down (no LLDP) until fabric_up
         # Done: a non-benign SEL entry, a BMC whose SEL cannot be read, a Redfish that
         # refuses the override clear; pxe_dir = where pxe_remove really unlinks (None:
@@ -741,11 +742,13 @@ class FakeRungs:
         out[server["pos"]] = RungResult("pass", {"served": [c["pos"] for c in clients]})
         return out
 
-    def host_run(self, host_ip, user, pw, script, *, timeout=None, runner=None):
+    def host_run(self, host_ip, user, pw, script, *, timeout=None, sudo=True, runner=None):
         from flax_rungs.install import _PROBE as install_probe
         from flax_rungs.liveboot import _PROBE
         self.calls.append(("host_run", self.pos_of.get(host_ip), script.split("\n")[0][:40]))
         pos = self.pos_of.get(host_ip)
+        if sudo and pos in self.sudo_prompt:
+            return 1, "", "sudo: a password is required"
         if script == _PROBE:
             out = self._probe_out(pos, host_ip)
             return (0, out, "") if out else (255, "", "ssh: connect to host: No route to host")

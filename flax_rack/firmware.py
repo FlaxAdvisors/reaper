@@ -87,8 +87,8 @@ class _Rows:
         upd_r = out.get("pair", (None, RungResult("skip", {"headline": f"{chk} failed"})))[1]
         self.res[upd] = run_step(self.ctx, self.key, upd, lambda: upd_r, STAGE)
 
-    def skip(self, prefix, why):
-        self.pair(prefix, lambda: fwcheck.skipped(why))
+    def skip(self, prefix, why, na=False):
+        self.pair(prefix, lambda: fwcheck.skipped(why, na))
 
 
 GATE_STEPS = ("bmc-leased", "bmc-pinged")
@@ -178,8 +178,8 @@ _NO_HOST = "no host BIOS/NIC firmware here"
 def _report_only(ctx, key, read, notes, host_why) -> _Rows:
     rows = _Rows(ctx, key)
     rows.pair("bmc", lambda: fwcheck.steps("bmc", *fwcheck.report_only(read()), notes=notes))
-    rows.skip("bios", host_why)
-    rows.skip("mlx", host_why)
+    rows.skip("bios", host_why, na=True)
+    rows.skip("mlx", host_why, na=True)
     return rows
 
 
@@ -189,8 +189,8 @@ def _iom(ctx, R, cr, lr, d, n, ip) -> _Rows:
     if why:
         rows = _Rows(ctx, key)
         rows.skip("bmc", why)
-        rows.skip("bios", "an IOM has no host")
-        rows.skip("mlx", "an IOM has no host")
+        rows.skip("bios", "an IOM has no host", na=True)
+        rows.skip("mlx", "an IOM has no host", na=True)
         return rows
 
     def read():
@@ -224,14 +224,14 @@ def _switch(ctx, R, cr, lr, s):
         rows = _Rows(ctx, key)
         for p in ("bmc", "bios", "mlx"):
             rows.skip(p, f"no BMC ({s.model} endpoints: {', '.join(s.endpoints) or 'none'})"
-                      if p == "bmc" else host_why)
+                      if p == "bmc" else host_why, na=True)
         return rows
     why = discover_gate(lr, key)
     if why:
         rows = _Rows(ctx, key)
         rows.skip("bmc", why)
-        rows.skip("bios", host_why)
-        rows.skip("mlx", host_why)
+        rows.skip("bios", host_why, na=True)
+        rows.skip("mlx", host_why, na=True)
         return rows
     ip = ((lr.get((key, "bmc-leased")) or {}).get("detail") or {}).get("ip")
 
@@ -250,7 +250,7 @@ def _switch(ctx, R, cr, lr, s):
 def _other(ctx, d):
     rows = _Rows(ctx, d.pos)
     for p in ("bmc", "bios", "mlx"):
-        rows.skip(p, f"no firmware reader for kind {d.kind}")
+        rows.skip(p, f"no firmware reader for kind {d.kind}", na=True)
 
 
 # ---------------------------------------------------------------- stage

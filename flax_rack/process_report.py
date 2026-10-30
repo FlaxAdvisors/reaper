@@ -18,6 +18,7 @@ was up going down, re-plugs = back up after a pull) and SOL scan findings (insta
 import html
 import json
 import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -169,9 +170,17 @@ def build(order_dir, g, db) -> dict:
 
 
 def _atomic(path: Path, text: str) -> None:
-    tmp = path.with_name(f".{path.name}.tmp")
-    tmp.write_text(text)
-    os.replace(tmp, path)
+    """Write via a temp file of this writer's own (two concurrent writers never share
+    one), then rename over path."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def write(order_dir, g, db) -> Path:

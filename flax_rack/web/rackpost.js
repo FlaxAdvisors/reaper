@@ -879,7 +879,8 @@ function App() {
     // with the same typed id); a drawer DEPLOY = its own confirm, waivers and reason, and a
     // reinstall there takes the typed order id too ----
     depHosts() { return (this.s.devices || []).filter((d) => (d.deploy_rungs || []).length); },
-    installed(d) { return !!d && ((d.runs || {}).install || {}).verdict === 'pass'; },
+    // the server's installed: an install passed in any pass (Start fresh keeps the disk)
+    installed(d) { return !!d && !!d.installed; },
     depInstalled() { return this.depHosts().filter((d) => this.installed(d)).map((d) => d.pos); },
     openDeploy() { this.deploying = true; this.depText = ''; this.depFrom = 'install'; this.depReinstall = false; },
     async doDeploy() {
