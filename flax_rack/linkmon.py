@@ -28,7 +28,10 @@ eth0 neighbour, unknown = no fresh snapshot; the site turtle itself is not read)
 LinkPoller: one thread per served rack. Each tick starts a read for every switch that
 has none in flight (a slow ssh never piles up; other switches still update), keeps
 the snapshots in memory (a restarted daemon rebuilds them within one poll: nothing
-stale carried over), and appends each state change to order.db `link_event`. The
+stale carried over), and evaluates + logs as soon as each switch's read lands (not at
+the next tick; /api/state evaluates per request), so a change shows within one
+interval + that switch's read (5-8 s live) + the UI's own refresh. It appends each
+state change to order.db `link_event`. The
 order's event log gets at most one line per switch per poll (link_summary), and only
 for changes into or out of down/wrong/unknown: ok <-> up is identity evidence aging
 (an FDB entry), not a link change. A link whose switch has not been read yet in this

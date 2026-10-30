@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { fetchAllReach, fetchBladeReach, makeReconciler } from "./reconcile";
+import { fetchAllReach, fetchBladeReach, LEAVE_TICKS, makeFeedWarn, makeReconciler } from "./reconcile";
+import { logger } from "./utils/logger";
 
 const blade = (o: any) => ({ port:"et5b1", bmc_mac:"aa", bmc_ip:"10.0.0.1", bmc_pinged:true, ...o });
 
@@ -29,14 +30,29 @@ describe("fetchAllReach", () => {
     const f = byUrl({ post: [blade({})],
                       rack: [blade({ port: "rackpost:rr101:L37", bmc_mac: "cc", bmc_ip: "172.32.37.11" })] });
     const r = await fetchAllReach(["post", "rack"], f);
-    expect(r.map(b => [b.port, b.ip])).toEqual([["et5b1", "10.0.0.1"], ["rackpost:rr101:L37", "172.32.37.11"]]);
+    expect(r.blades.map(b => [b.port, b.ip, b.feed])).toEqual(
+      [["et5b1", "10.0.0.1", "post"], ["rackpost:rr101:L37", "172.32.37.11", "rack"]]);
   });
   it("keeps the feed that answered when the other is down", async () => {
     const r = await fetchAllReach(["post", "rack"], byUrl({ post: [blade({})], rack: null }));
-    expect(r.map(b => b.port)).toEqual(["et5b1"]);
+    expect(r.blades.map(b => b.port)).toEqual(["et5b1"]);
+    expect([...r.answered]).toEqual(["post"]);
+    expect([...r.errors.keys()]).toEqual(["rack"]);
   });
-  it("throws only when every feed fails", async () => {
-    await expect(fetchAllReach(["post", "rack"], byUrl({ post: null, rack: null }))).rejects.toThrow();
+});
+
+describe("feed warnings", () => {
+  it("logs a failing feed once, then at most every interval, and when it is back", () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const info = vi.spyOn(logger, "info").mockImplementation(() => {});
+    const fw = makeFeedWarn(600_000);
+    const down = { blades: [], answered: new Set(["post"]), errors: new Map([["rack", "refused"]]) };
+    for (let t = 0; t <= 15_000 * 40; t += 15_000) fw(down, t);   // 41 ticks, 10 min
+    expect(warn.mock.calls.length).toBe(2);
+    expect(warn.mock.calls[1][0]).toContain("41 ticks");
+    fw({ blades: [], answered: new Set(["post", "rack"]), errors: new Map() }, 615_000);
+    expect(info.mock.calls.map(c => c[0])).toEqual(["[reconcile] feed answers again after 41 skipped tick(s): rack"]);
+    warn.mockRestore(); info.mockRestore();
   });
 });
 
@@ -46,6 +62,8 @@ describe("makeReconciler", () => {
          hasSession:(ip:string)=>live.has(ip),
          start:(ip:string)=>{ calls.push(["start",ip]); live.add(ip); },
          replace:(o:string,n:string)=>{ calls.push(["replace",o,n]); live.delete(o); live.add(n); },
+         stop:(ip:string)=>{ calls.push(["stop",ip]); live.delete(ip); },
+         endOnLeave: [] as string[],
          fetchFn: null as any } }; };
   const feed = (d:any, slots:any[]) => { d.fetchFn = (async()=>({ok:true,json:async()=>({slots})}))as any; };
 
@@ -97,5 +115,24 @@ describe("makeReconciler", () => {
       return { ok: true, json: async () => ({ slots: [blade({}), blade({ port: "et5b2", bmc_mac: "dd", bmc_ip: "10.0.0.2" })] }) }; }) as any;
     await r.tick();
     expect(calls).toEqual([["start","10.0.0.1"],["start","172.32.37.11"],["start","10.0.0.2"]]);
+  });
+  it("ends a rackpost target's session once it has left the answering feed (closed rack)", async () => {
+    const {calls,d}=deps(); const r=makeReconciler(d);
+    d.bladesUrls = ["post", "rack"]; d.endOnLeave = ["rack"];
+    const rack = blade({ port: "rackpost:rr101:L37", bmc_mac: "cc", bmc_ip: "172.32.37.11" });
+    let feeds: Record<string, any[] | null> = { post: [blade({})], rack: [rack] };
+    d.fetchFn = (async (u: string) => { if (feeds[u] === null) throw new Error("down");
+      return { ok: true, json: async () => ({ slots: feeds[u] }) }; }) as any;
+    await r.tick();
+    feeds = { post: [], rack: null };                     // rackpost down: nothing ends
+    for (let i = 0; i < LEAVE_TICKS + 2; i++) await r.tick();
+    feeds = { post: [], rack: [] };                        // rack closed: ends after LEAVE_TICKS
+    for (let i = 0; i < LEAVE_TICKS - 1; i++) await r.tick();
+    expect(calls).toEqual([["start","10.0.0.1"],["start","172.32.37.11"]]);
+    await r.tick();
+    expect(calls).toEqual([["start","10.0.0.1"],["start","172.32.37.11"],["stop","172.32.37.11"]]);
+    feeds = { post: [], rack: [rack] };                     // reopened: starts again
+    await r.tick();
+    expect(calls.at(-1)).toEqual(["start","172.32.37.11"]);
   });
 });

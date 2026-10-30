@@ -12,8 +12,10 @@ and follows that file from its start; a mark that fails is noted and the file is
 followed from its current end. A thread copies new bytes into `path` (the order
 dir's artifact) every SYNC_S, so rungs that read the artifact mid-stage (install's
 sol_tail) see the console so far. A rotation in between (another mark, or the
-relay's size cap) is followed by inode: the rest of the file now named .prev.txt is
-copied first, then the new file from byte 0. stop() copies what is left and returns
+relay's size cap) is seen by inode, or by the file being shorter than what was copied
+(two rotations inside one SYNC_S free the old inode, and the new file may reuse its
+number): the rest of the file now named .prev.txt is copied first when it is still
+there, then the new file from byte 0. stop() copies what is left and returns
 the rung result. Read-only towards the node: no IPMI from here at all.
 """
 import json
@@ -96,15 +98,17 @@ class Capture:
         with self._mu:
             if self._out is None:
                 return
-            ino = _ino(self.src)
-            if ino is None:
+            try:
+                st = self.src.stat()
+            except OSError:
                 return
-            if ino != self.ino:
+            ino = st.st_ino
+            if ino != self.ino or st.st_size < self.off:
                 if self.ino is not None:    # rotated: finish the file we were following
                     self.rotations += 1
-                    if _ino(self.prev) == self.ino:
+                    if ino != self.ino and _ino(self.prev) == self.ino:
                         self._copy(self.prev, self.off)
-                    else:
+                    else:                   # gone again (or its inode number reused)
                         self.lost += 1
                 self.ino, self.off = ino, 0
             self.off = self._copy(self.src, self.off)

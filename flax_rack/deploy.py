@@ -610,6 +610,19 @@ def _snapshots(ctx, R) -> tuple[dict, float | None, int]:
     return out, None, linkmon.INTERVAL_S
 
 
+def _silent(ctx, snaps: dict, now, sid: str) -> str | None:
+    """Why wedge `sid` gave no fresh snapshot (it did not answer the link monitor's read,
+    or that read is stale), else None (it answered: its LLDP just has no port of ours)."""
+    snap = snaps.get(sid)
+    if snap and snap.get("at") is not None and (now is None or now - snap["at"] <= linkmon.STALE_S):
+        return None
+    lm = getattr(ctx, "links", None)
+    err = lm.switch_live(sid).get("error") if lm is not None else None
+    if snap and snap.get("at") is not None:
+        return f"last read {int(now - snap['at'])} s ago" + (f": {err}" if err else "")
+    return err or "not read"
+
+
 def _fabric_macs(ctx, lr, pos, live) -> list[str]:
     """The node's fabric port MACs: live LLDP's, then Qualify ha-path's (any verdict:
     each seen port's live-image ifname, MAC'd by the inventory's ip-d-link)."""
@@ -656,15 +669,24 @@ def ha_sides(ctx, R, cr, lr, d, host_ip) -> tuple[dict | None, dict, str | None]
         info["rows"].append(["wedge sides from", "live LLDP: " + "; ".join(
             f"{k} {v['link'].split()[1]} {v['mac']}" for k, v in sorted(live.items()))])
         return live, info, None
+    name = linkmon.device_names(ctx.g)[d.pos]
     if live:
         (k, v), = live.items()
         miss = "B" if k == "A" else "A"
+        down = _silent(ctx, snaps, now, miss)
+        if down:
+            return None, info, (f"wedge {miss} did not answer ({down}): its side of {name} is "
+                                f"not proven; live LLDP sees wedge {k} ({v['link'].split()[1]} "
+                                f"{v['mac']})")
         return None, info, (f"live LLDP sees only wedge {k} ({v['link'].split()[1]} {v['mac']}); "
-                            f"no port of {linkmon.device_names(ctx.g)[d.pos]} on wedge {miss}")
+                            f"no port of {name} on wedge {miss}")
     side, _cidr_, why = ha_inputs(ctx, lr, d, host_ip)
     if why:
-        return None, info, (f"no wedge side proven: live LLDP names no port of "
-                            f"{linkmon.device_names(ctx.g)[d.pos]} on wedge A/B, and {why}")
+        down = [f"wedge {w} did not answer ({x})" for w in ("A", "B")
+                if (x := _silent(ctx, snaps, now, w))]
+        return None, info, (f"no wedge side proven: "
+                            + ("; ".join(down) + ", " if down else "")
+                            + f"live LLDP names no port of {name} on wedge A/B, and {why}")
     info["sides_from"] = "Qualify ha-path"
     info["rows"].append(["wedge sides from", "Qualify ha-path (live LLDP showed nothing): "
                          + "; ".join(f"{k} {v['mac']}" for k, v in sorted(side.items()))])

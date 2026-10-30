@@ -4,7 +4,7 @@ import { Server } from 'socket.io';
 import { registerTerminalNamespace } from './io/handlers/terminal';
 import { startReconcileLoop } from './reconcile';
 import { markCapture } from './sessions/capture';
-import { hasLiveSession, relaunchSession, replaceSession, setIo, startSession } from './sessions/manager';
+import { hasLiveSession, relaunchSession, replaceSession, setIo, startSession, stopSession } from './sessions/manager';
 import { logger } from './utils/logger';
 
 export const app = express();
@@ -66,12 +66,15 @@ setIo(io);
 // blades are keep-on-loss — never auto-torn-down.
 // RACKPOST_SOL_TARGETS_URL (optional) adds the customer racks' host BMCs from
 // rackpost, so rackpost's console rungs mark + read this relay's capture files
-// instead of opening a second `sol activate` of their own.
+// instead of opening a second `sol activate` of their own. Its ports are targets,
+// not hardware: one that leaves the answering feed (rack closed/disabled) ends.
 const BLADES_URL = process.env.POST_BLADES_URL ?? 'http://127.0.0.1:8446/api/v1/blades';
-const FEEDS = [BLADES_URL, process.env.RACKPOST_SOL_TARGETS_URL].filter((u): u is string => !!u);
+const RACKPOST_URL = process.env.RACKPOST_SOL_TARGETS_URL;
+const FEEDS = [BLADES_URL, RACKPOST_URL].filter((u): u is string => !!u);
 const RECONCILE_MS = Number(process.env.POST_SOL_RECONCILE_SECS ?? 15) * 1000;
 startReconcileLoop(
-  { bladesUrls: FEEDS, hasSession: hasLiveSession, start: startSession, replace: replaceSession },
+  { bladesUrls: FEEDS, hasSession: hasLiveSession, start: startSession, replace: replaceSession,
+    stop: stopSession, endOnLeave: RACKPOST_URL ? [RACKPOST_URL] : [] },
   RECONCILE_MS
 );
 
