@@ -333,7 +333,15 @@ if [ -e {q(NETPLAN)} ]; then
 fi
 mkdir -p {q(UNIT_DIR)}
 {writes}networkctl reload && timeout 120 networkctl reconfigure {links} && echo APPLIED
-for l in {links}; do echo "NETFILE $l $(networkctl status "$l" --no-pager 2>/dev/null | sed -n 's/^ *Network File: //p')"; done
+# networkd configures the links asynchronously after reconfigure: poll (<= 20 s) until each
+# reports one of our files (read once, right away, bond0 still showed "n/a" on all five nodes)
+for l in {links}; do
+  f=; for i in $(seq 1 40); do
+    f=$(networkctl status "$l" --no-pager 2>/dev/null | sed -n 's/^ *Network File: //p')
+    case "$f" in {q(UNIT_DIR)}/*) break ;; esac; sleep 0.5
+  done
+  echo "NETFILE $l $f"
+done
 """
 
 
