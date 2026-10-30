@@ -213,11 +213,13 @@ def _installed_now(lr) -> set[str]:
 
 
 def plan(lr, g, *, positions=None, from_phase="install", reinstall=None, waive=None,
-         installed=None):
+         installed=None, firstboot=()):
     """(target devices, waivers, {pos: why} of the other host devices not passed). Raises
     GateError when the run may not start: unknown position, the gate (with the waivers),
     or an installed disk (`installed`: installed_positions(db), across passes; this pass's
-    runs when None) without reinstall=<order id>."""
+    runs when None) without reinstall=<order id>. `firstboot`: targets of an install run
+    that start at firstboot instead (installed disks a Run does not reinstall); each must
+    be installed."""
     if installed is None:
         installed = _installed_now(lr)
     if from_phase not in FROM_PHASES:
@@ -240,19 +242,23 @@ def plan(lr, g, *, positions=None, from_phase="install", reinstall=None, waive=N
         raise GateError("deploy gate: " + scope + "; ".join(f"{p} {y}" for p, y in blocked.items()))
     tset = {d.pos for d in targets}
     incomplete = {d.pos: why for d in hosts if d.pos not in tset and (why := gate_why(lr, d))}
+    fb = set(firstboot)
+    if fb - tset:
+        raise GateError(f"firstboot: not a target: {', '.join(sorted(fb - tset))}")
     if from_phase == "install":
-        done = [d.pos for d in targets if d.pos in installed]
+        done = [d.pos for d in targets if d.pos in installed and d.pos not in fb]
         if done and reinstall != g.order:
             raise GateError(
                 f"already installed: {', '.join(done)}; a reinstall wipes their disks -- "
                 f"confirm with reinstall {g.order} (CLI --reinstall {g.order}), or deploy "
                 f"from firstboot (CLI --from firstboot)")
     else:
-        # a first boot of a never-installed disk boots whatever is on it, then fails slowly
-        none = [d.pos for d in targets if d.pos not in installed]
-        if none:
-            raise GateError(f"no passed install recorded for {', '.join(none)}; deploy them "
-                            "from install")
+        fb = tset
+    # a first boot of a never-installed disk boots whatever is on it, then fails slowly
+    none = [d.pos for d in targets if d.pos in fb and d.pos not in installed]
+    if none:
+        raise GateError(f"no passed install recorded for {', '.join(none)}; deploy them "
+                        "from install")
     return targets, w, incomplete
 
 
@@ -775,14 +781,18 @@ def _record_ha_mode(ctx):
 # ---------------------------------------------------------------- stage
 def run_deploy(ctx, *, positions: list[str] | None = None, from_phase: str = "install",
                reinstall: str | None = None, waive: dict | None = None,
-               who: str = "?") -> None:
+               who: str = "?", firstboot=()) -> None:
+    """Deploy the targets from `from_phase`; `firstboot` names install-run targets that
+    skip the install (installed disks: plan() checks them)."""
     if ctx.db.closed_at():
         raise RuntimeError("order is closed")
     g = ctx.g
     lr = ctx.db.latest_runs()
     targets, waivers, incomplete = plan(lr, g, positions=positions, from_phase=from_phase,
                                         reinstall=reinstall, waive=waive,
-                                        installed=installed_positions(ctx.db, lr))
+                                        installed=installed_positions(ctx.db, lr),
+                                        firstboot=firstboot)
+    fb = set(firstboot) if from_phase == "install" else set()
     who = clean_who(who)
     cr = creds(ctx)
     R = ctx.rungs or real_rungs()
@@ -793,7 +803,9 @@ def run_deploy(ctx, *, positions: list[str] | None = None, from_phase: str = "in
         if a.role == "host":                # = the Kea reservation's hostname
             names[a.pos] = a.name
     ctx.db.add_event("deploy", f"deploy started from {from_phase}: "
-                               + ", ".join(d.pos for d in targets)
+                               + ", ".join(d.pos for d in targets if d.pos not in fb)
+                               + (f"; from firstboot (installed): {', '.join(sorted(fb))}"
+                                  if fb else "")
                                + (" (reinstall confirmed)" if reinstall == g.order else ""))
     if incomplete:
         ctx.db.add_event("deploy", "rack incomplete: "
@@ -814,7 +826,8 @@ def run_deploy(ctx, *, positions: list[str] | None = None, from_phase: str = "in
             for x in xs:
                 if x.failed:
                     _skip_phase(ctx, x, phase)
-            run = [x for x in xs if not x.failed and _applies(phase, x)]
+            run = [x for x in xs if not x.failed and _applies(phase, x)
+                   and not (phase == "install" and x.pos in fb)]
             prog.start(phase, [x.pos for x in run])
             if phase == "install":
                 _wave(ctx, phase, run, lambda x: _install(ctx, R, cr, x), MAX_PARALLEL, prog)

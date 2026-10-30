@@ -1,5 +1,5 @@
 """python -m flax_rack: rack-order CLI (import-bom, enable/disable, serve, discover, firmware,
-qualify, deploy, done, fresh, process-report, close).
+qualify, deploy, done, run, fresh, process-report, close).
 
 Order-dir commands act on the current directory (one dir per rack).
 """
@@ -257,6 +257,50 @@ def _done(a) -> int:
     return 0 if not bad else 1
 
 
+def _run(a) -> int:
+    """A whole Run in the foreground (holds the stage lock throughout), or --continue a
+    held / interrupted one."""
+    from .creds import CredsError
+    from .deploy import GateError
+    from .server import DRAIN_FILE, DRAINING
+    from . import run as runmod
+    if a.cont == (a.confirm is not None):
+        sys.exit("run --confirm <order id> [--reinstall], or run --continue")
+    if a.cont and a.reinstall:
+        sys.exit("--reinstall is chosen when the Run starts, not at --continue")
+    if DRAIN_FILE.exists():
+        sys.exit(DRAINING)
+    waive = _waive_arg(a.waive, a.reason)
+    ctx, lock = _order_ctx(None if a.cont else a.confirm)
+    try:
+        if a.cont:
+            rp = ctx.db.run_plan()
+            if rp and rp["state"] == "running":         # we hold the lock: its process died
+                rp = ctx.db.interrupt_run_plan()
+            if not rp or rp["state"] not in runmod.CONTINUABLE:
+                sys.exit("no held or interrupted Run to continue")
+            runmod.cont(ctx, rp["id"], waive=waive, who=_who(a.by))
+            rid = rp["id"]
+        else:
+            if waive:
+                sys.exit("--waive goes with --continue (the gate is read at the hold)")
+            rid = runmod.run(ctx, who=_who(a.by), reinstall=a.reinstall)
+    except (CredsError, GateError, RuntimeError) as e:
+        sys.exit(str(e))
+    finally:
+        lock.release()
+    rp = ctx.db.run_plan(rid)
+    print(f"run {rid}: {rp['state']} (stage {rp['stage']})")
+    for k, bs in (rp["held"] or {}).items():
+        print(f"  held {k:10s} {'; '.join(bs)}")
+    for k, why in (rp["out"] or {}).items():
+        print(f"  out  {k:10s} {why}")
+    if rp["state"] == "held":
+        print("continue to Deploy with: python -m flax_rack run --continue "
+              "[--waive POS:RUNG --reason \"...\"]")
+    return 0 if rp["state"] == "done" else 1
+
+
 def _fresh(a) -> int:
     from .deploy import clean_who
     from .server import DRAIN_FILE, DRAINING
@@ -361,6 +405,19 @@ def main(argv=None) -> int:
                    help="only these positions (--pos C37 R37 or repeated)")
     p.add_argument("--confirm", metavar="ORDER", help="the order id (required without --pos)")
     p.set_defaults(fn=_done)
+    p = sub.add_parser("run", help="Run: Discover -> Firmware -> Qualify -> Deploy -> Done; "
+                                    "held before Deploy on any failure (then --continue)")
+    p.add_argument("--confirm", metavar="ORDER", help="the order id (starts a Run)")
+    p.add_argument("--reinstall", action="store_true",
+                   help="reinstall nodes already installed (wipes their disks); default: "
+                        "installed nodes deploy from firstboot")
+    p.add_argument("--continue", dest="cont", action="store_true",
+                   help="continue the held / interrupted Run to Deploy -> Done")
+    p.add_argument("--waive", action="append", metavar="POS:RUNG[,RUNG]",
+                   help="with --continue: let POS through the Deploy gate on these rungs")
+    p.add_argument("--reason", help="why the waived rungs may be accepted (recorded)")
+    p.add_argument("--by", help="who (default: the login)")
+    p.set_defaults(fn=_run)
     p = sub.add_parser("fresh", help="start fresh: a new pass (earlier runs, waivers and CSVs "
                                      "leave the tiles, gates and reports; nothing is deleted)")
     p.add_argument("--confirm", required=True, metavar="ORDER")

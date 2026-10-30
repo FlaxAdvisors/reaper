@@ -54,6 +54,8 @@
         <label>Customer <span class="ro">{{s.customer || '—'}}</span></label>
         <label>Order <span class="ro">{{s.order || '—'}}</span></label>
         <label>vid <span class="ro">{{s.vid || '—'}}</span></label>
+        <button class="discbtn runbtn" v-if="s.order" :disabled="s.stage_running || !!s.closed_at" @click="openRun()"
+                :title="s.closed_at ? 'order is closed' : s.stage_running ? 'a stage is running' : 'Run: Discover → Firmware → Qualify → Deploy → Done, driven by the server; all pass = straight through, any failure = held before Deploy with the blockers listed (then Continue to Deploy)'">Run</button>
         <button class="discbtn" v-if="s.order" :disabled="s.stage_running || !!s.closed_at" @click="openDiscover()"
                 :title="s.closed_at ? 'order is closed' : s.stage_running ? 'a stage is running' : 'run Discover for this rack: Post\'s 16-step ladder per device (switch port → MACs → Kea reserve/lease → power-on → live boot → BMC ready); powers on / cycles nodes not in the live image'">Discover</button>
         <button class="discbtn fwbtn" v-if="s.order" :disabled="s.stage_running || !!s.closed_at" @click="firmware()"
@@ -71,7 +73,7 @@
           <a href="api/report/devices.csv" download>devices</a>
           <a href="api/report/components.csv" download>components</a></span>
         <button class="closebtn cancelbtn" v-if="s.stage_running && s.stage" :disabled="s.cancelling" @click="cancelStage()"
-                :title="s.cancelling ? 'cancel requested: stopping after the steps now running' : 'stop the running ' + s.stage + ' between steps (a power action already sent finishes)'">{{s.cancelling ? 'Cancelling…' : 'Cancel ' + s.stage}}</button>
+                :title="s.cancelling ? 'cancel requested: stopping after the steps now running' : 'stop the running ' + s.stage + ' between steps (a power action already sent finishes)'">{{s.cancelling ? 'Cancelling…' : 'Cancel ' + (runRunning ? 'run' : s.stage)}}</button>
         <span class="hdr-msg" v-if="hdrMsg">{{hdrMsg}}</span>
         <span class="pass-chip" v-if="(s.pass?.id || 1) > 1" :title="passTitle()">pass {{s.pass?.id}}</span>
         <a class="rep-link" v-if="s.order" href="api/report/process.html" target="_blank" rel="noopener"
@@ -83,6 +85,15 @@
                 title="release this rack's reservations, mark the order closed">Close order…</button>
       </div></div>
     </div>
+  </div>
+
+  <!-- ================= Run strip (the current pass's latest Run) ================= -->
+  <div class="run-strip" v-if="s.run && !s.closed_at" :class="'rs-' + s.run.state" :title="runTitle()">
+    <span class="rs-main">run: {{runText()}}</span>
+    <span class="rs-held" v-for="(bs, k) in (s.run.state === 'held' ? s.run.held : {})"><b>{{k}}</b> {{bs.join('; ')}}</span>
+    <span class="rs-held out" v-for="(why, k) in (['done', 'running'].includes(s.run.state) ? (s.run.out || {}) : {})"><b>{{k}}</b> left out: {{why}}</span>
+    <button class="discbtn depbtn" v-if="s.run.can_continue" :disabled="s.stage_running" @click="openContinue()">Continue to Deploy…</button>
+    <button class="closebtn" v-if="s.run.can_continue && !s.stage_running" @click="endRun()" title="end this Run (nothing runs; the tiles keep every result)">End run</button>
   </div>
 
   <!-- ================= rack (populated OUs only) ================= -->
@@ -381,6 +392,50 @@
             <td class="mono">{{r.rule}}</td><td>{{r.ok ? '✓' : '✕'}}</td><td>{{r.found}}</td></tr>
         </table>
         <p class="m-sub" v-else>no rules evaluated</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= Run modal (typed confirm; reinstall chosen up front) ================= -->
+  <div class="m-scrim" v-if="running" @click="running=false">
+    <div class="m-box" @click.stop>
+      <div class="m-h"><span class="m-title">Run order {{s.order}}{{s.rack ? ' rack ' + s.rack : ''}}</span>
+        <span class="x" @click="running=false">✕</span></div>
+      <div class="m-b">
+        <p class="m-sub">The server runs Discover → Firmware → Qualify → Deploy → Done for the whole rack
+          (powers nodes on, power-cycles them into the live image, stress, then installs). Every device
+          passing: straight through to Done. Any failure: the other devices carry on, then the Run holds
+          before Deploy and lists the blockers; Continue to Deploy is one click from there.</p>
+        <label class="m-sub"><input type="checkbox" v-model="runRein"> reinstall nodes already installed
+          <span class="dim">{{runInstalled().length ? '(' + runInstalled().join(', ') + ')' : '(none installed)'}}</span></label>
+        <p class="m-sub dim" v-if="!runRein">Installed nodes deploy from firstboot (their disks are kept); never-installed nodes are installed.</p>
+        <div v-if="runRein">
+          <p class="m-sub bad">Reinstall wipes the disks of every installed node. Type the order id again for the reinstall.</p>
+          <input class="confirm-in" name="rp-runrein" autocomplete="off" v-model="runReinText" :placeholder="s.order">
+        </div>
+        <p class="m-sub">Type the order id to start the Run.</p>
+        <input class="confirm-in" name="rp-runconfirm" autocomplete="off" v-model="runConfirm" :placeholder="s.order">
+        <button class="press danger" :disabled="runConfirm!==s.order || (runRein && runReinText!==s.order)" @click="doRun()">Run rack</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= Continue to Deploy modal (held Run: waivers, then one click) ================= -->
+  <div class="m-scrim" v-if="contM" @click="contM=null">
+    <div class="m-box" @click.stop>
+      <div class="m-h"><span class="m-title">Continue run {{s.run?.id}} to Deploy</span>
+        <span class="x" @click="contM=null">✕</span></div>
+      <div class="m-b">
+        <p class="m-sub">Deploy then Done. The Deploy gate is read again at this click{{s.run?.reinstall ? ' (reinstall chosen at the start)' : ': installed nodes deploy from firstboot'}}.
+          A device still blocked then is left out of Deploy; Done covers the whole rack.</p>
+        <div v-for="k in contKeys()">
+          <p class="m-sub bad"><b class="mono">{{k}}</b> {{(s.run?.held?.[k] || []).join('; ')}}</p>
+          <label class="m-sub mono" v-for="r in Object.keys(contWaive[k] || {})"><input type="checkbox" v-model="contWaive[k][r]"> waive {{r}}</label>
+        </div>
+        <input class="confirm-in" name="rp-contreason" autocomplete="off" v-if="contWaived().length" v-model="contReason"
+               placeholder="reason for the waivers (recorded with who and when)">
+        <button class="press danger" :disabled="busy || (contWaived().length && !contReason.trim())" @click="doContinue()">Continue to Deploy</button>
+        <p class="action-msg" v-if="contM?.msg">{{contM?.msg}}</p>
       </div>
     </div>
   </div>

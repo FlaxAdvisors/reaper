@@ -205,6 +205,9 @@ function App() {
     freshing: false, freshText: '', freshReason: '', freshMsg: null,
     hdrStage: null,            // the stage hdrMsg announced: the message goes when it stops
     deploying: false, depText: '', depFrom: 'install', depReinstall: false,
+    // Run modal (typed order id; reinstall + the id typed again) and the held Run's
+    // Continue modal: contM = {msg} while open, contWaive = {pos: {rung: ticked}}
+    running: false, runConfirm: '', runRein: false, runReinText: '', contM: null, contWaive: {}, contReason: '',
     // per-device Deploy modal: depM = {pos, msg} while open; its inputs are top-level so
     // v-model never reads through a null depM while the modal tears down
     depM: null, devFrom: 'install', devReinText: '', devWaive: {}, devReason: '',
@@ -224,7 +227,7 @@ function App() {
     async mounted() {
       document.addEventListener('keydown', (e) => {
         if (e.key !== 'Escape') return;
-        if (this.solM) this.closeSol(); else if (this.artM) this.backArt(); else if (this.stepM) this.stepM = null; else if (this.depM) this.depM = null; else if (this.finishing) this.finishing = false; else if (this.freshing) this.freshing = false; else if (this.deploying) this.deploying = false; else if (this.qualifying) this.qualifying = false; else if (this.discovering) this.discovering = false; else if (this.closing) this.closing = false; else if (this.popOpen) this.popOpen = null; else this.close();
+        if (this.solM) this.closeSol(); else if (this.artM) this.backArt(); else if (this.stepM) this.stepM = null; else if (this.depM) this.depM = null; else if (this.contM) this.contM = null; else if (this.running) this.running = false; else if (this.finishing) this.finishing = false; else if (this.freshing) this.freshing = false; else if (this.deploying) this.deploying = false; else if (this.qualifying) this.qualifying = false; else if (this.discovering) this.discovering = false; else if (this.closing) this.closing = false; else if (this.popOpen) this.popOpen = null; else this.close();
       });
       await this.refresh(); setInterval(() => this.refresh(), POLL_MS);
       setInterval(() => this.tickConsole(), CON_MS);
@@ -233,7 +236,8 @@ function App() {
       try {
         this.s = await api('api/state'); this.layout = buildLayout(this.s); this.live = true; this.now = Date.now(); document.title = `${this.s.prefix} rackpost`;
         // "<stage> started" outlives its stage otherwise (finished, or died on a restart)
-        if (this.hdrStage && !(this.s.stage_running && this.s.stage === this.hdrStage)) { this.hdrMsg = null; this.hdrStage = null; }
+        const on = this.hdrStage === 'run' ? this.runRunning : this.s.stage === this.hdrStage;
+        if (this.hdrStage && !(this.s.stage_running && on)) { this.hdrMsg = null; this.hdrStage = null; }
       }
       catch (e) { this.live = false; console.error(e); }
     },
@@ -856,7 +860,8 @@ function App() {
     // Cancel: the running stage stops between steps/phases (a power action already
     // sent finishes); later steps are recorded skip "cancelled".
     async cancelStage() {
-      if (!window.confirm(`Cancel the running ${this.s.stage}? It stops after the steps now running.`)) return;
+      const what = this.runRunning ? `run (now in ${this.s.stage})` : this.s.stage;
+      if (!window.confirm(`Cancel the running ${what}? It stops after the steps now running.`)) return;
       const st = this.s.stage;
       try { await api('api/stage/cancel', { confirm: true, stage: st }); this.started(st, `${st} cancelling…`); }
       catch (e) { this.refused('cancel: ' + e.message); }
@@ -925,6 +930,64 @@ function App() {
     waiverChip(d) {
       const w = d && d.waiver; if (!w || !w.active) return null;
       return { t: 'waived', cls: 'amb', title: `Deploy gate waiver: ${w.rungs.join(', ')} · ${w.reason} · by ${w.who} · ${w.at}` };
+    },
+    // ---- Run: the server drives Discover → Firmware → Qualify → Deploy → Done; held
+    // before Deploy on any blocker, Continue to Deploy (waivers ticked here) goes on ----
+    get runRunning() { return !!this.s.run && this.s.run.state === 'running' && this.s.stage_running; },
+    runText() {
+      const r = this.s.run; if (!r) return '';
+      const st = `${r.stage || 'start'} (${r.n}/${r.of})`;
+      if (r.state === 'running') return `${st}${this.s.cancelling ? ' cancelling…' : ' running…'}`;
+      if (r.state === 'held') return `held before deploy · ${Object.keys(r.held || {}).length} blocked`;
+      if (r.state === 'interrupted') return `interrupted in ${st} (daemon restart: not resumed)`;
+      return `${r.state}${r.state === 'done' ? '' : ' in ' + st}`;
+    },
+    runTitle() {
+      const r = this.s.run; if (!r) return '';
+      return `run ${r.id} by ${r.who} since ${r.started_at}` + (r.finished_at ? ` · ended ${r.finished_at}` : '') +
+        ` · ${r.reinstall ? 'reinstall: installed disks wiped' : 'no reinstall: installed nodes deploy from firstboot'}`;
+    },
+    runInstalled() { return this.depHosts().filter((d) => this.installed(d)).map((d) => d.pos); },
+    openRun() { this.running = true; this.runConfirm = ''; this.runRein = false; this.runReinText = ''; },
+    async doRun() {
+      this.running = false;
+      const body = { confirm: this.runConfirm };
+      if (this.runRein) body.reinstall = this.runReinText;
+      try { await api('api/run', body); this.started('run', 'run started'); }
+      catch (e) { this.refused('run: ' + e.message); }
+      await this.refresh();
+    },
+    // the held devices, and per host one its current Deploy-gate blockers to waive (not
+    // for a device Discover failed: it stays out of Deploy whatever is waived)
+    contKeys() { return Object.keys((this.s.run || {}).held || {}); },
+    openContinue() {
+      const w = {}, held = (this.s.run || {}).held || {};
+      for (const k of this.contKeys()) {
+        if ((held[k] || []).some((b) => b.startsWith('discover:'))) continue;
+        const d = (this.s.devices || []).find((x) => x.pos === k);
+        const rs = ((d && d.gate_blockers) || []).filter((r) => !r.startsWith('verdict '));
+        if (rs.length) w[k] = Object.fromEntries(rs.map((r) => [r, false]));
+      }
+      this.contWaive = w; this.contReason = ''; this.contM = { msg: null };
+    },
+    contWaived() { return Object.entries(this.contWaive || {}).filter(([, rs]) => Object.values(rs).some(Boolean)); },
+    async doContinue() {
+      const body = { confirm: true }, w = this.contWaived();
+      if (w.length) body.waive = Object.fromEntries(w.map(([k, rs]) => [k, { rungs: Object.keys(rs).filter((r) => rs[r]), reason: this.contReason.trim() }]));
+      this.busy = true;
+      try {
+        const r = await api('api/run/continue', body);
+        const out = Object.keys(r.out || {});
+        this.contM = null; this.started('run', `run continued: deploy ${r.deploy.join(', ')}` + (out.length ? ` · left out: ${out.join(', ')}` : ''));
+      } catch (e) { this.contM = { msg: e.message }; }
+      this.busy = false;
+      await this.refresh();
+    },
+    async endRun() {
+      if (!window.confirm(`End run ${this.s.run.id}? Nothing more runs for it; every result stays on the tiles.`)) return;
+      try { await api('api/stage/cancel', { confirm: true }); this.refused(`run ${this.s.run.id} ended`); }
+      catch (e) { this.refused('end run: ' + e.message); }
+      await this.refresh();
     },
     // ---- Done: end summary (SDR/SEL, installed-OS captures), boot reset (hostname iPXE
     // file + Redfish override; never a power action), components, then the customer CSVs.

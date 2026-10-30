@@ -43,6 +43,10 @@ CREATE TABLE IF NOT EXISTS pass(
   id INTEGER PRIMARY KEY, started_at TEXT NOT NULL, who TEXT NOT NULL, reason TEXT NOT NULL,
   run_after INTEGER NOT NULL DEFAULT 0, waiver_after INTEGER NOT NULL DEFAULT 0,
   event_after INTEGER NOT NULL DEFAULT 0, link_after INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS run_plan(
+  id INTEGER PRIMARY KEY, pass INTEGER NOT NULL, started_at TEXT NOT NULL, who TEXT NOT NULL,
+  options TEXT NOT NULL, state TEXT NOT NULL, stage TEXT, held TEXT, out TEXT,
+  run_after INTEGER NOT NULL, finished_at TEXT);
 """
 # the current pass's marks: its rows are the runs / waivers with a higher id
 _RUN_AFTER = "COALESCE((SELECT run_after FROM pass ORDER BY id DESC LIMIT 1), 0)"
@@ -182,13 +186,14 @@ class OrderDB:
         return {(r["pos"], r["rung"]): json.loads(r["detail"]) if r["detail"] else {}
                 for r in rows}
 
-    def ever_passed(self, rungs) -> set[str]:
+    def ever_passed(self, rungs, after: int = 0) -> set[str]:
         """The positions with a passed run of any of `rungs` in ANY pass (e.g. an install:
-        the disk was written, whatever this pass has judged so far)."""
+        the disk was written, whatever this pass has judged so far); only runs with an id
+        above `after` when given (e.g. since a Run started)."""
         rungs = list(rungs)
         return {r["pos"] for r in self._all(
-            "SELECT DISTINCT pos FROM run WHERE verdict='pass' AND rung IN "
-            f"({','.join('?' * len(rungs))})", rungs)}
+            "SELECT DISTINCT pos FROM run WHERE verdict='pass' AND id > ? AND rung IN "
+            f"({','.join('?' * len(rungs))})", [after, *rungs])}
 
     def latest_run_id(self, pos, rung) -> int | None:
         """The id of (pos, rung)'s latest run row (the one latest_runs() shows)."""
@@ -224,6 +229,56 @@ class OrderDB:
         return self._exec(
             "UPDATE run SET status='interrupted', finished_at=? WHERE status='running'",
             (_now(),)).rowcount
+
+    # ------------------------------------------------------------ Run (run_plan)
+    # One row per server-driven Run (flax_rack.run): state running | held | interrupted |
+    # cancelled | done | failed | superseded; stage = the stage it is in (or was in);
+    # held = {pos: [blocker, ...]} at the hold; out = {pos: why} left out of its Deploy;
+    # run_after = the highest run id when it started (what it ran since).
+    def start_run_plan(self, who: str, options: dict) -> int:
+        """A new Run of the current pass ('running'); a held / interrupted Run of this
+        pass is superseded by it."""
+        with closing(self._conn()) as c, c:
+            c.execute("BEGIN IMMEDIATE")
+            c.execute("UPDATE run_plan SET state='superseded', finished_at=? "
+                      "WHERE state IN ('running','held','interrupted')", (_now(),))
+            return c.execute(
+                "INSERT INTO run_plan(pass,started_at,who,options,state,run_after) "
+                "VALUES((SELECT MAX(id) FROM pass),?,?,?,'running',"
+                "(SELECT COALESCE(MAX(id),0) FROM run))",
+                (_now(), who, json.dumps(options))).lastrowid
+
+    def set_run_plan(self, rid: int, **kw) -> None:
+        """Update a Run's state / stage / held / out (finished_at set with a final state)."""
+        cols = {k: json.dumps(v) if k in ("held", "out") and v is not None else v
+                for k, v in kw.items() if k in ("state", "stage", "held", "out")}
+        if kw.get("state") in ("cancelled", "done", "failed", "interrupted", "superseded"):
+            cols["finished_at"] = _now()
+        if cols:
+            self._exec(f"UPDATE run_plan SET {', '.join(f'{k}=?' for k in cols)} WHERE id=?",
+                       (*cols.values(), rid))
+
+    def run_plan(self, rid: int | None = None) -> dict | None:
+        """Run `rid`, else the current pass's latest Run (None before one)."""
+        r = (self._all("SELECT * FROM run_plan WHERE id=?", (rid,)) if rid is not None else
+             self._all("SELECT * FROM run_plan WHERE pass=(SELECT MAX(id) FROM pass) "
+                       "ORDER BY id DESC LIMIT 1"))
+        if not r:
+            return None
+        x = dict(r[0])
+        for k in ("options", "held", "out"):
+            x[k] = json.loads(x[k]) if x[k] else {}
+        return x
+
+    def interrupt_run_plan(self) -> dict | None:
+        """A 'running' Run left by a previous daemon -> 'interrupted' (its stage kept);
+        returns it, None when there was none."""
+        r = self._all("SELECT id FROM run_plan WHERE state='running' ORDER BY id DESC LIMIT 1")
+        if not r:
+            return None
+        self._exec("UPDATE run_plan SET state='interrupted', finished_at=? WHERE state='running'",
+                   (_now(),))
+        return self.run_plan(r[0]["id"])
 
     def devices(self) -> list[dict]:
         return [{"pos": r["pos"], "kind": r["kind"], "host_mac": r["host_mac"],

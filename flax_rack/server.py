@@ -33,6 +33,14 @@ then the customer CSVs): rack-wide with the typed order id, a positions run with
 {"confirm": true}. GET api/report/devices.csv and api/report/components.csv download
 those CSVs (attachment; 404 until Done has written them).
 
+POST api/run {"confirm": <order id>, "reinstall": <order id> | false} starts a Run
+(flax_rack.run: Discover -> Firmware -> Qualify -> Deploy -> Done, held before Deploy
+on any blocker); reinstall is chosen up front and needs the order id typed again. POST
+api/run/continue {"confirm": true, "waive": {...}} continues a held / interrupted Run
+(Deploy with the gate at that click, then Done). POST api/stage/cancel stops a running
+Run, and ends a held / interrupted one. /api/state carries `run` (the current pass's
+latest Run: state, stage n/of, held blockers, devices left out of its Deploy).
+
 POST api/fresh {"confirm": <order id>, "reason": "..."} starts a new pass (Start fresh:
 the runs, waivers and CSVs so far leave the tiles, gates and reports; nothing is
 deleted), refused like a stage start while one runs or the daemon drains. GET
@@ -87,6 +95,7 @@ from .kea_client import KeaError
 from . import linkmon
 from .linkmon import LinkPoller
 from .orderdb import OrderDB
+from . import run as runmod
 from .poller import INTERVAL_S, BmcPoller
 from .qualify import (AGENT_STAGES, OLD_RUNG_NAMES, PHASES as QUALIFY_PHASES, device_rungs,
                       pop_default, qualify_passed, qualify_why, run_qualify)
@@ -241,6 +250,12 @@ class Rack:
                 self.db.set_deploy_progress(None)    # ... nor Deploy
                 if n:
                     self.db.add_event("restart", f"{n} rung(s) interrupted by a daemon restart")
+                # a Run is never resumed by a restart: the operator Continues (or reruns)
+                rp = self.db.interrupt_run_plan()
+                if rp:
+                    self.db.add_event("restart", f"run {rp['id']} interrupted by a daemon "
+                                                 f"restart in {rp['stage'] or 'its start'}; "
+                                                 "not resumed (Continue to Deploy, or a new Run)")
                 # an install cut short leaves its hostname file: a power-on would reinstall
                 sweep_interrupted_installs(self.db, g, pxe_dir=pxe_dir)
             finally:
@@ -391,7 +406,7 @@ def rack_state(r: Rack) -> dict:
     return clean_ha({
         "order": g.order, "customer": g.customer, "vid": g.vid, "site": g.site, "rack": g.rack,
         "prefix": g.url_prefix, "version": __version__, "closed_at": db.closed_at(),
-        "iperf_server": g.iperf_server, "pass": _pass_view(db),
+        "iperf_server": g.iperf_server, "pass": _pass_view(db), "run": _run_view(r),
         "stage_running": r.lock.locked(), "stage": r.stage if r.lock.locked() else None,
         "cancelling": bool(r.stage and r.cancel.is_set()),
         "phases": list(PHASES), "discover_rungs": list(DISCOVER_RUNGS),
@@ -412,6 +427,23 @@ def rack_state(r: Rack) -> dict:
         "switches": switches, "devices": devices, "rack_runs": rack_runs,
         "unexpected": [{"port": u["port"], "mac": _fmt_mac(u["mac"])} for u in unexpected],
         "events": db.events(30)})
+
+
+def _run_view(r: Rack) -> dict | None:
+    """The current pass's latest Run for the strip ('running' with no lock held = its
+    process died: shown interrupted, as the next daemon start records it)."""
+    x = r.db.run_plan()
+    if x is None:
+        return None
+    state = x["state"]
+    if state == "running" and not r.lock.locked():
+        state = "interrupted"
+    st = x["stage"]
+    return {"id": x["id"], "state": state, "stage": st,
+            "n": runmod.STAGES.index(st) + 1 if st in runmod.STAGES else 0,
+            "of": len(runmod.STAGES), "reinstall": bool(x["options"].get("reinstall")),
+            "who": x["who"], "started_at": x["started_at"], "finished_at": x["finished_at"],
+            "held": x["held"], "out": x["out"], "can_continue": state in runmod.CONTINUABLE}
 
 
 def _pass_view(db) -> dict:
@@ -541,6 +573,12 @@ class App:
         if body.get("confirm") is not True:
             return 400, {"error": "confirm the cancel"}
         stage = r.stage
+        if stage is None and not r.lock.locked():
+            rp = r.db.run_plan()
+            if rp and rp["state"] in (*runmod.CONTINUABLE, "running"):    # 'running': died
+                r.db.set_run_plan(rp["id"], state="cancelled")
+                r.db.add_event(runmod.STAGE, f"run {rp['id']} cancelled ({rp['state']})")
+                return 202, {"cancelled_run": rp["id"]}
         if stage is None:
             return 409, {"error": "a CLI run holds this rack: stop it there" if r.lock.locked()
                          else "no stage is running"}
@@ -620,6 +658,61 @@ class App:
         if code == 202:
             out = {"started": "deploy", "positions": kw.get("positions"), "from": frm,
                    "reinstall": rein is not None, "waived": sorted((waive or {}))}
+        return code, out
+
+    def start_run(self, r: Rack, body: dict, who: str = "?"):
+        """A Run: the typed order id; a reinstall (wipes installed disks) is chosen up
+        front with the order id typed again."""
+        if body.get("confirm") != r.g.order:
+            return 400, {"error": "type the order id to confirm a Run"}
+        rein = body.get("reinstall")
+        if rein not in (None, False) and rein != r.g.order:
+            return 400, {"error": "reinstall must be the order id (typed), or false"}
+        by = body.get("by")
+        if by is not None and not isinstance(by, str):
+            return 400, {"error": "by must be a name"}
+        who = clean_who(by or who)
+
+        def go(ctx, **_):
+            runmod.run(ctx, who=who, reinstall=bool(rein),
+                       on_stage=lambda st: setattr(r, "stage", st))
+        code, out = self._start_stage(r, runmod.STAGE, go)
+        if code == 202:
+            out = {"started": "run", "reinstall": bool(rein)}
+        return code, out
+
+    def continue_run(self, r: Rack, body: dict, who: str = "?"):
+        """Continue a held / interrupted Run to Deploy -> Done (the gate at this click,
+        with the waivers sent now)."""
+        if body.get("confirm") is not True:
+            return 400, {"error": "confirm the continue"}
+        by = body.get("by")
+        if by is not None and not isinstance(by, str):
+            return 400, {"error": "by must be a name"}
+        if r.db.closed_at():
+            return 409, {"error": "order is closed"}
+        rp = r.db.run_plan()
+        if rp and rp["state"] == "running" and not r.lock.locked():
+            rp = r.db.interrupt_run_plan() or rp            # its process died
+        if not rp or rp["state"] not in runmod.CONTINUABLE:
+            return 409, {"error": "no held or interrupted Run to continue"}
+        waive = body.get("waive")
+        try:
+            ch = runmod.deploy_choice(r.db, r.g, rp, waive)
+        except GateError as e:
+            return 400, {"error": str(e)}
+        if rp["stage"] != "done" and not ch["targets"]:
+            return 409, {"error": "no device passes the Deploy gate: "
+                                  + "; ".join(f"{p} ({y})" for p, y in ch["out"].items())}
+        who = clean_who(by or who)
+
+        def go(ctx, **_):
+            runmod.cont(ctx, rp["id"], waive=waive, who=who,
+                        on_stage=lambda st: setattr(r, "stage", st))
+        code, out = self._start_stage(r, runmod.STAGE, go)
+        if code == 202:
+            out = {"continued": rp["id"], "deploy": ch["targets"], "out": ch["out"],
+                   "firstboot": ch["firstboot"]}
         return code, out
 
     def start_done(self, r: Rack, body: dict):
@@ -1029,6 +1122,10 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(*app.start_deploy(r, body, who=f"ui {ip}"))
         if rest == "api/stage/done":
             return self._json(*app.start_done(r, body))
+        if rest in ("api/run", "api/run/continue"):
+            ip = self.headers.get("X-Real-IP") or self.client_address[0]
+            fn = app.start_run if rest == "api/run" else app.continue_run
+            return self._json(*fn(r, body, who=f"ui {ip}"))
         if rest == "api/fresh":
             ip = self.headers.get("X-Real-IP") or self.client_address[0]
             return self._json(*app.fresh(r, body, who=f"ui {ip}"))

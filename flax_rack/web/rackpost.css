@@ -177,3 +177,11 @@ textarea.confirm-in{font:inherit;font-size:.8rem;resize:vertical}
 .step.held{color:var(--muted)} .step.held .si{color:var(--grey)}
 /* live console tail (the relay's capture while a console rung runs) */
 .con-live{max-height:22rem;overflow:auto;white-space:pre-wrap;margin:.3rem 0 .6rem;font-size:12px}
+/* Run strip: the current pass's latest Run (held = its blockers + Continue to Deploy) */
+.run-strip{display:flex;flex-wrap:wrap;gap:.35rem .7rem;align-items:center;margin:.4rem 1rem 0;padding:.35rem .6rem;border:1px solid var(--line);border-radius:6px;font-size:.72rem}
+.run-strip .rs-main{font-weight:600}
+.run-strip.rs-running{border-color:rgba(163,113,247,.55)} .run-strip.rs-running .rs-main{color:var(--violet)}
+.run-strip.rs-held,.run-strip.rs-interrupted{border-color:rgba(210,153,34,.55)} .run-strip.rs-held .rs-main,.run-strip.rs-interrupted .rs-main{color:var(--amber)}
+.run-strip.rs-done .rs-main{color:var(--green)}
+.run-strip .rs-held{color:var(--muted)} .run-strip .rs-held b{color:var(--text);font-family:ui-monospace,monospace}
+.runbtn{border-color:rgba(63,185,80,.6);color:var(--green)}
