@@ -1,5 +1,5 @@
 """iperf3 mesh: the rack's server node (geometry.iperf_server) serves one daemon per
-network (mgmt/A/B); clients run one at a time, both directions per network, judged
+network (mgmt/A/B, or Deploy's bond0); clients run one at a time, both directions per network, judged
 against 0.8 x the client NIC's ethtool speed. Never the bang, never an IP outside the
 server dict. The image has no pkill/pidof/ps, so processes are found via /proc."""
 import json
@@ -10,7 +10,7 @@ import subprocess
 from . import hostssh
 from .result import UNMEASURED, RungResult
 
-NETS = ("mgmt", "A", "B")
+NETS = ("mgmt", "A", "B", "bond")      # port = base + index; "bond": Deploy's bond0
 THRESHOLD = 0.8
 
 # bash: print "PID <pid>" for every iperf3 whose argv carries exactly `-B <ip> -p <port>`
