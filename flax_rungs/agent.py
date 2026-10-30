@@ -28,8 +28,10 @@ def launch_script(stages: str) -> str:
         f"systemctl is-active --quiet flax-qual-agent && {{ echo {_ACTIVE}; exit 0; }}\n"
         "set -e\n"
         "mkdir -p /opt/flax/hook && cd /opt/flax/hook\n"
-        "ok=0; for i in 1 2 3 4 5; do curl -sf http://bang/post.tgz -o post.tgz && ok=1 && break; sleep 3; done\n"
-        "[ \"$ok\" = 1 ] || { echo 'post.tgz fetch failed after 5 tries'; exit 2; }\n"
+        # up to 2 min: a fresh live image's network can need >15 s to settle (L37, 2026-10-30:
+        # the fetch worked 12 s after 5 tries x 3 s had given up, twice)
+        "ok=0; for i in $(seq 1 40); do curl -sf --max-time 10 http://bang/post.tgz -o post.tgz && ok=1 && break; sleep 3; done\n"
+        "[ \"$ok\" = 1 ] || { echo 'post.tgz fetch failed for 2 min'; exit 2; }\n"
         "tar xzf post.tgz\n"
         "touch flax-qual.env && sed -i '/^FLAX_QUAL_STAGES=/d' flax-qual.env\n"
         f"echo 'FLAX_QUAL_STAGES={stages}' >> flax-qual.env\n"
@@ -59,7 +61,7 @@ def launch(host_ip, user, password, *, stages=ORDER_STAGES, runner=None,
            client_factory=QualClient) -> RungResult:
     kw = {"runner": runner} if runner else {}
     script = launch_script(stages)
-    rc, out, err = hostssh.run(host_ip, user, password, script, timeout=60, **kw)
+    rc, out, err = hostssh.run(host_ip, user, password, script, timeout=180, **kw)   # covers the 2 min post.tgz fetch window
     if rc != 0:
         return RungResult("fail", {"error": f"agent launch rc={rc}",
                                    "output": hostssh.tail(out, err)})
