@@ -182,7 +182,7 @@ def fetch_post_node():
 def _sql_lit(s):
     """MAC / run ids only: restrict to the safe character set instead of quoting,
     since the query travels through a shell -c string into psql."""
-    return re.sub(r"[^0-9a-zA-Z:_-]", "", str(s or ""))
+    return re.sub(r"[^0-9a-zA-Z:._-]", "", str(s or ""))
 
 
 def fetch_node(bmc_mac):
@@ -635,6 +635,188 @@ def render_node_page(bmc_mac):
     return SUBPAGE.format(title=f"node {_esc(node.get('serial') or bmc_mac)}", body="".join(parts))
 
 
+# ---- order archive (rackpost.*, written by flax-control on Close; read-only here) ----
+
+_DEV_COLS = ["customer", "order_id", "rack", "pos", "kind", "hostname", "chassis_serial",
+             "final_verdict", "closed_at"]
+_DEV_SELECT = ("SELECT d.customer,d.order_id,d.rack,d.pos,d.kind,d.hostname,d.chassis_serial,"
+               "d.final_verdict,d.closed_at FROM rackpost.order_device d ")
+_HEX_ONLY_RE = re.compile(r"[^0-9a-f]")
+
+
+def _search_mac(term):
+    """The colon form of a term that is a MAC in any separator form/case, else ''."""
+    t = (term or "").strip().lower()
+    if not t or re.search(r"[^0-9a-f:.\-]", t):
+        return ""
+    h = _HEX_ONLY_RE.sub("", t)
+    return ":".join(h[i:i + 2] for i in range(0, 12, 2)) if len(h) == 12 else ""
+
+
+def fetch_archive_customers():
+    return _psql_rows(
+        "SELECT customer,count(DISTINCT order_id||'/'||rack),count(*),max(closed_at) "
+        "FROM rackpost.order_device GROUP BY customer ORDER BY customer",
+        ["customer", "orders", "devices", "last_closed"])
+
+
+def fetch_archive_devices(customer):
+    """Every archived device of one customer (matched exactly in Python: customer
+    names may hold spaces, which _sql_lit would strip)."""
+    rows = _psql_rows(_DEV_SELECT + "ORDER BY d.closed_at DESC,d.order_id,d.rack,d.ou DESC,d.pos",
+                      _DEV_COLS)
+    return [r for r in rows if r["customer"] == customer]
+
+
+def fetch_archive_search(term):
+    """Devices whose chassis/component serial, hostname or order id contains the
+    term, or one of whose MACs equals it (any separator form)."""
+    t = _sql_lit(term)
+    conds = []
+    if t:
+        like = f"'%{t}%'"
+        conds += [f"d.chassis_serial ILIKE {like}", f"d.hostname ILIKE {like}",
+                  f"d.order_id ILIKE {like}",
+                  "EXISTS (SELECT 1 FROM rackpost.order_component c WHERE c.order_id=d.order_id "
+                  f"AND c.rack=d.rack AND c.pos=d.pos AND c.serial ILIKE {like})"]
+    mac = _search_mac(term)
+    if mac:
+        conds.append("EXISTS (SELECT 1 FROM rackpost.order_mac m WHERE m.order_id=d.order_id "
+                     f"AND m.rack=d.rack AND m.pos=d.pos AND m.mac='{_sql_lit(mac)}'::macaddr)")
+    if not conds:
+        return []
+    return _psql_rows(_DEV_SELECT + "WHERE " + " OR ".join(conds)
+                      + " ORDER BY d.customer,d.closed_at DESC,d.order_id,d.rack,d.pos", _DEV_COLS)
+
+
+def fetch_archive_device(order, rack, pos):
+    o, r, p = _sql_lit(order), _sql_lit(rack), _sql_lit(pos)
+    key = f"order_id='{o}' AND rack='{r}' AND pos='{p}'"
+    dev = _psql_rows(
+        "SELECT customer,site,order_id,rack,pos,ou,kind,part,hostname,chassis_serial,final_verdict,"
+        f"ha_mode,closed_at,order_dir FROM rackpost.order_device WHERE {key}",
+        ["customer", "site", "order_id", "rack", "pos", "ou", "kind", "part", "hostname",
+         "chassis_serial", "final_verdict", "ha_mode", "closed_at", "order_dir"])
+    if not dev:
+        return None
+    return {
+        "dev": dev[0],
+        "macs": _psql_rows(f"SELECT role,mac FROM rackpost.order_mac WHERE {key} ORDER BY role",
+                           ["role", "mac"]),
+        "components": _psql_rows(
+            f"SELECT kind,model,serial,slot FROM rackpost.order_component WHERE {key} "
+            "ORDER BY kind,slot,serial", ["kind", "model", "serial", "slot"]),
+        "rungs": _psql_rows(
+            f"SELECT stage,rung,verdict,finished_at,artifacts FROM rackpost.order_rung WHERE {key} "
+            "ORDER BY stage,rung", ["stage", "rung", "verdict", "finished_at", "artifacts"]),
+    }
+
+
+def _verdict_span(v):
+    v = v or ""
+    low = v.lower()
+    cls = ("ok" if low in ("pass", "deployed") else
+           "gray" if low in ("", "unmeasured", "skip", "n/a") else "bad")
+    return f'<span class="{cls}">{_esc(v)}</span>'
+
+
+def _archive_search_form(q=""):
+    return ('<form method="get" action="/archive"><input type="search" name="q" size="40" '
+            'placeholder="chassis/component serial, MAC, hostname, order id" '
+            f'value="{_esc(q)}"> <button>Search</button></form>')
+
+
+def _device_link(r, text):
+    href = ("/archive/device?order=" + urllib.parse.quote(r["order_id"])
+            + "&rack=" + urllib.parse.quote(r["rack"]) + "&pos=" + urllib.parse.quote(r["pos"]))
+    return f'<a href="{_esc(href)}">{_esc(text)}</a>'
+
+
+def _device_table(rows, with_order=False):
+    head = ("<th>customer</th><th>order</th><th>rack</th>" if with_order else "")
+    body = "".join(
+        "<tr>"
+        + (f"<td><a href=\"/archive?customer={_esc(urllib.parse.quote(r['customer']))}\">"
+           f"{_esc(r['customer'])}</a></td><td>{_esc(r['order_id'])}</td><td>{_esc(r['rack'])}</td>"
+           if with_order else "")
+        + f"<td>{_device_link(r, r['pos'])}</td><td>{_esc(r['kind'])}</td><td>{_esc(r['hostname'])}</td>"
+        f"<td class='mono'>{_esc(r['chassis_serial'])}</td><td>{_verdict_span(r['final_verdict'])}</td>"
+        f"<td>{_esc(r['closed_at'])}</td></tr>"
+        for r in rows)
+    return (f"<table><thead><tr>{head}<th>pos</th><th>kind</th><th>hostname</th><th>chassis serial</th>"
+            f"<th>final verdict</th><th>closed</th></tr></thead><tbody>{body}</tbody></table>")
+
+
+def render_archive_page(customer="", q=""):
+    """Customer-first order archive: customers -> orders/racks/devices, or search hits."""
+    nav = '<h2><a href="/archive">Order archive</a></h2>' + _archive_search_form(q)
+    if q.strip():
+        rows = fetch_archive_search(q)
+        if not rows:
+            return SUBPAGE.format(title="archive", body=nav + f"<p class='dim'>no archived device matches {_esc(q)}</p>")
+        return SUBPAGE.format(title="archive search", body=nav
+                              + f"<h3>search: {_esc(q)} ({len(rows)})</h3>" + _device_table(rows, True))
+    if customer:
+        rows = fetch_archive_devices(customer)
+        if not rows:
+            return SUBPAGE.format(title="archive", body=nav + f"<p class='dim'>no archived orders for {_esc(customer)}</p>")
+        groups = {}
+        for r in rows:
+            groups.setdefault((r["order_id"], r["rack"]), []).append(r)
+        parts = [f"<h3>{_esc(customer)}</h3>"]
+        for (order, rack), devs in groups.items():
+            parts.append(f"<h4>order {_esc(order)} &middot; rack {_esc(rack or '-')} &middot; "
+                         f"{len(devs)} device(s) &middot; closed {_esc(devs[0]['closed_at'])}</h4>"
+                         + _device_table(devs))
+        return SUBPAGE.format(title=f"archive {_esc(customer)}", body=nav + "".join(parts))
+    custs = fetch_archive_customers()
+    if not custs:
+        return SUBPAGE.format(title="archive", body=nav + "<p class='dim'>no archived orders</p>")
+    trs = "".join(
+        f"<tr><td><a href=\"/archive?customer={_esc(urllib.parse.quote(c['customer']))}\">"
+        f"{_esc(c['customer'])}</a></td><td>{_esc(c['orders'])}</td><td>{_esc(c['devices'])}</td>"
+        f"<td>{_esc(c['last_closed'])}</td></tr>" for c in custs)
+    return SUBPAGE.format(title="archive", body=nav + "<table><thead><tr><th>customer</th><th>orders</th>"
+                          f"<th>devices</th><th>last closed</th></tr></thead><tbody>{trs}</tbody></table>")
+
+
+def render_archive_device_page(order, rack, pos):
+    d = fetch_archive_device(order, rack, pos)
+    if not d:
+        return SUBPAGE.format(title="archive device", body="<p>no such archived device</p>")
+    dev = d["dev"]
+    ident = "".join(_kv(k, dev.get(k)) for k in
+                    ("customer", "order_id", "rack", "pos", "ou", "kind", "part", "hostname",
+                     "chassis_serial", "final_verdict", "ha_mode", "closed_at", "order_dir"))
+    macs = "".join(f"<tr><td>{_esc(m['role'])}</td><td class='mono'>{_esc(m['mac'])}</td></tr>"
+                   for m in d["macs"])
+    comps = "".join(
+        f"<tr><td>{_esc(c['kind'])}</td><td>{_esc(c['model'])}</td><td class='mono'>{_esc(c['serial'])}</td>"
+        f"<td>{_esc(c['slot'])}</td></tr>" for c in d["components"])
+
+    def arts(raw):
+        try:
+            lst = json.loads(raw or "[]")
+        except ValueError:
+            lst = []
+        return "<br>".join(f"<span class='mono'>{_esc(a)}</span>" for a in lst) if isinstance(lst, list) else ""
+
+    rungs = "".join(
+        f"<tr><td>{_esc(r['stage'])}</td><td>{_esc(r['rung'])}</td><td>{_verdict_span(r['verdict'])}</td>"
+        f"<td>{_esc(r['finished_at'])}</td><td>{arts(r['artifacts'])}</td></tr>" for r in d["rungs"])
+    none = lambda n: f"<tr><td colspan={n} class=dim>none</td></tr>"  # noqa: E731
+    back = ("<p><a href=\"/archive?customer=" + _esc(urllib.parse.quote(dev["customer"]))
+            + "\">&larr; " + _esc(dev["customer"]) + "</a></p>")
+    body = (back + f"<h2>{_esc(dev.get('hostname') or dev.get('pos'))}</h2><div class=\"kv-grid\">{ident}</div>"
+            "<h3>MACs</h3><table><thead><tr><th>role</th><th>mac</th></tr></thead>"
+            f"<tbody>{macs or none(2)}</tbody></table>"
+            "<h3>components</h3><table><thead><tr><th>kind</th><th>model</th><th>serial</th><th>slot</th></tr></thead>"
+            f"<tbody>{comps or none(4)}</tbody></table>"
+            "<h3>rungs</h3><table><thead><tr><th>stage</th><th>rung</th><th>verdict</th><th>finished</th>"
+            f"<th>artifacts (paths in the order dir)</th></tr></thead><tbody>{rungs or none(5)}</tbody></table>")
+    return SUBPAGE.format(title=f"archive {_esc(dev.get('hostname') or pos)}", body=body)
+
+
 def render_artifact_page(aid):
     a = fetch_artifact(aid)
     if not a:
@@ -649,8 +831,9 @@ SUBPAGE = """<!doctype html><html><head><meta charset="utf-8"><title>{title}</ti
 <style>body{{font:14px system-ui;margin:1.5rem;color-scheme:light dark}} .mono{{font-family:ui-monospace,monospace}}
 .dim{{color:#6b7a88}} .kv-grid{{display:grid;grid-template-columns:max-content 1fr;gap:.2rem 1rem}} .lbl{{color:#6b7a88}}
 table{{border-collapse:collapse;margin:.5rem 0}} td,th{{border:1px solid #8884;padding:.2rem .5rem;text-align:left}}
+.ok{{color:#1c8a5c}} .bad{{color:#b6432a}} .gray{{color:#6b7a88}}
 pre{{white-space:pre-wrap;word-break:break-all;border:1px solid #8884;padding:.5rem}}</style></head>
-<body><p><a href="/?view=post_node">&larr; post_node</a></p>{body}</body></html>"""
+<body><p><a href="/?view=post_node">&larr; post_node</a> &middot; <a href="/archive">Archive</a></p>{body}</body></html>"""
 
 
 PAGE = """<!doctype html>
@@ -694,7 +877,8 @@ PAGE = """<!doctype html>
   .search input[type=search]{{font-size:13px;padding:5px 8px;border-radius:6px;width:240px;max-width:100%;
           border:1px solid var(--border);background:var(--surface);color:var(--text)}}
   .search label{{font-size:12.5px;display:flex;gap:4px;align-items:center;cursor:pointer;white-space:nowrap}}
-  td a{{color:var(--accent)}}
+  td a,a.navlink{{color:var(--accent)}}
+  a.navlink{{font-size:12.5px}}
   td .more{{color:var(--dim)}}
   .meta{{font-size:11.5px;color:var(--dim);margin:0 0 8px;font-family:ui-monospace,monospace}}
   .err{{background:var(--warn-bg);color:var(--warn);border-radius:8px;padding:8px 12px;
@@ -739,6 +923,7 @@ PAGE = """<!doctype html>
     <div class="ctrl-group">
       <div class="lbl">View</div>
       <div class="views">{view_links}</div>
+      <a class="navlink" href="/archive">Archive</a>
     </div>
     <div class="ctrl-group">
       <div class="lbl">Columns</div>
@@ -872,10 +1057,17 @@ class Handler(BaseHTTPRequestHandler):
         art = qs.get("art", [""])[0] == "1"
         ids = qs.get("ids", [""])[0] == "1"
 
-        if parsed.path in ("/node", "/artifact"):
+        if parsed.path in ("/node", "/artifact", "/archive", "/archive/device"):
             try:
-                body = (render_node_page(qs.get("mac", [""])[0]) if parsed.path == "/node"
-                        else render_artifact_page(qs.get("id", [""])[0]))
+                if parsed.path == "/node":
+                    body = render_node_page(qs.get("mac", [""])[0])
+                elif parsed.path == "/archive":
+                    body = render_archive_page(qs.get("customer", [""])[0], _clip_q(qs.get("q", [""])[0]))
+                elif parsed.path == "/archive/device":
+                    body = render_archive_device_page(qs.get("order", [""])[0], qs.get("rack", [""])[0],
+                                                      qs.get("pos", [""])[0])
+                else:
+                    body = render_artifact_page(qs.get("id", [""])[0])
             except Exception as exc:  # noqa: BLE001
                 body = f"<pre>error: {html.escape(str(exc))}</pre>"
             encoded = body.encode("utf-8")
