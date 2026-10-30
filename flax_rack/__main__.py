@@ -1,5 +1,5 @@
 """python -m flax_rack: rack-order CLI (import-bom, enable/disable, serve, discover, firmware,
-qualify, deploy, done, close).
+qualify, deploy, done, fresh, process-report, close).
 
 Order-dir commands act on the current directory (one dir per rack).
 """
@@ -258,6 +258,36 @@ def _done(a) -> int:
     return 0 if not bad else 1
 
 
+def _fresh(a) -> int:
+    from .deploy import clean_who
+    from .server import DRAIN_FILE, DRAINING
+    from .stages import start_fresh
+    if not (a.reason or "").strip():
+        sys.exit("--reason is required: why this order starts over")
+    if DRAIN_FILE.exists():
+        sys.exit(DRAINING)
+    ctx, lock = _order_ctx(a.confirm)
+    try:
+        if ctx.db.closed_at():
+            sys.exit("order is closed")
+        out = start_fresh(ctx.dir, ctx.db, clean_who(_who(a.by)), a.reason.strip())
+    finally:
+        lock.release()
+    print(f"pass {out['pass']['id']} started; earlier runs and waivers are history"
+          + (f"; kept {', '.join(out['renamed'])}" if out["renamed"] else ""))
+    return 0
+
+
+def _process_report(a) -> int:
+    from . import process_report
+    d = Path.cwd()
+    g = load_geometry(d / "geometry.json")
+    db = OrderDB(d / "order.db")
+    db.init(g)
+    print(f"wrote {process_report.write(d, g, db)}")
+    return 0
+
+
 def _close(a) -> int:
     from .kea_client import KeaError
     from .stages import close_order
@@ -332,6 +362,15 @@ def main(argv=None) -> int:
                    help="only these positions (--pos C37 R37 or repeated)")
     p.add_argument("--confirm", metavar="ORDER", help="the order id (required without --pos)")
     p.set_defaults(fn=_done)
+    p = sub.add_parser("fresh", help="start fresh: a new pass (earlier runs, waivers and CSVs "
+                                     "leave the tiles, gates and reports; nothing is deleted)")
+    p.add_argument("--confirm", required=True, metavar="ORDER")
+    p.add_argument("--reason", required=True, help="why the order starts over (recorded)")
+    p.add_argument("--by", help="who (default: the login)")
+    p.set_defaults(fn=_fresh)
+    sub.add_parser("process-report", help="write the internal process report (every attempt "
+                                          "of every pass) into this order dir"
+                   ).set_defaults(fn=_process_report)
     p = sub.add_parser("close", help="release this rack's reservations and close it")
     p.add_argument("--confirm", required=True, metavar="ORDER")
     p.set_defaults(fn=_close)

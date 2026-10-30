@@ -181,6 +181,7 @@ function App() {
     live: null, sel: selFromHash(), filter: null, q: '', popOpen: null, now: Date.now(),
     actionMsg: null, hdrMsg: null, stepM: null, artM: null, artSeq: 0, closing: false, confirmText: '', closeMsg: null, busy: false,
     qualifying: false, qualText: '', discovering: false, discText: '', finishing: false, doneText: '',
+    freshing: false, freshText: '', freshReason: '', freshMsg: null,
     hdrStage: null,            // the stage hdrMsg announced: the message goes when it stops
     deploying: false, depText: '', depFrom: 'install', depReinstall: false,
     // per-device Deploy modal: depM = {pos, msg} while open; its inputs are top-level so
@@ -199,7 +200,7 @@ function App() {
     async mounted() {
       document.addEventListener('keydown', (e) => {
         if (e.key !== 'Escape') return;
-        if (this.artM) this.backArt(); else if (this.stepM) this.stepM = null; else if (this.depM) this.depM = null; else if (this.finishing) this.finishing = false; else if (this.deploying) this.deploying = false; else if (this.qualifying) this.qualifying = false; else if (this.discovering) this.discovering = false; else if (this.closing) this.closing = false; else if (this.popOpen) this.popOpen = null; else this.close();
+        if (this.artM) this.backArt(); else if (this.stepM) this.stepM = null; else if (this.depM) this.depM = null; else if (this.finishing) this.finishing = false; else if (this.freshing) this.freshing = false; else if (this.deploying) this.deploying = false; else if (this.qualifying) this.qualifying = false; else if (this.discovering) this.discovering = false; else if (this.closing) this.closing = false; else if (this.popOpen) this.popOpen = null; else this.close();
       });
       await this.refresh(); setInterval(() => this.refresh(), POLL_MS);
     },
@@ -866,6 +867,22 @@ function App() {
     invUrl(d) {
       const a = ((d && (d.runs || {}).inventory) || {}).artifacts || {};
       return a['macinv-v'] || a.macinv || null;
+    },
+
+    // ---- start fresh (a new pass) ----
+    passTitle() {
+      const p = this.s.pass || {};
+      return `pass ${p.id} since ${p.started_at} by ${p.who}: ${p.reason}\nearlier passes: in the process report`;
+    },
+    openFresh() { this.freshing = true; this.freshText = ''; this.freshReason = ''; this.freshMsg = null; },
+    async doFresh() {
+      this.busy = true; this.freshMsg = 'starting…';
+      try {
+        const r = await api('api/fresh', { confirm: this.freshText, reason: this.freshReason });
+        this.freshing = false; this.refused(`pass ${r.pass.id} started`);
+      } catch (e) { this.freshMsg = 'start fresh refused: ' + e.message; }
+      this.busy = false;
+      await this.refresh();
     },
 
     // ---- close order ----

@@ -73,6 +73,11 @@
         <button class="closebtn cancelbtn" v-if="s.stage_running && s.stage" :disabled="s.cancelling" @click="cancelStage()"
                 :title="s.cancelling ? 'cancel requested: stopping after the steps now running' : 'stop the running ' + s.stage + ' between steps (a power action already sent finishes)'">{{s.cancelling ? 'Cancelling…' : 'Cancel ' + s.stage}}</button>
         <span class="hdr-msg" v-if="hdrMsg">{{hdrMsg}}</span>
+        <span class="pass-chip" v-if="(s.pass?.id || 1) > 1" :title="passTitle()">pass {{s.pass?.id}}</span>
+        <a class="rep-link" v-if="s.order" href="api/report/process.html" target="_blank" rel="noopener"
+           title="internal process report: every attempt of every pass (failures, waivers, restarts, cable pulls, SOL findings); written now, and again by Close">process report</a>
+        <button class="closebtn freshbtn" v-if="s.order && !s.closed_at" :disabled="s.stage_running" @click="openFresh()"
+                :title="s.stage_running ? 'a stage is running' : 'start a new pass: the runs, waivers and CSVs so far leave the tiles, gates and reports (kept as history in the process report; nothing is deleted, no power action, Kea unchanged)'">Start fresh…</button>
         <span class="closed-chip" v-if="s.closed_at" :title="'closed ' + s.closed_at">closed</span>
         <button class="closebtn" v-else-if="s.order" @click="openClose()"
                 title="release this rack's reservations, mark the order closed">Close order…</button>
@@ -515,13 +520,32 @@
     </div>
   </div>
 
+  <!-- ================= start-fresh modal (typed confirm + reason) ================= -->
+  <div class="m-scrim" v-if="freshing" @click="freshing=false">
+    <div class="m-box" @click.stop>
+      <div class="m-h"><span class="m-title">Start fresh: order {{s.order}}{{s.rack ? ' rack ' + s.rack : ''}}</span>
+        <span class="x" @click="freshing=false">✕</span></div>
+      <div class="m-b">
+        <p class="m-sub">Starts pass {{(s.pass?.id || 1) + 1}}. Every run, waiver and failure so far leaves the
+          tiles, the Deploy gate and the customer CSVs (those are kept as
+          <span class="mono">*.pass{{s.pass?.id || 1}}.csv</span>). Nothing is deleted: the process report
+          keeps every pass. No node is powered, Kea is unchanged. Type the order id and say why.</p>
+        <input class="confirm-in" name="rp-freshconfirm" autocomplete="off" v-model="freshText" :placeholder="s.order">
+        <textarea class="confirm-in" name="rp-freshreason" rows="3" v-model="freshReason" placeholder="reason (recorded)"></textarea>
+        <button class="press danger" :disabled="freshText!==s.order || !freshReason.trim() || busy" @click="doFresh()">Start pass {{(s.pass?.id || 1) + 1}}</button>
+        <p class="action-msg" v-if="freshMsg">{{freshMsg}}</p>
+      </div>
+    </div>
+  </div>
+
   <!-- ================= close-order modal (typed confirm) ================= -->
   <div class="m-scrim" v-if="closing" @click="closing=false">
     <div class="m-box" @click.stop>
       <div class="m-h"><span class="m-title">Close order {{s.order}}{{s.rack ? ' rack ' + s.rack : ''}}</span>
         <span class="x" @click="closing=false">✕</span></div>
       <div class="m-b">
-        <p class="m-sub">Releases every Kea reservation of this rack (source
+        <p class="m-sub">Writes the internal process report (every pass), then archives the order and
+          releases every Kea reservation of this rack (source
           <span class="mono">order:{{s.order}}{{s.rack ? '/' + s.rack : ''}}</span>) and marks it closed.
           Stages can no longer run. Type the order id to confirm.</p>
         <input class="confirm-in" name="rp-confirm" autocomplete="off" v-model="confirmText" :placeholder="s.order">

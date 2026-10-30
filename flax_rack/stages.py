@@ -1,12 +1,17 @@
 """Stage orchestration for a rack order: the shared context and rung recorder; Discover
 itself is discover_ladder (Post's 16-step ladder per device).
 
-Close archives the rack (flax-control's rackpost.* tables) and then deletes the order's
+Close first writes the internal process report (flax_rack.process_report: every
+attempt of every pass; a failure to write it fails Close, the order stays open), then
+archives the rack (flax-control's rackpost.* tables) and then deletes the order's
 Kea rows, both through flax-control; the order is marked closed only after both
 succeed, so a failure leaves it open, reservations kept, and Close re-runnable (a
 first close whose release fails withdraws the archive it just wrote). Then the Deploy
 stage's per-run ansible inventory (the live hosts' IPs) leaves the order dir (best
 effort: an `error` event if it cannot).
+Start fresh (start_fresh) opens a new pass: earlier runs and waivers leave the tiles,
+gates and CSVs (order.db scopes every latest read to the pass); nothing is deleted, the
+customer CSVs of the ended pass are kept as *.pass<N>.csv.
 Close needs Kea only: `creds` may be a zero-arg loader, called the first time a
 Discover rung needs the switch or BMC login, so missing creds never block Close.
 """
@@ -73,6 +78,24 @@ def run_discover(ctx, *, positions: list[str] | None = None) -> None:
     _run(ctx, positions=positions)
 
 
+def start_fresh(order_dir, db, who: str, reason: str) -> dict:
+    """A new pass (the caller holds the rack's stage lock). The ended pass's customer
+    CSVs are renamed *.pass<N-1>.csv, so Done's links and ✓ start over too.
+    -> {"pass": the new pass, "renamed": [new file names]}."""
+    from . import report
+    p = db.start_pass(who, reason)
+    renamed = []
+    for name in (report.DEVICES_CSV, report.COMPONENTS_CSV):
+        src = Path(order_dir) / name
+        if src.is_file():
+            dst = src.with_name(f"{src.stem}.pass{p['id'] - 1}{src.suffix}")
+            src.replace(dst)
+            renamed.append(dst.name)
+    db.add_event("fresh", f"start fresh (pass {p['id']}) by {who}: {reason}"
+                          + (f"; kept {', '.join(renamed)}" if renamed else ""))
+    return {"pass": p, "renamed": renamed}
+
+
 def _retract(ctx, p) -> str:
     """Undo a first close's archive write (the same route, no rows: flax-control deletes
     this (order, rack)'s rows and inserts none). -> the event's clause."""
@@ -94,8 +117,10 @@ def close_order(ctx) -> dict:
     re-close never withdraws (the order is already closed and archived). Dropping the
     Deploy ansible inventory after set_closed is best effort: a failure is an event,
     the close stands."""
-    from . import archive                       # archive -> report -> deploy -> stages
+    from . import archive, process_report       # archive -> report -> deploy -> stages
     first = ctx.db.closed_at() is None
+    # internal, every pass: before anything leaves the order (raises -> order stays open)
+    process_report.write(ctx.dir, ctx.g, ctx.db)
     at = ctx.db.closed_at() or archive.now()    # a re-close keeps the first close time
     p = archive.payload(ctx.g, ctx.db, ctx.dir, closed_at=at)
     counts = ctx.kea.archive(p)                 # raises KeaError -> order stays open

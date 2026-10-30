@@ -1,5 +1,12 @@
 """order.db: per-rack SQLite store (devices, MACs, rung runs, events, gate waivers,
-Done's component list, the live link monitor's state transitions)."""
+Done's component list, the live link monitor's state transitions, passes).
+
+A pass is one go at the order. Start fresh opens a new pass: it records the highest run
+and waiver id so far, and every "latest" read (latest_runs, last_passed, latest_run_id,
+latest_stage_runs, run_count, waivers, components, ha_mode) sees only rows after that
+mark -- the tiles, gates, CSVs and the archive start over. Nothing is deleted: the
+`*_all` reads (the process report, a history view) see every pass. An order.db made
+before passes existed is pass 1 from its first run (init migrates it)."""
 import dataclasses
 import json
 import re
@@ -32,7 +39,14 @@ CREATE TABLE IF NOT EXISTS link_event(
   id INTEGER PRIMARY KEY, at TEXT NOT NULL, pos TEXT NOT NULL, link TEXT NOT NULL,
   state TEXT NOT NULL, text TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS link_event_pos ON link_event(pos, link, id);
+CREATE TABLE IF NOT EXISTS pass(
+  id INTEGER PRIMARY KEY, started_at TEXT NOT NULL, who TEXT NOT NULL, reason TEXT NOT NULL,
+  run_after INTEGER NOT NULL DEFAULT 0, waiver_after INTEGER NOT NULL DEFAULT 0,
+  event_after INTEGER NOT NULL DEFAULT 0, link_after INTEGER NOT NULL DEFAULT 0);
 """
+# the current pass's marks: its rows are the runs / waivers with a higher id
+_RUN_AFTER = "COALESCE((SELECT run_after FROM pass ORDER BY id DESC LIMIT 1), 0)"
+_WAIVER_AFTER = "COALESCE((SELECT waiver_after FROM pass ORDER BY id DESC LIMIT 1), 0)"
 # columns added after Plan 1 shipped: an existing order.db gains them on init
 _ADDED = (("device", "bmc_reachable", "INTEGER"), ("device", "bmc_power", "TEXT"),
           ("device", "bmc_at", "TEXT"))
@@ -82,6 +96,11 @@ class OrderDB:
                 c.execute("INSERT OR REPLACE INTO meta(k,v) VALUES(?,?)", (k, v))
             for d in g.devices:
                 c.execute("INSERT OR IGNORE INTO device(pos,kind) VALUES(?,?)", (d.pos, d.kind))
+            if not c.execute("SELECT 1 FROM pass LIMIT 1").fetchone():
+                # pass 1 = everything so far (an order.db from before passes: its first run)
+                first = c.execute("SELECT MIN(started_at) t FROM run").fetchone()["t"]
+                c.execute("INSERT INTO pass(id,started_at,who,reason) VALUES(1,?,?,?)",
+                          (first or _now(), "order", "first pass"))
 
     def set_macs(self, pos, *, host_mac, bmc_mac, iom_macs) -> None:
         cur = self._exec(
@@ -116,9 +135,33 @@ class OrderDB:
             (result.verdict, json.dumps(result.detail), json.dumps(result.artifacts),
              _now(), run_id))
 
+    # ------------------------------------------------------------ passes
+    def current_pass(self) -> dict:
+        """{id, started_at, who, reason, run_after, waiver_after, event_after, link_after}
+        of the pass in progress (its rows: ids above those marks)."""
+        return dict(self._all("SELECT * FROM pass ORDER BY id DESC LIMIT 1")[0])
+
+    def passes(self) -> list[dict]:
+        """Every pass, oldest first."""
+        return [dict(r) for r in self._all("SELECT * FROM pass ORDER BY id")]
+
+    def start_pass(self, who: str, reason: str) -> dict:
+        """Start fresh: a new pass from here (the runs and waivers so far leave every
+        latest read; nothing is deleted). -> the new pass."""
+        with closing(self._conn()) as c, c:
+            c.execute("BEGIN IMMEDIATE")
+            c.execute("INSERT INTO pass(started_at,who,reason,run_after,waiver_after,"
+                      "event_after,link_after) VALUES(?,?,?,"
+                      + ",".join(f"(SELECT COALESCE(MAX(id),0) FROM {t})"
+                                 for t in ("run", "waiver", "event", "link_event")) + ")",
+                      (_now(), who, reason))
+        return self.current_pass()
+
+    # ------------------------------------------------------------ runs (current pass)
     def latest_runs(self) -> dict:
         rows = self._all(
-            "SELECT * FROM run WHERE id IN (SELECT MAX(id) FROM run GROUP BY pos, rung)")
+            "SELECT * FROM run WHERE id IN (SELECT MAX(id) FROM run "
+            f"WHERE id > {_RUN_AFTER} GROUP BY pos, rung)")
         return {(r["pos"], r["rung"]): {
             "stage": r["stage"], "status": r["status"], "verdict": r["verdict"],
             "detail": json.loads(r["detail"]) if r["detail"] else None,
@@ -131,21 +174,23 @@ class OrderDB:
         rungs = list(rungs)
         rows = self._all(
             "SELECT pos, rung, detail FROM run WHERE id IN (SELECT MAX(id) FROM run WHERE "
-            f"verdict='pass' AND rung IN ({','.join('?' * len(rungs))}) GROUP BY pos, rung)",
+            f"id > {_RUN_AFTER} AND verdict='pass' AND rung IN ({','.join('?' * len(rungs))}) GROUP BY pos, rung)",
             rungs)
         return {(r["pos"], r["rung"]): json.loads(r["detail"]) if r["detail"] else {}
                 for r in rows}
 
     def latest_run_id(self, pos, rung) -> int | None:
         """The id of (pos, rung)'s latest run row (the one latest_runs() shows)."""
-        r = self._all("SELECT MAX(id) id FROM run WHERE pos=? AND rung=?", (pos, rung))
+        r = self._all(f"SELECT MAX(id) id FROM run WHERE pos=? AND rung=? AND id > {_RUN_AFTER}",
+                      (pos, rung))
         return r[0]["id"]
 
     def latest_stage_runs(self) -> list[dict]:
         """The latest run per (pos, stage, rung): [{pos, stage, rung, status, verdict,
         finished_at, artifacts {name: order-dir-relative path}}], by pos, stage, rung."""
         rows = self._all(
-            "SELECT * FROM run WHERE id IN (SELECT MAX(id) FROM run GROUP BY pos, stage, rung)"
+            "SELECT * FROM run WHERE id IN (SELECT MAX(id) FROM run "
+            f"WHERE id > {_RUN_AFTER} GROUP BY pos, stage, rung)"
             " ORDER BY pos, stage, rung")
         return [{"pos": r["pos"], "stage": r["stage"], "rung": r["rung"],
                  "status": r["status"], "verdict": r["verdict"],
@@ -154,7 +199,14 @@ class OrderDB:
                 for r in rows]
 
     def run_count(self, pos, rung) -> int:
-        return self._all("SELECT COUNT(*) n FROM run WHERE pos=? AND rung=?", (pos, rung))[0]["n"]
+        return self._all(f"SELECT COUNT(*) n FROM run WHERE pos=? AND rung=? AND id > {_RUN_AFTER}",
+                         (pos, rung))[0]["n"]
+
+    def runs_all(self) -> list[dict]:
+        """Every run row of every pass, oldest first (the process report)."""
+        return [{**dict(r), "detail": json.loads(r["detail"]) if r["detail"] else None,
+                 "artifacts": json.loads(r["artifacts"]) if r["artifacts"] else {}}
+                for r in self._all("SELECT * FROM run ORDER BY id")]
 
     def mark_interrupted(self) -> int:
         # an interrupted run keeps its row; a new start_run appends a fresh one
@@ -178,6 +230,10 @@ class OrderDB:
         return [dict(r) for r in self._all(
             "SELECT ts,kind,text FROM event ORDER BY id DESC LIMIT ?", (limit,))]
 
+    def events_all(self) -> list[dict]:
+        """Every event, oldest first (+ its id; the process report)."""
+        return [dict(r) for r in self._all("SELECT id,ts,kind,text FROM event ORDER BY id")]
+
     def set_qualify_progress(self, progress: dict | None) -> None:
         """Qualify's current phase and barrier (None = no Qualify running)."""
         self._set_meta_json("qualify_progress", progress)
@@ -194,10 +250,14 @@ class OrderDB:
 
     def set_ha_mode(self, ha: dict | None) -> None:
         """The HA mode Deploy's ha-test delivered (order level; None clears it)."""
-        self._set_meta_json("ha_mode", ha)
+        self._set_meta_json("ha_mode", ha and {**ha, "pass": self.current_pass()["id"]})
 
     def ha_mode(self) -> dict | None:
-        return self._meta_json("ha_mode")
+        """The current pass's HA record (one from an earlier pass is not served)."""
+        ha = self._meta_json("ha_mode")
+        if not ha or ha.pop("pass", 1) != self.current_pass()["id"]:
+            return None
+        return ha
 
     def _set_meta_json(self, k, v) -> None:
         if v is None:
@@ -219,12 +279,20 @@ class OrderDB:
                 "at": at}
 
     def waivers(self, history=False) -> dict | list:
-        """pos -> its latest waiver ({pos, stage, rungs, reason, who, at}); every row,
-        oldest first, with history=True."""
-        rows = [{"pos": r["pos"], "stage": r["stage"], "rungs": json.loads(r["rungs"]),
-                 "reason": r["reason"], "who": r["who"], "at": r["at"]}
-                for r in self._all("SELECT * FROM waiver ORDER BY id")]
+        """pos -> its latest waiver of this pass ({pos, stage, rungs, reason, who, at});
+        every row of this pass, oldest first, with history=True."""
+        rows = self._waivers(f"WHERE id > {_WAIVER_AFTER}")
         return rows if history else {r["pos"]: r for r in rows}
+
+    def waivers_all(self) -> list[dict]:
+        """Every waiver of every pass, oldest first (+ its row id)."""
+        return self._waivers("")
+
+    def _waivers(self, where) -> list[dict]:
+        return [{"id": r["id"], "pos": r["pos"], "stage": r["stage"],
+                 "rungs": json.loads(r["rungs"]), "reason": r["reason"], "who": r["who"],
+                 "at": r["at"]}
+                for r in self._all(f"SELECT * FROM waiver {where} ORDER BY id")]
 
     def set_closed(self, at: str | None = None) -> None:
         """Mark the order closed at `at` (UTC iso; now when None). A first close wins."""
@@ -245,9 +313,10 @@ class OrderDB:
                  for r in rows])
 
     def components(self, pos=None) -> list[dict]:
-        """Component rows (pos, then the order they were read in); one pos with pos=."""
-        q = "SELECT pos,kind,model,serial,slot,source_run FROM component"
-        rows = (self._all(q + " WHERE pos=? ORDER BY id", (pos,)) if pos is not None
+        """Component rows read in this pass (pos, then the order they were read in); one
+        pos with pos=."""
+        q = f"SELECT pos,kind,model,serial,slot,source_run FROM component WHERE source_run > {_RUN_AFTER}"
+        rows = (self._all(q + " AND pos=? ORDER BY id", (pos,)) if pos is not None
                 else self._all(q + " ORDER BY pos, id"))
         return [dict(r) for r in rows]
 
@@ -265,3 +334,8 @@ class OrderDB:
     def link_events(self, limit=200) -> list[dict]:
         return [dict(r) for r in self._all(
             "SELECT at,pos,link,state,text FROM link_event ORDER BY id DESC LIMIT ?", (limit,))]
+
+    def link_events_all(self) -> list[dict]:
+        """Every link transition, oldest first (the process report)."""
+        return [dict(r) for r in self._all(
+            "SELECT id,at,pos,link,state,text FROM link_event ORDER BY id")]

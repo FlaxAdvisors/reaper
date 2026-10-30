@@ -33,6 +33,12 @@ then the customer CSVs): rack-wide with the typed order id, a positions run with
 {"confirm": true}. GET api/report/devices.csv and api/report/components.csv download
 those CSVs (attachment; 404 until Done has written them).
 
+POST api/fresh {"confirm": <order id>, "reason": "..."} starts a new pass (Start fresh:
+the runs, waivers and CSVs so far leave the tiles, gates and reports; nothing is
+deleted), refused like a stage start while one runs or the daemon drains. GET
+api/report/process.html (re)writes and serves the internal process report (every
+attempt of every pass; Close writes it too, before archiving).
+
 Stages run in daemon threads under one lock per rack dir (RackLock: a thread lock
 plus a flock on <dir>/.stage.lock, so a CLI `discover` and the daemon exclude each
 other too). Different racks run in parallel. A stage's exception lands in that
@@ -59,9 +65,9 @@ from flax_rungs.bond import clean_ha
 from flax_rungs.fwsteps import FW_STEPS
 from flax_rungs.pxeboot import PXE_DIR
 
-from . import devview, report
+from . import devview, process_report, report
 from .addressing import plan_addresses
-from .deploy import (FROM_PHASES, PHASES as DEPLOY_PHASES, GateError, clean_who, deploy_rungs,
+from .deploy import (_REASON_MAX, FROM_PHASES, PHASES as DEPLOY_PHASES, GateError, clean_who, deploy_rungs,
                      deploy_why, gate_blockers, gate_why, ha_mode_of, plan as deploy_plan,
                      run_deploy, sweep_interrupted_installs)
 from .done import DONE_RUNGS, done_rungs, run as run_done, targets as done_targets
@@ -75,7 +81,7 @@ from .orderdb import OrderDB
 from .poller import INTERVAL_S, BmcPoller
 from .qualify import (AGENT_STAGES, OLD_RUNG_NAMES, PHASES as QUALIFY_PHASES, device_rungs,
                       pop_default, qualify_passed, qualify_why, run_qualify)
-from .stages import close_order, run_discover
+from .stages import close_order, run_discover, start_fresh
 from .version import __version__
 
 # The apply_rackpost role creates this before it copies code and restarts the daemon,
@@ -315,6 +321,9 @@ def rack_state(r: Rack) -> dict:
     devices = []
     for d in g.devices:
         x = dbdev.get(d.pos, {})
+        if not any(k == d.pos or k.startswith(f"{d.pos}.iom") for k in by_pos):
+            # MACs Discover recorded in an earlier pass: not on the tile until it runs again
+            x = {**x, "host_mac": None, "bmc_mac": None, "iom_macs": []}
         default = pop_default(g, d)
         ovr = x.get("pop_override")
         profiles.update(p for p in (default, ovr) if p)
@@ -368,7 +377,7 @@ def rack_state(r: Rack) -> dict:
     return clean_ha({
         "order": g.order, "customer": g.customer, "vid": g.vid, "site": g.site, "rack": g.rack,
         "prefix": g.url_prefix, "version": __version__, "closed_at": db.closed_at(),
-        "iperf_server": g.iperf_server,
+        "iperf_server": g.iperf_server, "pass": _pass_view(db),
         "stage_running": r.lock.locked(), "stage": r.stage if r.lock.locked() else None,
         "cancelling": bool(r.stage and r.cancel.is_set()),
         "phases": list(PHASES), "discover_rungs": list(DISCOVER_RUNGS),
@@ -389,6 +398,11 @@ def rack_state(r: Rack) -> dict:
         "switches": switches, "devices": devices, "rack_runs": rack_runs,
         "unexpected": [{"port": u["port"], "mac": _fmt_mac(u["mac"])} for u in unexpected],
         "events": db.events(30)})
+
+
+def _pass_view(db) -> dict:
+    p = db.current_pass()
+    return {k: p[k] for k in ("id", "started_at", "who", "reason")}
 
 
 def _csv_at(rack_dir: Path) -> str | None:
@@ -610,6 +624,37 @@ class App:
         except ValueError as e:
             return 400, {"error": str(e)}
         return self._start_stage(r, "done", run_done, positions=sorted(set(pos)))
+
+    def fresh(self, r: Rack, body: dict, who: str = "?"):
+        """Start fresh: a new pass (typed order id + a reason). Refused while a stage
+        runs (409, like a stage start), while draining, or once closed."""
+        if body.get("confirm") != r.g.order:
+            return 400, {"error": "type the order id to start fresh"}
+        reason = body.get("reason")
+        if not (isinstance(reason, str) and reason.strip()):
+            return 400, {"error": "a reason is required"}
+        if len(reason) > _REASON_MAX:
+            return 400, {"error": f"reason longer than {_REASON_MAX} characters"}
+        by = body.get("by")
+        if by is not None and not isinstance(by, str):
+            return 400, {"error": "by must be a name"}
+        if r.db.closed_at():
+            return 409, {"error": "order is closed"}
+        if DRAIN_FILE.exists():
+            return 409, {"error": DRAINING}
+        if not r.lock.acquire():
+            return 409, {"error": f"a stage ({r.stage or 'cli'}) is running for this rack"}
+        try:
+            out = start_fresh(r.dir, r.db, clean_who(by or who), reason.strip())
+        finally:
+            r.lock.release()
+        return 200, {"pass": _pass_view(r.db), "renamed": out["renamed"]}
+
+    def process_report(self, r: Rack) -> bytes:
+        """Rewrite the process report now; its HTML with links resolved from the rack
+        root (the file links artifacts relative to the order dir)."""
+        text = process_report.write(r.dir, r.g, r.db).read_text()
+        return text.replace("<head>", '<head><base href="../../">', 1).encode()
 
     def report_file(self, r: Rack, name: str) -> tuple[Path, str] | None:
         """(the CSV Done wrote, its download name) or None (unknown, not written yet)."""
@@ -888,6 +933,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._static(rest[len("static/"):])
             if rest == "api/state":
                 return self._json(200, rack_state(r))
+            if rest == "api/report/process.html":
+                return self._send(200, app.process_report(r), _CTYPES[".html"])
             if rest.startswith("api/report/"):
                 f = app.report_file(r, rest[len("api/report/"):])
                 if f is None:
@@ -923,6 +970,9 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(*app.start_deploy(r, body, who=f"ui {ip}"))
         if rest == "api/stage/done":
             return self._json(*app.start_done(r, body))
+        if rest == "api/fresh":
+            ip = self.headers.get("X-Real-IP") or self.client_address[0]
+            return self._json(*app.fresh(r, body, who=f"ui {ip}"))
         if rest == "api/close":
             return self._json(*app.close(r, body))
         return self._json(404, {"error": "not found"})
