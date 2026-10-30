@@ -278,6 +278,8 @@ class FakeRungs:
         self.sol_findings: set[str] = set()
         self.bond_fail: set[str] = set()
         self.hatest_fail: set[str] = set()
+        self.installed: set[str] = set()       # up on its installed OS (after a first boot)
+        self.fabric_down: set[str] = set()     # fabric ports admin-down (no LLDP) until fabric_up
         # Done: a non-benign SEL entry, a BMC whose SEL cannot be read, a Redfish that
         # refuses the override clear; pxe_dir = where pxe_remove really unlinks (None:
         # recorded only)
@@ -337,6 +339,7 @@ class FakeRungs:
             n = self.nboot
         self.boots[pos] = {"boot_id": f"00000000-0000-4000-8000-{n:012x}", "kernel": at + 150,
                            "tftp": at + 20, "ipxe": at + 90, "iso": at + 160}
+        self.installed.discard(pos)            # a PXE boot: the live image again
 
     def forget_boots(self):
         """Every live node rebooted since Discover (new boot_ids, nothing else changes)."""
@@ -534,6 +537,9 @@ class FakeRungs:
         mac = "-".join(h[i:i + 2] for i in range(0, 12, 2))
         if pos in self.wrong_host:
             mac = "02-fa-ff-ff-00-99"
+        if pos in self.installed:
+            return (f"{b['boot_id']}\n{self.t - b['kernel']:.2f}\n"
+                    "BOOT_IMAGE=/vmlinuz-6.8.0-45-generic root=/dev/mapper/vg0-root ro\n")
         return (f"{b['boot_id']}\n{self.t - b['kernel']:.2f}\n"
                 f"BOOT_IMAGE=/vmlinuz BOOTIF=01-{mac} pxeaddr={host_ip} rd.live\n")
 
@@ -664,7 +670,8 @@ class FakeRungs:
             ifaces = {f"Ethernet{n}": IfStatus("down", "up", "25G") for n in range(128)}
             for d in self.g.devices:
                 for name, l in sorted(d.links.items()):
-                    if name not in _IFN or l.switch != s.id or d.pos not in booted:
+                    if name not in _IFN or l.switch != s.id or d.pos not in booted \
+                            or d.pos in self.fabric_down:
                         continue
                     ifn = wedge_iface(l.port, l.lane)
                     if ifaces[ifn].oper == "up":
@@ -715,12 +722,29 @@ class FakeRungs:
         return out
 
     def host_run(self, host_ip, user, pw, script, *, timeout=None, runner=None):
+        from flax_rungs.install import _PROBE as install_probe
         from flax_rungs.liveboot import _PROBE
         self.calls.append(("host_run", self.pos_of.get(host_ip), script.split("\n")[0][:40]))
         pos = self.pos_of.get(host_ip)
         if script == _PROBE:
             out = self._probe_out(pos, host_ip)
             return (0, out, "") if out else (255, "", "ssh: connect to host: No route to host")
+        if script == install_probe:
+            out = self._probe_out(pos, host_ip)
+            if not out:
+                return 255, "", "ssh: connect to host: No route to host"
+            if pos not in self.installed:
+                return 0, ("version_id=15.6\nroot=LiveOS_rootfs\ncmdline="
+                           + out.splitlines()[2] + "\n"), ""
+            d = self.g.device(pos)
+            macs = [self.host_macs.get(pos) or _mac(d.ou, d.col, 0x10).replace(":", ""),
+                    *(m.replace(":", "") for k, m in self._macs(pos).items() if k != "eno1")]
+            return 0, (f"boot_id={out.splitlines()[0]}\nuptime={out.splitlines()[1]}\n"
+                       f"cmdline={out.splitlines()[2]}\nversion_id=24.04\n"
+                       f"hostname=rr101-{pos.lower()}\nroot=/dev/mapper/vg0-root\n"
+                       f"macs={' '.join(macs)}\n"
+                       'blk=NAME="vg0-root" TYPE="lvm" TRAN="" RM="0"\n'
+                       'blk=NAME="nvme0n1" TYPE="disk" TRAN="nvme" RM="0"\n'), ""
         fw = self._fw_host(pos, script)
         if fw is not None:
             if self._probe_out(pos, host_ip) is None or pos in self.fw_host_down:
@@ -873,6 +897,7 @@ class FakeRungs:
             return RungResult("fail", {"headline": why, "error": why, "ssh_user": user,
                                        "rows": [["ssh user", user], ["ssh after", "no answer"]],
                                        "notes": []})
+        self.installed.add(pos)
         return RungResult("pass", {
             "headline": f"Ubuntu 24.04 up as {user} after 188 s, / on nvme0n1",
             "ssh_user": user, "ssh_after_s": 188, "version_id": "24.04", "disk": "nvme0n1",
@@ -918,8 +943,15 @@ class FakeRungs:
                                    "macs": {k: side[k]["mac"] for k in ("A", "B")},
                                    "headline": f"bond0 {cidr} active enp25s0f0np0 (wedge A)",
                                    "rows": rows + [["active slave", "enp25s0f0np0 (primary)"]]},
-                          {"60-bond0.yaml": f"# rackpost Deploy (ha-config)\n# {cidr}\n",
+                          {"60-bond0.network": f"# rackpost Deploy (ha-config)\n[Match]\nName=bond0\n"
+                                               f"\n[Network]\nAddress={cidr}\n",
                            "bond0.txt": "Bonding Mode: fault-tolerance (active-backup)\n"})
+
+    def fabric_up(self, host_ip, user, pw, macs, *, runner=None):
+        pos = self.pos_of.get(host_ip)
+        self.calls.append(("fabric_up", pos, sorted(macs)))
+        self.fabric_down.discard(pos)
+        return {m: n for n, m in self._macs(pos).items() if m in macs}, None
 
     def ha_test(self, nodes, server_pos, *, user, pw, runner=None):
         from flax_rungs.bond import HA_MODE
@@ -952,7 +984,7 @@ class FakeRungs:
     def end_summary(self, host_ip, bmc_ip, *, host_user, host_pw, bmc_creds, runner=None):
         """endsummary.collect's shape: canned SDR/SEL judged by the real BENIGN_SEL rule,
         and the in-band captures only when a host IP is given."""
-        from flax_rungs.endsummary import nonbenign
+        from flax_rungs.endsummary import nonbenign, transients
         from flax_rungs.result import RungResult
         pos = self.pos_of.get(bmc_ip)
         self.calls.append(("end_summary", pos, host_ip))
@@ -961,9 +993,13 @@ class FakeRungs:
                "P0 Temp          | 02h | ok  |  3.0 | 41 degrees C\n"
                "HSC Input Power  | 0Ah | ok  | 10.1 | 312 Watts\n")
         sel = ("   1 | 10/30/2026 | 02:01:12 | Temperature Inlet Temp | Upper Critical going high | Asserted\n"
-               "   2 | 10/30/2026 | 02:14:40 | Power Unit #0x3b | Unknown Chassis Pwr Sts | Asserted\n")
+               "   2 | 10/30/2026 | 02:14:40 | Power Unit #0x3b | Unknown Chassis Pwr Sts | Asserted\n"
+               "   3 | 10/30/2026 | 12:49:44 PM GMT | Fan MB FAN1 TACH | Lower Critical going low"
+               " | Asserted | Reading 0 < Threshold 500 RPM\n"
+               "   4 | 10/30/2026 | 12:49:50 PM GMT | Fan MB FAN1 TACH | Lower Critical going low"
+               " | Deasserted | Reading 4800 > Threshold 500 RPM\n")
         if pos in self.sel_nonbenign:
-            sel += ("   3 | 10/30/2026 | 03:02:51 | Memory #0x02 | Correctable ECC | Asserted"
+            sel += ("   5 | 10/30/2026 | 03:02:51 | Memory #0x02 | Correctable ECC | Asserted"
                     " | DIMM_A3\n")
         arts = {"sdr-elist.txt": sdr}
         rows = [["BMC", f"{bmc_ip} as u, cipher 17"], ["sdr elist", "read"]]
@@ -991,10 +1027,10 @@ class FakeRungs:
         if "sel-elist.txt" not in arts:
             head = "SEL not read: sel elist failed: timeout"
             return RungResult("unmeasured", {**detail, "headline": head, "reason": head}, arts)
-        bad = nonbenign(sel)
+        bad, tr = nonbenign(sel), transients(sel)
         n = sum("|" in ln for ln in sel.splitlines())
-        detail["sel_nonbenign"] = bad
-        rows.append(["SEL", f"{n} entries, {len(bad)} non-benign"])
+        detail["sel_nonbenign"], detail["sel_transients"] = bad, tr
+        rows.append(["SEL", f"{n} entries, {len(bad)} non-benign, {len(tr)} transient"])
         if bad:
             head = f"SEL: {len(bad)} non-benign: {bad[0]}"
             return RungResult("fail", {**detail, "headline": head, "error": head}, arts)

@@ -9,7 +9,8 @@ barrier (wait for all) before the next:
              proof; then the SOL capture stops and is scanned (install-console)
   user       ansible.flax_user: flax_user.yml once over every node still in         1800 s
   ha-config  bond.configure: bond0 active-backup over the two PCIe ports (by MAC),    300 s
-             primary = the wedge-A port Qualify's ha-path saw, A-side fabric address
+             primary = the wedge-A port (live wedge LLDP, else Qualify's ha-path),
+             A-side fabric address
   ha-test    hatest.run once for the rack: whole-wedge cut A, then B, iperf mesh     1200 s
              over bond0 against geometry.iperf_server
 
@@ -36,6 +37,17 @@ fail there still fails the device in deploy_passed. The rack's Cancel is checked
 each device's install and at every barrier (an install already powering the node runs
 to its end). The current phase is kept in order.db (deploy_progress) for the UI.
 
+ha-config's wedge sides come from LIVE LLDP (the rack's LinkPoller snapshot, else one
+read of each wedge): the wedge whose LLDP table names this node (<prefix><pos>) with the
+port's MAC is that port's side. A port the installer left admin-down sends no LLDP, so
+when live LLDP does not show both sides the fabric ports (MACs from live LLDP + Qualify's
+ha-path/inventory) are set up on the node (bond.bring_up, by permanent MAC, never the
+mgmt NIC) and live LLDP is re-read for up to LLDP_WAIT_POLLS poll intervals. Only when
+live LLDP shows nothing for the node does Qualify's ha-path decide (it must have
+passed); one side live and the other not, or neither source, fails naming what was
+seen. ha-test takes each node's sides + bond address from its passed ha-config row, so
+an `ha-path` waiver no longer strands a deployed node.
+
 ha-test needs the iperf server: when it is not one of this run's devices, its latest
 ha-config must have passed (it joins the test: its wedge ports are cut too), else every
 participant fails "server <pos> not deployed". After a test the order records the HA
@@ -46,14 +58,17 @@ namespace like real_rungs()) replaces them in tests and in RACKPOST_FAKE.
 """
 import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from flax_rungs import agent, ansible, bond, fabric, hatest, install, pxeboot, sol, solscan
+from flax_rungs import (agent, ansible, bond, fabric, hatest, install, pxeboot, sol, solscan,
+                        sonic)
 from flax_rungs.result import UNMEASURED, RungResult, not_passed
 
+from . import linkmon
 from .addressing import plan_addresses
 from .qualify import (AGENT_STAGES, _Progress, _artifact, _safe, _stage_ok, device_rungs,
                       device_verdict, parse_ip_link)
@@ -69,6 +84,7 @@ PHASE_RUNG = {"install": "install", "firstboot": "firstboot", "user": "flax-user
 CONSOLE = "install-console"
 NON_GATING = (CONSOLE,)
 MAX_PARALLEL = 8            # concurrent installs / first boots (BMC power actions)
+LLDP_WAIT_POLLS = 2         # ha-config: link-monitor intervals to wait for a raised port's LLDP
 _REASON_MAX = 500
 
 
@@ -80,7 +96,8 @@ def real_rungs():
     return SimpleNamespace(
         install=install.install, firstboot=install.firstboot, sol_start=sol.start,
         sol_stop=sol.stop, sol_scan=solscan.scan_file, flax_user=ansible.flax_user,
-        bond_config=bond.configure, ha_test=hatest.run)
+        bond_config=bond.configure, fabric_up=bond.bring_up, ha_test=hatest.run,
+        read_live=sonic.read_live, clock=time.monotonic, sleep=time.sleep)
 
 
 def deploy_rungs(d) -> list[str]:
@@ -478,43 +495,188 @@ def _user(ctx, R, cr, prog, xs):
 
 
 # ---------------------------------------------------------------- HA
+def _cidr(ctx, d, host_ip) -> tuple[str | None, str | None]:
+    try:
+        return fabric.fabric_addr(ctx.g, d, "A", int(host_ip.rsplit(".", 1)[1])), None
+    except (ValueError, AttributeError) as e:
+        return None, str(e)
+
+
+def _qualify_ifmac(ctx, lr, pos) -> dict[str, str]:
+    text = _artifact(ctx, lr, pos, "inventory", "ip-d-link")
+    return parse_ip_link(text) if text else {}
+
+
 def ha_inputs(ctx, lr, d, host_ip) -> tuple[dict | None, str | None, str | None]:
-    """(sides, A-side cidr, None) for bond.configure / hatest from Qualify's evidence:
-    its ha-path links (the wedge LLDP saw each port on) and the live image's
-    ifname -> MAC (the inventory's ip-d-link); else (None, None, why not)."""
+    """(sides, A-side cidr, None) from Qualify's evidence: its ha-path links (the wedge
+    LLDP saw each port on) and the live image's ifname -> MAC (the inventory's
+    ip-d-link); else (None, None, why not). ha-config's fallback when live LLDP shows
+    nothing for the node."""
     ha = lr.get((d.pos, "ha-path")) or {}
     if ha.get("verdict") != "pass":
         return None, None, (f"Qualify ha-path {ha.get('verdict') or 'not run'}: no proven "
                             "wedge side per port")
-    text = _artifact(ctx, lr, d.pos, "inventory", "ip-d-link")
-    ifmac = parse_ip_link(text) if text else {}
+    ifmac = _qualify_ifmac(ctx, lr, d.pos)
     if not ifmac:
         return None, None, "no live-image MACs (Qualify inventory ip-d-link artifact)"
     side, err = bond.sides((ha.get("detail") or {}).get("links") or [], ifmac)
     if err:
         return None, None, err
+    cidr, err = _cidr(ctx, d, host_ip)
+    return (side, cidr, None) if cidr else (None, None, err)
+
+
+def _mac12(m) -> str:
+    h = re.sub(r"[^0-9a-f]", "", (m or "").lower())
+    return h if len(h) == 12 else ""
+
+
+def live_sides(g, snaps: dict, pos: str, now: float | None = None) -> dict[str, dict]:
+    """side -> {"mac", "link" ("<wedge> <iface>"), "ifname"} from fresh wedge snapshots:
+    an LLDP row on wedge A/B whose system name is the node's hostname (<prefix><pos>, or
+    <that>-...) and whose port ID is a MAC. A side seen with two MACs is left out."""
+    base = linkmon.device_names(g)[pos]
+    out, dup = {}, set()
+    for s in g.switches:
+        snap = snaps.get(s.id)
+        if s.id not in ("A", "B") or not snap or snap.get("at") is None:
+            continue
+        if now is not None and now - snap["at"] > linkmon.STALE_S:
+            continue
+        for e in snap.get("lldp") or []:
+            e = linkmon._d(e)
+            n = (e.get("remote_device") or "").strip().lower()
+            m = _mac12(e.get("remote_port"))
+            if not m or not (n == base or n.startswith(base + "-")):
+                continue
+            mac = ":".join(m[i:i + 2] for i in range(0, 12, 2))
+            if s.id in out and out[s.id]["mac"] != mac:
+                dup.add(s.id)
+            out[s.id] = {"mac": mac, "link": f"{s.id} {e.get('local_iface')}",
+                         "ifname": e.get("remote_descr") or None}
+    return {k: v for k, v in out.items() if k not in dup}
+
+
+def _snapshots(ctx, R) -> tuple[dict, float | None, int]:
+    """(switch id -> snapshot, now for freshness, poll interval s): the rack's
+    LinkPoller's when it runs, else one read of each wedge here (CLI / tests)."""
+    lm = getattr(ctx, "links", None)
+    if lm is not None:
+        return lm.snapshots(), lm.clock(), lm.interval_s
+    out = {}
     try:
-        cidr = fabric.fabric_addr(ctx.g, d, "A", int(host_ip.rsplit(".", 1)[1]))
-    except (ValueError, AttributeError) as e:
-        return None, None, str(e)
-    return side, cidr, None
+        ips, (user, pw) = linkmon.switch_ips(ctx), creds(ctx).sonic
+    except Exception:                       # noqa: BLE001 -- no switch logins: no live view
+        return {}, None, linkmon.INTERVAL_S
+    for s in ctx.g.switches:
+        if s.id in ("A", "B") and ips.get(s.id):
+            try:
+                r = R.read_live(ips[s.id], user, pw, runner=ctx.runner)
+            except Exception:               # noqa: BLE001
+                continue
+            if r.verdict == "pass":
+                out[s.id] = {**r.detail, "at": 0}
+    return out, None, linkmon.INTERVAL_S
+
+
+def _fabric_macs(ctx, lr, pos, live) -> list[str]:
+    """The node's fabric port MACs: live LLDP's, then Qualify ha-path's (any verdict:
+    each seen port's live-image ifname, MAC'd by the inventory's ip-d-link)."""
+    out = [v["mac"] for v in live.values()]
+    links = ((lr.get((pos, "ha-path")) or {}).get("detail") or {}).get("links") or []
+    ifmac = _qualify_ifmac(ctx, lr, pos) if links else {}
+    for l in links:
+        m = bond._mac(ifmac.get(l.get("ifname") or "", ""))
+        if m and m not in out:
+            out.append(m)
+    return out
+
+
+def ha_sides(ctx, R, cr, lr, d, host_ip) -> tuple[dict | None, dict, str | None]:
+    """(sides, info, None) or (None, info, why). info: {"sides_from", "rows", "notes"}."""
+    info = {"sides_from": None, "rows": [], "notes": []}
+    snaps, now, interval = _snapshots(ctx, R)
+    live = live_sides(ctx.g, snaps, d.pos, now)
+    if len(live) < 2:
+        macs = _fabric_macs(ctx, lr, d.pos, live)
+        if not macs:
+            info["notes"].append("no fabric port MAC known (live LLDP, Qualify ha-path): "
+                                 "none raised")
+        else:
+            user, pw = cr.host
+            up, err = R.fabric_up(host_ip, user, pw, macs, runner=ctx.runner)
+            if err:
+                return None, info, f"raising the fabric ports: {err}"
+            info["rows"].append(["fabric ports set up", ", ".join(
+                f"{n} {m}" for m, n in sorted(up.items(), key=lambda x: x[1]))])
+            wait = LLDP_WAIT_POLLS * interval
+            t0 = R.clock()
+            while len(live) < 2 and R.clock() - t0 < wait:
+                R.sleep(min(5 if getattr(ctx, "links", None) is not None else interval / 2,
+                            max(1, wait - (R.clock() - t0))))
+                snaps, now, _i = _snapshots(ctx, R)
+                live = live_sides(ctx.g, snaps, d.pos, now)
+            info["notes"].append(f"ports set up (ip link set up, by MAC); live LLDP re-read "
+                                 f"for up to {int(wait)} s")
+    if len(live) == 2:
+        if live["A"]["mac"] == live["B"]["mac"]:
+            return None, info, "live LLDP: both wedges see the same MAC"
+        info["sides_from"] = "live LLDP"
+        info["rows"].append(["wedge sides from", "live LLDP: " + "; ".join(
+            f"{k} {v['link'].split()[1]} {v['mac']}" for k, v in sorted(live.items()))])
+        return live, info, None
+    if live:
+        (k, v), = live.items()
+        miss = "B" if k == "A" else "A"
+        return None, info, (f"live LLDP sees only wedge {k} ({v['link'].split()[1]} {v['mac']}); "
+                            f"no port of {linkmon.device_names(ctx.g)[d.pos]} on wedge {miss}")
+    side, _cidr_, why = ha_inputs(ctx, lr, d, host_ip)
+    if why:
+        return None, info, (f"no wedge side proven: live LLDP names no port of "
+                            f"{linkmon.device_names(ctx.g)[d.pos]} on wedge A/B, and {why}")
+    info["sides_from"] = "Qualify ha-path"
+    info["rows"].append(["wedge sides from", "Qualify ha-path (live LLDP showed nothing): "
+                         + "; ".join(f"{k} {v['mac']}" for k, v in sorted(side.items()))])
+    return side, info, None
 
 
 def _ha_config(ctx, R, cr, lr, x):
     host_ip = x.ips["host"]
-    side, cidr, why = ha_inputs(ctx, lr, x.d, host_ip)
+    cidr, why = _cidr(ctx, x.d, host_ip)
     if why:
         r = _record(ctx, x.pos, "ha-config", RungResult("fail", {"error": why, "headline": why}))
-    else:
+        _out(x, "ha-config", r)
+        return
+
+    def one():
+        if not cr.host:
+            why = "add credentials-host.json (flax row)"
+            return RungResult("fail", {"error": why, "headline": why})
+        side, info, why = ha_sides(ctx, R, cr, lr, x.d, host_ip)
+        if why:
+            return RungResult("fail", {"error": why, "headline": why, **info})
         user, pw = cr.host
-        r = _rung(ctx, x.pos, "ha-config", lambda: R.bond_config(
-            host_ip, user, pw, side, cidr, runner=ctx.runner))
-    _out(x, "ha-config", r)
+        res = R.bond_config(host_ip, user, pw, side, cidr, runner=ctx.runner)
+        det = dict(res.detail)
+        det["sides_from"] = info["sides_from"]
+        det["rows"] = info["rows"] + list(det.get("rows") or [])
+        det["notes"] = list(det.get("notes") or []) + info["notes"]
+        return RungResult(res.verdict, det, res.artifacts)
+
+    _out(x, "ha-config", _rung(ctx, x.pos, "ha-config", one))
 
 
-def _ha_node(pos, host_ip, side, cidr) -> dict:
-    return {"pos": pos, "host_ip": host_ip, "bond_ip": cidr.split("/")[0],
-            "macs": {s: side[s]["mac"] for s in ("A", "B")}}
+def ha_node(lr, pos, host_ip) -> tuple[dict | None, str | None]:
+    """ha-test's node from its latest passed ha-config (the sides + address it bonded)."""
+    hc = lr.get((pos, "ha-config")) or {}
+    det = hc.get("detail") or {}
+    macs, addr = det.get("macs") or {}, det.get("address")
+    if hc.get("verdict") != "pass":
+        return None, "its ha-config has not passed"
+    if not (macs.get("A") and macs.get("B") and addr):
+        return None, "its ha-config row records no bond MACs/address"
+    return {"pos": pos, "host_ip": host_ip, "bond_ip": addr.split("/")[0],
+            "macs": {s: macs[s] for s in ("A", "B")}}, None
 
 
 def _ha_test(ctx, R, cr, prog, ips, xs, all_xs):
@@ -524,11 +686,11 @@ def _ha_test(ctx, R, cr, prog, ips, xs, all_xs):
     lr = ctx.db.latest_runs()
     nodes, why, extra = [], None, None
     for x in xs:
-        side, cidr, err = ha_inputs(ctx, lr, x.d, x.ips["host"])
-        if err:                             # ha-config passed on these inputs: cannot happen
+        n, err = ha_node(lr, x.pos, x.ips["host"])
+        if err:                             # ha-config passed in this run: cannot happen
             why = f"{x.pos}: {err}"
             break
-        nodes.append(_ha_node(x.pos, x.ips["host"], side, cidr))
+        nodes.append(n)
     sx = next((x for x in all_xs if x.pos == srv), None)
     srv_dev = next((d for d in g.devices if d.pos == srv), None)
     if why:
@@ -540,16 +702,14 @@ def _ha_test(ctx, R, cr, prog, ips, xs, all_xs):
     elif sx is not None:
         if sx not in xs:
             why = f"server {srv} not deployed: {_why_out(sx)}"
-    elif (lr.get((srv, "ha-config")) or {}).get("verdict") != "pass":
-        why = f"server {srv} not deployed: its ha-config has not passed"
     else:
         hip = ips.get(srv, {}).get("host")
-        side, cidr, err = ha_inputs(ctx, lr, srv_dev, hip) if hip else (None, None, "no host IP")
+        n, err = ha_node(lr, srv, hip) if hip else (None, "no host IP")
         if err:
             why = f"server {srv} not deployed: {err}"
         else:
             extra = srv
-            nodes.append(_ha_node(srv, hip, side, cidr))
+            nodes.append(n)
     parts = [x.pos for x in xs] + ([extra] if extra else [])
     rids = {p: ctx.db.start_run(p, STAGE, "ha-test") for p in parts}
     try:

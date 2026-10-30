@@ -320,7 +320,7 @@ def run(nodes: list[dict], server_pos: str, *, user: str, pw: str, mesh=iperf.me
         restore_s: int = RESTORE_S, mesh_seconds: int = 10,
         deadman_s: int = DEADMAN_S) -> dict[str, RungResult]:
     """nodes: [{"pos", "host_ip", "bond_ip", "macs": {"A", "B"}}] (bond_ip without the
-    prefix; macs as bond.sides()). server_pos must be one of them. One RungResult per pos."""
+    prefix; macs = the A/B permanent MACs ha-config bonded). server_pos must be one of them. One RungResult per pos."""
     R = _Run(nodes, server_pos, user, pw, mesh, runner, sleep, clock, ping_s, lead_s,
              settle_s, restore_s, mesh_seconds, deadman_s)
     R.ensure_iperf()

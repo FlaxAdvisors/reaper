@@ -26,6 +26,11 @@ the steps after it are recorded `skip` ("<step> failed"); `serial` and
     boot markers are proven at ssh like Post's _prove_boot: kernel boot time (bang
     clock - uptime) between an iPXE and an ISO fetch in the logs, else `skip`.
     A live image answering with ANOTHER host's BOOTIF fails power-on without acting.
+  Up on its installed OS (a deployed node: ssh as flax answers, VERSION_ID 24.04, no
+    BOOTIF= on /proc/cmdline, / on an internal disk, the discovered host MAC among its
+    NICs): NO power action, NO PXE override. power-on passes "up on its installed OS",
+    the boot markers are `skip` (no live boot to mark), host-ssh re-proves the
+    installed OS. One without the discovered host MAC fails power-on without acting.
   JBOD (bc-jbod): each IOM endpoint is its own ladder, key "<pos>.iomN" (bmc-*
     steps, serial = fruid-util Board Serial, bmc-ready); host steps `skip`. The
     device's own rows are the per-step roll-up of its IOMs.
@@ -57,7 +62,7 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 
 from flax_post.observe import bootlog, family_map_live, fru
-from flax_rungs import agent, bmc, hostssh, identity, ios, liveboot, redfish, sonic
+from flax_rungs import agent, bmc, hostssh, identity, install, ios, liveboot, redfish, sonic
 from flax_rungs.result import UNMEASURED, RungResult
 from flax_rungs.sonic import FdbEntry
 
@@ -376,6 +381,7 @@ def _pinged(R, ctx, ip, budget) -> tuple[bool, float]:
 @dataclass
 class _Boot:
     live: bool = False
+    installed: bool = False             # up on its installed OS (a deployed node)
     power_at: float | None = None
     old_boot_id: str | None = None
     boot_id: str | None = None
@@ -535,6 +541,9 @@ def _power_on(ctx, env, st, bmc_ip, host_ip, want) -> RungResult:
                            "BOOTIF MAC: nothing is powered until that is explained"])
             if live:
                 return _already_live(ctx, env, st, bmc_ip, host_ip, bid, up, at, got)
+            os_ = _installed_os(ctx, env, host_ip)
+            if os_ is not None:
+                return _already_installed(ctx, env, st, bmc_ip, host_ip, bid, up, want, os_)
             probe_note = "the host answers ssh but is not in the live image: it is cycled"
     info = {}
     state = R.power_status(bmc_ip, cr.bmc, info=info, runner=ctx.runner)
@@ -601,6 +610,47 @@ def _already_live(ctx, env, st, bmc_ip, host_ip, bid, up, at, got) -> RungResult
               proof=st.proof)
 
 
+def _installed_os(ctx, env, host_ip) -> dict | None:
+    """install's first-boot probe when the host answers it as the installed OS
+    (VERSION_ID 24.04, no BOOTIF=, / on an internal disk), else None."""
+    user, pw = env.cr.host
+    rc, out, _err = env.R.host_run(host_ip, user, pw, install._PROBE, timeout=20,
+                                   runner=ctx.runner)
+    if rc != 0:
+        return None
+    p = install.parse_probe(out)
+    disk, _why = install.root_disk(p)
+    if "BOOTIF=" in p["cmdline"] or p["version_id"] != install.VERSION_ID or not disk:
+        return None
+    return {**p, "disk": disk}
+
+
+def _os_rows(host_ip, p, want) -> list[list]:
+    return [["host IP", host_ip], ["VERSION_ID", p["version_id"]], ["hostname", p["hostname"]],
+            ["root disk", p["disk"]], ["boot_id", p["boot_id"]],
+            ["host MAC on a NIC", "yes" if want in p["macs"] else f"no ({_colon(want)})"]]
+
+
+def _already_installed(ctx, env, st, bmc_ip, host_ip, bid, up, want, p) -> RungResult:
+    """No power action, no PXE override: the node runs its installed OS (Deploy got it
+    there); pulling it back to the live image would undo nothing Discover needs."""
+    rows = _os_rows(host_ip, p, want)
+    if want not in p["macs"]:
+        return ev("fail", f"wrong host at {host_ip}: an installed OS without the discovered "
+                          f"host MAC {_colon(want)}; not acting", rows,
+                  ["an installed OS answers at this device's host IP but none of its NICs "
+                   "carries the discovered host MAC: nothing is powered until that is explained"])
+    st.installed, st.boot_id = True, bid
+    power = env.R.power_status(bmc_ip, env.cr.bmc, runner=ctx.runner)
+    rows = [["chassis power", power or "unreadable"], *rows,
+            ["uptime", f"{int(up)} s" if up is not None else None]]
+    return ev("pass", "up on its installed OS: no power action", rows,
+              ["the node was up on its installed OS (Ubuntu "
+               f"{p['version_id']}, / on {p['disk']}) when Discover looked: no power cycle, "
+               "no PXE override"],
+              installed_os=True, boot_id=bid, power=power, version_id=p["version_id"])
+
+
 _MARK_SRC = {"tftp": "dnsmasq log (TFTP sent to the host IP)",
              "ipxe": "nginx access log (iPXE fetched its script)",
              "iso": "nginx access log (live ISO fetched)"}
@@ -609,6 +659,10 @@ _MARK_SRC = {"tftp": "dnsmasq log (TFTP sent to the host IP)",
 def _marker(ctx, env, st, host_ip, step, key) -> RungResult:
     R = env.R
     budget = LADDER_BUDGET_S[step]
+    if st.installed:
+        return ev("skip", "up on its installed OS: no live boot to mark",
+                  [["evidence", _MARK_SRC[key]]],
+                  ["the node was not booted by Discover (it runs its installed OS)"])
     if st.live:
         ts = (st.proof or {}).get(key)
         rows = [["seen at", _t(ts) or "not seen"], ["kernel booted at", _t(st.kernel_boot)],
@@ -695,6 +749,8 @@ def _host_ssh(ctx, env, st, host_ip, want) -> RungResult:
              "image's BOOTIF= and pxeaddr=, and BOOTIF must be the discovered host MAC"]
     if not env.cr.host:
         return ev("fail", "add credentials-host.json (flax row)")
+    if st.installed:
+        return _host_ssh_installed(ctx, env, st, host_ip, want)
     last = {}
 
     def probe():
@@ -737,6 +793,26 @@ def _host_ssh(ctx, env, st, host_ip, want) -> RungResult:
         notes.append("the boot_id changed since power-on read it: the node rebooted meanwhile")
     return ev("pass", ("live image (already running)" if st.live else "fresh live boot")
               + f" · BOOTIF {_colon(bootif)}", rows, notes, **extra)
+
+
+def _host_ssh_installed(ctx, env, st, host_ip, want) -> RungResult:
+    """The installed OS still answers as itself: VERSION_ID, no BOOTIF, internal root,
+    the discovered host MAC on one of its NICs."""
+    notes = ["ssh as flax to the installed OS (no power action): /etc/os-release VERSION_ID "
+             f"{install.VERSION_ID}, no BOOTIF= on /proc/cmdline, / on an internal disk, and "
+             "the discovered host MAC on one of its NICs"]
+    p = _installed_os(ctx, env, host_ip)
+    if p is None:
+        return ev("fail", "the installed OS no longer answers as itself",
+                  [["host IP", host_ip]], notes)
+    rows = _os_rows(host_ip, p, want)
+    if want not in p["macs"]:
+        return ev("fail", f"wrong host at {host_ip}: host MAC {_colon(want)} on no NIC", rows,
+                  notes)
+    if st.boot_id and p["boot_id"] != st.boot_id:
+        notes.append("the boot_id changed since power-on read it: the node rebooted meanwhile")
+    return ev("pass", f"installed OS (Ubuntu {p['version_id']}) · host MAC {_colon(want)}", rows,
+              notes, boot_id=p["boot_id"], installed_os=True, already_live=False)
 
 
 def _bmc_ready(ctx, env, st, bmc_ip) -> RungResult:

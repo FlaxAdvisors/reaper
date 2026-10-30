@@ -246,11 +246,12 @@ class Rack:
 
 
 # a skip because the rung does not apply to this endpoint's kind (no host / BMC / boot /
-# reservation / reader, or the node was already up): "n/a", drawn green. Any other skip
+# reservation / reader, or the node was already up -- live image or installed OS): "n/a",
+# drawn green. Any other skip
 # (cancelled, an earlier step or phase failed or was not measured) is "upstream": neutral.
 _NA_SKIP = re.compile(r"(an IOM has no host|no BMC \(|no firmware reader for kind|"
                       r"switch endpoints are discovered|a switch has no |"
-                      r"already in the live image)")
+                      r"already in the live image|up on its installed OS)")
 
 
 def _skip_reason(run: dict) -> str:
@@ -470,6 +471,7 @@ class App:
             try:
                 ctx = self.factory(r.dir, g, db)
                 ctx.cancel = cancel
+                ctx.links = r.linkmon               # Deploy's ha-config reads live LLDP
                 fn(ctx, **kw)
             except Exception as e:           # noqa: BLE001 -- logged, never fatal
                 try:

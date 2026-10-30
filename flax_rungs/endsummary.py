@@ -11,12 +11,20 @@ Two halves, each saved as text artifacts:
                one is a row + detail["inband_errors"][key], its text (the error) still
                saved, the others kept.
 
-The verdict is the SEL's: `fail` on any line no BENIGN_SEL pattern matches, `unmeasured`
+The verdict is the SEL's: `fail` on any line no BENIGN_SEL pattern matches and no
+transient pair covers, `unmeasured`
 when the SEL was not read (no IPMI session, or `sel elist` failed: SEL not read is not
 SEL clean), else `pass`. The in-band half never decides it: a host that does not answer
-is a row (`inband: false`) beside a SEL that was read. Read-only: nothing here
+is a row (`inband: false`) beside a SEL that was read.
+
+Transients (operator 2026-10-30): a threshold event (Upper/Lower Non-critical / Critical /
+Non-recoverable going high/low) whose `Asserted` line has a `Deasserted` line for the
+same sensor + event within TRANSIENT_S is benign: both lines are listed in
+detail["sel_transients"], never in sel_nonbenign. An Asserted line with no such
+Deasserted (and a lone Deasserted) stays red. Read-only: nothing here
 power-controls the node or clears its SEL.
 """
+import datetime
 import re
 import subprocess
 
@@ -26,6 +34,7 @@ from .result import RungResult
 # donum 83's benign SEL patterns, verbatim (substring match against an elist line)
 BENIGN_SEL = ("Inlet Temp | Upper Critical", "C1 Remote Temp | Upper Critical",
               "Unknown Chassis Pwr Sts")
+TRANSIENT_S = 60           # a threshold that asserts and deasserts within this is benign
 SEL_TIMEOUT_S = 120         # a flooded SEL takes far longer than a power status
 _MARK = "===flax-es "
 _INBAND = (("net", "net.txt", "ip -br link; ip -br addr"),
@@ -75,10 +84,55 @@ def first_boot(bootorder_text: str) -> tuple[str | None, str | None, bool]:
     return bid, line, bool(line and _NET_BOOT.search(line))
 
 
+_THRESHOLD = re.compile(r"^(?:Upper|Lower) (?:Non-critical|Critical|Non-recoverable) "
+                        r"going (?:high|low)$", re.I)
+
+
+def _sel_at(date: str, clock: str) -> datetime.datetime | None:
+    """`10/30/2026` + `12:49:59 PM GMT` (or `12:49:59`) -> a naive datetime."""
+    m = re.match(r"(\d{1,2}:\d{2}:\d{2})(?:\s*([AP]M))?", clock.strip(), re.I)
+    if not m:
+        return None
+    try:
+        if m.group(2):
+            return datetime.datetime.strptime(f"{date.strip()} {m.group(1)} {m.group(2).upper()}",
+                                              "%m/%d/%Y %I:%M:%S %p")
+        return datetime.datetime.strptime(f"{date.strip()} {m.group(1)}", "%m/%d/%Y %H:%M:%S")
+    except ValueError:
+        return None
+
+
+def transients(sel_text: str) -> list[dict]:
+    """Asserted/Deasserted pairs of one threshold event (same sensor + event) at most
+    TRANSIENT_S apart: [{"sensor", "event", "seconds", "lines": [asserted, deasserted]}].
+    Each Deasserted line closes the earliest open Asserted it can."""
+    rows = []
+    for ln in (sel_text or "").splitlines():
+        f = [x.strip() for x in ln.split("|")]
+        if len(f) >= 6 and _THRESHOLD.match(f[4]) and f[5] in ("Asserted", "Deasserted"):
+            rows.append((ln.rstrip(), f[3], f[4], f[5], _sel_at(f[1], f[2])))
+    out, open_ = [], []
+    for ln, sensor, event, way, at in rows:
+        if way == "Asserted":
+            if at is not None:
+                open_.append((ln, sensor, event, at))
+            continue
+        for i, (aln, s, e, aat) in enumerate(open_):
+            if (s, e) == (sensor, event) and at is not None \
+                    and 0 <= (at - aat).total_seconds() <= TRANSIENT_S:
+                del open_[i]
+                out.append({"sensor": sensor, "event": event,
+                            "seconds": int((at - aat).total_seconds()), "lines": [aln, ln]})
+                break
+    return out
+
+
 def nonbenign(sel_text: str) -> list[str]:
-    """The SEL entries (elist lines, `|`-separated) no BENIGN_SEL pattern matches."""
+    """The SEL entries (elist lines, `|`-separated) no BENIGN_SEL pattern matches and no
+    transient pair covers."""
+    paired = {ln for t in transients(sel_text) for ln in t["lines"]}
     return [ln.rstrip() for ln in (sel_text or "").splitlines()
-            if "|" in ln and not any(p in ln for p in BENIGN_SEL)]
+            if "|" in ln and not any(p in ln for p in BENIGN_SEL) and ln.rstrip() not in paired]
 
 
 def _inband(host_ip, user, pw, runner, arts, rows, errors) -> bool:
@@ -111,7 +165,8 @@ def collect(host_ip: str | None, bmc_ip: str, *, host_user: str, host_pw: str,
     arts: dict[str, str] = {}
     oob_rows: list[list[str]] = []
     host_rows: list[list[str]] = []
-    detail = {"inband": False, "oob": False, "sel_nonbenign": [], "user": None,
+    detail = {"inband": False, "oob": False, "sel_nonbenign": [], "sel_transients": [],
+              "user": None,
               "cipher": None, "inband_errors": {}}
     detail["inband"] = _inband(host_ip, host_user, host_pw, runner, arts, host_rows,
                                detail["inband_errors"])
@@ -143,13 +198,17 @@ def collect(host_ip: str | None, bmc_ip: str, *, host_user: str, host_pw: str,
         head = f"SEL not read: {why}"
         return RungResult("unmeasured", {**detail, "headline": head, "reason": head}, arts)
     bad = nonbenign(sel)
+    tr = transients(sel)
     entries = sum("|" in ln for ln in sel.splitlines())
-    detail["sel_nonbenign"] = bad
+    detail["sel_nonbenign"], detail["sel_transients"] = bad, tr
     rows.append(["SEL", f"{entries} entr{'y' if entries == 1 else 'ies'}, "
-                        f"{len(bad)} non-benign"])
+                        f"{len(bad)} non-benign" + (f", {len(tr)} transient" if tr else "")])
+    rows += [[f"SEL transient {t['sensor']}", f"{t['event']}: asserted, deasserted after "
+                                               f"{t['seconds']} s"] for t in tr]
     host = "" if detail["inband"] else "; in-band not read"
     if bad:
         head = f"SEL: {len(bad)} non-benign: {bad[0]}"
         return RungResult("fail", {**detail, "headline": head, "error": head}, arts)
-    return RungResult("pass", {**detail, "headline": f"SEL clean ({entries} benign){host}"},
+    tnote = f", {len(tr)} transient" if tr else ""
+    return RungResult("pass", {**detail, "headline": f"SEL clean ({entries} benign{tnote}){host}"},
                       arts)

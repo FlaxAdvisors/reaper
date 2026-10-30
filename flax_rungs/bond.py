@@ -1,15 +1,27 @@
 """ha-config: bond0 (active-backup) over the two PCIe fabric ports of the installed OS.
 
-The ports are found BY MAC (Qualify's ha-path links + the live image's MACs), never by
-name; the primary is the port LLDP saw on wedge A -- not the P0 label (R05 is
-cross-cabled). /etc/netplan/60-bond0.yaml (renderer networkd) keys each port by the
-kernel name its MAC carries on the installed OS (so it merges over an installer entry
-for the same name, e.g. `dhcp4: true`) and matches it by `macaddress`; no set-name.
-The bond's address is the device's A-side fabric formula (fabric.fabric_addr "A").
-`netplan generate`, then `networkctl reload` + `reconfigure` of bond0 and its two slaves only
-(never `netplan apply`, which re-DHCPs the mgmt NIC); a generate failure restores the previous file.
+The ports are found BY MAC, never by name; the primary is the port LLDP saw on wedge A
+-- not the P0 label (R05 is cross-cabled). Deploy decides the sides (live wedge LLDP,
+else Qualify's ha-path: sides()); a port left admin-down by the installer is brought
+up first (bring_up) so the wedges can see it.
 
-The mgmt NIC (the mezz enp94s0np0, the one holding the host IP) is never in the file:
+bond0 is written as systemd-networkd units, NOT netplan (2026-10-30, R37): `netplan
+generate` rewrites every /run/systemd/network/10-netplan-*.network, so the following
+`networkctl reload` reconfigured the mgmt NIC enp94s0np0 too (journal: "Reconfiguring
+with 10-netplan-enp94s0np0.network", "DHCPv6 lease lost", DHCPv4 re-acquired 4 s later
+although `critical: true`) -- R37 lost mgmt 4-8 s on every apply. networkd keeps a
+.network file whose stats did not change, so writing only our own units leaves the mgmt
+link alone. In /etc/systemd/network/: 60-bond0.netdev, 60-bond0.network and one
+60-bond0-slave-{a,b}.network per port matched by PermanentMACAddress (A = PrimarySlave);
+the address is the device's A-side fabric formula (fabric.fabric_addr "A"). Then
+`networkctl reload` + `reconfigure` of bond0 and its two slaves only (never `netplan
+apply`, never a reload of anything we did not change). netplan must not also configure
+those ports (its 10-netplan-* units sort first and would win): another /etc/netplan
+file naming a port or its MAC refuses the rung; rackpost's own earlier
+/etc/netplan/60-bond0.yaml is retired to /var/lib/flax/ with its generated units. Each
+link's `Network File` is read back and must be ours.
+
+The mgmt NIC (the mezz enp94s0np0, the one holding the host IP) is never in a unit:
 a fabric MAC that resolves to it refuses the rung. The bang pings the host's mgmt IP
 every 100 ms across the apply; any gap over MGMT_GAP_MS fails the rung. Verified from
 /proc/net/bonding/bond0: active-backup, MII 100 ms, both slaves (by permanent MAC) up,
@@ -24,11 +36,14 @@ from . import hostssh
 from .remote import unreachable
 from .result import UNMEASURED, RungResult
 
-NETPLAN = "/etc/netplan/60-bond0.yaml"
+NETPLAN = "/etc/netplan/60-bond0.yaml"       # rackpost's netplan bond before 2026-10-30
+NETPLAN_RETIRED = "/var/lib/flax/60-bond0.yaml.retired"
+UNIT_DIR = "/etc/systemd/network"
+NETPLAN_RUN = "/run/systemd/network"
 MGMT_IF = "enp94s0np0"
 MIIMON = 100
 PING_MS = 100
-MGMT_GAP_MS = 10000       # ssh must survive; R37 stalls 4-8 s on any mgmt reconfigure (C37 ~0), recorded either way
+MGMT_GAP_MS = 10000       # ssh must survive; the networkd units no longer touch mgmt (R37 lost 4-8 s via netplan)
 SETTLE_S = 30
 HA_MODE = "active-backup"
 # order.db rows from before 2026-10-30 carry a longer mode text and an interconnect note
@@ -80,32 +95,51 @@ def sides(links: list[dict], ifmac: dict[str, str]) -> tuple[dict, str | None]:
     return out, ("; ".join(errs) or None)
 
 
-def netplan_yaml(names: dict[str, str], macs: dict[str, str], cidr: str) -> str:
-    """names/macs: side -> installed kernel name / MAC. Primary = side A."""
-    eth = "".join(f"""    {names[s]}:
-      match:
-        macaddress: "{macs[s]}"
-      dhcp4: false
-      dhcp6: false
-      accept-ra: false
-""" for s in ("A", "B"))
-    return f"""# rackpost Deploy (ha-config): bond0 active-backup, primary = the wedge-A port
-network:
-  version: 2
-  renderer: networkd
-  ethernets:
-{eth}  bonds:
-    bond0:
-      interfaces: [{names['A']}, {names['B']}]
-      addresses: [{cidr}]
-      dhcp4: false
-      dhcp6: false
-      accept-ra: false
-      parameters:
-        mode: active-backup
-        mii-monitor-interval: {MIIMON}
-        primary: {names['A']}
-"""
+def unit_files(names: dict[str, str], macs: dict[str, str], cidr: str) -> dict[str, str]:
+    """names/macs: side -> installed kernel name / permanent MAC; primary = side A.
+    file name -> content, for UNIT_DIR (the same keys as netplan rendered them)."""
+    head = "# rackpost Deploy (ha-config): bond0 active-backup, primary = the wedge-A port\n"
+    out = {"60-bond0.netdev": f"""{head}[NetDev]
+Name=bond0
+Kind=bond
+
+[Bond]
+Mode=active-backup
+MIIMonitorSec={MIIMON}ms
+""", "60-bond0.network": f"""{head}[Match]
+Name=bond0
+
+[Network]
+LinkLocalAddressing=ipv6
+Address={cidr}
+IPv6AcceptRA=no
+ConfigureWithoutCarrier=yes
+"""}
+    for s in ("A", "B"):
+        out[slave_unit(s)] = f"""{head}# {names[s]} (wedge {s})
+[Match]
+PermanentMACAddress={macs[s]}
+
+[Network]
+LinkLocalAddressing=no
+IPv6AcceptRA=no
+Bond=bond0
+""" + ("PrimarySlave=true\n" if s == "A" else "")
+    return out
+
+
+def slave_unit(side: str) -> str:
+    return f"60-bond0-slave-{side.lower()}.network"
+
+
+def parse_netfiles(text: str) -> dict[str, str]:
+    """link -> its Network File from the apply script's `NETFILE <link> <path>` lines."""
+    out = {}
+    for line in text.splitlines():
+        f = line.split()
+        if len(f) >= 2 and f[0] == "NETFILE":
+            out[f[1]] = f[2] if len(f) > 2 else ""
+    return out
 
 
 # ---------------------------------------------------------------- parsers
@@ -237,67 +271,102 @@ def _res(verdict, why, det, rows, arts) -> RungResult:
     return RungResult(verdict, {**det, "headline": why, "rows": rows, **err, **extra}, arts)
 
 
-def configure(host_ip: str, user: str, pw: str, side: dict, cidr: str, *,
-              runner=subprocess.run, pinger=bang_ping, sleep=time.sleep,
-              clock=time.monotonic, settle_s: int = SETTLE_S) -> RungResult:
-    """side: sides()[0] (A/B -> {"mac", "link", "ifname"}); cidr: the A-side fabric
-    address. One RungResult; artifacts = the YAML, bond0 status, the mgmt ping."""
-    macs = {s: side[s]["mac"] for s in ("A", "B")}
-    det = {"ha_mode": HA_MODE, "address": cidr, "macs": macs, "names": None,
-           "mgmt_ping": None, "bond": None,
-           "notes": [f"primary = the port LLDP saw on wedge A ({side['A'].get('link')}, "
-                     f"{macs['A']}); never the mgmt NIC {MGMT_IF}"]}
-    rows, arts = [], {}
-    # 1. the installed OS's names for the fabric MACs; refuse anything mgmt
+def _names(host_ip, user, pw, macs, runner) -> tuple[dict | None, tuple | None]:
+    """({side: installed kernel name}, None) for the fabric MACs, or (None, (verdict, why));
+    a MAC on the mgmt NIC (enp94s0np0 / the host IP's link) refuses."""
     rc, out, err = hostssh.run(host_ip, user, pw,
                                "ip -o link show\necho ===ADDR\nip -4 -o addr show\n",
                                runner=runner)
     if unreachable(rc):
-        return _res(UNMEASURED, f"{host_ip} did not answer ssh (rc={rc}): "
-                    f"{hostssh.tail('', err, 200)}", det, rows, arts)
+        return None, (UNMEASURED, f"{host_ip} did not answer ssh (rc={rc}): "
+                                  f"{hostssh.tail('', err, 200)}")
     if rc != 0:
-        return _res("fail", f"reading links failed (rc={rc}): {hostssh.tail(out, err, 200)}",
-                    det, rows, arts)
+        return None, ("fail", f"reading links failed (rc={rc}): {hostssh.tail(out, err, 200)}")
     links_t, _, addr_t = out.partition("===ADDR")
     byname = parse_links(links_t)
     mgmt = {MGMT_IF, addr_iface(addr_t, host_ip)} - {None}
     names = {}
-    for s in ("A", "B"):
-        hit = [n for n, m in byname.items() if m == macs[s] and not n.startswith("bond")]
+    for s, m in macs.items():
+        hit = [n for n, x in byname.items() if x == m and not n.startswith("bond")]
         if not hit:
-            return _res("fail", f"wedge-{s} port {macs[s]} not on the installed OS",
-                        det, rows, arts)
+            return None, ("fail", f"wedge-{s} port {m} not on the installed OS")
         if set(hit) & mgmt:
-            return _res("fail", f"refusing: wedge-{s} MAC {macs[s]} is the mgmt NIC "
-                        f"{'/'.join(sorted(set(hit) & mgmt))}", det, rows, arts)
+            return None, ("fail", f"refusing: wedge-{s} MAC {m} is the mgmt NIC "
+                                  f"{'/'.join(sorted(set(hit) & mgmt))}")
         names[s] = hit[0]
+    return names, None
+
+
+def bring_up(host_ip: str, user: str, pw: str, macs: list[str], *,
+             runner=subprocess.run) -> tuple[dict | None, str | None]:
+    """`ip link set <port> up` for each fabric port, found by permanent MAC (never the
+    mgmt NIC): an installer leaves unconfigured ports admin-down, and a down port sends
+    no LLDP for the wedges to see. ({mac: name}, None) or (None, why)."""
+    names, bad = _names(host_ip, user, pw, {m: m for m in macs}, runner)
+    if bad:
+        return None, bad[1].replace("wedge-", "fabric ")
+    script = "".join(f"ip link set dev {shlex.quote(n)} up\n" for n in names.values())
+    rc, out, err = hostssh.run(host_ip, user, pw, script + "echo UP\n", runner=runner)
+    if rc != 0 or "UP" not in out:
+        return None, f"ip link set up failed (rc={rc}): {hostssh.tail(out, err, 200)}"
+    return names, None
+
+
+def _apply_script(names, macs, units) -> str:
+    q = shlex.quote
+    pat = "|".join(re.escape(x) for x in (names["A"], names["B"], macs["A"], macs["B"]))
+    retire = " ".join(q(f"{NETPLAN_RUN}/10-netplan-{n}") for n in
+                      ("bond0.netdev", "bond0.network", f"{names['A']}.network",
+                       f"{names['B']}.network"))
+    writes = "".join(f"""cat > {q(f'{UNIT_DIR}/.{f}.new')} <<'FLAX_BOND_EOF'
+{body}FLAX_BOND_EOF
+mv -f {q(f'{UNIT_DIR}/.{f}.new')} {q(f'{UNIT_DIR}/{f}')}
+""" for f, body in units.items())
+    links = " ".join(q(x) for x in ("bond0", names["A"], names["B"]))
+    return f"""umask 022
+other=$(grep -lisE {q(pat)} /etc/netplan/*.yaml 2>/dev/null | grep -vxF {q(NETPLAN)})
+if [ -n "$other" ]; then echo "NETPLANDEF $other"; exit 3; fi
+if [ -e {q(NETPLAN)} ]; then
+  mkdir -p {q(NETPLAN_RETIRED.rsplit('/', 1)[0])} && mv -f {q(NETPLAN)} {q(NETPLAN_RETIRED)}
+  rm -f {retire}
+  echo RETIRED
+fi
+mkdir -p {q(UNIT_DIR)}
+{writes}networkctl reload && timeout 120 networkctl reconfigure {links} && echo APPLIED
+for l in {links}; do echo "NETFILE $l $(networkctl status "$l" --no-pager 2>/dev/null | sed -n 's/^ *Network File: //p')"; done
+"""
+
+
+def configure(host_ip: str, user: str, pw: str, side: dict, cidr: str, *,
+              runner=subprocess.run, pinger=bang_ping, sleep=time.sleep,
+              clock=time.monotonic, settle_s: int = SETTLE_S) -> RungResult:
+    """side: A/B -> {"mac", "link", ...} (Deploy's sides); cidr: the A-side fabric
+    address. One RungResult; artifacts = the units, bond0 status, the mgmt ping."""
+    macs = {s: side[s]["mac"] for s in ("A", "B")}
+    det = {"ha_mode": HA_MODE, "address": cidr, "macs": macs, "names": None,
+           "mgmt_ping": None, "bond": None,
+           "notes": [f"primary = the port LLDP saw on wedge A ({side['A'].get('link')}, "
+                     f"{macs['A']}); never the mgmt NIC {MGMT_IF}",
+                     f"written as systemd-networkd units in {UNIT_DIR} (no netplan generate: "
+                     "the mgmt NIC's config is never rewritten)"]}
+    rows, arts = [], {}
+    # 1. the installed OS's names for the fabric MACs; refuse anything mgmt
+    names, bad = _names(host_ip, user, pw, macs, runner)
+    if bad:
+        return _res(bad[0], bad[1], det, rows, arts)
     det["names"] = names
     rows += [["primary (wedge A)", f"{names['A']} {macs['A']}"],
              ["backup (wedge B)", f"{names['B']} {macs['B']}"],
              ["bond0", f"active-backup, miimon {MIIMON} ms, {cidr}"]]
-    yaml = netplan_yaml(names, macs, cidr)
-    arts["60-bond0.yaml"] = yaml
-    # 2. write + generate + apply while the bang pings the mgmt IP. Not `netplan apply`:
-    # it reconfigures every link, the mgmt NIC too (a fresh DHCP on enp94s0np0 cost R37
-    # 8.2 s of mgmt); reload networkd and reconfigure only bond0 and its slaves.
-    q = shlex.quote(NETPLAN)
-    script = f"""umask 077
-[ -e {q} ] && cp -p {q} {q}.prev
-cat > {q}.new <<'FLAX_BOND_EOF'
-{yaml}FLAX_BOND_EOF
-chmod 600 {q}.new && mv -f {q}.new {q}
-if ! netplan generate; then
-  if [ -e {q}.prev ]; then mv -f {q}.prev {q}; else rm -f {q}; fi
-  netplan generate
-  echo GENFAIL; exit 3
-fi
-rm -f {q}.prev
-networkctl reload && timeout 120 networkctl reconfigure bond0 {shlex.quote(names['A'])} {shlex.quote(names['B'])} && echo APPLIED
-"""
+    units = unit_files(names, macs, cidr)
+    arts.update(units)
+    # 2. write the units + reload/reconfigure bond0 and its slaves while the bang pings
+    # the mgmt IP. Never `netplan generate/apply`: they rewrite/reconfigure the mgmt NIC.
     ping = pinger(host_ip)
     try:
         sleep(1)
-        rc, out, err = hostssh.run(host_ip, user, pw, script, timeout=180, runner=runner)
+        rc, out, err = hostssh.run(host_ip, user, pw, _apply_script(names, macs, units),
+                                   timeout=180, runner=runner)
         sleep(2)
     finally:
         ptext = ping.stop()
@@ -306,13 +375,23 @@ networkctl reload && timeout 120 networkctl reconfigure bond0 {shlex.quote(names
     det["mgmt_ping"] = pg
     rows.append(["mgmt ping across apply",
                  f"max gap {pg['max_gap_ms']} ms, {pg['lost']}/{pg['sent']} lost"])
-    if "GENFAIL" in out:
-        return _res("fail", f"netplan generate rejected 60-bond0.yaml (previous restored): "
-                    f"{hostssh.tail('', err, 300)}", det, rows, arts)
+    m = re.search(r"^NETPLANDEF (.+)$", out, re.M)
+    if m:
+        return _res("fail", f"netplan also configures {names['A']}/{names['B']} "
+                            f"({m.group(1).strip()}): its units would win over bond0's; "
+                            "nothing written", det, rows, arts)
+    if "RETIRED" in out:
+        det["notes"].append(f"rackpost's earlier {NETPLAN} retired to {NETPLAN_RETIRED}")
     if "APPLIED" not in out:
         why = ("ssh session dropped during the bond apply" if unreachable(rc)
                else f"networkctl reload/reconfigure failed (rc={rc}): {hostssh.tail(out, err, 300)}")
         return _res("fail", why, det, rows, arts)
+    want = {"bond0": "60-bond0.network", names["A"]: slave_unit("A"), names["B"]: slave_unit("B")}
+    got = parse_netfiles(out)
+    for link, f in want.items():
+        if got.get(link) != f"{UNIT_DIR}/{f}":
+            return _res("fail", f"{link} is configured by {got.get(link) or 'no network file'}, "
+                                f"not {UNIT_DIR}/{f}", det, rows, arts)
     if not pg["received"] or pg["max_gap_ms"] > MGMT_GAP_MS:
         return _res("fail", f"mgmt {host_ip} lost {pg['max_gap_ms']} ms across the bond apply "
                     f"(> {MGMT_GAP_MS} ms)" if pg["received"]

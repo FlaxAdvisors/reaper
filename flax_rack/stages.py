@@ -42,6 +42,7 @@ class OrderContext:
     runner: object = field(default=subprocess.run)
     rungs: object = None        # Discover's + Qualify's rung functions (None = the real ones)
     cancel: threading.Event = field(default_factory=threading.Event)   # the rack's Cancel
+    links: object = None        # the rack's LinkPoller (live switch snapshots); None = read here
 
 
 def source(ctx) -> str:
