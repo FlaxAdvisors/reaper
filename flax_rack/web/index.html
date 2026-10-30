@@ -151,7 +151,8 @@
                 <div class="t-row"><span class="k">MAC</span>
                   <span v-if="cellMac(cell)" class="v">{{cellMac(cell)}}</span><span v-else class="skel"></span></div>
                 <div class="t-row"><span class="k">SN</span>
-                  <span v-if="cellSerial(cell)" class="v">{{cellSerial(cell)}}</span><span v-else class="skel" style="width:60%"></span></div>
+                  <span v-if="cellSerial(cell)" class="v">{{cellSerial(cell)}}</span><span v-else class="skel" style="width:60%"></span>
+                  <span v-if="cell.iom" class="side" :class="iomSide(cell).cls" :title="iomSide(cell).title">{{iomSide(cell).t}}</span></div>
                 <div class="t-row"><span class="k">POP</span>
                   <select class="popsel" :class="{ovr: cell.dev.pop_overridden}" :title="popTitle(cell.dev)"
                           :disabled="!!s.closed_at" @click.stop @change="setPop(cell.dev, $event.target.value)">

@@ -29,7 +29,8 @@
 // Header counters: each device counted ONCE, in the phase it has reached (chipPhase, as
 // Post's chip_phase): its earliest failed phase, else the phase in progress, else the
 // last phase passed; they sum to the device count. ALERTS = devices held on a failure.
-// Firmware is detect + report only: its findings never fault a device here.
+// Firmware is detect + report only: a finding (needs_update, an unsupported PSID, a
+// version not read) is an amber note on its bar, never a red dot, never in ALERTS.
 // Tiles carry no firmware; the drawer's firmware block does (BIOS, BMC active/backup or
 // an IOM's BMC + ROM, NIC per port with PSID).
 // Serial console: the shared flax-post-sol relay holds the BMC's one SOL session.
@@ -72,7 +73,11 @@ function loadAsset(src) {
   });
   return loaded[src];
 }
-const STEP_WORD = { done: 'done', run: 'running…', cur: 'in progress', fault: 'fault', pending: 'not run', skip: 'skipped', held: 'skipped (upstream)', unknown: 'unknown', unmeasured: 'not measured' };
+const STEP_WORD = { done: 'done', run: 'running…', cur: 'in progress', fault: 'fault', pending: 'not run', skip: 'skipped', held: 'skipped (upstream)', unknown: 'unknown', unmeasured: 'not measured', fwnote: 'to note (report only)' };
+// Firmware is report only (controller ruling 2026-10-30): a finished Firmware row that
+// found something (needs_update, a fault such as an unsupported PSID, a version not read)
+// is an amber note, never a red fault: it never reddens the dot nor counts in ALERTS
+const FW_NOTE = ['fault', 'cur', 'unmeasured'];
 // live link state -> pill class
 const LINK_CLS = { ok: 'ok', up: 'up', down: 'bad', wrong: 'bad', unknown: 'unk' };
 
@@ -307,7 +312,7 @@ function App() {
       }
       return out;
     },
-    stepEntries(d, phase) { return this.entriesOf(this.steps(d, phase), d && d.pos); },
+    stepEntries(d, phase) { return this.entriesOf(this.steps(d, phase), d && d.pos, phase); },
     // the rows the server hides (Qualify's agent-stages + console, Deploy's
     // install-console): not drawn, but a failed one still fails its phase and the device
     hiddenEntries(d, phase) {
@@ -316,9 +321,10 @@ function App() {
       return this.entriesOf(Object.fromEntries(names.map((n) => [n, runs[n]])), d && d.pos);
     },
     hiddenBad(d, phase) { return this.hiddenEntries(d, phase).filter((x) => ['fault', 'unmeasured', 'unknown'].includes(x.state)); },
-    entriesOf(steps, key) {
+    entriesOf(steps, key, phase) {
+      const state = (run) => { const st = stepState(run); return phase === 'firmware' && FW_NOTE.includes(st) ? 'fwnote' : st; };
       return Object.entries(steps).map(([name, run]) => ({
-        name, run, key: `${key}/${name}`, state: stepState(run), note: stepNote(run, name),
+        name, run, key: `${key}/${name}`, state: state(run), note: stepNote(run, name),
         arts: Object.entries((run && run.artifacts) || {}).map(([n, url]) => ({ name: n, url })),
         ev: run && run.detail && (run.detail.rows || run.detail.notes) ? run.detail : null,
         title: (run ? `${run.status}${run.verdict ? ' · ' + run.verdict : ''} · ${run.finished_at || run.started_at}` : 'not run')
@@ -330,7 +336,7 @@ function App() {
       return Object.entries(d.endpoint_runs || {}).map(([ep, runs]) => {
         const steps = {};
         for (const rung of this.s.firmware_rungs || []) steps[rung] = runs[rung];
-        return { ep, entries: this.entriesOf(steps, `${d.pos}.${ep}`) };
+        return { ep, entries: this.entriesOf(steps, `${d.pos}.${ep}`, 'firmware') };
       }).filter((x) => x.entries.some((e) => e.run));
     },
     // the step evidence modal (Post's stepinfo): a snapshot of the step at the click
@@ -497,6 +503,8 @@ function App() {
       // finished, but a step's target did not answer: grey (not measured), never done
       if ((v.includes('unmeasured') || hb.length) && v.every((x) => ['done', 'skip', 'unmeasured', 'held'].includes(x))) return 'unmeasured';
       if (v.every((x) => x === 'done' || x === 'skip')) return 'done';
+      // Firmware read to the end with something to note: amber, complete, never a fault
+      if (v.includes('fwnote') && v.every((x) => ['done', 'skip', 'fwnote'].includes(x))) return 'fwnote';
       if (v.includes('cur') || v.includes('run')) return 'cur';
       if (v.includes('held')) return '';      // skipped because something upstream failed
       if (v.some((x) => x !== 'pending')) return 'cur';
@@ -526,7 +534,7 @@ function App() {
       if (!d) return 'grey';
       if (this.faulted(d)) return 'fault';
       // every phase passed or has nothing to do for it (a JBOD IOM, a switch)
-      if ((this.s.phases || []).every((p) => this.phaseState(d, p) === 'done')) return 'done';
+      if ((this.s.phases || []).every((p) => ['done', 'fwnote'].includes(this.phaseState(d, p)))) return 'done';
       const cp = this.phaseState(d, this.curPhase(d));
       if (cp === 'unmeasured') return 'unmeasured';
       if (this.hasRuns(d, 'done')) {
@@ -541,12 +549,12 @@ function App() {
     // Deploy passed (every step done/skipped), or the device has no Deploy steps
     deployOk(d) { return !this.stepEntries(d, 'deploy').length || this.phaseState(d, 'deploy') === 'done'; },
     dotCls(d) { return this.phaseKey(d); },
-    phaseDot(d, p) { const st = this.phaseState(d, p); return ['done', 'fault', 'unmeasured'].includes(st) ? st : st === 'cur' ? p : 'grey'; },
+    phaseDot(d, p) { const st = this.phaseState(d, p); return ['done', 'fault', 'unmeasured', 'fwnote'].includes(st) ? st : st === 'cur' ? p : 'grey'; },
     phasePct(d, p) {
       const v = this.stepEntries(d, p); if (!v.length) return '';
-      return `${v.filter((x) => x.state === 'done' || x.state === 'skip').length}/${v.length}`;
+      return `${v.filter((x) => ['done', 'skip', 'fwnote'].includes(x.state)).length}/${v.length}`;
     },
-    stepIcon(st) { return { done: '✓', run: '◌', cur: '◉', fault: '✕', pending: '·', skip: '–', held: '–', unknown: '?', unmeasured: '○' }[st] || '·'; },
+    stepIcon(st) { return { done: '✓', run: '◌', cur: '◉', fault: '✕', pending: '·', skip: '–', held: '–', unknown: '?', unmeasured: '○', fwnote: '!' }[st] || '·'; },
     statusText(d) {
       if (!d) return '';
       for (const p of ['discover', 'firmware', 'qualify', 'deploy', 'done']) {
@@ -730,6 +738,15 @@ function App() {
     // the object a tile stands for (an IOM tile is its own endpoint) and its serial
     cellObj(c) { return c.obj || c.dev; },
     cellSerial(c) { return c.iom ? c.obj.view.serial : c.dev.serial; },
+    // an IOM tile's side: what its check_pal_sku.sh reported vs what the geometry wants
+    iomSide(c) {
+      const v = c.obj.view || {}, want = v.want_side;
+      if (!v.side) return { t: want ? `side ${want}?` : '', cls: 'dimv', title: `side not read yet${want ? ' · geometry wants Side ' + want : ''}` };
+      const bad = want && v.side !== want;
+      return { t: `side ${v.side}`, cls: bad ? 'bad' : '',
+               title: bad ? `IOM reports Side ${v.side}, geometry wants Side ${want} on ${c.iom} (cables swapped?)`
+                          : `IOM Location: Side ${v.side} (check_pal_sku.sh)` };
+    },
     serialOf(o) {
       if (!o) return null;
       return o.type === 'iom' ? (o.view || {}).serial : o.type === 'sw' || o.type === 'swbmc' ? o.sw.serial : o.serial;

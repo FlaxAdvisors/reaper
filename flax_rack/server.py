@@ -349,16 +349,20 @@ def console_view(runs: dict) -> dict | None:
             "at": run.get("finished_at") or run.get("started_at")}
 
 
-def _ep_view(runs: dict, n: int, dbdev: dict, last: dict) -> dict:
+def _ep_view(runs: dict, n: int, dbdev: dict, last: dict, want_side=None) -> dict:
     """One IOM: its MAC and serial from this Discover, else from the last one it passed
-    (a silent IOM keeps what was seen; blank only if never seen)."""
+    (a silent IOM keeps what was seen; blank only if never seen); the side it reported
+    (check_pal_sku.sh) and the side the geometry wants on its link."""
     macs = dbdev.get("iom_macs") or []
     seen = ((runs.get("bmc-mac-seen") or {}).get("detail") or {}).get("iom_mac") \
         or (last.get("bmc-mac-seen") or {}).get("iom_mac")
     ident = devview.identity(runs)
     return {"mac": _fmt_mac(macs[n - 1] if n <= len(macs) else seen),
             "serial": (ident or {}).get("serial") or (last.get("serial") or {}).get("serial"),
-            "identity": ident, "fw": devview.firmware(runs)}
+            "identity": ident, "fw": devview.firmware(runs),
+            "side": (((runs.get("serial") or {}).get("detail") or {}).get("side")
+                     or (last.get("serial") or {}).get("side")),
+            "want_side": want_side}
 
 
 def rack_state(r: Rack) -> dict:
@@ -391,7 +395,7 @@ def rack_state(r: Rack) -> dict:
     lm = getattr(r, "linkmon", None)
     now = time.time()
     live = linkmon.evaluate(g, lm.snapshots() if lm else {}, linkmon.device_macs(db),
-                            linkmon.device_names(g), now)
+                            linkmon.device_names(g), now, db.iom_sides())
     devices = []
     for d in g.devices:
         x = dbdev.get(d.pos, {})
@@ -407,7 +411,8 @@ def rack_state(r: Rack) -> dict:
                               for n in range(1, d.endpoints.get("ioms", 0) + 1)},
             # each IOM is its own BMC endpoint: fruid-util identity + fw-util versions
             "ioms": {f"iom{n}": _ep_view(by_pos.get(f"{d.pos}.iom{n}", {}), n, x,
-                                         last.get(f"{d.pos}.iom{n}", {}))
+                                         last.get(f"{d.pos}.iom{n}", {}),
+                                         d.sides.get(f"iom{n}"))
                      for n in range(1, d.endpoints.get("ioms", 0) + 1)},
             "serial": (devview.identity(runs) or {}).get("serial"),
             "identity": devview.identity(runs), "fw": devview.firmware(runs),

@@ -2,7 +2,9 @@
 
 - TiogaPass BMC: `ipmitool fru print 0` Product Serial (lanplus, cipher 17 then 3).
 - BryceCanyon IOM (Facebook OpenBMC fbttn): `fruid-util iom` Board Serial (its Product
-  Serial is N/A), `fw-util bmc --version` and `fw-util all --version`.
+  Serial is N/A), `fw-util bmc --version` and `fw-util all --version`, and its side
+  (`check_pal_sku.sh`: `IOM Location: Side A|B`, `Platform SKU: 17 (00010001)`; the
+  script exits with the SKU as its status, so its rc is not an error).
 - Wedge100S BMC (Facebook OpenBMC wedge100): `weutil` Product Serial Number, `/etc/issue`,
   `cpld_rev.sh`; optionally cross-checked against the SONiC side's syseeprom.
 
@@ -22,6 +24,7 @@ FWUTIL_ALL = "/usr/bin/fw-util all --version"
 WEUTIL = "weutil"
 ISSUE = "cat /etc/issue"
 CPLD_REV = "/usr/local/bin/cpld_rev.sh"
+PAL_SKU = "sh /usr/local/bin/check_pal_sku.sh"
 
 _BLANK = {"", "n/a", "na", "none", "unknown"}
 
@@ -55,6 +58,28 @@ def parse_versions(text: str) -> tuple[dict[str, str], dict[str, str]]:
         else:
             present[k] = v
     return present, absent
+
+
+def parse_pal_sku(text: str) -> tuple[str | None, str | None]:
+    """check_pal_sku.sh -> (side "A"|"B" | None, platform SKU text | None)."""
+    f = parse_fields(text)
+    loc = (f.get("IOM Location") or "").strip()
+    side = loc[5:].strip() if loc.lower().startswith("side ") else None
+    return (side if side in ("A", "B") else None), (f.get("Platform SKU") or None)
+
+
+def check_side(r: RungResult, want: str | None) -> RungResult:
+    """An IOM serial result judged against the side the geometry puts on its link: a
+    passing read that reports the other side fails `wrong` (the two IOM cables are
+    swapped, or the geometry is). An unread side or no expectation is left as is."""
+    side = r.detail.get("side")
+    if r.verdict != "pass" or not want or not side or side == want:
+        return r
+    return RungResult("fail", {**r.detail, "status": "wrong", "want_side": want,
+                               "error": f"IOM reports Side {side}, geometry wants Side {want} "
+                                        "on this link (IOM cables swapped?)",
+                               "headline": f"wrong IOM: Side {side}, want Side {want}"},
+                      r.artifacts)
 
 
 def _fail(headline: str, error: str, arts=None, **extra) -> RungResult:
@@ -135,9 +160,16 @@ def iom(bmc_ip: str, user: str, pw: str, *, runner=subprocess.run) -> RungResult
         p, a = parse_versions(vout)
         versions.update(p)
         absent.update(a)
+    src, sout, serr = ssh_cmd(bmc_ip, user, pw, PAL_SKU, runner=runner)
+    arts["check_pal_sku.txt"] = sout + serr
+    side, sku = parse_pal_sku(sout)
+    if side is None:
+        errors["check_pal_sku"] = f"rc={src} {(serr or sout).strip()[-200:] or 'no IOM Location'}"
     rows = [["Board Serial", serial or "empty"],
             ["Board Product", f.get("Board Product") or "-"],
-            ["Board Part Number", f.get("Board Part Number") or "-"]]
+            ["Board Part Number", f.get("Board Part Number") or "-"],
+            ["IOM Location", f"Side {side}" if side else "not read"],
+            ["Platform SKU", sku or "-"]]
     rows += [[k, v] for k, v in versions.items()]
     rows += [[k, f"not present ({why})"] for k, why in absent.items()]
     notes = ["identity is the IOM's Board Serial (its Product Serial is N/A)",
@@ -146,12 +178,14 @@ def iom(bmc_ip: str, user: str, pw: str, *, runner=subprocess.run) -> RungResult
     detail = {"serial": serial, "serial_field": "Board Serial",
               "board_product": f.get("Board Product"), "part_number": f.get("Board Part Number"),
               "versions": versions, "not_present": absent, "errors": errors,
+              "side": side, "sku": sku,
               "phase": "unsupported", "rows": rows, "notes": notes}
     if not serial:
         return RungResult("fail", {**detail, "error": "fruid-util iom has no Board Serial",
                                    "headline": "IOM has no Board Serial"}, arts)
     bmc_v = versions.get("BMC Version")
     return RungResult("pass", {**detail, "headline": f"SN {serial}"
+                               + (f" · Side {side}" if side else "")
                                + (f" · BMC {bmc_v}" if bmc_v else "")}, arts)
 
 

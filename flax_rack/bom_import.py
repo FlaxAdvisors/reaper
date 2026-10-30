@@ -133,6 +133,8 @@ def import_bom(xlsx_path, *, order, customer, site, vid, prefix):
             out[k] = f"{sw}:{port}/{lane}" if k.startswith("pcie") and lane else f"{sw}:{port}"
         dev = {"pos": pos, "ou": bottom, "h": h, "col": col, "kind": kind,
                "part": PARTS[kind], "links": out}
+        if kind == "bc-jbod":       # iom1 (left half) = side A: RRORD-101 C:13 reports Side A
+            dev["sides"] = {"iom1": "A", "iom2": "B"}
         devices.append(dev)
 
         if col and kind in ("compute-tp", "bc-head-tp"):

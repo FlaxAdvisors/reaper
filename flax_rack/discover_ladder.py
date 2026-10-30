@@ -897,6 +897,10 @@ def _iom_ladder(ctx, env, d, n, ip) -> Walk:
         if not cr.obmc:
             return ev("fail", "add obmcuser/obmcpass to the vaulted credentials.json")
         r = R.iom(ip, *cr.obmc, runner=ctx.runner)
+        # the MAC + the side it reported: linkmon flags the port `wrong` from these
+        r = RungResult(r.verdict, {**r.detail, "iom_mac": mac,
+                                   "want_side": d.sides.get(f"iom{n}")}, r.artifacts)
+        r = identity.check_side(r, d.sides.get(f"iom{n}"))
         out["serial"] = r
         return r
 

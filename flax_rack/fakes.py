@@ -488,16 +488,20 @@ class FakeRungs:
                 "Mellanox NIC firmware version": "14.20.1202", "Expander Version": "0.3.6"}
         absent = {"SCC Version": "Server Power-off"}
         fwu = "".join(f"{k}: {v}\n" for k, v in vers.items()) + "SCC Version: NA (Server Power-off)\n"
+        side, sku = ("A", "17 (00010001)") if role == "iom1" else ("B", "33 (00100001)")
+        pal = f"System: Type5\nIOM Location: Side {side}\nPlatform SKU: {sku}\n"
         return RungResult("pass", {
             "serial": sn, "serial_field": "Board Serial", "phase": "unsupported",
             "board_product": "BCIOM001", "part_number": "33S5BCI0000",
-            "versions": vers, "not_present": absent, "errors": {},
-            "headline": f"SN {sn} · BMC fbttn-v2019.52.0",
+            "versions": vers, "not_present": absent, "errors": {}, "side": side, "sku": sku,
+            "headline": f"SN {sn} · Side {side} · BMC fbttn-v2019.52.0",
             "rows": [["Board Serial", sn], ["Board Product", "BCIOM001"],
-                     ["Board Part Number", "33S5BCI0000"], *([k, v] for k, v in vers.items()),
+                     ["Board Part Number", "33S5BCI0000"], ["IOM Location", f"Side {side}"],
+                     ["Platform SKU", sku], *([k, v] for k, v in vers.items()),
                      *([k, f"not present ({w})"] for k, w in absent.items())],
             "notes": ["identity is the IOM's Board Serial (its Product Serial is N/A)"]},
-            {"fruid-util-iom.txt": text, "fw-util-bmc.txt": fwu, "fw-util-all.txt": fwu})
+            {"fruid-util-iom.txt": text, "fw-util-bmc.txt": fwu, "fw-util-all.txt": fwu,
+             "check_pal_sku.txt": pal})
 
     def _sw_of(self, ip):
         leases = self.switch_leases()

@@ -11,6 +11,8 @@ Per link (evaluate):
            silent: no FDB entry, maybe no LLDP) -- green, never "missing"
   wrong    oper up and the port carries an identity of ANOTHER device of this rack
            (LLDP name or FDB MAC; one the geometry does not also put on this interface),
+           a JBOD iomN port whose IOM MAC last reported the other side (geometry
+           `sides`, check_pal_sku.sh: the two IOM cables are swapped),
            an LLDP name that looks like a rackpost hostname but no device of this rack,
            or (mgmt switch only, the device's MACs known) MACs of no device of this rack
            and none of its own. `text` names what is seen.
@@ -107,11 +109,14 @@ def _snap_view(snap):
     return ifaces, lldp, fdb
 
 
-def evaluate(g, snapshots: dict, macs: dict, names: dict, now: float) -> dict:
+def evaluate(g, snapshots: dict, macs: dict, names: dict, now: float,
+             iom_sides: dict | None = None) -> dict:
     """Pure: {pos: {link: {"state", "text", "seen": {"lldp", "macs"}, "at", "switch",
     "iface"}}} for every geometry device link, plus "_sw-<id>" for each switch's
     uplinks and site port. snapshots: switch id -> {"at": epoch, "ifaces", "lldp",
-    "fdb"} (dataclasses or dicts) or None; "at" is the snapshot's time (None without)."""
+    "fdb"} (dataclasses or dicts) or None; "at" is the snapshot's time (None without).
+    iom_sides: {IOM MAC: side it reported} (OrderDB.iom_sides)."""
+    iom_sides = iom_sides or {}
     sws = {s.id: s for s in g.switches}
     views, fresh = {}, {}
     for sid, snap in snapshots.items():
@@ -140,7 +145,7 @@ def evaluate(g, snapshots: dict, macs: dict, names: dict, now: float) -> dict:
         return {"state": "unknown", "text": why, "seen": {"lldp": None, "macs": []},
                 "at": _iso((snap or {}).get("at")), "switch": sid, "iface": iface}
 
-    def judge(sid, iface, pos=None):
+    def judge(sid, iface, pos=None, want_side=None):
         sw = sws.get(sid)
         if sw is None:
             return unknown(sid, iface, f"no switch {sid} in geometry")
@@ -182,6 +187,10 @@ def evaluate(g, snapshots: dict, macs: dict, names: dict, now: float) -> dict:
                 foreign.append(f"{_colon(m)} ({o})")
             elif o is None and sw.role == "mgmt" and mine and not ok:
                 foreign.append(f"{_colon(m)} (not this rack)")
+        swapped = [f"{_colon(m)} (Side {iom_sides[m]} IOM, want Side {want_side})"
+                   for m in seen_macs if want_side and iom_sides.get(m) not in (None, want_side)]
+        if swapped:
+            return {**base, "state": "wrong", "text": "sees " + ", ".join(swapped + foreign)}
         if ok:
             return {**base, "state": "ok", "text": f"{iface} up · {ok[0]}"
                     + (f" · also {', '.join(foreign)}" if foreign else "")}
@@ -198,7 +207,7 @@ def evaluate(g, snapshots: dict, macs: dict, names: dict, now: float) -> dict:
         for name, l in sorted(d.links.items()):
             sw = sws.get(l.switch)
             iface = link_iface(sw, l.port, l.lane) if sw else f"{l.switch}:{l.port}"
-            out[d.pos][name] = judge(l.switch, iface, d.pos)
+            out[d.pos][name] = judge(l.switch, iface, d.pos, d.sides.get(name))
     for s in g.switches:
         links = {f"uplink{p}": judge(s.id, link_iface(s, p, None)) for p in s.uplink_ports}
         if s.site_port:
@@ -375,7 +384,8 @@ class LinkPoller(threading.Thread):
             with self._mu:
                 snaps, attempted = dict(self._snaps), set(self._attempted)
                 errors = dict(self._errors)
-            res = evaluate(g, snaps, device_macs(db), device_names(g), self.clock())
+            res = evaluate(g, snaps, device_macs(db), device_names(g), self.clock(),
+                           db.iom_sides())
             if self._last is None:
                 self._last = db.last_link_states()
             by_sw: dict[str, list] = {}

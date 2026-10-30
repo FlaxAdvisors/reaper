@@ -186,6 +186,19 @@ class OrderDB:
         return {(r["pos"], r["rung"]): json.loads(r["detail"]) if r["detail"] else {}
                 for r in rows}
 
+    def iom_sides(self) -> dict[str, str]:
+        """{IOM MAC (12 hex lower): the side it last reported} from Discover's IOM serial
+        reads in ANY pass and any verdict (a side is a fact about the IOM: a read that
+        failed `wrong` still says which IOM is on that cable)."""
+        out: dict[str, str] = {}
+        for r in self._all("SELECT detail FROM run WHERE rung='serial' AND pos LIKE '%.iom%' "
+                           "AND detail LIKE '%\"side\"%' ORDER BY id"):
+            det = json.loads(r["detail"] or "{}")
+            mac = (det.get("iom_mac") or "").replace(":", "").lower()
+            if mac and det.get("side"):
+                out[mac] = det["side"]
+        return out
+
     def ever_passed(self, rungs, after: int = 0) -> set[str]:
         """The positions with a passed run of any of `rungs` in ANY pass (e.g. an install:
         the disk was written, whatever this pass has judged so far); only runs with an id

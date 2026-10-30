@@ -26,6 +26,7 @@ a.tile{display:block;color:inherit;text-decoration:none}
 .popsel:disabled{opacity:.6}
 .popv{font-size:.72rem;color:var(--dim)}
 .t-row .popsel{min-width:0}
+.side{margin-left:auto;font-size:.72rem;color:var(--dim);white-space:nowrap} .side.bad{color:var(--red);font-weight:700}
 
 /* header: read-only order context + Close */
 .ctx .ro{font-family:ui-monospace,monospace;color:var(--text);font-size:.78rem;text-transform:none;letter-spacing:0;font-weight:400;
@@ -192,3 +193,9 @@ textarea.confirm-in{font:inherit;font-size:.8rem;resize:vertical}
 .con-find .mono{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .con-find .lbl{color:var(--dim)}
 .run-strip .rs-fw{color:var(--accent);cursor:help}
+
+/* Firmware is report only: a finding is an amber note (never a red fault, never an alert) */
+.seg.fwnote{background:var(--amber);border-color:transparent;opacity:.75}
+.dot.fwnote{background:var(--amber)}
+.step.fwnote .si{color:var(--amber)} .step.fwnote .note{color:var(--amber)}
+.pop-badge.st-fwnote{color:var(--amber);background:rgba(210,153,34,.15)}

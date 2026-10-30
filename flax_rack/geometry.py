@@ -10,6 +10,10 @@ KIND_ENDPOINTS = {"compute-tp": {"bmc": 1, "hosts": 1},
                   "bc-head-tp": {"bmc": 1, "hosts": 1},
                   "bc-jbod": {"ioms": 2}}
 _EP_KEYS = ("hosts", "bmc", "ioms")
+# which BryceCanyon IOM each iomN link is cabled to: `check_pal_sku.sh` reports it as
+# "IOM Location: Side A|B". A device may set its own {"sides": {"iom1": "A", ...}}.
+KIND_SIDES = {"bc-jbod": {"iom1": "A", "iom2": "B"}}
+IOM_SIDES = ("A", "B")
 # a switch's own endpoints on the site mgmt network (the turtle port in site_port):
 # discovered by MAC + current lease, never reserved (vid 26 is a dynamic pool)
 SWITCH_ENDPOINTS = {"wedge100s": {"sonic": 1, "bmc": 1}, "dell-n3248te": {"sonic": 1}}
@@ -69,6 +73,7 @@ class Device:
     links: dict[str, Link] = field(default_factory=dict)
     pop: str | None = None
     endpoints: dict[str, int] = field(default_factory=dict)   # {hosts, bmc, ioms}, all keys
+    sides: dict[str, str] = field(default_factory=dict)       # {"iom1": "A", ...} expected
 
 
 @dataclass
@@ -128,6 +133,19 @@ def parse_endpoints(kind: str, ep, ctx: str) -> dict[str, int]:
     if not any(out.values()):
         raise GeometryError(f"{ctx}: no endpoints")
     return out
+
+
+def parse_sides(kind: str, sides, n_ioms: int, ctx: str) -> dict[str, str]:
+    """The IOM side each iomN must report (`check_pal_sku.sh` IOM Location): the device's
+    own "sides", else the kind's default, limited to the IOMs the device has."""
+    if sides is None:
+        sides = KIND_SIDES.get(kind, {})
+    want = {f"iom{n}" for n in range(1, n_ioms + 1)}
+    if not isinstance(sides, dict) or set(sides) - want or \
+            any(v not in IOM_SIDES for v in sides.values()):
+        raise GeometryError(f"{ctx}: bad sides {sides!r} (want {{\"iom1\": \"A\", "
+                            f"\"iom2\": \"B\"}} for its {n_ioms} IOM(s))")
+    return {k: v for k, v in sides.items() if k in want}
 
 
 def parse_site_port(sp, ctx: str) -> dict | None:
@@ -199,7 +217,8 @@ def parse_geometry(data: dict) -> Geometry:
         devices.append(Device(
             pos=pos, ou=int(_req(x, "ou", pos)), h=int(_req(x, "h", pos)), col=col,
             kind=kind, part=_req(x, "part", pos), links=links, pop=x.get("pop"),
-            endpoints=endpoints))
+            endpoints=endpoints,
+            sides=parse_sides(kind, x.get("sides"), endpoints["ioms"], pos)))
 
     return Geometry(
         order=order, customer=_req(data, "customer", "geometry"),
