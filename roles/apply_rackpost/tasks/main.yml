@@ -3,6 +3,52 @@
 # repo so flax_rack/server.py finds flax_post/web/static relative to itself.
 # Plain copy, NOT template: the code carries literal braces.
 
+# Drain first: while /run/flax-rackpost.drain exists the daemon refuses to start a
+# stage or a Close, so nothing starts between the idle check below and the restart
+# at the end (a restart mid-stage killed two operator runs on 2026-10-30).
+- name: Drain flax-rackpost (no new stages until the restart)
+  become: true
+  ansible.builtin.file:
+    path: /run/flax-rackpost.drain
+    state: touch
+    mode: "0644"
+
+- name: Refuse to restart under a running stage
+  become: true
+  ansible.builtin.shell: |
+    python3 - <<'PY'
+    import json, sys, urllib.request
+    base = "http://127.0.0.1:{{ apply_rackpost_port }}"
+    try:
+        ix = json.load(urllib.request.urlopen(base + "/rackpost/api/racks", timeout=10))
+    except OSError:
+        sys.exit(0)                     # daemon not up: nothing to interrupt
+    busy = []
+    for o in ix["orders"]:
+        for r in o["racks"]:
+            s = json.load(urllib.request.urlopen(f"{base}/{r['prefix']}/api/state", timeout=10))
+            if s.get("stage_running"):
+                busy.append(f"{r['prefix']}: {s.get('stage') or 'cli'}")
+    print("; ".join(busy))
+    sys.exit(3 if busy else 0)
+    PY
+  register: apply_rackpost_busy
+  changed_when: false
+  failed_when: false
+  when: not (apply_rackpost_restart_busy | default(false) | bool)
+
+- name: Undrain and stop when a stage is running
+  when: apply_rackpost_busy.rc is defined and apply_rackpost_busy.rc == 3
+  block:
+    - name: Undrain flax-rackpost
+      become: true
+      ansible.builtin.file:
+        path: /run/flax-rackpost.drain
+        state: absent
+    - name: Stop
+      ansible.builtin.fail:
+        msg: "a stage is running ({{ apply_rackpost_busy.stdout }}); re-run when idle, or -e apply_rackpost_restart_busy=true"
+
 - name: Create rackpost directories
   become: true
   ansible.builtin.file:
@@ -93,3 +139,12 @@
     enabled: true
     state: started
     daemon_reload: true
+
+- name: Restart now (handlers) so the drain covers it
+  ansible.builtin.meta: flush_handlers
+
+- name: Undrain flax-rackpost
+  become: true
+  ansible.builtin.file:
+    path: /run/flax-rackpost.drain
+    state: absent

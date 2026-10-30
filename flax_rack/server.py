@@ -68,6 +68,12 @@ from .qualify import (AGENT_STAGES, OLD_RUNG_NAMES, PHASES as QUALIFY_PHASES, de
 from .stages import close_order, run_discover
 from .version import __version__
 
+# The apply_rackpost role creates this before it copies code and restarts the daemon,
+# so no stage (or Close) starts in the window between its idle check and the restart;
+# a new daemon removes it at start, the role again after the restart.
+DRAIN_FILE = Path(os.environ.get("RACKPOST_DRAIN_FILE", "/run/flax-rackpost.drain"))
+DRAINING = "rackpost is being updated (daemon restart pending); try again in a minute"
+
 PHASES = ("discover", "firmware", "qualify", "deploy", "done")
 DISCOVER_RUNGS = DISCOVER_STEPS            # Post's 16 steps; OLD_DISCOVER_RUNGS from history
 FIRMWARE_RUNGS = FW_STEPS                  # Post's 6 firmware steps (detect only)
@@ -442,6 +448,8 @@ class App:
     def _start_stage(self, r: Rack, name: str, fn, **kw):
         if r.db.closed_at():
             return 409, {"error": "order is closed"}
+        if DRAIN_FILE.exists():
+            return 409, {"error": DRAINING}
         if not r.lock.acquire():
             return 409, {"error": f"a stage ({r.stage or 'cli'}) is already running for this rack"}
         r.cancel = cancel = threading.Event()    # a fresh flag: an old Cancel never carries
@@ -679,6 +687,8 @@ class App:
     def close(self, r: Rack, body: dict):
         if body.get("confirm") != r.g.order:
             return 400, {"error": "type the order id to confirm"}
+        if DRAIN_FILE.exists():
+            return 409, {"error": DRAINING}
         if not r.lock.acquire():
             return 409, {"error": "a stage is running for this rack"}
         try:
@@ -924,6 +934,7 @@ def default_context_factory(rack_dir: Path, g: Geometry, db: OrderDB):
 
 def make_server(orders_root: Path, *, port=8452, bind="127.0.0.1", static_dirs=None,
                 context_factory=default_context_factory) -> ThreadingHTTPServer:
+    DRAIN_FILE.unlink(missing_ok=True)      # this process is the update the drain waited for
     srv = ThreadingHTTPServer((bind, port), _Handler)
     srv.daemon_threads = True
     srv.app = App(Path(orders_root), static_dirs or DEFAULT_STATIC, context_factory)
