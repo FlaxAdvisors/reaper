@@ -19,8 +19,8 @@ The storage deadline counts the disks fio will read in the inventory's lsblk
 capture (fio_disks; 8 when there is none). On a deadline the agent is stopped, so
 nothing still runs when the next phase starts; a node whose stop failed is named.
 
-A device failing a phase (a `fail` on any of that phase's rungs; fw-versions is
-report-only and never gates) gets `skip` ("failed in phase <p>") on every rung of
+A device failing a phase (a `fail` on any of that phase's rungs; fw-versions and
+pop never gate -- a pop fail still fails the device in qualify_passed) gets `skip` ("failed in phase <p>") on every rung of
 the later phases; the rest of the rack carries on. Identity first: a device is
 only booted when its latest Discover `reserve` and `bmc-reach` passed and order.db
 holds its host MAC (else pxe-live fails "discover first"); pxe-live then requires
@@ -503,8 +503,9 @@ def _poll(ctx, R, cr, phase, x):
               lambda: fw_versions(arts.get("dmidecode"),
                                   R.mc_info(x.ips.get("bmc"), cr.bmc, runner=ctx.runner)),
               FW_STAGE)
-        p = _rung(ctx, pos, "pop", lambda: pop_rung(ctx, x.d, arts.get("macinv")), STAGE)
-        failed = failed or p.verdict != "pass"
+        # POP never gates either (a missing profile must not keep the iperf server out
+        # of burn/network); its fail still fails the device in qualify_passed
+        _rung(ctx, pos, "pop", lambda: pop_rung(ctx, x.d, arts.get("macinv")), STAGE)
     if failed:
         x.failed = phase
 
@@ -522,12 +523,13 @@ def _host_lookup(ctx, R, lr, pos, host_ip, user, pw, art, cmd, parse):
 
 def server_not_ready(lr, d) -> str | None:
     """Why an iperf server outside this run's positions may not serve (None = it may):
-    every earlier-phase rung's latest run must be a pass, its agent not left running."""
+    every earlier-phase rung but pop (which never gates) must have passed last time,
+    and its agent must not have been left running."""
     stop = ((lr.get((d.pos, "agent-stages")) or {}).get("detail") or {}).get("agent_stop")
     if stop not in (None, "stopped"):
         return "its qual agent is still running (stop failed)"
     for r in device_rungs(d):
-        if r not in NET_RUNGS and (lr.get((d.pos, r)) or {}).get("verdict") != "pass":
+        if r not in (*NET_RUNGS, "pop") and (lr.get((d.pos, r)) or {}).get("verdict") != "pass":
             return f"its {r} did not pass"
     return None
 
