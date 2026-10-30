@@ -6,7 +6,8 @@ cross-cabled). /etc/netplan/60-bond0.yaml (renderer networkd) keys each port by 
 kernel name its MAC carries on the installed OS (so it merges over an installer entry
 for the same name, e.g. `dhcp4: true`) and matches it by `macaddress`; no set-name.
 The bond's address is the device's A-side fabric formula (fabric.fabric_addr "A").
-`netplan generate && netplan apply`; a generate failure restores the previous file.
+`netplan generate`, then `networkctl reload` + `reconfigure` of bond0 and its two slaves only
+(never `netplan apply`, which re-DHCPs the mgmt NIC); a generate failure restores the previous file.
 
 The mgmt NIC (the mezz enp94s0np0, the one holding the host IP) is never in the file:
 a fabric MAC that resolves to it refuses the rung. The bang pings the host's mgmt IP
@@ -27,7 +28,7 @@ NETPLAN = "/etc/netplan/60-bond0.yaml"
 MGMT_IF = "enp94s0np0"
 MIIMON = 100
 PING_MS = 100
-MGMT_GAP_MS = 3000        # netplan apply restarts networkd: R37 saw 1.9 s with ssh intact
+MGMT_GAP_MS = 3000        # the apply never touches the mgmt NIC; this is slack, not a budget
 SETTLE_S = 30
 HA_MODE = "active-backup (no MLAG peer link)"
 
@@ -261,7 +262,9 @@ def configure(host_ip: str, user: str, pw: str, side: dict, cidr: str, *,
              ["bond0", f"active-backup, miimon {MIIMON} ms, {cidr}"]]
     yaml = netplan_yaml(names, macs, cidr)
     arts["60-bond0.yaml"] = yaml
-    # 2. write + generate + apply while the bang pings the mgmt IP
+    # 2. write + generate + apply while the bang pings the mgmt IP. Not `netplan apply`:
+    # it reconfigures every link, the mgmt NIC too (a fresh DHCP on enp94s0np0 cost R37
+    # 8.2 s of mgmt); reload networkd and reconfigure only bond0 and its slaves.
     q = shlex.quote(NETPLAN)
     script = f"""umask 077
 [ -e {q} ] && cp -p {q} {q}.prev
@@ -274,7 +277,7 @@ if ! netplan generate; then
   echo GENFAIL; exit 3
 fi
 rm -f {q}.prev
-timeout 120 netplan apply && echo APPLIED
+networkctl reload && timeout 120 networkctl reconfigure bond0 {shlex.quote(names['A'])} {shlex.quote(names['B'])} && echo APPLIED
 """
     ping = pinger(host_ip)
     try:
@@ -292,11 +295,11 @@ timeout 120 netplan apply && echo APPLIED
         return _res("fail", f"netplan generate rejected 60-bond0.yaml (previous restored): "
                     f"{hostssh.tail('', err, 300)}", det, rows, arts)
     if "APPLIED" not in out:
-        why = ("ssh session dropped during netplan apply" if unreachable(rc)
-               else f"netplan apply failed (rc={rc}): {hostssh.tail(out, err, 300)}")
+        why = ("ssh session dropped during the bond apply" if unreachable(rc)
+               else f"networkctl reload/reconfigure failed (rc={rc}): {hostssh.tail(out, err, 300)}")
         return _res("fail", why, det, rows, arts)
     if not pg["received"] or pg["max_gap_ms"] > MGMT_GAP_MS:
-        return _res("fail", f"mgmt {host_ip} lost {pg['max_gap_ms']} ms across netplan apply "
+        return _res("fail", f"mgmt {host_ip} lost {pg['max_gap_ms']} ms across the bond apply "
                     f"(> {MGMT_GAP_MS} ms)" if pg["received"]
                     else f"mgmt {host_ip} never answered the bang's ping", det, rows, arts)
     # 3. verify bond0
