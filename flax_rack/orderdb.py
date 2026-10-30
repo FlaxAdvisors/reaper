@@ -1,4 +1,5 @@
-"""order.db: per-rack SQLite store (devices, MACs, rung runs, events, gate waivers)."""
+"""order.db: per-rack SQLite store (devices, MACs, rung runs, events, gate waivers,
+Done's component list)."""
 import dataclasses
 import json
 import re
@@ -23,6 +24,10 @@ CREATE TABLE IF NOT EXISTS event(
 CREATE TABLE IF NOT EXISTS waiver(
   id INTEGER PRIMARY KEY, pos TEXT NOT NULL, stage TEXT NOT NULL, rungs TEXT NOT NULL,
   reason TEXT NOT NULL, who TEXT NOT NULL, at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS component(
+  id INTEGER PRIMARY KEY, pos TEXT NOT NULL, kind TEXT NOT NULL, model TEXT, serial TEXT,
+  slot TEXT, source_run INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS component_pos ON component(pos, id);
 """
 # columns added after Plan 1 shipped: an existing order.db gains them on init
 _ADDED = (("device", "bmc_reachable", "INTEGER"), ("device", "bmc_power", "TEXT"),
@@ -116,6 +121,11 @@ class OrderDB:
             "artifacts": json.loads(r["artifacts"]) if r["artifacts"] else {},
             "started_at": r["started_at"], "finished_at": r["finished_at"]} for r in rows}
 
+    def latest_run_id(self, pos, rung) -> int | None:
+        """The id of (pos, rung)'s latest run row (the one latest_runs() shows)."""
+        r = self._all("SELECT MAX(id) id FROM run WHERE pos=? AND rung=?", (pos, rung))
+        return r[0]["id"]
+
     def run_count(self, pos, rung) -> int:
         return self._all("SELECT COUNT(*) n FROM run WHERE pos=? AND rung=?", (pos, rung))[0]["n"]
 
@@ -195,3 +205,20 @@ class OrderDB:
     def closed_at(self) -> str | None:
         r = self._all("SELECT v FROM meta WHERE k='closed_at'")
         return r[0]["v"] if r else None
+
+    def set_components(self, pos, rows: list[dict], source_run: int) -> None:
+        """Replace pos's component rows (one transaction) with `rows` ({kind, model,
+        serial, slot}) read from run `source_run` (the inventory run they came from)."""
+        with closing(self._conn()) as c, c:
+            c.execute("DELETE FROM component WHERE pos=?", (pos,))
+            c.executemany(
+                "INSERT INTO component(pos,kind,model,serial,slot,source_run) VALUES(?,?,?,?,?,?)",
+                [(pos, r["kind"], r.get("model"), r.get("serial"), r.get("slot"), source_run)
+                 for r in rows])
+
+    def components(self, pos=None) -> list[dict]:
+        """Component rows (pos, then the order they were read in); one pos with pos=."""
+        q = "SELECT pos,kind,model,serial,slot,source_run FROM component"
+        rows = (self._all(q + " WHERE pos=? ORDER BY id", (pos,)) if pos is not None
+                else self._all(q + " ORDER BY pos, id"))
+        return [dict(r) for r in rows]
