@@ -20,7 +20,7 @@
       <div class="tl">
         <img class="flogo" src="static/flax-logo.svg" alt="flax" onerror="this.style.display='none'">
         <div class="metrics">
-          <div v-for="m in metricList" class="metric" :class="[m.key, {on: filter===m.key}]" @click="toggle(m.key)"
+          <div v-for="m in metricList" class="metric" :class="[m.key, {on: filter===m.key, lit: metricLit(m)}]" @click="toggle(m.key)"
                :title="metricTitle(m)"><b>{{counts[m.key]}}</b><span>{{m.label}}</span></div>
         </div>
       </div>
@@ -92,6 +92,7 @@
     <span class="rs-main">run: {{runText()}}</span>
     <span class="rs-held" v-for="(bs, k) in (s.run.state === 'held' ? s.run.held : {})"><b>{{k}}</b> {{bs.join('; ')}}</span>
     <span class="rs-held out" v-for="(why, k) in (['done', 'running'].includes(s.run.state) ? (s.run.out || {}) : {})"><b>{{k}}</b> left out: {{why}}</span>
+    <span class="rs-held rs-fw" v-if="runFw().length" :title="runFwTitle()">firmware: {{runFw().length}} to note</span>
     <button class="discbtn depbtn" v-if="s.run.can_continue" :disabled="s.stage_running" @click="openContinue()">Continue to Deploy…</button>
     <button class="closebtn" v-if="s.run.can_continue && !s.stage_running" @click="endRun()" title="end this Run (nothing runs; the tiles keep every result)">End run</button>
   </div>
@@ -157,8 +158,6 @@
                     <option v-for="p in s.profiles" :value="p" :selected="p===cell.dev.pop">{{p}}</option>
                   </select><span class="popv" :class="popMark(cell.dev).cls" :title="popMark(cell.dev).title"
                           @click.stop="openPop(cell.dev)">{{popMark(cell.dev).t}}</span></div>
-                <div class="t-row" v-if="fwText(cell.dev)"><span class="k">FW</span>
-                  <span class="v fwv" :class="fwCls(cell.dev)" :title="fwTitle(cell.dev)">{{fwText(cell.dev)}}</span></div>
                 <div class="links">
                   <span class="lk" v-for="c in chips(cell)" :class="c.state" :title="c.title">{{c.label}}</span>
                   <span class="lk waived" v-if="!cell.iom && waiverChip(cell.dev)" :class="waiverChip(cell.dev)?.cls"
@@ -291,11 +290,11 @@
         <span class="art" v-for="a in artList(identOf(selObj))" :title="a.url" @click="openArt(a)">{{a.name}}</span></div>
     </div>
 
-    <!-- ---- versions (Firmware's bmc-checked; report only for Facebook OpenBMC) ---- -->
+    <!-- ---- firmware block (Firmware's reads, detect + report only; tiles carry none) ---- -->
     <div v-if="verRows(selObj).length">
-      <div class="section-l">versions (Firmware, detect only) · {{fwViewOf(selObj)?.phase || '?'}}</div>
+      <div class="section-l" :title="'Firmware read (detect + report only): ' + (fwViewOf(selObj)?.headline || '')">firmware</div>
       <div class="kv-grid">
-        <template v-for="r in verRows(selObj)"><span class="lbl">{{r.k}}</span><span class="mono" :class="r.cls">{{r.v}}</span></template>
+        <template v-for="r in verRows(selObj)"><span class="lbl">{{r.k}}</span><span class="mono" :class="r.cls" :title="r.title">{{r.v}}</span></template>
         <template v-if="selKind==='sw'"><span class="lbl">NOS</span><span class="mono">{{selObj?.sw?.nos}} ({{selObj?.sw?.model}})</span></template>
       </div>
       <div class="arts-line" v-if="artList(fwViewOf(selObj)).length"><span class="lbl">raw</span>
@@ -338,11 +337,16 @@
       <p class="pending-note" v-else>no port read yet</p>
     </div>
 
-    <!-- ---- live console: the relay's capture while a console rung runs ---- -->
-    <div v-if="selKind==='dev' && conRung(selDev)">
-      <div class="section-l">console (live) · {{conRung(selDev)}}
-        <span class="note mono">{{con && con.pos===selDev?.pos ? conInfo() : 'reading…'}}</span></div>
-      <pre id="rp-contail" class="console con-live">{{con && con.pos===selDev?.pos ? (con.text || '(nothing yet)') : ''}}</pre>
+    <!-- ---- console panel: the relay's capture tailed while a SOL capture runs; after,
+         the scan's findings (a finding fails the device) + the raw SOL ---- -->
+    <div v-if="selKind==='dev' && selDev?.console">
+      <div class="section-l con-h" :class="{bad: selDev?.console?.bad, live: selDev?.console?.live}" :title="conTitle(selDev)">{{conHead(selDev)}}</div>
+      <pre id="rp-contail" class="console con-live" v-if="conRung(selDev)">{{con && con.pos===selDev?.pos ? (con.text || '(nothing yet)') : 'reading…'}}</pre>
+      <div v-else>
+        <div class="con-find" v-for="f in (selDev?.console?.findings || [])" :title="f[1]"><span class="lbl mono">{{f[0]}}</span><span class="mono">{{f[1]}}</span></div>
+        <div class="arts-line" v-if="conArts(selDev).length"><span class="lbl">raw</span>
+          <span class="art" v-for="a in conArts(selDev)" :title="a.url" @click="openArt(a)">{{a.name}}</span></div>
+      </div>
     </div>
 
     <!-- ---- pipeline: Post's step names per phase; a step opens its evidence ---- -->
@@ -404,8 +408,9 @@
       <div class="m-b">
         <p class="m-sub">The server runs Discover → Firmware → Qualify → Deploy → Done for the whole rack
           (powers nodes on, power-cycles them into the live image, stress, then installs). Every device
-          passing: straight through to Done. Any failure: the other devices carry on, then the Run holds
-          before Deploy and lists the blockers; Continue to Deploy is one click from there.</p>
+          passing: straight through to Done. Any failure (Discover, Qualify, the Deploy gate): the other
+          devices carry on, then the Run holds before Deploy and lists the blockers; Continue to Deploy
+          is one click from there. Firmware is report only: what it finds never holds the Run.</p>
         <label class="m-sub"><input type="checkbox" v-model="runRein"> reinstall nodes already installed
           <span class="dim">{{runInstalled().length ? '(' + runInstalled().join(', ') + ')' : '(none installed)'}}</span></label>
         <p class="m-sub dim" v-if="!runRein">Installed nodes deploy from firstboot (their disks are kept); never-installed nodes are installed.</p>

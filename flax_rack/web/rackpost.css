@@ -70,12 +70,6 @@ textarea.confirm-in{font:inherit;font-size:.8rem;resize:vertical}
 .popv{cursor:pointer;margin-left:.3rem}
 .popv.ok{color:var(--green)} .popv.bad{color:var(--red);font-weight:700}
 .watt.bad{color:var(--red);background:rgba(248,81,73,.13)}
-.fwv{font-family:ui-monospace,monospace;font-size:.7rem;padding-left:.3rem;border-left:3px solid var(--line)}
-.fwv.grp-0{border-left-color:var(--accent)} .fwv.grp-1{border-left-color:var(--green)}
-.fwv.grp-2{border-left-color:var(--amber)} .fwv.grp-3{border-left-color:var(--violet)}
-.fwv.grp-4{border-left-color:var(--red)} .fwv.grp-5{border-left-color:#39c5cf}
-.fwv.grp-6{border-left-color:#f0883e} .fwv.grp-7{border-left-color:#db61a2}
-.fwv.grp-8{border-left-color:var(--grey)}
 .step .art{margin-left:.35rem;font-family:ui-monospace,monospace;font-size:.66rem;color:var(--accent);text-decoration:none}
 .step .art:hover{text-decoration:underline}
 .pop-tbl td:nth-child(2),.pop-tbl td:nth-child(3){width:2.5rem;text-align:center}
@@ -185,3 +179,16 @@ textarea.confirm-in{font:inherit;font-size:.8rem;resize:vertical}
 .run-strip.rs-done .rs-main{color:var(--green)}
 .run-strip .rs-held{color:var(--muted)} .run-strip .rs-held b{color:var(--text);font-family:ui-monospace,monospace}
 .runbtn{border-color:rgba(63,185,80,.6);color:var(--green)}
+/* Plan 6 Task 3: a running step (blue, "running…"; amber stays "needs attention"), the
+   lit phase chip of the stage running now, the console panel */
+.step.run{color:var(--accent)} .step.run .si{color:var(--accent);animation:rp-pulse 1.4s ease-in-out infinite}
+.seg.run{background:var(--accent);border-color:transparent;animation:rp-pulse 1.4s ease-in-out infinite}
+.pop-badge.st-run{color:var(--accent);background:rgba(88,166,255,.15)}
+@keyframes rp-pulse{50%{opacity:.45}}
+.metric.lit{border-color:var(--accent);box-shadow:inset 0 -2px 0 var(--accent)}
+.section-l.con-h{text-transform:none}
+.section-l.con-h.live{color:var(--accent)} .section-l.con-h.bad{color:var(--red)}
+.con-find{display:grid;grid-template-columns:5rem 1fr;gap:.5rem;font-size:.72rem;margin:.1rem 0;color:var(--red)}
+.con-find .mono{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.con-find .lbl{color:var(--dim)}
+.run-strip .rs-fw{color:var(--accent);cursor:help}

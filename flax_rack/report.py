@@ -4,7 +4,12 @@ customer-devices.csv     one row per geometry device (pos), per JBOD IOM (<pos>.
                          and per switch (_sw-<id>), DEVICE_COLUMNS.
 customer-components.csv  latest_components: the parts of each device's LATEST Qualify
                          inventory (macinv -v; order.db's rows when Done's `components`
-                         rung read that same run), COMPONENT_COLUMNS.
+                         rung read that same run), COMPONENT_COLUMNS; then
+                         firmware_components: the BMC images (model = the version,
+                         serial blank) -- a node's `bmc` (active, slot bmc0) and
+                         `bmc-backup` (slot backup), each JBOD IOM's `bmc` and `rom`
+                         (slot iom<n>). A backup / ROM the latest Firmware read did not
+                         pass has its model "" -- never the active version in its place.
 
 Every cell comes from that row's own device and its LATEST run of the rung named
 (order.db latest_runs; never an older run, never another device): a device that never
@@ -16,9 +21,6 @@ ran a rung has "" there, not a neighbour's value. Sources:
                       device without one: the MAC of the port Qualify's latest ha-path
                       saw on each wedge (inventory ip-d-link)
   *_version           the latest Firmware <x>-checked slice's current version
-  bmc_backup_version  the latest passed Firmware bmc-backup-checked's backup_version (a
-                      TiogaPass's backup BMC chip, an IOM's fw-util ROM Version); an
-                      unread backup is "" -- never the active version in its place
   qualify / deploy    qualify.qualify_why / deploy.deploy_why: pass, fail, or
                       unmeasured ("not measured: ..."); "" before the stage ran
   ha_mode             order.db ha_mode's mode for a device whose ha-test passed
@@ -42,7 +44,7 @@ from .qualify import device_rungs, parse_ip_link, qualify_why
 
 DEVICE_COLUMNS = ("order", "rack", "pos", "ou", "kind", "part", "hostname",
                   "chassis_serial", "bmc_mac", "host_mac", "fabric_a_mac", "fabric_b_mac",
-                  "bmc_version", "bmc_backup_version", "bios_version", "nic_firmware",
+                  "bmc_version", "bios_version", "nic_firmware",
                   "qualify", "deploy", "ha_mode", "done")
 COMPONENT_COLUMNS = ("order", "rack", "pos", "kind", "model", "serial", "slot")
 DEVICES_CSV = "customer-devices.csv"
@@ -172,6 +174,30 @@ def _fw(lr, key, prefix) -> str:
     return str(sl.get("current") or sl.get("current_version") or "")
 
 
+def firmware_components(g, lr) -> list[dict]:
+    """[{pos, kind, model (= version), serial "", slot}]: each device's BMC images from
+    the latest Firmware reads (a device whose bmc-checked never ran has none)."""
+    out = []
+
+    def add(pos, kind, model, slot):
+        out.append({"pos": pos, "kind": kind, "model": model, "serial": "", "slot": slot})
+    for d in g.devices:
+        if d.endpoints.get("hosts") and _done(lr, d.pos, "bmc-checked"):
+            add(d.pos, "bmc", _fw(lr, d.pos, "bmc"), "bmc0")
+            if _done(lr, d.pos, BACKUP_STEP):
+                add(d.pos, "bmc-backup", _backup(lr, d.pos), "backup")
+        for n in range(1, d.endpoints.get("ioms", 0) + 1):
+            key = f"{d.pos}.iom{n}"
+            r = _done(lr, key, "bmc-checked")
+            if not r:
+                continue
+            vers = ((r.get("detail") or {}).get("slice") or {}).get("versions") or {}
+            add(d.pos, "bmc", _fw(lr, key, "bmc") or str(vers.get("BMC Version") or ""),
+                f"iom{n}")
+            add(d.pos, "rom", _backup(lr, key), f"iom{n}")
+    return out
+
+
 def _backup(lr, key) -> str:
     """The backup BMC version this pass's Firmware read ("" unless it passed)."""
     r = _done(lr, key, BACKUP_STEP)
@@ -224,7 +250,7 @@ def device_rows(order_dir, g, db) -> list[dict]:
             hostname=" ".join(hosts), chassis_serial=fru.get("serial") or "",
             bmc_mac=_mac(row.get("bmc_mac")), host_mac=_mac(row.get("host_mac")),
             fabric_a_mac=fmac.get("A", ""), fabric_b_mac=fmac.get("B", ""),
-            bmc_version=_fw(lr, d.pos, "bmc"), bmc_backup_version=_backup(lr, d.pos),
+            bmc_version=_fw(lr, d.pos, "bmc"),
             bios_version=_fw(lr, d.pos, "bios"),
             nic_firmware=_fw(lr, d.pos, "mlx"), qualify=qualify, deploy=deploy,
             ha_mode=ha.get("mode", "") if d.pos in (ha.get("devices") or []) else "",
@@ -236,7 +262,7 @@ def device_rows(order_dir, g, db) -> list[dict]:
                 order=g.order, rack=g.rack, pos=key, ou=d.ou, kind="iom", part=d.part,
                 hostname=names.get((d.pos, f"iom{n}"), ""),
                 bmc_mac=_mac(ioms[n - 1] if n <= len(ioms) else None),
-                bmc_version=_fw(lr, key, "bmc"), bmc_backup_version=_backup(lr, key),
+                bmc_version=_fw(lr, key, "bmc"),
                 done=_done_verdict(lr, key)))
     for s in g.switches:
         key = f"_sw-{s.id}"
@@ -267,7 +293,9 @@ def write(order_dir: Path, g, db) -> dict[str, Path]:
     devs = order_dir / DEVICES_CSV
     comps = order_dir / COMPONENTS_CSV
     _write_csv(devs, DEVICE_COLUMNS, device_rows(order_dir, g, db))
+    lr = db.latest_runs()
+    parts = latest_components(order_dir, db, lr) + firmware_components(g, lr)
+    parts.sort(key=lambda c: c["pos"])     # stable: a device's parts, then its BMC images
     _write_csv(comps, COMPONENT_COLUMNS,
-               [{"order": g.order, "rack": g.rack, **c}
-                for c in latest_components(order_dir, db)])
+               [{"order": g.order, "rack": g.rack, **c} for c in parts])
     return {"devices": devs, "components": comps}

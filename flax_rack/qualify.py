@@ -16,7 +16,9 @@ devices in one launch wave, then polls them in parallel; each battery stage is
 recorded as its own rung as soon as its device finishes (artifacts under
 artifacts/<pos>/<agent run>/<stage>/), so a slow device delays only the barrier.
 agent-reachable (the launch) and agent-stages are recorded once per agent phase
-(detail.phase).
+(detail.phase). agent-stages is the watchdog (the agent answered with this phase's
+list in time): the UI draws no row for it, so its failure is also put on the stage the
+agent was in (watchdog_on: its error + the `agent-watchdog` log artifact).
 The storage deadline counts the disks fio will read in the inventory's lsblk
 capture (fio_disks; 8 when there is none). On a deadline the agent is stopped, so
 nothing still runs when the next phase starts; a node whose stop failed is named.
@@ -126,9 +128,11 @@ def device_rungs(d) -> list[str]:
     """The Qualify rungs a device must pass, in Post's step order ([] = no host)."""
     if not d.endpoints.get("hosts"):
         return []
-    out = ["pxe-live", "agent-reachable", "agent-stages",
+    # agent-stages (the watchdog: the agent answered with this phase's stage list) after
+    # the battery: a dead agent is named on the stage it was in first (_poll)
+    out = ["pxe-live", "agent-reachable",
            *PHASE_STAGES["inventory"], *PHASE_STAGES["storage"], *ENGINE_CHECKS,
-           *PHASE_STAGES["burn"]]
+           *PHASE_STAGES["burn"], "agent-stages"]
     if any(n.startswith("pcie") for n in d.links):
         out += ["ha-path", "fabric-addr"]
     return out + ["iperf-mesh", "console"]
@@ -777,13 +781,23 @@ def _poll(ctx, R, cr, phase, x):
         _out(x, phase, ar)
     run_seg = (ar.detail or {}).get("run_id")
     word = "not measured" if ar.verdict == UNMEASURED else "failed"
+    # the watchdog has no row of its own in the UI: its failure is shown on the stage
+    # the agent was in (the first one not passed), with the watchdog log as an artifact
+    cur = None if ar.verdict == "pass" else next(
+        (n for n in want if n not in got or got[n].verdict not in ("pass", "skip")), None)
     for name in want:
         if name in got:
-            r = _record(ctx, pos, name, got[name], STAGE, run_seg)
+            res = got[name]
         elif got:
-            r = _record(ctx, pos, name, RungResult("fail", {"error": f"agent did not report {name}"}))
+            res = RungResult("fail", {"error": f"agent did not report {name}"})
+        elif name == cur:
+            why = ar.detail.get("headline") or ar.detail.get("error") or f"agent-stages {word}"
+            res = RungResult(ar.verdict, {"error": why, "headline": why, "reason": why})
         else:
-            r = _record(ctx, pos, name, RungResult("skip", {"reason": f"agent-stages {word}"}))
+            res = RungResult("skip", {"reason": f"agent-stages {word}"})
+        if name == cur:
+            res = watchdog_on(res, ar)
+        r = _record(ctx, pos, name, res, STAGE, run_seg if name in got else None)
         if r.verdict in ("fail", UNMEASURED):
             _out(x, phase, r)
     if phase == "inventory":
@@ -805,6 +819,24 @@ def _poll(ctx, R, cr, phase, x):
             except Exception as e:          # noqa: BLE001 -- a judge never sinks the phase
                 res = RungResult("fail", {"error": f"{type(e).__name__}: {e}"})
             _record(ctx, pos, name, res, STAGE, run_seg)
+
+
+def watchdog_on(res: RungResult, ar: RungResult) -> RungResult:
+    """res (the stage the agent was in) carrying the agent-stages watchdog's failure: its
+    error as a note and row, the watchdog's detail as the `agent-watchdog` artifact."""
+    w = ar.detail or {}
+    why = w.get("headline") or w.get("error") or "agent-stages " + ar.verdict
+    log = "\n".join(f"{k}: {w[k]}" for k in ("phase", "error", "headline", "last", "run_id",
+                                             "stages", "deadline_s", "deadline_by",
+                                             "agent_stop") if w.get(k) not in (None, "", []))
+    det = dict(res.detail)
+    det["rows"] = [*(det.get("rows") or []), ["agent-stages", f"{ar.verdict}: {why}"]]
+    det["notes"] = [*(det.get("notes") or []),
+                    "the qual agent's watchdog (agent-stages) failed while this stage ran"]
+    if det.get("error") in (None, "", "timeout"):
+        det["error"] = why
+    return RungResult(res.verdict, det, {**(res.artifacts or {}),
+                                         "agent-watchdog": f"agent-stages {ar.verdict}\n{log}\n"})
 
 
 # ---------------------------------------------------------------- network phase

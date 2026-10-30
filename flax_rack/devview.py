@@ -5,10 +5,10 @@ BMC endpoint (a TiogaPass BMC, each JBOD IOM, a wedge's BMC) gets its own
 
   identity  the Discover `serial` step's read: serial + the kind's fields (TiogaPass
             FRU 0, IOM `fruid-util iom`, wedge `weutil`, SONiC `show platform syseeprom`)
-  fw        the Firmware reads: `bmc-checked`'s {component: version} for Facebook OpenBMC
-            (fw-util / issue+cpld, report only) + not-present parts, and each manifest
-            part's current/target/phase (TiogaPass BMC, BMC backup chip, BIOS, each
-            Mellanox card)
+  fw        the Firmware reads (the drawer's firmware block; tiles carry none): a
+            TiogaPass's BIOS, BMC active, BMC backup chip and each Mellanox port (PSID)
+            with current/target/phase; an IOM's BMC + ROM and the rest of its fw-util
+            read (report only) + not-present parts
 
 and a switch its mgmt / BMC MAC+IP (Discover's *-mac-seen / *-leased) and a per-port
 table: mgmt switch = FDB MACs per port -> the geometry device cabled there + link state
@@ -57,32 +57,56 @@ def _part(name, sl):
             "phase": sl.get("phase")}
 
 
+def _done(run):
+    return run if run and run.get("status") == "done" else None
+
+
+def _backup_row(run, label) -> dict | None:
+    """The backup chip's row (TiogaPass backup BMC / IOM ROM): its version when the read
+    passed, else "not read" with the reason; None when the step is n/a or never ran."""
+    r = _done(run)
+    if not r or (r.get("verdict") == "skip" and _detail(r).get("na")):
+        return None
+    v = _detail(r).get("backup_version") if r.get("verdict") == "pass" else None
+    return {"part": label, "current": v, "target": None, "phase": None,
+            "why": None if v else (_detail(r).get("reason") or _detail(r).get("headline")
+                                   or r.get("verdict"))}
+
+
 def firmware(runs: dict) -> dict | None:
-    """The Firmware stage's reads: `bmc-checked` versions ({component: version} for
-    Facebook OpenBMC, report only) + each part's current/target/phase (BMC, BIOS, each
-    Mellanox card) for the TiogaPass manifests."""
-    r = runs.get("bmc-checked")
-    if not r or r.get("status") != "done":
+    """The Firmware stage's reads for the drawer's firmware block. `parts`, in order:
+    TiogaPass = BIOS, BMC active, BMC backup, NIC per port (current/target/phase, PSID);
+    Facebook OpenBMC (an IOM) = BMC + ROM from fw-util; `versions` = the rest of a
+    fw-util read (report only); `not_present` its absent components."""
+    r = _done(runs.get("bmc-checked"))
+    if not r:
         return None
     d = _detail(r)
     sl = d.get("slice") or {}
+    vers = dict(sl.get("versions") or {})
     parts = []
-    for step, name in (("bmc-checked", "BMC"), ("bios-checked", "BIOS")):
-        p = _part(name, _detail(runs.get(step)).get("slice") or {})
-        if p:
-            parts.append(p)
+    if vers:                                # Facebook OpenBMC: the versions are the read
+        bmc = vers.pop("BMC Version", None)
+        if bmc:
+            parts.append({"part": "BMC", "current": bmc, "target": None, "phase": None})
+        rom = _backup_row(runs.get("bmc-backup-checked"), "ROM")
+        if rom:
+            vers.pop("ROM Version", None)
+            parts.append(rom)
+    else:
+        for step, name in (("bios-checked", "BIOS"), ("bmc-checked", "BMC active")):
+            p = _part(name, _detail(runs.get(step)).get("slice") or {})
+            if p:
+                parts.append(p)
+        bk = _backup_row(runs.get("bmc-backup-checked"), "BMC backup")
+        if bk:
+            parts.append(bk)
     for c in (_detail(runs.get("mlx-checked")).get("slice") or {}).get("devices") or []:
-        p = _part(f"NIC {c.get('pci')}", c)
+        p = _part(f"NIC {c.get('port') or c.get('pci') or '?'}", c)
         if p:
+            p.update(psid=c.get("psid"), target_psid=c.get("target_psid"))
             parts.append(p)
-    bk = runs.get("bmc-backup-checked")     # a TiogaPass's backup chip (read, else none)
-    if bk and bk.get("status") == "done" and bk.get("verdict") == "pass" \
-            and _detail(bk).get("backup_version"):
-        parts.insert(1, {"part": "BMC backup", "current": _detail(bk)["backup_version"],
-                         "target": None, "phase": None})
-    if sl.get("versions"):                  # Facebook OpenBMC: the versions are the read
-        parts = [p for p in parts if p["part"] not in ("BMC", "BMC backup")]
-    return {"phase": d.get("phase") or sl.get("phase"), "versions": sl.get("versions") or {},
+    return {"phase": d.get("phase") or sl.get("phase"), "versions": vers,
             "not_present": sl.get("not_present") or {}, "parts": parts,
             "headline": d.get("headline"), "artifacts": r.get("artifacts") or {}}
 

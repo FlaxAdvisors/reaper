@@ -84,7 +84,8 @@ from flax_rungs.pxeboot import PXE_DIR
 
 from . import devview, process_report, report
 from .addressing import plan_addresses
-from .deploy import (_REASON_MAX, FROM_PHASES, PHASES as DEPLOY_PHASES, GateError, clean_who, deploy_rungs,
+from .deploy import (_REASON_MAX, CONSOLE as INSTALL_CONSOLE, FROM_PHASES, PHASES as DEPLOY_PHASES,
+                     GateError, clean_who, deploy_rungs,
                      deploy_why, gate_blockers, gate_why, ha_mode_of, installed_positions,
                      plan as deploy_plan, run_deploy, sweep_interrupted_installs)
 from .done import DONE_RUNGS, done_rungs, run as run_done, targets as done_targets
@@ -306,6 +307,48 @@ def _trim(run: dict) -> dict:
     return r
 
 
+# rows the drawer's step lists and the tile bars do not show: agent-stages is Qualify's
+# watchdog (its failure is carried by the stage the agent was in), the SOL captures are
+# the drawer's console panel (console_view). They still gate as before, and a failed one
+# still fails the device (the UI counts it: hidden_rungs).
+HIDDEN_RUNGS = {"qualify": ("agent-stages", "console"), "deploy": (INSTALL_CONSOLE,)}
+
+
+def _shown(rungs, phase) -> list[str]:
+    return [r for r in rungs if r not in HIDDEN_RUNGS[phase]]
+
+
+def console_view(runs: dict) -> dict | None:
+    """The device's latest SOL capture (Qualify's console or Deploy's install-console,
+    whichever started last): live while its row runs; after, the scan's findings (an
+    install-console scan; a Qualify capture is not scanned)."""
+    have = [(r, runs[r]) for r in ("console", INSTALL_CONSOLE) if runs.get(r)]
+    if not have:
+        return None
+    # a tie (same second): Deploy's, which comes after Qualify's
+    rung, run = max(have, key=lambda x: (x[1].get("started_at") or "", x[0] == INSTALL_CONSOLE))
+    d = run.get("detail") or {}
+    live = run.get("status") == "running"
+    findings = [r for r in d.get("rows") or [] if str(r[0]).startswith("line ")]
+    if live:
+        word = "live"
+    elif run.get("status") != "done":
+        word = run.get("status") or "?"
+    elif d.get("findings"):
+        word = f"{d['findings']} finding{'s' if d['findings'] != 1 else ''}"
+    elif run.get("verdict") == "pass":
+        word = "clean" if "findings" in d else "captured"
+    elif run.get("verdict") == "skip":
+        word = "not captured"
+    else:
+        word = "not measured" if run.get("verdict") == "unmeasured" else "failed"
+    return {"rung": rung, "live": live, "word": word, "verdict": run.get("verdict"),
+            "bad": run.get("verdict") in ("fail", "unmeasured") and not live,
+            "headline": d.get("headline") or d.get("error") or d.get("reason") or "",
+            "findings": findings, "artifacts": run.get("artifacts") or {},
+            "at": run.get("finished_at") or run.get("started_at")}
+
+
 def _ep_view(runs: dict, n: int, dbdev: dict, last: dict) -> dict:
     """One IOM: its MAC and serial from this Discover, else from the last one it passed
     (a silent IOM keeps what was seen; blank only if never seen)."""
@@ -341,7 +384,8 @@ def rack_state(r: Rack) -> dict:
     waivers = db.waivers()
     last: dict[str, dict] = {}
     # last seen in ANY pass: a MAC / serial is a fact about the hardware, not a verdict
-    for (k, rung), det in db.last_passed(("bmc-mac-seen", "serial"), all_passes=True).items():
+    for (k, rung), det in db.last_passed(("bmc-mac-seen", "serial", "host-mac-seen",
+                                          "host-leased", "bmc-leased"), all_passes=True).items():
         last.setdefault(k, {})[rung] = det
     inst = installed_positions(db, raw)
     lm = getattr(r, "linkmon", None)
@@ -373,10 +417,11 @@ def rack_state(r: Rack) -> dict:
             "addrs": addrs.get(d.pos, {}), "names": names.get(d.pos, {}),
             "bmc_live": x.get("bmc_live") or {"reachable": None, "power": None, "at": None},
             "live_links": live.get(d.pos, {}), "presence": linkmon.presence(live.get(d.pos, {})),
-            "qualify_rungs": device_rungs(d),
+            "qualify_rungs": _shown(device_rungs(d), "qualify"),
+            "console": console_view(runs),
             # Deploy: its rungs, the gate (None = may enter), the Qualify rungs a waiver
             # would have to name, and its latest recorded waiver (active = still needed)
-            "deploy_rungs": deploy_rungs(d),
+            "deploy_rungs": _shown(deploy_rungs(d), "deploy"),
             # an installed OS on its disk (any pass): Deploy's reinstall guard
             "installed": d.pos in inst,
             "deploy_gate": gate_why(raw, d) if deploy_rungs(d) else None,
@@ -396,6 +441,7 @@ def rack_state(r: Rack) -> dict:
         sw["endpoints"] = s.endpoints
         sw["runs"] = by_pos.get(f"_sw-{s.id}", {})     # the switch's own Discover ladder
         sw.update(devview.switch_view(g, s, sw["runs"], raw))
+        _switch_facts(sw, last.get(f"_sw-{s.id}", {}))
         sw["live"] = lm.switch_live(s.id, now) if lm else {"at": None, "ok": False, "error": None}
         sw["live_links"] = live.get(f"_sw-{s.id}", {})
         switches.append(sw)
@@ -406,13 +452,14 @@ def rack_state(r: Rack) -> dict:
     return clean_ha({
         "order": g.order, "customer": g.customer, "vid": g.vid, "site": g.site, "rack": g.rack,
         "prefix": g.url_prefix, "version": __version__, "closed_at": db.closed_at(),
-        "iperf_server": g.iperf_server, "pass": _pass_view(db), "run": _run_view(r),
+        "iperf_server": g.iperf_server, "pass": _pass_view(db), "run": _run_view(r, raw),
         "stage_running": r.lock.locked(), "stage": r.stage if r.lock.locked() else None,
         "cancelling": bool(r.stage and r.cancel.is_set()),
         "phases": list(PHASES), "discover_rungs": list(DISCOVER_RUNGS),
         "discover_old_rungs": list(OLD_DISCOVER_RUNGS),
         "firmware_rungs": list(FIRMWARE_RUNGS), "firmware_old_rungs": list(FIRMWARE_OLD_RUNGS),
         "agent_stages": list(AGENT_STAGES),
+        "hidden_rungs": {k: list(v) for k, v in HIDDEN_RUNGS.items()},
         "qualify_phases": list(QUALIFY_PHASES),
         "qualify": {"passed": passed, "not_passed": not_passed,
                     "why": qualify_why(raw, g), "progress": db.qualify_progress()},
@@ -429,9 +476,23 @@ def rack_state(r: Rack) -> dict:
         "events": db.events(30)})
 
 
-def _run_view(r: Rack) -> dict | None:
+def _switch_facts(sw: dict, last: dict) -> None:
+    """A switch's serial and mgmt / BMC MAC+IP are facts about the hardware: blank in
+    this pass (Start fresh, or a read that failed) they show what was last seen."""
+    sw["serial"] = sw.get("serial") or (last.get("serial") or {}).get("serial")
+    for role, mac_step, lease_step in (("sonic", "host-mac-seen", "host-leased"),
+                                       ("bmc", "bmc-mac-seen", "bmc-leased")):
+        ep = sw.get(role)
+        if ep is None:
+            continue
+        ep["mac"] = ep.get("mac") or devview._fmt((last.get(mac_step) or {}).get("mac"))
+        ep["ip"] = ep.get("ip") or (last.get(lease_step) or {}).get("ip")
+
+
+def _run_view(r: Rack, lr: dict | None = None) -> dict | None:
     """The current pass's latest Run for the strip ('running' with no lock held = its
-    process died: shown interrupted, as the next daemon start records it)."""
+    process died: shown interrupted, as the next daemon start records it). `firmware`:
+    the Firmware findings now (report only: they never hold the Run)."""
     x = r.db.run_plan()
     if x is None:
         return None
@@ -443,7 +504,10 @@ def _run_view(r: Rack) -> dict | None:
             "n": runmod.STAGES.index(st) + 1 if st in runmod.STAGES else 0,
             "of": len(runmod.STAGES), "reinstall": bool(x["options"].get("reinstall")),
             "who": x["who"], "started_at": x["started_at"], "finished_at": x["finished_at"],
-            "held": x["held"], "out": x["out"], "can_continue": state in runmod.CONTINUABLE}
+            "held": x["held"], "out": x["out"], "can_continue": state in runmod.CONTINUABLE,
+            "firmware": runmod.firmware_findings(
+                r.db.latest_runs() if lr is None else lr,
+                [d.pos for d in r.g.devices] + runmod._sw_keys(r.g, firmware=True))}
 
 
 def _pass_view(db) -> dict:

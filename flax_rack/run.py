@@ -9,10 +9,11 @@ Each stage is the existing stage function; the Run adds no stage logic of its ow
 
   discover  run_discover, rack-wide. A device or switch with a failed or not-measured
             step (or an interrupted one) is a blocker and is left out of the rest.
-  firmware  run_firmware on the devices and switches Discover passed. It is detect
-            only, so an off-target / failed / unmeasured read is a blocker (it holds the
-            Run before Deploy) but does not keep the device out of Qualify: nothing
-            Firmware reads changes whether Qualify can run.
+  firmware  run_firmware on the devices and switches Discover passed. Detect only and
+            report only (controller ruling 2026-10-30): an off-target / failed /
+            unmeasured read never holds the Run and never keeps a device out of a later
+            stage. Its findings go to the Run's event (the process report) and the run
+            strip (firmware_findings, read live from the latest runs).
   qualify   run_qualify on the host-bearing devices Discover passed. Each one's Deploy
             gate (deploy.gate_why) that is not open is a blocker.
   deploy    run_deploy. Targets are the hosts with no Discover blocker NOW whose gate is
@@ -87,6 +88,12 @@ def discover_blockers(lr, g) -> dict[str, list[str]]:
     """key (device pos or _sw-<id>) -> its Discover blockers, from the latest runs."""
     keys = [d.pos for d in g.devices] + _sw_keys(g)
     return {k: b for k in keys if (b := _bad(lr, k, DISCOVER_STEPS, "discover"))}
+
+
+def firmware_findings(lr, keys) -> dict[str, list[str]]:
+    """key -> its Firmware findings (off target, failed, not measured): reported, never
+    a blocker."""
+    return {k: b for k in keys if (b := _bad(lr, k, FIRMWARE_RUNGS, "firmware"))}
 
 
 def deploy_choice(db, g, row: dict, waive=None) -> dict:
@@ -180,10 +187,9 @@ def _run(x: _Run):
         run_firmware(ctx, positions=None if not held else fw)
         if x.stopped():
             return
-        lr = db.latest_runs()
-        for k in fw:
-            if b := _bad(lr, k, FIRMWARE_RUNGS, "firmware"):
-                held.setdefault(k, []).extend(b)
+        if found := firmware_findings(db.latest_runs(), fw):
+            db.add_event(STAGE, f"run {x.rid} firmware findings (report only, not held): "
+                                + "; ".join(f"{k} ({', '.join(b)})" for k, b in found.items()))
     hosts = _hosts(g)
     ok = [d for d in hosts if not any(b.startswith("discover:") for b in held.get(d.pos, []))]
     x.stage("qualify")
