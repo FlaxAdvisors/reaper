@@ -154,3 +154,8 @@ a.tile{display:block;color:inherit;text-decoration:none}
 .d-head .lk.waived{margin-left:.4rem}
 .m-sub.ok{color:var(--green)} .m-sub .dim,.m-sub.dim{color:var(--dim)}
 .m-box label.m-sub{display:block}
+.donebtn{border-color:rgba(63,185,80,.55);color:var(--green)}
+.donebtn.passed{border-color:rgba(63,185,80,.8)}
+.csv-links{font-size:.68rem;color:var(--muted);white-space:nowrap}
+.csv-links a{color:var(--green);margin-left:.35rem;text-decoration:none;border-bottom:1px dotted rgba(63,185,80,.6)}
+.csv-links a:hover{border-bottom-style:solid}

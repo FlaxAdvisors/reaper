@@ -1,5 +1,5 @@
 """python -m flax_rack: rack-order CLI (import-bom, enable/disable, serve, discover, firmware,
-qualify, deploy, close).
+qualify, deploy, done, close).
 
 Order-dir commands act on the current directory (one dir per rack).
 """
@@ -223,6 +223,39 @@ def _deploy(a) -> int:
     return 0 if not mine else 1
 
 
+def _done(a) -> int:
+    from .creds import CredsError
+    from .done import DONE_RUNGS, run
+    if not a.pos and a.confirm is None:
+        sys.exit("a rack-wide done clears every node's boot override and rewrites the "
+                 "customer CSVs: --confirm <order id> (or --pos for some positions)")
+    ctx, lock = _order_ctx(None if a.pos else a.confirm)
+    try:
+        out = run(ctx, positions=a.pos or None)
+    except (CredsError, ValueError, RuntimeError) as e:
+        sys.exit(str(e))
+    finally:
+        lock.release()
+    lr = ctx.db.latest_runs()
+    for pos in out["devices"]:
+        for rung in DONE_RUNGS:
+            r = lr.get((pos, rung))
+            if r:
+                det = r["detail"] or {}
+                why = det.get("headline") or det.get("error") or det.get("reason") or ""
+                print(f"{pos:8s} {rung:12s} {r['verdict'] or r['status']}"
+                      + (f"  {why}" if why else ""))
+    if out["csv"] is None:
+        print("done: cancelled, csv not written")
+        return 1
+    for p in out["csv"].values():
+        print(f"wrote {p}")
+    bad = [p for p, vs in out["devices"].items()
+           if any(v in ("fail", "unmeasured") for v in vs.values())]
+    print("done: clean" if not bad else f"done: not clean: {', '.join(bad)}")
+    return 0 if not bad else 1
+
+
 def _close(a) -> int:
     from .kea_client import KeaError
     from .stages import close_order
@@ -287,6 +320,13 @@ def main(argv=None) -> int:
     p.add_argument("--reason", help="why the waived rungs may be accepted (recorded)")
     p.add_argument("--by", help="who waives (default: the login)")
     p.set_defaults(fn=_deploy)
+    p = sub.add_parser("done", help="end summary (SDR/SEL + installed OS), clear the boot "
+                                    "override + hostname iPXE file (no power action), "
+                                    "write the customer CSVs")
+    p.add_argument("--pos", action="extend", nargs="+", metavar="P",
+                   help="only these positions (--pos C37 R37 or repeated)")
+    p.add_argument("--confirm", metavar="ORDER", help="the order id (required without --pos)")
+    p.set_defaults(fn=_done)
     p = sub.add_parser("close", help="release this rack's reservations and close it")
     p.add_argument("--confirm", required=True, metavar="ORDER")
     p.set_defaults(fn=_close)

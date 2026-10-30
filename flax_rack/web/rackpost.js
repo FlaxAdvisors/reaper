@@ -5,7 +5,9 @@
 // device's qualify_rungs from the server), deploy (its deploy_rungs: install, firstboot,
 // install-console (the SOL scan; the raw SOL is its `sol` artifact), flax-user,
 // ha-config, ha-test). A step whose target did not answer is `unmeasured` (verdict):
-// grey "not measured", never a fault and never done. done renders empty/grey (Plan 4).
+// grey "not measured", never a fault and never done. done (its done_rungs: end-summary
+// (SDR/SEL + installed-OS captures), boot-reset, components) writes the customer CSVs,
+// linked from the header once written; it never power-controls a node.
 // Deploy's gate may be passed with a recorded waiver of named Qualify rungs: the tile
 // and drawer show it as a "waived" chip (amber while the rung still has not passed).
 // Every switch and every BMC endpoint opens its own drawer (sel in the URL hash):
@@ -162,7 +164,8 @@ function App() {
     layout: [],                // buildLayout(s), rebuilt on every poll (refresh)
     live: null, sel: selFromHash(), filter: null, q: '', popOpen: null, now: Date.now(),
     actionMsg: null, hdrMsg: null, stepM: null, artM: null, artSeq: 0, closing: false, confirmText: '', closeMsg: null, busy: false,
-    qualifying: false, qualText: '', discovering: false, discText: '',
+    qualifying: false, qualText: '', discovering: false, discText: '', finishing: false, doneText: '',
+    hdrStage: null,            // the stage hdrMsg announced: the message goes when it stops
     deploying: false, depText: '', depFrom: 'install', depReinstall: false,
     // per-device Deploy modal: depM = {pos, msg} while open; its inputs are top-level so
     // v-model never reads through a null depM while the modal tears down
@@ -172,21 +175,29 @@ function App() {
       { key: 'firmware', label: 'firmware', title: 'devices with firmware versions read (report only)' },
       { key: 'qualify', label: 'qualify', title: 'devices in Qualify' },
       { key: 'deploy', label: 'deploy', title: 'devices in Deploy' },
-      { key: 'done', label: 'done', title: 'Plan 4' },
+      { key: 'done', label: 'done', title: 'devices through Done (end summary, boot reset, components)' },
       { key: 'alert', label: 'alerts', title: 'devices with a failed rung' },
     ],
 
     async mounted() {
       document.addEventListener('keydown', (e) => {
         if (e.key !== 'Escape') return;
-        if (this.artM) this.backArt(); else if (this.stepM) this.stepM = null; else if (this.depM) this.depM = null; else if (this.deploying) this.deploying = false; else if (this.qualifying) this.qualifying = false; else if (this.discovering) this.discovering = false; else if (this.closing) this.closing = false; else if (this.popOpen) this.popOpen = null; else this.close();
+        if (this.artM) this.backArt(); else if (this.stepM) this.stepM = null; else if (this.depM) this.depM = null; else if (this.finishing) this.finishing = false; else if (this.deploying) this.deploying = false; else if (this.qualifying) this.qualifying = false; else if (this.discovering) this.discovering = false; else if (this.closing) this.closing = false; else if (this.popOpen) this.popOpen = null; else this.close();
       });
       await this.refresh(); setInterval(() => this.refresh(), POLL_MS);
     },
     async refresh() {
-      try { this.s = await api('api/state'); this.layout = buildLayout(this.s); this.live = true; this.now = Date.now(); document.title = `${this.s.prefix} rackpost`; }
+      try {
+        this.s = await api('api/state'); this.layout = buildLayout(this.s); this.live = true; this.now = Date.now(); document.title = `${this.s.prefix} rackpost`;
+        // "<stage> started" outlives its stage otherwise (finished, or died on a restart)
+        if (this.hdrStage && !(this.s.stage_running && this.s.stage === this.hdrStage)) { this.hdrMsg = null; this.hdrStage = null; }
+      }
       catch (e) { this.live = false; console.error(e); }
     },
+    // a header message about a stage just started (cleared once that stage is not running)
+    started(stage, msg) { this.hdrMsg = msg; this.hdrStage = stage; },
+    // a header message about a refusal (stays until the next one)
+    refused(msg) { this.hdrMsg = msg; this.hdrStage = null; },
 
     // the selected object: a device (itself), an IOM, a switch or a wedge's BMC
     get selObj() {
@@ -225,6 +236,8 @@ function App() {
         for (const rung of d.qualify_rungs || []) out[rung] = runs[rung];
       } else if (phase === 'deploy') {
         for (const rung of d.deploy_rungs || []) out[rung] = runs[rung];
+      } else if (phase === 'done') {
+        for (const rung of d.done_rungs || []) out[rung] = runs[rung];
       }
       return out;
     },
@@ -323,7 +336,7 @@ function App() {
     },
     hasRuns(d, phase) { return this.stepEntries(d, phase).some((x) => x.run); },
     // the phase whose steps the tile's second bar shows: the latest one with a run
-    curPhase(d) { return this.hasRuns(d, 'deploy') ? 'deploy' : this.hasRuns(d, 'qualify') ? 'qualify' : 'discover'; },
+    curPhase(d) { return this.hasRuns(d, 'done') ? 'done' : this.hasRuns(d, 'deploy') ? 'deploy' : this.hasRuns(d, 'qualify') ? 'qualify' : 'discover'; },
     phaseState(d, p) {
       const v = this.stepEntries(d, p).map((x) => x.state);
       if (v.includes('fault')) return 'fault';
@@ -343,7 +356,7 @@ function App() {
     // but no longer makes the tile an alert: the operator accepted it, on record
     waived(d, phase, name) { const w = d && d.waiver; return phase === 'qualify' && !!w && w.active && w.rungs.includes(name); },
     faulted(d) {
-      return !!d && ['discover', 'firmware', 'qualify', 'deploy'].some((p) =>
+      return !!d && ['discover', 'firmware', 'qualify', 'deploy', 'done'].some((p) =>
         this.stepEntries(d, p).some((x) => x.state === 'fault' && !this.waived(d, p, x.name)));
     },
     phaseKey(d) {
@@ -351,6 +364,7 @@ function App() {
       if (this.faulted(d)) return 'fault';
       const cp = this.phaseState(d, this.curPhase(d));
       if (cp === 'unmeasured') return 'unmeasured';
+      if (this.hasRuns(d, 'done')) return 'done';
       if (this.hasRuns(d, 'deploy')) return cp === 'done' ? 'done' : 'deploy';
       if (this.hasRuns(d, 'qualify')) return cp === 'done' ? 'done' : 'qualify';
       return Object.keys(d.runs || {}).length ? 'discover' : 'grey';
@@ -364,7 +378,7 @@ function App() {
     stepIcon(st) { return { done: '✓', cur: '◉', fault: '✕', pending: '·', skip: '–', unknown: '?', unmeasured: '○' }[st] || '·'; },
     statusText(d) {
       if (!d) return '';
-      for (const p of ['discover', 'firmware', 'qualify', 'deploy']) {
+      for (const p of ['discover', 'firmware', 'qualify', 'deploy', 'done']) {
         const bad = this.stepEntries(d, p).find((x) => x.state === 'fault' && !this.waived(d, p, x.name));
         if (bad) return `${p} · ${bad.name}`;
       }
@@ -375,7 +389,7 @@ function App() {
     statusStyle(d) { const c = RGB[this.phaseKey(d)] || RGB.discover; return `background:rgba(${c},.15);color:rgb(${c})`; },
     faults(d) {
       if (!d) return [];
-      return ['discover', 'firmware', 'qualify', 'deploy'].flatMap((p) => this.stepEntries(d, p).map((x) => ({ ...x, phase: p })))
+      return ['discover', 'firmware', 'qualify', 'deploy', 'done'].flatMap((p) => this.stepEntries(d, p).map((x) => ({ ...x, phase: p })))
         .filter((x) => x.state === 'fault' || x.state === 'unknown')
         .map((x) => ({ rung: x.name, text: x.note, bad: x.state === 'fault', phase: x.phase, st: x }));
     },
@@ -428,13 +442,14 @@ function App() {
       const ds = this.s.devices || [];
       return { discover: ds.length, firmware: ds.filter((d) => this.hasRuns(d, 'firmware')).length,
                qualify: ds.filter((d) => this.hasRuns(d, 'qualify')).length,
-               deploy: ds.filter((d) => this.hasRuns(d, 'deploy')).length, done: 0,
+               deploy: ds.filter((d) => this.hasRuns(d, 'deploy')).length,
+               done: ds.filter((d) => this.hasRuns(d, 'done')).length,
                alert: ds.filter((d) => this.faulted(d)).length };
     },
     toggle(f) { this.filter = this.filter === f ? null : f; },
     inFilter(d, f) {
       if (f === 'alert') return this.faulted(d);
-      if (f === 'firmware' || f === 'qualify' || f === 'deploy') return this.hasRuns(d, f);
+      if (['firmware', 'qualify', 'deploy', 'done'].includes(f)) return this.hasRuns(d, f);
       return f === 'discover';
     },
     qualifyTitle() {
@@ -660,16 +675,16 @@ function App() {
     openDiscover() { this.discovering = true; this.discText = ''; },
     async doDiscover() {
       this.discovering = false;
-      try { await api('api/stage/discover', { confirm: this.discText }); this.hdrMsg = 'discover started'; }
-      catch (e) { this.hdrMsg = 'discover: ' + e.message; }
+      try { await api('api/stage/discover', { confirm: this.discText }); this.started('discover', 'discover started'); }
+      catch (e) { this.refused('discover: ' + e.message); }
       await this.refresh();
     },
     async firmware(pos) {
       try {
         await api('api/stage/firmware', pos ? { positions: [pos] } : {});
         const m = `firmware started${pos ? ' for ' + pos : ''} (detect only)`;
-        if (pos) this.actionMsg = m; else this.hdrMsg = m;
-      } catch (e) { const m = 'firmware: ' + e.message; if (pos) this.actionMsg = m; else this.hdrMsg = m; }
+        if (pos) this.actionMsg = m; else this.started('firmware', m);
+      } catch (e) { const m = 'firmware: ' + e.message; if (pos) this.actionMsg = m; else this.refused(m); }
       await this.refresh();
     },
     async retry(pos) {
@@ -684,8 +699,9 @@ function App() {
     // sent finishes); later steps are recorded skip "cancelled".
     async cancelStage() {
       if (!window.confirm(`Cancel the running ${this.s.stage}? It stops after the steps now running.`)) return;
-      try { await api('api/stage/cancel', { confirm: true, stage: this.s.stage }); this.hdrMsg = `${this.s.stage} cancelling…`; }
-      catch (e) { this.hdrMsg = 'cancel: ' + e.message; }
+      const st = this.s.stage;
+      try { await api('api/stage/cancel', { confirm: true, stage: st }); this.started(st, `${st} cancelling…`); }
+      catch (e) { this.refused('cancel: ' + e.message); }
       await this.refresh();
     },
     // Qualify power-cycles nodes, clears SELs and runs stress: the rack-wide run takes
@@ -694,8 +710,8 @@ function App() {
     openQualify() { this.qualifying = true; this.qualText = ''; },
     async doQualify() {
       this.qualifying = false;
-      try { await api('api/stage/qualify', { confirm: this.qualText }); this.hdrMsg = 'qualify started'; }
-      catch (e) { this.hdrMsg = 'qualify: ' + e.message; }
+      try { await api('api/stage/qualify', { confirm: this.qualText }); this.started('qualify', 'qualify started'); }
+      catch (e) { this.refused('qualify: ' + e.message); }
       await this.refresh();
     },
     async qualify(pos) {
@@ -716,8 +732,8 @@ function App() {
       this.deploying = false;
       const body = { confirm: this.depText, from: this.depFrom };
       if (this.depFrom === 'install' && this.depReinstall) body.reinstall = this.depText;
-      try { await api('api/stage/deploy', body); this.hdrMsg = 'deploy started'; }
-      catch (e) { this.hdrMsg = 'deploy: ' + e.message; }
+      try { await api('api/stage/deploy', body); this.started('deploy', 'deploy started'); }
+      catch (e) { this.refused('deploy: ' + e.message); }
       await this.refresh();
     },
     openDeployDev(d) {
@@ -750,6 +766,30 @@ function App() {
       const w = d && d.waiver; if (!w) return null;
       return { t: w.active ? 'waived' : 'waived (now passed)', cls: w.active ? 'amb' : 'dimv',
                title: `Deploy gate waiver: ${w.rungs.join(', ')} · ${w.reason} · by ${w.who} · ${w.at}` };
+    },
+    // ---- Done: end summary (SDR/SEL, installed-OS captures), boot reset (hostname iPXE
+    // file + Redfish override; never a power action), components, then the customer CSVs.
+    // Rack-wide = typed order id (like Qualify); a drawer DONE a plain confirm naming it ----
+    doneHosts() { return (this.s.devices || []).filter((d) => (d.done_rungs || []).length); },
+    openDone() { this.finishing = true; this.doneText = ''; },
+    async doDone() {
+      this.finishing = false;
+      try { await api('api/stage/done', { confirm: this.doneText }); this.started('done', 'done started'); }
+      catch (e) { this.refused('done: ' + e.message); }
+      await this.refresh();
+    },
+    async doneDev(pos) {
+      if (!pos || !window.confirm(`Run Done for ${pos}? Its SDR/SEL and installed OS are read, its ` +
+                                  'boot override and hostname iPXE file are cleared (no power action), ' +
+                                  'and the customer CSVs are rewritten.')) return;
+      try { await api('api/stage/done', { positions: [pos], confirm: true }); this.actionMsg = `done started for ${pos}`; }
+      catch (e) { this.actionMsg = 'done: ' + e.message; }
+      await this.refresh();
+    },
+    get csvAt() { return (this.s.done || {}).csv_at || null; },
+    doneTitle() {
+      const base = 'run Done: per node SDR/SEL (non-benign SEL = fault) + installed-OS captures, clear the hostname iPXE file and the Redfish boot override (never a power action), list components from the Qualify inventory, then write the customer CSVs';
+      return this.csvAt ? `${base} · CSVs written ${this.csvAt}` : base;
     },
     openInv(d) {
       const a = ((d && (d.runs || {}).inventory) || {}).artifacts || {};

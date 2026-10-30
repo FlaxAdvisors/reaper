@@ -64,6 +64,12 @@
         <button class="discbtn depbtn" v-if="s.order" :disabled="s.stage_running || !!s.closed_at" @click="openDeploy()"
                 :class="{passed: s.deploy?.passed}"
                 :title="s.closed_at ? 'order is closed' : s.stage_running ? 'a stage is running' : deployTitle()">Deploy{{s.deploy?.passed ? ' ✓' : ''}}</button>
+        <button class="discbtn donebtn" v-if="s.order" :disabled="s.stage_running || !!s.closed_at" @click="openDone()"
+                :class="{passed: !!csvAt}"
+                :title="s.closed_at ? 'order is closed' : s.stage_running ? 'a stage is running' : doneTitle()">Done{{csvAt ? ' ✓' : ''}}</button>
+        <span class="csv-links" v-if="csvAt" :title="'customer CSVs written by Done ' + csvAt">CSV
+          <a href="api/report/devices.csv" download>devices</a>
+          <a href="api/report/components.csv" download>components</a></span>
         <button class="closebtn cancelbtn" v-if="s.stage_running && s.stage" :disabled="s.cancelling" @click="cancelStage()"
                 :title="s.cancelling ? 'cancel requested: stopping after the steps now running' : 'stop the running ' + s.stage + ' between steps (a power action already sent finishes)'">{{s.cancelling ? 'Cancelling…' : 'Cancel ' + s.stage}}</button>
         <span class="hdr-msg" v-if="hdrMsg">{{hdrMsg}}</span>
@@ -177,6 +183,8 @@
               title="re-run Qualify for this node only (then the rack-level rungs)">QUAL</button>
       <button :disabled="s.stage_running || !!s.closed_at || !(selDev?.deploy_rungs || []).length" @click="openDeployDev(selDev)"
               :title="selDev?.deploy_gate ? 'Deploy gate: ' + selDev?.deploy_gate + ' (a waiver can be recorded)' : 'deploy this node: install Ubuntu 24.04 (wipes its disks), flax_user, bond0, HA test'">DEPLOY</button>
+      <button :disabled="s.stage_running || !!s.closed_at || !(selDev?.done_rungs || []).length" @click="doneDev(selDev?.pos)"
+              title="Done for this node: SDR/SEL + installed-OS summary, clear its boot override and hostname iPXE file (no power action), components; rewrites the customer CSVs">DONE</button>
       <button :disabled="s.stage_running || !!s.closed_at" @click="firmware(selDev?.pos)"
               title="read this device's firmware versions (detect only: never flashes)">FW</button>
       <button :disabled="s.stage_running || !!s.closed_at" @click="retry(selDev?.pos)"
@@ -312,7 +320,7 @@
             <span class="si">{{stepIcon(st.state)}}</span>{{st.name}}<span class="note" v-if="st.note"> · {{st.note}}</span>
             <span class="art" v-for="a in st.arts" :title="a.url" @click.stop="openStepArt(selObj, p, st, a)">{{a.name}}</span></div>
         </div>
-        <div class="steps" v-else><div class="step pending"><span class="si">·</span>{{selKind==='dev' ? 'later plan' : 'none for this endpoint'}}</div></div>
+        <div class="steps" v-else><div class="step pending"><span class="si">·</span>{{selKind==='dev' ? 'none for this device' : 'none for this endpoint'}}</div></div>
         <div v-if="p==='firmware' && selKind==='dev'"><div class="ep-fw" v-for="x in endpointFw(selDev)">
           <div class="ep-h clk" @click="select(selDev?.pos + '.' + x.ep)">{{x.ep.toUpperCase()}} ›</div>
           <div class="steps">
@@ -403,6 +411,23 @@
           <input type="checkbox" v-model="depReinstall"> reinstall {{depInstalled().join(', ')}} (already installed: wipes their disks again)</label>
         <input class="confirm-in" name="rp-depconfirm" autocomplete="off" v-model="depText" :placeholder="s.order">
         <button class="press danger" :disabled="depText!==s.order" @click="doDeploy()">Deploy rack</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= rack-wide Done modal (typed confirm) ================= -->
+  <div class="m-scrim" v-if="finishing" @click="finishing=false">
+    <div class="m-box" @click.stop>
+      <div class="m-h"><span class="m-title">Done order {{s.order}}{{s.rack ? ' rack ' + s.rack : ''}}</span>
+        <span class="x" @click="finishing=false">✕</span></div>
+      <div class="m-b">
+        <p class="m-sub">For all {{doneHosts().length}} host-bearing nodes ({{doneHosts().map((d) => d.pos).join(', ')}}):
+          reads SDR + SEL out of band (a non-benign SEL entry is a fault) and the installed OS in band
+          (only where Deploy's first boot passed), removes the hostname iPXE file and clears the
+          Redfish boot override, and lists the components from the Qualify inventory. Then writes
+          the customer CSVs. No node is powered on or off. Type the order id to confirm.</p>
+        <input class="confirm-in" name="rp-doneconfirm" autocomplete="off" v-model="doneText" :placeholder="s.order">
+        <button class="press danger" :disabled="doneText!==s.order" @click="doDone()">Done rack</button>
       </div>
     </div>
   </div>

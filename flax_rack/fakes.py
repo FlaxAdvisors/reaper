@@ -38,6 +38,13 @@ served fake R05's inventory lacks the Mellanox line (POP_FAIL), so its populatio
 is red and Deploy needs a recorded waiver for it; R37's install console carries a
 "Buffer I/O error" line (SOL_FINDINGS), so its install-console fails (it never gates).
 Knobs for tests: install_fail, firstboot_fail, sol_findings, bond_fail, hatest_fail.
+
+Done runs against FakeRungs' end_summary (canned SDR + SEL judged by the real
+BENIGN_SEL rule; the in-band captures only when Done passes a host IP), pxe_remove (a
+real pxeboot.remove under pxe_dir when set, else recorded only) and clear_override. In
+the served fake R37's SEL holds a correctable-ECC entry (SEL_NONBENIGN): its end-summary
+is red. Knobs: sel_nonbenign, sel_unread (SEL not read: unmeasured), override_fail,
+pxe_dir.
 """
 import subprocess
 
@@ -50,6 +57,7 @@ FW_HOST_DOWN = {"R05"}               # served fake only: ssh gone for the firmwa
 LIVE_POS = "L05"                     # already in the live image when Discover starts
 POP_FAIL = {"R05"}                   # served fake: POP red (Deploy needs a recorded waiver)
 SOL_FINDINGS = {"R37"}               # served fake: an I/O error line in its install console
+SEL_NONBENIGN = {"R37"}              # served fake: a correctable-ECC entry in its Done SEL
 SITE_PORTS = {"A": "Gi1/0/18", "B": "Gi1/0/17", "C": "Gi1/0/19"}
 
 
@@ -145,6 +153,7 @@ def fake_context_factory(rack_dir, g, db) -> OrderContext:
                                                  pop_fail=POP_FAIL)
         rungs.fw_host_down = set(FW_HOST_DOWN)
         rungs.sol_findings = set(SOL_FINDINGS)
+        rungs.sel_nonbenign = set(SEL_NONBENIGN)
     kea = _KEAS.setdefault(g.kea_source, FakeKea(refuse))
     kea.dyn.update(rungs.switch_leases())
     if _PROFILE_DIR is None:
@@ -167,6 +176,29 @@ _IFN = {"pcie0": "ens3f0np0", "pcie1": "ens3f1np1"}
 _MACINV = ("2 Processor Version: Intel(R) Xeon(R) Gold 6138 CPU @ 2.00GHz\n"
            "12 Memory Size: 32 GB, Type: DDR4\n"
            "2 Ethernet controller: Mellanox Technologies MT27710 Family [ConnectX-4 Lx]\n")
+
+
+def _macinv_v(sn: str, n: int, nic: bool = True) -> str:
+    """`macinv -v` detail text (the components Done lists): 2 CPUs, 2 DIMMs, the
+    Mellanox (dropped with POP_FAIL), 2 NVMe disks, the BMC VGA."""
+    return (f"Board Mfg: Wiwynn, Product: Tioga Pass Single Side, Serial: B{sn}, "
+            f"Product Serial: {sn}, Chassis Serial: C{sn}\n"
+            + "".join("Processor Version: Intel(R) Xeon(R) Gold 6138 CPU @ 2.00GHz, "
+                      "Serial: To be filled by O.E.M.\n" for _ in range(2))
+            + "".join(f"Memory: 32 GB, DIMM {s}, _Node{k}_Channel0_Dimm0, 2666 MT/s, Samsung, "
+                      f"{0xF00D0000 + n * 16 + k:08X}, M393A4K40CB2-CTD\n"
+                      for k, s in enumerate(("A0", "D0")))
+            + (f'BusID: 5e:00.0, Eth MAC: 02:00:00:00:{n:02x}:01, Model: "Mellanox MCX4411A-ACQN, '
+               'ConnectX-4 Lx EN OCP, 1x25Gb", SubVendor: pci 0x15b3 "Mellanox Technologies", '
+               "Interface: pxedev\n"
+               f"BusID: 5e:00.0, [SN] Serial number: MT{n:04d}X0{n:04d}\n" if nic else "")
+            + "".join(f'Handler: {190 + k}, BusID: nvme{k}, Model: "Sandisk WD Black SN850", '
+                      'SubVendor: pci 0x15b7 "Sandisk Corp", SubDevice: pci 0x5011 , '
+                      f'Serial ID: "2228158{n:03d}{k:02d}", Capacity: 1863 GB\n' for k in range(2))
+            + 'BusID: 03:00.0, Model: "ASPEED AST1000/2000", Device: pci 0x2000 "AST1000/2000", '
+              "SubDevice: pci 0x2000 , Revision: 0x41\n")
+
+
 # plain `lsblk` as the inventory captures it: two unmounted NVMe disks for fio
 _LSBLK = ("NAME        MAJ:MIN RM   SIZE RO TYPE MOUNTPOINTS\n"
           "loop0         7:0    0 850.2M  1 loop /run/overlay/squashfs_container\n"
@@ -239,6 +271,13 @@ class FakeRungs:
         self.sol_findings: set[str] = set()
         self.bond_fail: set[str] = set()
         self.hatest_fail: set[str] = set()
+        # Done: a non-benign SEL entry, a BMC whose SEL cannot be read, a Redfish that
+        # refuses the override clear; pxe_dir = where pxe_remove really unlinks (None:
+        # recorded only)
+        self.sel_nonbenign: set[str] = set()
+        self.sel_unread: set[str] = set()
+        self.override_fail: set[str] = set()
+        self.pxe_dir = None
         self._discover_init(live)
 
     def _pause(self):
@@ -566,7 +605,9 @@ class FakeRungs:
         for n in stages:
             macinv = _MACINV if pos not in self.pop_fail else "".join(
                 ln + "\n" for ln in _MACINV.splitlines() if "Mellanox" not in ln)
-            arts = {"macinv": macinv, "dmidecode": dmi, "ip-d-link": link, "lsblk": _LSBLK,
+            arts = {"macinv": macinv, "macinv-v": _macinv_v(sn, d.ou * 4 + (d.col or 0),
+                                                          pos not in self.pop_fail),
+                    "dmidecode": dmi, "ip-d-link": link, "lsblk": _LSBLK,
                     "ip-d-address": addr, "ipmitool-fru": fru, "dimmsum": _DIMMSUM,
                     "tpmstate": _TPMSTATE} if n == "inventory" else {f"{n}": f"{n}: ok\n"}
             out[n] = RungResult("pass", {"stage": n, "run_id": run_id, "summary": {}}, arts)
@@ -819,6 +860,7 @@ class FakeRungs:
             return RungResult("fail", {"ha_mode": HA_MODE, "headline": why, "error": why,
                                        "rows": rows}, {"bond0.txt": "MII Status: down\n"})
         return RungResult("pass", {"ha_mode": HA_MODE, "address": cidr,
+                                   "macs": {k: side[k]["mac"] for k in ("A", "B")},
                                    "headline": f"bond0 {cidr} active enp25s0f0np0 (wedge A)",
                                    "rows": rows + [["active slave", "enp25s0f0np0 (primary)"]]},
                           {"60-bond0.yaml": f"# rackpost Deploy (ha-config)\n# {cidr}\n",
@@ -850,6 +892,71 @@ class FakeRungs:
                     + ", back on enp25s0f0np0"},
                     {"ping-cut-A.txt": "120 packets transmitted, 118 received\n"} if not srv else {})
         return out
+
+    # ------------------------------------------------------------ Done stand-ins
+    def end_summary(self, host_ip, bmc_ip, *, host_user, host_pw, bmc_creds, runner=None):
+        """endsummary.collect's shape: canned SDR/SEL judged by the real BENIGN_SEL rule,
+        and the in-band captures only when a host IP is given."""
+        from flax_rungs.endsummary import nonbenign
+        from flax_rungs.result import RungResult
+        pos = self.pos_of.get(bmc_ip)
+        self.calls.append(("end_summary", pos, host_ip))
+        self._pause()
+        sdr = ("Inlet Temp       | 01h | ok  |  7.1 | 24 degrees C\n"
+               "P0 Temp          | 02h | ok  |  3.0 | 41 degrees C\n"
+               "HSC Input Power  | 0Ah | ok  | 10.1 | 312 Watts\n")
+        sel = ("   1 | 10/30/2026 | 02:01:12 | Temperature Inlet Temp | Upper Critical going high | Asserted\n"
+               "   2 | 10/30/2026 | 02:14:40 | Power Unit #0x3b | Unknown Chassis Pwr Sts | Asserted\n")
+        if pos in self.sel_nonbenign:
+            sel += ("   3 | 10/30/2026 | 03:02:51 | Memory #0x02 | Correctable ECC | Asserted"
+                    " | DIMM_A3\n")
+        arts = {"sdr-elist.txt": sdr}
+        rows = [["BMC", f"{bmc_ip} as u, cipher 17"], ["sdr elist", "read"]]
+        if pos in self.sel_unread:
+            rows.append(["sel elist", "not read: timeout"])
+        else:
+            arts["sel-elist.txt"] = sel
+            rows.append(["sel elist", "read"])
+        inband = bool(host_ip)
+        if inband:
+            arts.update({"net.txt": "bond0  UP  02:fb:25:01:00:01\nbond0  UP  10.201.37.51/16\n",
+                         "disks.txt": "NAME     MODEL                SERIAL        SIZE TYPE\n"
+                                      "nvme0n1  WD_BLACK SN850X 1TB  222815805096  931.5G disk\n",
+                         "bootorder.txt": "BootCurrent: 0003\nBootOrder: 0003,0001\n"
+                                          "Boot0003* ubuntu\tHD(1,GPT,...)/File(\\EFI\\ubuntu\\shimx64.efi)\n",
+                         "dimms.txt": "Memory Device\n\tSize: 32 GB\n\tLocator: DIMM A0\n"})
+            rows.append(["in-band", f"{host_ip}: net.txt, disks.txt, bootorder.txt, dimms.txt"])
+        else:
+            rows.append(["in-band", "skipped: no installed OS to reach"])
+        detail = {"inband": inband, "oob": True, "sel_nonbenign": [], "user": "u", "cipher": 17,
+                  "rows": rows}
+        if "sel-elist.txt" not in arts:
+            head = "SEL not read: sel elist failed: timeout"
+            return RungResult("unmeasured", {**detail, "headline": head, "reason": head}, arts)
+        bad = nonbenign(sel)
+        n = sum("|" in ln for ln in sel.splitlines())
+        detail["sel_nonbenign"] = bad
+        rows.append(["SEL", f"{n} entries, {len(bad)} non-benign"])
+        if bad:
+            head = f"SEL: {len(bad)} non-benign: {bad[0]}"
+            return RungResult("fail", {**detail, "headline": head, "error": head}, arts)
+        return RungResult("pass", {**detail, "headline": f"SEL clean ({n} benign)"
+                                   + ("" if inband else "; in-band not read")}, arts)
+
+    def pxe_remove(self, hostname):
+        self.calls.append(("pxe_remove", hostname))
+        if self.pxe_dir is None:
+            return True, None
+        from flax_rungs import pxeboot
+        return pxeboot.remove(hostname, pxe_dir=self.pxe_dir)
+
+    def clear_override(self, bmc_ip, creds, *, runner=None):
+        from flax_rungs.result import RungResult
+        pos = self.pos_of.get(bmc_ip)
+        self.calls.append(("clear_override", pos))
+        if pos in self.override_fail:
+            return RungResult("fail", {"error": "http 400", "target": "None"})
+        return RungResult("pass", {"method": "redfish", "user": "u", "target": "None"})
 
 
 class _FakeRedfish:

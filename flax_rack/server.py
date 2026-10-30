@@ -22,6 +22,11 @@ id, a positions run with {"confirm": true}; {"from": "firstboot"} skips the inst
 rungs (recorded in order.db; who = {"by": ...} or the client address). The gate is
 checked before the stage starts: a refusal is a 409 naming what blocks.
 
+POST api/stage/done starts Done (flax_rack.done: end summary, boot reset, components,
+then the customer CSVs): rack-wide with the typed order id, a positions run with
+{"confirm": true}. GET api/report/devices.csv and api/report/components.csv download
+those CSVs (attachment; 404 until Done has written them).
+
 Stages run in daemon threads under one lock per rack dir (RackLock: a thread lock
 plus a flock on <dir>/.stage.lock, so a CLI `discover` and the daemon exclude each
 other too). Different racks run in parallel. A stage's exception lands in that
@@ -39,17 +44,19 @@ import sqlite3
 import threading
 import urllib.parse
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from flax_rungs.fwsteps import FW_STEPS
 from flax_rungs.pxeboot import PXE_DIR
 
-from . import devview
+from . import devview, report
 from .addressing import plan_addresses
 from .deploy import (FROM_PHASES, PHASES as DEPLOY_PHASES, GateError, clean_who, deploy_rungs,
                      deploy_why, gate_blockers, gate_why, plan as deploy_plan, run_deploy,
                      sweep_interrupted_installs)
+from .done import DONE_RUNGS, done_rungs, run as run_done, targets as done_targets
 from .discover_ladder import DISCOVER_STEPS, OLD_DISCOVER_RUNGS, wanted as stage_positions
 from .firmware import run_firmware
 from .geometry import Geometry, load_geometry
@@ -344,6 +351,7 @@ def rack_state(r: Rack) -> dict:
             "deploy_gate": gate_why(raw, d) if deploy_rungs(d) else None,
             "gate_blockers": gate_blockers(raw, d) if deploy_rungs(d) else [],
             "waiver": _waiver_view(waivers.get(d.pos), raw, d),
+            "done_rungs": done_rungs(d),
             "runs": runs})
     rack_runs = by_pos.get("_rack", {})
     passed, not_passed = qualify_passed(db, g)
@@ -376,10 +384,23 @@ def rack_state(r: Rack) -> dict:
                    "not_passed": [d.pos for d in g.devices if d.pos in dwhy],
                    "why": dwhy, "progress": db.deploy_progress(), "ha_mode": db.ha_mode(),
                    "waivers": db.waivers(history=True)},
+        "done_rungs": list(DONE_RUNGS), "done": {"csv_at": _csv_at(r.dir)},
         "poll_interval_s": INTERVAL_S, "profiles": sorted(profiles),
         "switches": switches, "devices": devices, "rack_runs": rack_runs,
         "unexpected": [{"port": u["port"], "mac": _fmt_mac(u["mac"])} for u in unexpected],
         "events": db.events(30)}
+
+
+def _csv_at(rack_dir: Path) -> str | None:
+    """When Done last wrote the customer CSVs (UTC, seconds), None before."""
+    try:
+        t = (Path(rack_dir) / report.DEVICES_CSV).stat().st_mtime
+    except OSError:
+        return None
+    return datetime.fromtimestamp(t, timezone.utc).isoformat(timespec="seconds")
+
+
+REPORTS = {"devices.csv": report.DEVICES_CSV, "components.csv": report.COMPONENTS_CSV}
 
 
 # ---------------------------------------------------------------- app
@@ -567,6 +588,33 @@ class App:
                    "reinstall": rein is not None, "waived": sorted((waive or {}))}
         return code, out
 
+    def start_done(self, r: Rack, body: dict):
+        # Done clears the boot override and the hostname iPXE file (never a power
+        # action) and rewrites the customer CSVs: rack-wide = the typed order id, a
+        # positions run an explicit {"confirm": true}
+        pos = body.get("positions")
+        if pos is None and body.get("confirm") != r.g.order:
+            return 400, {"error": "type the order id to confirm a rack-wide Done"}
+        if pos is None:
+            return self._start_stage(r, "done", run_done)
+        if body.get("confirm") is not True:
+            return 400, {"error": "confirm the positions to run Done for"}
+        if not (isinstance(pos, list) and pos and all(isinstance(p, str) for p in pos)):
+            return 400, {"error": "positions must be a non-empty list of positions"}
+        try:
+            done_targets(r.g, pos)
+        except ValueError as e:
+            return 400, {"error": str(e)}
+        return self._start_stage(r, "done", run_done, positions=sorted(set(pos)))
+
+    def report_file(self, r: Rack, name: str) -> tuple[Path, str] | None:
+        """(the CSV Done wrote, its download name) or None (unknown, not written yet)."""
+        fn = REPORTS.get(name)
+        if fn is None or not (r.dir / fn).is_file():
+            return None
+        tag = re.sub(r"[^A-Za-z0-9._-]", "_", r.g.order + (f"-{r.g.rack}" if r.g.rack else ""))
+        return r.dir / fn, f"{tag}-{fn}"
+
     # -- BMC pollers: one per served rack; a disabled/vanished rack's poller stops --
     def start_pollers(self, interval_s=INTERVAL_S) -> threading.Thread:
         self._poll_stop = threading.Event()
@@ -747,9 +795,11 @@ class _Handler(BaseHTTPRequestHandler):
         self._dispatch("POST")
 
     # -- responses --
-    def _send(self, code, body: bytes, ctype):
+    def _send(self, code, body: bytes, ctype, headers=None):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("X-Content-Type-Options", "nosniff")   # artifacts are node-written
         self.send_header("Cache-Control", "no-cache")
@@ -824,6 +874,12 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._static(rest[len("static/"):])
             if rest == "api/state":
                 return self._json(200, rack_state(r))
+            if rest.startswith("api/report/"):
+                f = app.report_file(r, rest[len("api/report/"):])
+                if f is None:
+                    return self._json(404, {"error": "not written yet (run Done)"})
+                return self._send(200, f[0].read_bytes(), "text/csv; charset=utf-8",
+                                  {"Content-Disposition": f'attachment; filename="{f[1]}"'})
             if rest.startswith("artifacts/"):
                 p = app.artifact_file(r, rest)
                 if p is None:
@@ -851,6 +907,8 @@ class _Handler(BaseHTTPRequestHandler):
         if rest == "api/stage/deploy":
             ip = self.headers.get("X-Real-IP") or self.client_address[0]
             return self._json(*app.start_deploy(r, body, who=f"ui {ip}"))
+        if rest == "api/stage/done":
+            return self._json(*app.start_done(r, body))
         if rest == "api/close":
             return self._json(*app.close(r, body))
         return self._json(404, {"error": "not found"})
