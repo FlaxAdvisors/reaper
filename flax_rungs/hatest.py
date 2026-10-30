@@ -11,12 +11,17 @@ up (`ip link set up`) and every bond must return to its primary. The same again
 cutting B: the active slave must stay on A.
 
 Links are ALWAYS restored in a finally. A node whose restore could not be confirmed
-fails loudly (its port may be left down). Ports are found by the permanent MAC in
-/proc/net/bonding/bond0, never by name.
+fails loudly (its port may be left down). Each cut also arms a dead-man on the node
+(a setsid `sleep DEADMAN_S; ip link set <port> up`, pid in /run) that the normal
+restore kills first: a daemon that dies mid-cut cannot leave fabric ports down. Ports
+are found by the permanent MAC in /proc/net/bonding/bond0, never by name.
 
 Verdicts per node: fail on a real defect (no failover, a gap over FAILOVER_GAP_MS, no
 reply at all, mesh below threshold, no return to primary); unmeasured when the node
-(or the server) did not answer and nothing else was wrong; pass otherwise."""
+(or the server) did not answer and nothing else was wrong; pass otherwise. The iperf
+server is judged on its own failover and restore: a client's missing iperf result is
+that client's defect (the server's mesh verdict stays evidence), unless the server could
+not start iperf3 at all."""
 import shlex
 import subprocess
 import threading
@@ -32,6 +37,7 @@ PING_S = 12             # each ping runs this long (covers lead + cut + recovery
 LEAD_S = 2              # pings run this long before the cut
 SETTLE_S = 10           # failover must show in /proc/net/bonding within this
 RESTORE_S = 30          # a re-enabled port (100G link training) must be back by then
+DEADMAN_S = 600         # on-node self-restore of a cut port; well above a leg's cut window
 NOTES = ["whole-wedge failover: the wedge-A (then wedge-B) port of every node was cut "
          "at once; the wedges have no inter-switch link",
          "single-node failover needs an A↔B interconnect (MLAG peer link)",
@@ -48,6 +54,10 @@ def _par(fn, items) -> dict:
 
 def _ping_file(cut: str) -> str:
     return f"/run/flax-hatest-cut{cut}.ping"
+
+
+def _deadman_file(cut: str) -> str:
+    return f"/run/flax-hatest-cut{cut}.deadman"
 
 
 class _Node:
@@ -71,13 +81,14 @@ def _gbit(x):
 
 class _Run:
     def __init__(self, nodes, server_pos, user, pw, mesh, runner, sleep, clock, ping_s,
-                 lead_s, settle_s, restore_s, mesh_seconds):
+                 lead_s, settle_s, restore_s, mesh_seconds, deadman_s):
         self.st = {n["pos"]: _Node(n) for n in nodes}
         self.server_pos = server_pos
         self.user, self.pw, self.mesh, self.runner = user, pw, mesh, runner
         self.sleep, self.clock = sleep, clock
         self.ping_s, self.lead_s = ping_s, lead_s
         self.settle_s, self.restore_s, self.mesh_seconds = settle_s, restore_s, mesh_seconds
+        self.deadman_s = deadman_s
 
     def ssh(self, x: _Node, script: str, timeout: int = 60):
         return hostssh.run(x.n["host_ip"], self.user, self.pw, script, timeout=timeout,
@@ -154,7 +165,11 @@ class _Run:
                     barrier.wait(timeout=30)
                 except threading.BrokenBarrierError:
                     pass
-                return self.ssh(x, f"ip link set {shlex.quote(x.ports[cut])} down && echo CUT\n")
+                port, dm = shlex.quote(x.ports[cut]), shlex.quote(_deadman_file(cut))
+                up = shlex.quote(f"sleep {int(self.deadman_s)}; ip link set {port} up")
+                # the dead-man first: should this daemon die, the node restores itself
+                return self.ssh(x, f"setsid sh -c {up} >/dev/null 2>&1 </dev/null &\n"
+                                   f"echo $! >{dm}\nip link set {port} down && echo CUT\n")
 
             cut_res = _par(do_cut, xs)
             # failover: the kept side must be (or stay) active
@@ -204,10 +219,12 @@ class _Run:
                    "ifaces": {"bond": ("bond0", sip)}}
             clients = [{"pos": x.pos, "host_ip": x.n["host_ip"],
                         "ifaces": {"bond": ("bond0", x.n["bond_ip"])}} for x in pingers]
+            crashed = False
             try:
                 mres = self.mesh(srv, clients, user=self.user, pw=self.pw,
                                  seconds=self.mesh_seconds, runner=self.runner)
             except Exception as e:      # noqa: BLE001 -- the restore below must still run
+                crashed = True
                 mres = {x.pos: RungResult("fail", {"error": f"{type(e).__name__}: {e}"})
                         for x in xs}
             for x in xs:
@@ -215,6 +232,14 @@ class _Run:
                 net = r.detail.get("bond") or {}
                 x.legs[cut]["tx_bps"], x.legs[cut]["rx_bps"] = net.get("tx_bps"), net.get("rx_bps")
                 x.legs[cut]["iperf"] = r.verdict
+                if x.pos == self.server_pos:
+                    # evidence only: a client without a result is that client's defect
+                    err = r.detail.get("error") or ""
+                    x.legs[cut]["iperf"] = err or r.verdict
+                    if r.verdict == "fail" and (crashed or
+                                                err.startswith(f"server {x.pos} not ready")):
+                        x.problems.append(f"cut {cut}: iperf server: {err}")
+                    continue
                 if r.verdict == UNMEASURED:
                     x.unanswered.append(f"cut {cut}: iperf {r.detail.get('error')}")
                 elif r.verdict == "fail":
@@ -224,8 +249,10 @@ class _Run:
 
     # -- always: bring the cut ports back, then the bond must return to its primary
     def restore(self, cut: str, xs: list[_Node]):
+        dm = shlex.quote(_deadman_file(cut))
         res = _par(lambda x: self.ssh(
-            x, f"ip link set {shlex.quote(x.ports[cut])} up && echo UP\n"), xs)
+            x, f"kill \"$(cat {dm} 2>/dev/null)\" 2>/dev/null; rm -f {dm}\n"
+               f"ip link set {shlex.quote(x.ports[cut])} up && echo UP\n"), xs)
         up = []
         for x in xs:
             rc, out, err = res[x.pos]
@@ -286,11 +313,12 @@ class _Run:
 def run(nodes: list[dict], server_pos: str, *, user: str, pw: str, mesh=iperf.mesh,
         runner=subprocess.run, sleep=time.sleep, clock=time.monotonic,
         ping_s: int = PING_S, lead_s: int = LEAD_S, settle_s: int = SETTLE_S,
-        restore_s: int = RESTORE_S, mesh_seconds: int = 10) -> dict[str, RungResult]:
+        restore_s: int = RESTORE_S, mesh_seconds: int = 10,
+        deadman_s: int = DEADMAN_S) -> dict[str, RungResult]:
     """nodes: [{"pos", "host_ip", "bond_ip", "macs": {"A", "B"}}] (bond_ip without the
     prefix; macs as bond.sides()). server_pos must be one of them. One RungResult per pos."""
     R = _Run(nodes, server_pos, user, pw, mesh, runner, sleep, clock, ping_s, lead_s,
-             settle_s, restore_s, mesh_seconds)
+             settle_s, restore_s, mesh_seconds, deadman_s)
     ready = R.precheck()
     server = next((x for x in ready if x.pos == server_pos), None)
     if server is None:

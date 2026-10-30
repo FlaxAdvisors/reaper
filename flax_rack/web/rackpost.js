@@ -166,7 +166,7 @@ function App() {
     deploying: false, depText: '', depFrom: 'install', depReinstall: false,
     // per-device Deploy modal: depM = {pos, msg} while open; its inputs are top-level so
     // v-model never reads through a null depM while the modal tears down
-    depM: null, devFrom: 'install', devRein: false, devWaive: {}, devReason: '',
+    depM: null, devFrom: 'install', devReinText: '', devWaive: {}, devReason: '',
     metricList: [
       { key: 'discover', label: 'discover', title: 'devices in Discover' },
       { key: 'firmware', label: 'firmware', title: 'devices with firmware versions read (report only)' },
@@ -706,7 +706,8 @@ function App() {
       await this.refresh();
     },
     // ---- Deploy: wipes disks. Rack-wide = typed order id (+ reinstall of installed nodes
-    // with the same typed id); a drawer DEPLOY = its own confirm, waivers and reason ----
+    // with the same typed id); a drawer DEPLOY = its own confirm, waivers and reason, and a
+    // reinstall there takes the typed order id too ----
     depHosts() { return (this.s.devices || []).filter((d) => (d.deploy_rungs || []).length); },
     installed(d) { return !!d && ((d.runs || {}).install || {}).verdict === 'pass'; },
     depInstalled() { return this.depHosts().filter((d) => this.installed(d)).map((d) => d.pos); },
@@ -721,7 +722,7 @@ function App() {
     },
     openDeployDev(d) {
       if (!d) return;
-      this.devFrom = this.installed(d) ? 'firstboot' : 'install'; this.devRein = false; this.devReason = '';
+      this.devFrom = this.installed(d) ? 'firstboot' : 'install'; this.devReinText = ''; this.devReason = '';
       this.devWaive = Object.fromEntries((d.gate_blockers || []).filter((r) => !r.startsWith('verdict ')).map((r) => [r, false]));
       this.depM = { pos: d.pos, msg: null };
     },
@@ -732,12 +733,13 @@ function App() {
     depReady() {
       if (!this.depM || this.depLeft().length) return false;
       if (this.depWaived().length && !this.devReason.trim()) return false;
-      return !(this.devFrom === 'install' && this.installed(this.depDev) && !this.devRein);
+      // a reinstall wipes disks: the typed order id, like the rack-wide modal
+      return !(this.devFrom === 'install' && this.installed(this.depDev) && this.devReinText !== this.s.order);
     },
     async doDeployDev() {
       const m = this.depM; if (!m) return;
       const body = { positions: [m.pos], confirm: true, from: this.devFrom };
-      if (this.devFrom === 'install' && this.devRein) body.reinstall = this.s.order;
+      if (this.devFrom === 'install' && this.installed(this.depDev)) body.reinstall = this.devReinText;
       const w = this.depWaived();
       if (w.length) body.waive = { [m.pos]: { rungs: w, reason: this.devReason.trim() } };
       try { await api('api/stage/deploy', body); this.depM = null; this.actionMsg = `deploy started for ${m.pos}`; }

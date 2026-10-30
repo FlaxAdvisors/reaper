@@ -16,9 +16,10 @@ PATTERNS = (
     ("subiquity error", r"subiquity.*(error|Traceback)"),
     ("curtin error", r"curtin.*(ERROR|failed)"),
     ("out of memory", r"Out of memory"),
-    ("I/O error", r"I/O error"),
+    # not virtual media (the BMC's sr0) or a loop device: those print I/O errors on any boot
+    ("I/O error", r"I/O error(?!.*\bdev (?:sr|loop)\d)"),
     ("ext4 error", r"EXT4-fs error"),
-    ("machine check", r"mce:"),
+    ("machine check", r"mce: \[Hardware Error\]"),    # not mce: info lines (TM1 enabled)
 )
 _COMPILED = tuple((n, re.compile(rx)) for n, rx in PATTERNS)
 _ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])")

@@ -1,4 +1,5 @@
-"""Run a script on a live-image host as flax under sudo; password only via SSHPASS.
+"""Run a script on a live-image host as flax under sudo (sudo=False: as flax itself);
+password only via SSHPASS.
 
 run() returns (rc, stdout, stderr) separately: callers parse stdout only (ssh's
 "Warning: Permanently added ..." or a sudo hostname complaint lands on stderr and
@@ -8,13 +9,13 @@ import subprocess
 
 
 def run(host_ip: str, user: str, password: str, script: str, *, timeout: int = 60,
-        runner=subprocess.run) -> tuple[int, str, str]:
+        sudo: bool = True, runner=subprocess.run) -> tuple[int, str, str]:
     argv = ["sshpass", "-e", "ssh",
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
             "-o", "LogLevel=ERROR",
             "-o", "ConnectTimeout=8",
-            f"{user}@{host_ip}", "sudo", "-n", "bash", "-s"]
+            f"{user}@{host_ip}", *(("sudo", "-n") if sudo else ()), "bash", "-s"]
     env = dict(os.environ)
     env["SSHPASS"] = password
     try:

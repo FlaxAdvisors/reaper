@@ -427,8 +427,11 @@
         </div>
         <label class="m-sub">start at
           <select v-model="devFrom"><option v-for="f in (s.deploy_from || ['install'])" :value="f">{{f}}</option></select></label>
-        <label class="m-sub" v-if="devFrom==='install' && installed(depDev)">
-          <input type="checkbox" v-model="devRein"> reinstall: {{depM?.pos}} is already installed (wipes its disks again)</label>
+        <div v-if="devFrom==='install' && installed(depDev)">
+          <p class="m-sub bad">{{depM?.pos}} is already installed: a reinstall wipes its disks again.
+            Type the order id to confirm.</p>
+          <input class="confirm-in" name="rp-devrein" autocomplete="off" v-model="devReinText" :placeholder="s.order">
+        </div>
         <button class="press danger" :disabled="!depReady()" @click="doDeployDev()">Deploy {{depM?.pos}}</button>
         <p class="action-msg" v-if="depM?.msg">{{depM?.msg}}</p>
       </div>

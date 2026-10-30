@@ -26,7 +26,8 @@ carried by the request that uses it (never inherited from an earlier Deploy).
 
 Reinstall guard: a target whose latest `install` passed is only reinstalled (its disks
 wiped) with reinstall=<order id>; else the run is refused and `from_phase="firstboot"`
-(skip install: SOL, Hdd boot, installed-OS proof, then the rest) is the way on.
+(skip install: SOL, Hdd boot, installed-OS proof, then the rest) is the way on. A
+firstboot run needs each target's latest install (or firstboot) passed.
 
 A device failing a phase (fail or unmeasured on its rung) gets `skip` ("failed in phase
 <p>" / "not measured in phase <p>" / "cancelled") on the later phases' rungs; the rest
@@ -50,7 +51,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from flax_rungs import agent, ansible, bond, fabric, hatest, install, sol, solscan
+from flax_rungs import agent, ansible, bond, fabric, hatest, install, pxeboot, sol, solscan
 from flax_rungs.result import UNMEASURED, RungResult, not_passed
 
 from .addressing import plan_addresses
@@ -203,7 +204,36 @@ def plan(lr, g, *, positions=None, from_phase="install", reinstall=None, waive=N
                 f"already installed: {', '.join(done)}; a reinstall wipes their disks -- "
                 f"confirm with reinstall {g.order} (CLI --reinstall {g.order}), or deploy "
                 f"from firstboot (CLI --from firstboot)")
+    else:
+        # a first boot of a never-installed disk boots whatever is on it, then fails slowly
+        none = [d.pos for d in targets
+                if not any((lr.get((d.pos, r)) or {}).get("verdict") == "pass"
+                           for r in ("install", "firstboot"))]
+        if none:
+            raise GateError(f"no passed install recorded for {', '.join(none)}; deploy them "
+                            "from install")
     return targets, w, incomplete
+
+
+def sweep_interrupted_installs(db, g, *, pxe_dir: str = pxeboot.PXE_DIR) -> list[str]:
+    """Remove the hostname iPXE file of every device whose latest install row was
+    interrupted (a daemon restart mid-install: its finally never ran, so the file and the
+    Pxe override stay and the next power-on would reinstall). Each removal, or a removal
+    that failed, is an event; returns the positions acted on."""
+    lr = db.latest_runs()
+    acted = []
+    for a in plan_addresses(g):
+        if a.role != "host" or (lr.get((a.pos, "install")) or {}).get("status") != "interrupted":
+            continue
+        if not pxeboot.exists(a.name, pxe_dir=pxe_dir):
+            continue
+        gone, err = pxeboot.remove(a.name, pxe_dir=pxe_dir)
+        db.add_event("deploy", f"{a.pos}: install interrupted by a restart; hostname-{a.name}"
+                               ".ipxe " + ("removed (a power-on no longer reinstalls)" if gone
+                                           else f"NOT removed ({err}): a power-on would "
+                                                "reinstall"))
+        acted.append(a.pos)
+    return acted
 
 
 # ---------------------------------------------------------------- recording

@@ -43,11 +43,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from flax_rungs.fwsteps import FW_STEPS
+from flax_rungs.pxeboot import PXE_DIR
 
 from . import devview
 from .addressing import plan_addresses
 from .deploy import (FROM_PHASES, PHASES as DEPLOY_PHASES, GateError, clean_who, deploy_rungs,
-                     deploy_why, gate_blockers, gate_why, plan as deploy_plan, run_deploy)
+                     deploy_why, gate_blockers, gate_why, plan as deploy_plan, run_deploy,
+                     sweep_interrupted_installs)
 from .discover_ladder import DISCOVER_STEPS, OLD_DISCOVER_RUNGS, wanted as stage_positions
 from .firmware import run_firmware
 from .geometry import Geometry, load_geometry
@@ -183,7 +185,7 @@ class RackLock:
 
 
 class Rack:
-    def __init__(self, rack_dir: Path, g: Geometry, mtime=None):
+    def __init__(self, rack_dir: Path, g: Geometry, mtime=None, pxe_dir: str = PXE_DIR):
         self.dir = rack_dir
         self.g = g
         self.db = OrderDB(rack_dir / "order.db")
@@ -201,6 +203,8 @@ class Rack:
                 self.db.set_deploy_progress(None)    # ... nor Deploy
                 if n:
                     self.db.add_event("restart", f"{n} rung(s) interrupted by a daemon restart")
+                # an install cut short leaves its hostname file: a power-on would reinstall
+                sweep_interrupted_installs(self.db, g, pxe_dir=pxe_dir)
             finally:
                 self.lock.release()
 

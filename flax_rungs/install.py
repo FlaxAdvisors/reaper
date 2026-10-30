@@ -25,7 +25,10 @@ nothing else is tried) until a FRESH boot answers (uptime shorter than the time 
 the power action; a boot_id read before the action must change), and prove the
 installed OS: /etc/os-release VERSION_ID="24.04", /proc/cmdline without BOOTIF=, / on
 a /dev block device whose disk is not USB/removable, and (when given) the host MAC
-Discover matched among its interfaces."""
+Discover matched among its interfaces. The probe needs no root, so it runs as flax
+without sudo. A login refused on AUTH_FAIL_AFTER polls in a row fails at once, naming
+the user, instead of waiting out the deadline (in a row: a cycled node's old OS may
+still answer the first poll)."""
 import re
 import subprocess
 import time
@@ -41,6 +44,7 @@ INSTALLER = ("ga/casper/initrd", "ga/casper/vmlinuz")
 AUTOINSTALL = "wiwynn-tp/user-data"
 VERSION_ID = "24.04"
 OFF_WITHOUT_INSTALL = 3        # consecutive "off" reads before the installer ran -> fail
+AUTH_FAIL_AFTER = 3            # consecutive refused logins at first boot -> fail
 SOL_TAIL = 2000
 
 _OK = r' HTTP/[\d.]+" (?:200|206) '
@@ -296,7 +300,8 @@ def firstboot(bmc_ip: str, host_ip: str, hostname: str, creds, *,
         return _done(detail, "fail", f"Hdd boot override: {ov.detail.get('error')}", [], [])
     detail["override"] = f"Hdd ({ov.detail.get('method')})"
     if state == "on":                   # a re-run: whatever runs now must not be judged
-        rc, out, _ = hostssh.run(host_ip, user, pw, _PROBE, timeout=20, runner=runner)
+        rc, out, _ = hostssh.run(host_ip, user, pw, _PROBE, timeout=20, sudo=False,
+                                 runner=runner)
         if rc == 0:
             detail["old_boot_id"] = parse_probe(out)["boot_id"]
     action = "cycle" if state == "on" else "on"
@@ -306,9 +311,10 @@ def firstboot(bmc_ip: str, host_ip: str, hostname: str, creds, *,
         return _fb_done(detail, "fail", f"chassis power {action} failed", sol_path)
     detail["power_action"] = action
     end = t0 + deadline_s
-    last_rc, last_err, auth_refused = None, "", False
+    last_rc, last_err, refused = None, "", 0
     while True:
-        rc, out, err = hostssh.run(host_ip, user, pw, _PROBE, timeout=20, runner=runner)
+        rc, out, err = hostssh.run(host_ip, user, pw, _PROBE, timeout=20, sudo=False,
+                                   runner=runner)
         if rc == 0:
             p = parse_probe(out)
             since = clock() - t0
@@ -318,20 +324,23 @@ def firstboot(bmc_ip: str, host_ip: str, hostname: str, creds, *,
                 detail.update(boot_id=p["boot_id"], uptime_s=int(p["uptime"]),
                               ssh_after_s=int(since))
                 return _judge(detail, p, host_ip, expect_mac, sol_path)
-            last_rc, last_err = 0, "old OS still answering"
+            last_rc, last_err, refused = 0, "old OS still answering", 0
         else:
             last_rc, last_err = rc, (err or "").strip()[-160:]
             # sshpass exits 5 on a refused password
-            auth_refused = rc == 5 or bool(_AUTH.search(err or ""))
+            auth = rc == 5 or bool(_AUTH.search(err or ""))
+            refused = refused + 1 if auth else 0
+            if refused >= AUTH_FAIL_AFTER:
+                break
         if clock() + poll_s >= end:
             break
         sleep(poll_s)
     detail["last"] = {"ssh": f"rc={last_rc} {last_err}".strip(),
                       "power": bmc.power_status(bmc_ip, creds.bmc, runner=runner),
                       "ping": bmc.ping(host_ip, runner=runner)}
-    if auth_refused:
+    if refused:
         why = (f"ssh as {user}@{host_ip} refused (password; the autoinstall's users differ "
-               f"from credentials-host.json?); no other user tried")
+               f"from credentials-host.json, or ssh allow-pw off?); no other user tried")
     else:
         why = f"no ssh as {user}@{host_ip} to a fresh boot within {deadline_s} s"
     return _fb_done(detail, "fail", why, sol_path)

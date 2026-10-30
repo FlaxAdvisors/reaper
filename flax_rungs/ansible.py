@@ -4,9 +4,12 @@ A per-run inventory goes into the caller's work dir (the order dir): `[nodes]` =
 host IPs, ansible_user=flax. The password reaches ansible only through
 `--extra-vars @<file>`: a 0600 JSON file in the same dir, removed in a finally (pass,
 fail, timeout, exception); it is never in argv or the environment. ansible-playbook
-runs from the playbook's dir so its ansible.cfg applies (forks, callbacks); extra-vars
-outrank the playbook's group_vars, so the vaulted password, not the one in
-group_vars/nodes.yml, is used.
+runs from the playbook's dir so its ansible.cfg applies (forks, callbacks). The file
+sets EVERY password alias (ansible_password, ansible_ssh_pass, ansible_ssh_password and
+both become forms): ansible takes the ssh password from whichever alias is defined last
+in its list, not by variable precedence, so one alias alone can lose to the
+ansible_ssh_pass in the playbook's group_vars/nodes.yml. With all of them in extra-vars
+the vaulted password is used whatever group_vars sets.
 
 Per host the PLAY RECAP decides: unreachable>0 -> unmeasured (ssh never answered:
 nothing judged; but a refused login -- ansible calls that UNREACHABLE too -- fails,
@@ -26,6 +29,9 @@ PLAYBOOK = "/opt/flax/ansible/flax_user.yml"
 INVENTORY = "flax_user-inventory.ini"
 ARTIFACT = "ansible-playbook.txt"
 TAIL = 600
+# every alias ansible reads the ssh / become password from (see the docstring)
+PASSWORD_VARS = ("ansible_password", "ansible_ssh_pass", "ansible_ssh_password",
+                 "ansible_become_password", "ansible_become_pass")
 
 _AUTH = re.compile(r"password|Permission denied|Authentication fail", re.I)
 _RECAP_LINE = re.compile(r"^(\S+)\s*:\s*((?:\w+=\d+\s*)+)$")
@@ -93,8 +99,7 @@ def flax_user(hosts: dict[str, str], user: str, pw: str, workdir, *,
     try:
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w") as f:
-            json.dump({"ansible_user": user, "ansible_password": pw,
-                       "ansible_become_password": pw}, f)
+            json.dump({"ansible_user": user, **{k: pw for k in PASSWORD_VARS}}, f)
         argv = ["ansible-playbook", playbook, "-i", str(inv), "--extra-vars", f"@{secret}"]
         env = dict(os.environ, ANSIBLE_HOST_KEY_CHECKING="False", ANSIBLE_NOCOLOR="1",
                    ANSIBLE_FORCE_COLOR="0", ANSIBLE_RETRY_FILES_ENABLED="False")

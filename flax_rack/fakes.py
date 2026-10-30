@@ -736,7 +736,7 @@ class FakeRungs:
         con = ("Booting `Install Ubuntu 24.04`\nsubiquity/Meta/status_GET: running\n"
                "curtin command install\n")
         if pos in self.sol_findings:
-            con += "[  612.204118] Buffer I/O error on dev sr0, logical block 0, async page read\n"
+            con += "[  612.204118] Buffer I/O error on dev sda, logical block 0, async page read\n"
         rows = [["hostname file", f"/srv/pxe/ipxe/hostname-{hostname}.ipxe"],
                 ["boot override", "Pxe (redfish)"], ["power action", "cycle"],
                 ["tftp (iPXE binary)", "+20 s"], ["boot.ipxe fetched", "+31 s"],
