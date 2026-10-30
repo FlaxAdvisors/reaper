@@ -24,6 +24,7 @@ apply_rackpost_post_modules:
   - __init__.py
   - version.py
   - population.py
+  - inventory.py
   - qualclient.py
   - qualify_rules.py
   - shipchecks.py
