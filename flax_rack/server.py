@@ -11,9 +11,16 @@ mtime differs from the one its Geometry was parsed at rescans, and the rack
 adopts the freshly parsed geometry (or stops being served if it no longer
 parses or now conflicts). Nothing is adopted from an older scan.
 
-Artifacts saved by Qualify are served read-only at
+Artifacts saved by Qualify and Deploy are served read-only at
 /<prefix>/artifacts/<pos>/<run>/<stage>/<name>.txt, path-checked like static files.
 A BmcPoller thread per served rack (started by `serve`) keeps each tile's power chip.
+
+POST api/stage/deploy starts Deploy (flax_rack.deploy): rack-wide with the typed order
+id, a positions run with {"confirm": true}; {"from": "firstboot"} skips the install,
+{"reinstall": "<order id>"} reinstalls nodes whose install passed, {"waive": {pos:
+{"rungs": [...], "reason": "..."}}} lets a device through the Qualify gate on those
+rungs (recorded in order.db; who = {"by": ...} or the client address). The gate is
+checked before the stage starts: a refusal is a 409 naming what blocks.
 
 Stages run in daemon threads under one lock per rack dir (RackLock: a thread lock
 plus a flock on <dir>/.stage.lock, so a CLI `discover` and the daemon exclude each
@@ -39,6 +46,8 @@ from flax_rungs.fwsteps import FW_STEPS
 
 from . import devview
 from .addressing import plan_addresses
+from .deploy import (FROM_PHASES, PHASES as DEPLOY_PHASES, GateError, clean_who, deploy_rungs,
+                     deploy_why, gate_blockers, gate_why, plan as deploy_plan, run_deploy)
 from .discover_ladder import DISCOVER_STEPS, OLD_DISCOVER_RUNGS, wanted as stage_positions
 from .firmware import run_firmware
 from .geometry import Geometry, load_geometry
@@ -189,6 +198,7 @@ class Rack:
             try:
                 n = self.db.mark_interrupted()
                 self.db.set_qualify_progress(None)   # no Qualify runs: its phase is stale
+                self.db.set_deploy_progress(None)    # ... nor Deploy
                 if n:
                     self.db.add_event("restart", f"{n} rung(s) interrupted by a daemon restart")
             finally:
@@ -249,6 +259,14 @@ def _seen(d, slot, mgmt_ids, ha=None) -> dict:
     return out
 
 
+def _waiver_view(w, lr, d) -> dict | None:
+    """A device's latest waiver; active = some rung it names still has not passed
+    Qualify (else the waiver is history: the device has passed since)."""
+    if not w:
+        return None
+    return {**w, "active": bool(set(w["rungs"]) & set(gate_blockers(lr, d)))}
+
+
 def _trim(run: dict) -> dict:
     r = dict(run)
     if isinstance(r.get("detail"), dict) and ({"fdb", "lldp"} & set(r["detail"])):
@@ -289,6 +307,7 @@ def rack_state(r: Rack) -> dict:
     profiles = set(PROFILES)
     unexpected = ((by_pos.get("_rack", {}).get("slot-match") or {}).get("detail") or {}) \
         .get("unexpected") or []
+    waivers = db.waivers()
     devices = []
     for d in g.devices:
         x = dbdev.get(d.pos, {})
@@ -315,9 +334,16 @@ def rack_state(r: Rack) -> dict:
             "addrs": addrs.get(d.pos, {}), "names": names.get(d.pos, {}),
             "bmc_live": x.get("bmc_live") or {"reachable": None, "power": None, "at": None},
             "qualify_rungs": device_rungs(d),
+            # Deploy: its rungs, the gate (None = may enter), the Qualify rungs a waiver
+            # would have to name, and its latest recorded waiver (active = still needed)
+            "deploy_rungs": deploy_rungs(d),
+            "deploy_gate": gate_why(raw, d) if deploy_rungs(d) else None,
+            "gate_blockers": gate_blockers(raw, d) if deploy_rungs(d) else [],
+            "waiver": _waiver_view(waivers.get(d.pos), raw, d),
             "runs": runs})
     rack_runs = by_pos.get("_rack", {})
     passed, not_passed = qualify_passed(db, g)
+    dwhy = deploy_why(raw, g)
     fdb = rack_runs.get("switch-fdb")
     switches = []
     for s in g.switches:
@@ -331,6 +357,7 @@ def rack_state(r: Rack) -> dict:
     return {
         "order": g.order, "customer": g.customer, "vid": g.vid, "site": g.site, "rack": g.rack,
         "prefix": g.url_prefix, "version": __version__, "closed_at": db.closed_at(),
+        "iperf_server": g.iperf_server,
         "stage_running": r.lock.locked(), "stage": r.stage if r.lock.locked() else None,
         "cancelling": bool(r.stage and r.cancel.is_set()),
         "phases": list(PHASES), "discover_rungs": list(DISCOVER_RUNGS),
@@ -340,6 +367,11 @@ def rack_state(r: Rack) -> dict:
         "qualify_phases": list(QUALIFY_PHASES),
         "qualify": {"passed": passed, "not_passed": not_passed,
                     "why": qualify_why(raw, g), "progress": db.qualify_progress()},
+        "deploy_phases": list(DEPLOY_PHASES), "deploy_from": list(FROM_PHASES),
+        "deploy": {"passed": not dwhy,
+                   "not_passed": [d.pos for d in g.devices if d.pos in dwhy],
+                   "why": dwhy, "progress": db.deploy_progress(), "ha_mode": db.ha_mode(),
+                   "waivers": db.waivers(history=True)},
         "poll_interval_s": INTERVAL_S, "profiles": sorted(profiles),
         "switches": switches, "devices": devices, "rack_runs": rack_runs,
         "unexpected": [{"port": u["port"], "mac": _fmt_mac(u["mac"])} for u in unexpected],
@@ -487,6 +519,49 @@ class App:
                 body["skipped"] = skipped
             return code, body
         return self._start_stage(r, "qualify", run_qualify)
+
+    def start_deploy(self, r: Rack, body: dict, who: str = "?"):
+        # Deploy reinstalls nodes (wipes disks): rack-wide needs the typed order id, a
+        # positions run an explicit {"confirm": true}; a node whose install already
+        # passed is reinstalled only with {"reinstall": "<order id>"}. The gate (with the
+        # request's waivers) is checked here so a refusal is the response, then again
+        # by run_deploy itself.
+        pos = body.get("positions")
+        if pos is None and body.get("confirm") != r.g.order:
+            return 400, {"error": "type the order id to confirm a rack-wide Deploy"}
+        if pos is not None and body.get("confirm") is not True:
+            return 400, {"error": "confirm the positions to deploy"}
+        kw = {}
+        if pos is not None:
+            if not (isinstance(pos, list) and pos and all(isinstance(p, str) for p in pos)):
+                return 400, {"error": "positions must be a non-empty list of positions"}
+            unknown = sorted(set(pos) - {d.pos for d in r.g.devices})
+            if unknown:
+                return 400, {"error": f"unknown position: {', '.join(unknown)}"}
+            kw["positions"] = sorted(set(pos))
+        frm = body.get("from", "install")
+        if frm not in FROM_PHASES:
+            return 400, {"error": f"from must be one of {', '.join(FROM_PHASES)}"}
+        rein = body.get("reinstall")
+        if rein is not None and rein != r.g.order:
+            return 400, {"error": "reinstall must be the order id"}
+        waive = body.get("waive")
+        by = body.get("by")
+        if by is not None and not isinstance(by, str):
+            return 400, {"error": "by must be a name"}
+        if r.db.closed_at():
+            return 409, {"error": "order is closed"}
+        try:
+            deploy_plan(r.db.latest_runs(), r.g, positions=kw.get("positions"), from_phase=frm,
+                        reinstall=rein, waive=waive)
+        except GateError as e:
+            return 409, {"error": str(e)}
+        kw.update(from_phase=frm, reinstall=rein, waive=waive, who=clean_who(by or who))
+        code, out = self._start_stage(r, "deploy", run_deploy, **kw)
+        if code == 202:
+            out = {"started": "deploy", "positions": kw.get("positions"), "from": frm,
+                   "reinstall": rein is not None, "waived": sorted((waive or {}))}
+        return code, out
 
     # -- BMC pollers: one per served rack; a disabled/vanished rack's poller stops --
     def start_pollers(self, interval_s=INTERVAL_S) -> threading.Thread:
@@ -769,6 +844,9 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(*app.start_firmware(r, body))
         if rest == "api/stage/qualify":
             return self._json(*app.start_qualify(r, body))
+        if rest == "api/stage/deploy":
+            ip = self.headers.get("X-Real-IP") or self.client_address[0]
+            return self._json(*app.start_deploy(r, body, who=f"ui {ip}"))
         if rest == "api/close":
             return self._json(*app.close(r, body))
         return self._json(404, {"error": "not found"})

@@ -1,5 +1,5 @@
 """python -m flax_rack: rack-order CLI (import-bom, enable/disable, serve, discover, firmware,
-qualify, close).
+qualify, deploy, close).
 
 Order-dir commands act on the current directory (one dir per rack).
 """
@@ -156,6 +156,73 @@ def _qualify(a) -> int:
     return 0 if ok else 1
 
 
+def _waive_arg(items, reason) -> dict | None:
+    """--waive POS:RUNG[,RUNG] (repeatable) + one --reason -> run_deploy's waive dict."""
+    if not items:
+        if reason:
+            sys.exit("--reason goes with --waive POS:RUNG")
+        return None
+    if not reason or not reason.strip():
+        sys.exit("a waiver needs --reason \"...\" (it is recorded in order.db)")
+    out: dict[str, dict] = {}
+    for it in items:
+        pos, sep, rungs = it.partition(":")
+        names = [r for r in rungs.split(",") if r]
+        if not sep or not pos or not names:
+            sys.exit(f"--waive {it!r}: want POS:RUNG[,RUNG]")
+        w = out.setdefault(pos, {"rungs": [], "reason": reason})
+        w["rungs"] += [r for r in names if r not in w["rungs"]]
+    return out
+
+
+def _who(by) -> str:
+    if by:
+        return by
+    import getpass
+    try:
+        return "cli " + (os.environ.get("SUDO_USER") or getpass.getuser())
+    except Exception:                       # noqa: BLE001 -- a label only
+        return "cli"
+
+
+def _deploy(a) -> int:
+    from .creds import CredsError
+    from .deploy import GateError, deploy_passed, deploy_rungs, deploy_why, run_deploy
+    if not a.pos and a.confirm is None:
+        sys.exit("a rack-wide deploy reinstalls every host: --confirm <order id> "
+                 "(or --pos for some positions)")
+    waive = _waive_arg(a.waive, a.reason)
+    ctx, lock = _order_ctx(None if a.pos else a.confirm)
+    try:
+        run_deploy(ctx, positions=a.pos or None, from_phase=a.from_phase,
+                   reinstall=a.reinstall, waive=waive, who=_who(a.by))
+    except (CredsError, GateError) as e:
+        sys.exit(str(e))
+    finally:
+        lock.release()
+    lr = ctx.db.latest_runs()
+    for d in ctx.g.devices:
+        if a.pos and d.pos not in a.pos:
+            continue
+        for rung in deploy_rungs(d):
+            r = lr.get((d.pos, rung))
+            if r:
+                det = r["detail"] or {}
+                why = det.get("error") or det.get("reason") or det.get("headline") or ""
+                print(f"{d.pos:8s} {rung:16s} {r['verdict'] or r['status']}"
+                      + (f"  {why}" if why else ""))
+    ha = ctx.db.ha_mode()
+    if ha:
+        print(f"HA mode delivered: {ha['mode']} on {', '.join(ha['devices'])}"
+              + (f" (missing: {', '.join(ha['missing'])})" if ha["missing"] else ""))
+    ok, bad = deploy_passed(ctx.db, ctx.g)
+    why = deploy_why(lr, ctx.g)
+    mine = [p for p in bad if not a.pos or p in a.pos]
+    print("deploy: deployed" if not mine else "deploy: not deployed: "
+          + ", ".join(f"{p} ({why[p]})" for p in mine))
+    return 0 if not mine else 1
+
+
 def _close(a) -> int:
     from .kea_client import KeaError
     from .stages import close_order
@@ -205,6 +272,21 @@ def main(argv=None) -> int:
                    help="only these positions (--pos L37 C37 or repeated)")
     p.add_argument("--confirm", metavar="ORDER", help="the order id (required without --pos)")
     p.set_defaults(fn=_qualify)
+    p = sub.add_parser("deploy", help="install Ubuntu 24.04, flax_user, HA bond + HA test "
+                                      "on Qualify-passed nodes (wipes their disks)")
+    p.add_argument("--pos", action="extend", nargs="+", metavar="P",
+                   help="only these positions (--pos C37 R37 or repeated)")
+    p.add_argument("--confirm", metavar="ORDER", help="the order id (required without --pos)")
+    p.add_argument("--from", dest="from_phase", default="install", choices=("install", "firstboot"),
+                   help="firstboot: skip the install (boot the installed OS, then the rest)")
+    p.add_argument("--reinstall", metavar="ORDER",
+                   help="the order id: reinstall nodes whose install already passed")
+    p.add_argument("--waive", action="append", metavar="POS:RUNG[,RUNG]",
+                   help="let POS through the Qualify gate despite these failed rungs "
+                        "(recorded with --reason)")
+    p.add_argument("--reason", help="why the waived rungs may be accepted (recorded)")
+    p.add_argument("--by", help="who waives (default: the login)")
+    p.set_defaults(fn=_deploy)
     p = sub.add_parser("close", help="release this rack's reservations and close it")
     p.add_argument("--confirm", required=True, metavar="ORDER")
     p.set_defaults(fn=_close)

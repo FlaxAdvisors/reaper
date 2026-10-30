@@ -1,4 +1,4 @@
-"""order.db: per-rack SQLite store (devices, MACs, rung runs, events)."""
+"""order.db: per-rack SQLite store (devices, MACs, rung runs, events, gate waivers)."""
 import dataclasses
 import json
 import re
@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS run(
 CREATE INDEX IF NOT EXISTS run_pos_rung ON run(pos, rung, id);
 CREATE TABLE IF NOT EXISTS event(
   id INTEGER PRIMARY KEY, ts TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS waiver(
+  id INTEGER PRIMARY KEY, pos TEXT NOT NULL, stage TEXT NOT NULL, rungs TEXT NOT NULL,
+  reason TEXT NOT NULL, who TEXT NOT NULL, at TEXT NOT NULL);
 """
 # columns added after Plan 1 shipped: an existing order.db gains them on init
 _ADDED = (("device", "bmc_reachable", "INTEGER"), ("device", "bmc_power", "TEXT"),
@@ -140,15 +143,51 @@ class OrderDB:
 
     def set_qualify_progress(self, progress: dict | None) -> None:
         """Qualify's current phase and barrier (None = no Qualify running)."""
-        if progress is None:
-            self._exec("DELETE FROM meta WHERE k='qualify_progress'")
-        else:
-            self._exec("INSERT OR REPLACE INTO meta(k,v) VALUES('qualify_progress',?)",
-                       (json.dumps(progress),))
+        self._set_meta_json("qualify_progress", progress)
 
     def qualify_progress(self) -> dict | None:
-        r = self._all("SELECT v FROM meta WHERE k='qualify_progress'")
+        return self._meta_json("qualify_progress")
+
+    def set_deploy_progress(self, progress: dict | None) -> None:
+        """Deploy's current phase and barrier (None = no Deploy running)."""
+        self._set_meta_json("deploy_progress", progress)
+
+    def deploy_progress(self) -> dict | None:
+        return self._meta_json("deploy_progress")
+
+    def set_ha_mode(self, ha: dict | None) -> None:
+        """The HA mode Deploy's ha-test delivered (order level; None clears it)."""
+        self._set_meta_json("ha_mode", ha)
+
+    def ha_mode(self) -> dict | None:
+        return self._meta_json("ha_mode")
+
+    def _set_meta_json(self, k, v) -> None:
+        if v is None:
+            self._exec("DELETE FROM meta WHERE k=?", (k,))
+        else:
+            self._exec("INSERT OR REPLACE INTO meta(k,v) VALUES(?,?)", (k, json.dumps(v)))
+
+    def _meta_json(self, k):
+        r = self._all("SELECT v FROM meta WHERE k=?", (k,))
         return json.loads(r[0]["v"]) if r else None
+
+    def add_waiver(self, pos, stage, rungs: list[str], reason: str, who: str) -> dict:
+        """Record an operator's waiver of `rungs` (failed Qualify rungs) for `stage`'s gate.
+        Rows are never rewritten: the history is the record."""
+        at = _now()
+        self._exec("INSERT INTO waiver(pos,stage,rungs,reason,who,at) VALUES(?,?,?,?,?,?)",
+                   (pos, stage, json.dumps(list(rungs)), reason, who, at))
+        return {"pos": pos, "stage": stage, "rungs": list(rungs), "reason": reason, "who": who,
+                "at": at}
+
+    def waivers(self, history=False) -> dict | list:
+        """pos -> its latest waiver ({pos, stage, rungs, reason, who, at}); every row,
+        oldest first, with history=True."""
+        rows = [{"pos": r["pos"], "stage": r["stage"], "rungs": json.loads(r["rungs"]),
+                 "reason": r["reason"], "who": r["who"], "at": r["at"]}
+                for r in self._all("SELECT * FROM waiver ORDER BY id")]
+        return rows if history else {r["pos"]: r for r in rows}
 
     def set_closed(self) -> None:
         self._exec("INSERT OR IGNORE INTO meta(k,v) VALUES('closed_at',?)", (_now(),))

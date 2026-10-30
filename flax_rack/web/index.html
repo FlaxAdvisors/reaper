@@ -43,6 +43,12 @@
           <b class="mono">{{qprog?.done}}/{{qprog?.devices}}</b>
           <span class="qwait" v-if="(qprog?.waiting_on || []).length">· {{(qprog?.waiting_on || []).slice(0, 3).join(' ')}}{{(qprog?.waiting_on || []).length > 3 ? ' …' : ''}}</span>
         </span>
+        <span class="qphase dphase" v-if="dprog" :title="dphaseTitle()">
+          <i v-for="p in (s.deploy_phases || [])" :class="dphaseCls(p)">{{p}}</i>
+          <b class="mono">{{dprog?.done}}/{{dprog?.devices}}</b>
+          <span class="qwait" v-if="(dprog?.waiting_on || []).length">· {{(dprog?.waiting_on || []).slice(0, 3).join(' ')}}{{(dprog?.waiting_on || []).length > 3 ? ' …' : ''}}</span>
+        </span>
+        <span class="lk hamode" v-if="haMode" :class="haMode?.missing?.length ? 'dev' : 'ok'" :title="haTitle()">HA {{haMode?.mode}}{{haMode?.missing?.length ? ' · ' + haMode?.missing?.length + ' not yet' : ''}}</span>
       </div>
       <div class="tr"><div class="ctx">
         <label>Customer <span class="ro">{{s.customer || '—'}}</span></label>
@@ -55,6 +61,9 @@
         <button class="discbtn qualbtn" v-if="s.order" :disabled="s.stage_running || !!s.closed_at" @click="openQualify()"
                 :class="{passed: s.qualify?.passed}"
                 :title="s.closed_at ? 'order is closed' : s.stage_running ? 'a stage is running' : qualifyTitle()">Qualify{{s.qualify?.passed ? ' ✓' : ''}}</button>
+        <button class="discbtn depbtn" v-if="s.order" :disabled="s.stage_running || !!s.closed_at" @click="openDeploy()"
+                :class="{passed: s.deploy?.passed}"
+                :title="s.closed_at ? 'order is closed' : s.stage_running ? 'a stage is running' : deployTitle()">Deploy{{s.deploy?.passed ? ' ✓' : ''}}</button>
         <button class="closebtn cancelbtn" v-if="s.stage_running && s.stage" :disabled="s.cancelling" @click="cancelStage()"
                 :title="s.cancelling ? 'cancel requested: stopping after the steps now running' : 'stop the running ' + s.stage + ' between steps (a power action already sent finishes)'">{{s.cancelling ? 'Cancelling…' : 'Cancel ' + s.stage}}</button>
         <span class="hdr-msg" v-if="hdrMsg">{{hdrMsg}}</span>
@@ -73,7 +82,7 @@
       <div class="ab-b">on mgmt-switch ports no slot claims (a device cabled to the wrong port shows missing on its own slot):
         <span class="lk bad" v-for="u in s.unexpected">port {{u.port}} · {{u.mac}}</span></div>
     </div>
-    <div v-for="g in layout">
+    <div v-for="g in layout" :key="g.key">
       <div class="gap" v-if="g.gap">{{g.gap}}</div>
       <div class="group">
         <div class="group-h" :class="g.family" :style="g.style"><span class="g-range">{{g.range}}</span>
@@ -130,6 +139,8 @@
                   <span class="v fwv" :class="fwCls(cell.dev)" :title="fwTitle(cell.dev)">{{fwText(cell.dev)}}</span></div>
                 <div class="links">
                   <span class="lk" v-for="c in chips(cell)" :class="c.state" :title="c.title">{{c.label}}</span>
+                  <span class="lk waived" v-if="!cell.iom && waiverChip(cell.dev)" :class="waiverChip(cell.dev)?.cls"
+                        :title="waiverChip(cell.dev)?.title">{{waiverChip(cell.dev)?.t}}</span>
                 </div>
                 <div class="bars">
                   <div class="bar"><span class="seg" v-for="c in phaseSegs(cellObj(cell))" :class="c"></span></div>
@@ -150,6 +161,8 @@
       <span class="d-sn" :class="{bad: identOf(selObj) && !identOf(selObj)?.ok}"
             :title="identOf(selObj)?.headline || 'Discover\'s serial step has not read one yet'">{{serialOf(selObj) || '— no serial yet —'}}</span>
       <span class="d-status" :style="statusStyle(selObj)">{{statusText(selObj)}}</span>
+      <span class="lk waived" v-if="selKind==='dev' && waiverChip(selDev)" :class="waiverChip(selDev)?.cls"
+            :title="waiverChip(selDev)?.title">{{waiverChip(selDev)?.t}}</span>
       <span class="x" @click="close()">✕</span>
     </div>
     <div class="d-sub">{{subLine(selObj)}}</div>
@@ -162,6 +175,8 @@
       <button disabled title="later plan">IDNT</button>
       <button :disabled="s.stage_running || !!s.closed_at || !(selDev?.qualify_rungs || []).length" @click="qualify(selDev?.pos)"
               title="re-run Qualify for this node only (then the rack-level rungs)">QUAL</button>
+      <button :disabled="s.stage_running || !!s.closed_at || !(selDev?.deploy_rungs || []).length" @click="openDeployDev(selDev)"
+              :title="selDev?.deploy_gate ? 'Deploy gate: ' + selDev?.deploy_gate + ' (a waiver can be recorded)' : 'deploy this node: install Ubuntu 24.04 (wipes its disks), flax_user, bond0, HA test'">DEPLOY</button>
       <button :disabled="s.stage_running || !!s.closed_at" @click="firmware(selDev?.pos)"
               title="read this device's firmware versions (detect only: never flashes)">FW</button>
       <button :disabled="s.stage_running || !!s.closed_at" @click="retry(selDev?.pos)"
@@ -192,6 +207,14 @@
             <option v-for="p in s.profiles" :value="p" :selected="p===selDev?.pop">{{p}}</option></select>
           <span class="note">default from BOM {{selDev?.part}}{{selDev?.pop_overridden ? ' = ' + selDev?.pop_default : ''}}</span></span>
         <span class="no">{{selDev?.pop_overridden ? 'override' : ''}}</span>
+      </div>
+      <div v-if="selDev?.waiver">
+        <div class="section-l">deploy gate waiver{{selDev?.waiver?.active ? '' : ' (its rungs have passed since)'}}</div>
+        <div class="kv-grid">
+          <span class="lbl">rungs</span><span class="mono amb">{{(selDev?.waiver?.rungs || []).join(', ')}}</span>
+          <span class="lbl">reason</span><span>{{selDev?.waiver?.reason}}</span>
+          <span class="lbl">by</span><span class="mono">{{selDev?.waiver?.who}} · {{selDev?.waiver?.at}}</span>
+        </div>
       </div>
       <template v-if="Object.keys(selDev?.ioms || {}).length">
         <div class="section-l">IOMs (each its own BMC)</div>
@@ -357,6 +380,57 @@
           Only devices whose Discover passed are booted. Type the order id to confirm.</p>
         <input class="confirm-in" name="rp-qconfirm" autocomplete="off" v-model="qualText" :placeholder="s.order">
         <button class="press danger" :disabled="qualText!==s.order" @click="doQualify()">Qualify rack</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= rack-wide Deploy modal (typed confirm) ================= -->
+  <div class="m-scrim" v-if="deploying" @click="deploying=false">
+    <div class="m-box" @click.stop>
+      <div class="m-h"><span class="m-title">Deploy order {{s.order}}{{s.rack ? ' rack ' + s.rack : ''}}</span>
+        <span class="x" @click="deploying=false">✕</span></div>
+      <div class="m-b">
+        <p class="m-sub">Installs Ubuntu 24.04 on all {{depHosts().length}} host-bearing nodes
+          ({{depHosts().map((d) => d.pos).join(', ')}}) -- their disks are wiped -- with SOL captured,
+          boots the installed OS, runs flax_user, configures bond0 (active-backup) and runs the
+          whole-wedge HA test. Every node must have passed Qualify (a waiver is recorded per node
+          from its drawer's DEPLOY). Cancel stops it at the next phase.</p>
+        <p class="m-sub bad" v-for="d in depHosts().filter((x) => x.deploy_gate)">{{d.pos}}: {{d.deploy_gate}}</p>
+        <label class="m-sub">start at
+          <select v-model="depFrom"><option v-for="f in (s.deploy_from || ['install'])" :value="f">{{f}}</option></select>
+          <span class="dim">{{depFrom==='firstboot' ? 'skip the install: boot the installed OS, then the rest' : ''}}</span></label>
+        <label class="m-sub" v-if="depFrom==='install' && depInstalled().length">
+          <input type="checkbox" v-model="depReinstall"> reinstall {{depInstalled().join(', ')}} (already installed: wipes their disks again)</label>
+        <input class="confirm-in" name="rp-depconfirm" autocomplete="off" v-model="depText" :placeholder="s.order">
+        <button class="press danger" :disabled="depText!==s.order" @click="doDeploy()">Deploy rack</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= per-device Deploy modal (gate, waivers, confirm) ================= -->
+  <div class="m-scrim" v-if="depM" @click="depM=null">
+    <div class="m-box" @click.stop>
+      <div class="m-h"><span class="m-title">Deploy {{depM?.pos}}</span>
+        <span class="x" @click="depM=null">✕</span></div>
+      <div class="m-b">
+        <p class="m-sub">Installs Ubuntu 24.04 on {{depM?.pos}} (its disks are wiped), then flax_user,
+          bond0 and the HA test (with the iperf server {{s.iperf_server || ''}} when it is deployed).</p>
+        <p class="m-sub ok" v-if="!(depDev?.gate_blockers || []).length">Qualify passed: the gate is open.</p>
+        <div v-if="(depDev?.gate_blockers || []).length">
+          <p class="m-sub bad">Deploy gate: {{depDev?.deploy_gate}}</p>
+          <p class="m-sub">Waive (recorded in order.db with the reason, who and when; any rung not ticked still blocks):</p>
+          <label class="m-sub mono" v-for="r in Object.keys(devWaive)"><input type="checkbox" v-model="devWaive[r]"> {{r}}
+            <span class="dim">{{depDev?.runs?.[r]?.detail?.error || depDev?.runs?.[r]?.detail?.headline || depDev?.runs?.[r]?.verdict || 'not run'}}</span></label>
+          <input class="confirm-in" name="rp-reason" autocomplete="off" v-if="depWaived().length" v-model="devReason"
+                 placeholder="reason (e.g. extra SATA SSD missing; operator approved install)">
+          <p class="m-sub bad" v-if="depLeft().length">still blocked by: {{depLeft().join(', ')}}</p>
+        </div>
+        <label class="m-sub">start at
+          <select v-model="devFrom"><option v-for="f in (s.deploy_from || ['install'])" :value="f">{{f}}</option></select></label>
+        <label class="m-sub" v-if="devFrom==='install' && installed(depDev)">
+          <input type="checkbox" v-model="devRein"> reinstall: {{depM?.pos}} is already installed (wipes its disks again)</label>
+        <button class="press danger" :disabled="!depReady()" @click="doDeployDev()">Deploy {{depM?.pos}}</button>
+        <p class="action-msg" v-if="depM?.msg">{{depM?.msg}}</p>
       </div>
     </div>
   </div>

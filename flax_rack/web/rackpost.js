@@ -2,9 +2,12 @@
 // Polls api/state (relative: the page lives at /<prefix>/) every 5 s. Only the
 // populated OUs are drawn; a dashed marker stands for each run of skipped OUs.
 // Phases with rungs: discover, firmware (Post's 6 steps, detect only), qualify (the
-// device's qualify_rungs from the server). A step whose target did not answer is
-// `unmeasured` (verdict): grey "not measured", never a fault and never done.
-// deploy/done render empty/grey (Plan 3/4).
+// device's qualify_rungs from the server), deploy (its deploy_rungs: install, firstboot,
+// install-console (the SOL scan; the raw SOL is its `sol` artifact), flax-user,
+// ha-config, ha-test). A step whose target did not answer is `unmeasured` (verdict):
+// grey "not measured", never a fault and never done. done renders empty/grey (Plan 4).
+// Deploy's gate may be passed with a recorded waiver of named Qualify rungs: the tile
+// and drawer show it as a "waived" chip (amber while the rung still has not passed).
 // Every switch and every BMC endpoint opens its own drawer (sel in the URL hash):
 // a device `R05`, one JBOD IOM `JBOD01.iom2`, a switch `_sw-A`, a wedge's BMC
 // `_sw-A.bmc`. Each is an object carrying pos (= the sel key), runs and
@@ -74,6 +77,7 @@ function stepNote(run, name) {
   if (name === 'smbios-serial') return `SN ${(d.fru0_serials || [])[0] || '?'}`;
   if (name === 'tpm-state') return `TPM ${d.version || '?'} cleared`;
   if (name === 'console') return d.bytes != null ? `${d.bytes} B` : '';
+  if (name === 'install-console') return d.findings ? `${d.findings} finding(s)` : d.findings === 0 ? `clean · ${d.bytes} B` : '';
   if (name === 'iperf-mesh') {
     if (d.served) return `served ${d.served.length}`;
     return ['mgmt', 'A', 'B'].filter((n) => d[n]).map((n) => `${n} ${gbit(d[n].tx_bps)}/${gbit(d[n].rx_bps)}G`).join(' · ');
@@ -134,7 +138,17 @@ function buildLayout(s) {
     }
   }
   for (const x of groups) x.range = span(x.top, x.bottom);
+  // petite-vue does not re-run the bindings of a tile nested three v-fors deep when
+  // only the polled data under it changed: key each group by its content, so a group
+  // whose devices changed is re-mounted (and an unchanged one is left alone)
+  for (const x of groups) x.key = `${x.range}#${hashStr(JSON.stringify(x.rows.map((r) => r.sw || r.cells.map((c) => c.dev || c.label))))}`;
   return groups;
+}
+
+function hashStr(t) {
+  let h = 5381;
+  for (let i = 0; i < t.length; i++) h = ((h << 5) + h + t.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
 }
 
 function selFromHash() {
@@ -145,14 +159,19 @@ function selFromHash() {
 function App() {
   return {
     s: { switches: [], devices: [], phases: ['discover', 'firmware', 'qualify', 'deploy', 'done'], profiles: [], rack_runs: {}, events: [] },
+    layout: [],                // buildLayout(s), rebuilt on every poll (refresh)
     live: null, sel: selFromHash(), filter: null, q: '', popOpen: null, now: Date.now(),
     actionMsg: null, hdrMsg: null, stepM: null, artM: null, artSeq: 0, closing: false, confirmText: '', closeMsg: null, busy: false,
     qualifying: false, qualText: '', discovering: false, discText: '',
+    deploying: false, depText: '', depFrom: 'install', depReinstall: false,
+    // per-device Deploy modal: depM = {pos, msg} while open; its inputs are top-level so
+    // v-model never reads through a null depM while the modal tears down
+    depM: null, devFrom: 'install', devRein: false, devWaive: {}, devReason: '',
     metricList: [
       { key: 'discover', label: 'discover', title: 'devices in Discover' },
       { key: 'firmware', label: 'firmware', title: 'devices with firmware versions read (report only)' },
       { key: 'qualify', label: 'qualify', title: 'devices in Qualify' },
-      { key: 'deploy', label: 'deploy', title: 'Plan 4' },
+      { key: 'deploy', label: 'deploy', title: 'devices in Deploy' },
       { key: 'done', label: 'done', title: 'Plan 4' },
       { key: 'alert', label: 'alerts', title: 'devices with a failed rung' },
     ],
@@ -160,16 +179,15 @@ function App() {
     async mounted() {
       document.addEventListener('keydown', (e) => {
         if (e.key !== 'Escape') return;
-        if (this.artM) this.backArt(); else if (this.stepM) this.stepM = null; else if (this.qualifying) this.qualifying = false; else if (this.discovering) this.discovering = false; else if (this.closing) this.closing = false; else if (this.popOpen) this.popOpen = null; else this.close();
+        if (this.artM) this.backArt(); else if (this.stepM) this.stepM = null; else if (this.depM) this.depM = null; else if (this.deploying) this.deploying = false; else if (this.qualifying) this.qualifying = false; else if (this.discovering) this.discovering = false; else if (this.closing) this.closing = false; else if (this.popOpen) this.popOpen = null; else this.close();
       });
       await this.refresh(); setInterval(() => this.refresh(), POLL_MS);
     },
     async refresh() {
-      try { this.s = await api('api/state'); this.live = true; this.now = Date.now(); document.title = `${this.s.prefix} rackpost`; }
+      try { this.s = await api('api/state'); this.layout = buildLayout(this.s); this.live = true; this.now = Date.now(); document.title = `${this.s.prefix} rackpost`; }
       catch (e) { this.live = false; console.error(e); }
     },
 
-    get layout() { return buildLayout(this.s); },
     // the selected object: a device (itself), an IOM, a switch or a wedge's BMC
     get selObj() {
       const k = this.sel; if (!k) return null;
@@ -205,6 +223,8 @@ function App() {
         for (const rung of this.s.firmware_old_rungs || []) if (runs[rung]) out[rung] = runs[rung];
       } else if (phase === 'qualify') {
         for (const rung of d.qualify_rungs || []) out[rung] = runs[rung];
+      } else if (phase === 'deploy') {
+        for (const rung of d.deploy_rungs || []) out[rung] = runs[rung];
       }
       return out;
     },
@@ -303,7 +323,7 @@ function App() {
     },
     hasRuns(d, phase) { return this.stepEntries(d, phase).some((x) => x.run); },
     // the phase whose steps the tile's second bar shows: the latest one with a run
-    curPhase(d) { return this.hasRuns(d, 'qualify') ? 'qualify' : 'discover'; },
+    curPhase(d) { return this.hasRuns(d, 'deploy') ? 'deploy' : this.hasRuns(d, 'qualify') ? 'qualify' : 'discover'; },
     phaseState(d, p) {
       const v = this.stepEntries(d, p).map((x) => x.state);
       if (v.includes('fault')) return 'fault';
@@ -319,12 +339,19 @@ function App() {
       return this.stepEntries(d, this.curPhase(d)).map((x) => (x.state === 'done' || x.state === 'skip') ? 'done'
         : ['fault', 'cur', 'unmeasured'].includes(x.state) ? x.state : '');
     },
-    faulted(d) { return !!d && ['discover', 'firmware', 'qualify'].some((p) => this.phaseState(d, p) === 'fault'); },
+    // a Qualify rung an active Deploy waiver names stays red in the pipeline (the truth)
+    // but no longer makes the tile an alert: the operator accepted it, on record
+    waived(d, phase, name) { const w = d && d.waiver; return phase === 'qualify' && !!w && w.active && w.rungs.includes(name); },
+    faulted(d) {
+      return !!d && ['discover', 'firmware', 'qualify', 'deploy'].some((p) =>
+        this.stepEntries(d, p).some((x) => x.state === 'fault' && !this.waived(d, p, x.name)));
+    },
     phaseKey(d) {
       if (!d) return 'grey';
       if (this.faulted(d)) return 'fault';
       const cp = this.phaseState(d, this.curPhase(d));
       if (cp === 'unmeasured') return 'unmeasured';
+      if (this.hasRuns(d, 'deploy')) return cp === 'done' ? 'done' : 'deploy';
       if (this.hasRuns(d, 'qualify')) return cp === 'done' ? 'done' : 'qualify';
       return Object.keys(d.runs || {}).length ? 'discover' : 'grey';
     },
@@ -337,8 +364,8 @@ function App() {
     stepIcon(st) { return { done: '✓', cur: '◉', fault: '✕', pending: '·', skip: '–', unknown: '?', unmeasured: '○' }[st] || '·'; },
     statusText(d) {
       if (!d) return '';
-      for (const p of ['discover', 'firmware', 'qualify']) {
-        const bad = this.stepEntries(d, p).find((x) => x.state === 'fault');
+      for (const p of ['discover', 'firmware', 'qualify', 'deploy']) {
+        const bad = this.stepEntries(d, p).find((x) => x.state === 'fault' && !this.waived(d, p, x.name));
         if (bad) return `${p} · ${bad.name}`;
       }
       const p = this.curPhase(d);
@@ -348,7 +375,7 @@ function App() {
     statusStyle(d) { const c = RGB[this.phaseKey(d)] || RGB.discover; return `background:rgba(${c},.15);color:rgb(${c})`; },
     faults(d) {
       if (!d) return [];
-      return ['discover', 'firmware', 'qualify'].flatMap((p) => this.stepEntries(d, p).map((x) => ({ ...x, phase: p })))
+      return ['discover', 'firmware', 'qualify', 'deploy'].flatMap((p) => this.stepEntries(d, p).map((x) => ({ ...x, phase: p })))
         .filter((x) => x.state === 'fault' || x.state === 'unknown')
         .map((x) => ({ rung: x.name, text: x.note, bad: x.state === 'fault', phase: x.phase, st: x }));
     },
@@ -400,13 +427,14 @@ function App() {
     get counts() {
       const ds = this.s.devices || [];
       return { discover: ds.length, firmware: ds.filter((d) => this.hasRuns(d, 'firmware')).length,
-               qualify: ds.filter((d) => this.hasRuns(d, 'qualify')).length, deploy: 0, done: 0,
+               qualify: ds.filter((d) => this.hasRuns(d, 'qualify')).length,
+               deploy: ds.filter((d) => this.hasRuns(d, 'deploy')).length, done: 0,
                alert: ds.filter((d) => this.faulted(d)).length };
     },
     toggle(f) { this.filter = this.filter === f ? null : f; },
     inFilter(d, f) {
       if (f === 'alert') return this.faulted(d);
-      if (f === 'firmware' || f === 'qualify') return this.hasRuns(d, f);
+      if (f === 'firmware' || f === 'qualify' || f === 'deploy') return this.hasRuns(d, f);
       return f === 'discover';
     },
     qualifyTitle() {
@@ -431,6 +459,30 @@ function App() {
       const g = this.qprog || {}, w = g.waiting_on || [];
       return `Qualify phase ${g.n} of ${g.of} (${g.phase}): ${g.done} of ${g.devices} device(s) done, ` +
         `waiting at the barrier` + (w.length ? ` for ${w.join(', ')}` : '');
+    },
+    // Deploy's lockstep phase (install → firstboot → user → ha-config → ha-test)
+    get dprog() { return (this.s.deploy || {}).progress || null; },
+    dphaseCls(p) {
+      const i = (this.s.deploy_phases || []).indexOf(p), n = (this.dprog?.n || 0) - 1;
+      return i < n ? 'past' : i === n ? 'cur' : '';
+    },
+    dphaseTitle() {
+      const g = this.dprog || {}, w = g.waiting_on || [];
+      return `Deploy phase ${g.n} of ${g.of} (${g.phase}): ${g.done} of ${g.devices} device(s) done, ` +
+        `waiting at the barrier` + (w.length ? ` for ${w.join(', ')}` : '');
+    },
+    // the order's delivered HA mode (from ha-test)
+    get haMode() { return (this.s.deploy || {}).ha_mode || null; },
+    haTitle() {
+      const h = this.haMode; if (!h) return '';
+      return `HA mode delivered: ${h.mode} · ha-test passed on ${h.devices.join(', ')}` +
+        (h.missing.length ? ` · not yet: ${h.missing.join(', ')}` : '') + ` · ${h.at}\n` + (h.notes || []).join('\n');
+    },
+    deployTitle() {
+      const q = this.s.deploy || {}, why = q.why || {};
+      const base = 'run Deploy: SOL capture + Ubuntu 24.04 install → first boot (installed-OS proof, SOL scan) → flax_user → bond0 active-backup → whole-wedge HA test';
+      const gated = this.depHosts().filter((d) => d.deploy_gate).map((d) => `${d.pos} (${d.deploy_gate})`);
+      return gated.length ? `${base} · gate: ${gated.join('; ')}` : q.passed ? base + ' · rack deployed' : base;
     },
     eventsTitle() { return (this.s.events || []).slice(0, 12).map((e) => `${e.ts} ${e.kind}: ${e.text}`).join('\n'); },
 
@@ -652,6 +704,50 @@ function App() {
       try { await api('api/stage/qualify', { positions: [pos], confirm: true }); this.actionMsg = `qualify started for ${pos}`; }
       catch (e) { this.actionMsg = 'qualify: ' + e.message; }
       await this.refresh();
+    },
+    // ---- Deploy: wipes disks. Rack-wide = typed order id (+ reinstall of installed nodes
+    // with the same typed id); a drawer DEPLOY = its own confirm, waivers and reason ----
+    depHosts() { return (this.s.devices || []).filter((d) => (d.deploy_rungs || []).length); },
+    installed(d) { return !!d && ((d.runs || {}).install || {}).verdict === 'pass'; },
+    depInstalled() { return this.depHosts().filter((d) => this.installed(d)).map((d) => d.pos); },
+    openDeploy() { this.deploying = true; this.depText = ''; this.depFrom = 'install'; this.depReinstall = false; },
+    async doDeploy() {
+      this.deploying = false;
+      const body = { confirm: this.depText, from: this.depFrom };
+      if (this.depFrom === 'install' && this.depReinstall) body.reinstall = this.depText;
+      try { await api('api/stage/deploy', body); this.hdrMsg = 'deploy started'; }
+      catch (e) { this.hdrMsg = 'deploy: ' + e.message; }
+      await this.refresh();
+    },
+    openDeployDev(d) {
+      if (!d) return;
+      this.devFrom = this.installed(d) ? 'firstboot' : 'install'; this.devRein = false; this.devReason = '';
+      this.devWaive = Object.fromEntries((d.gate_blockers || []).filter((r) => !r.startsWith('verdict ')).map((r) => [r, false]));
+      this.depM = { pos: d.pos, msg: null };
+    },
+    get depDev() { return this.depM ? (this.s.devices || []).find((d) => d.pos === this.depM.pos) || null : null; },
+    depWaived() { return Object.keys(this.devWaive || {}).filter((r) => this.devWaive[r]); },
+    // what still blocks the device with the ticked waivers (empty = it may enter Deploy)
+    depLeft() { const d = this.depDev; return !d ? [] : (d.gate_blockers || []).filter((r) => !this.depWaived().includes(r)); },
+    depReady() {
+      if (!this.depM || this.depLeft().length) return false;
+      if (this.depWaived().length && !this.devReason.trim()) return false;
+      return !(this.devFrom === 'install' && this.installed(this.depDev) && !this.devRein);
+    },
+    async doDeployDev() {
+      const m = this.depM; if (!m) return;
+      const body = { positions: [m.pos], confirm: true, from: this.devFrom };
+      if (this.devFrom === 'install' && this.devRein) body.reinstall = this.s.order;
+      const w = this.depWaived();
+      if (w.length) body.waive = { [m.pos]: { rungs: w, reason: this.devReason.trim() } };
+      try { await api('api/stage/deploy', body); this.depM = null; this.actionMsg = `deploy started for ${m.pos}`; }
+      catch (e) { this.depM = { ...m, msg: e.message }; }
+      await this.refresh();
+    },
+    waiverChip(d) {
+      const w = d && d.waiver; if (!w) return null;
+      return { t: w.active ? 'waived' : 'waived (now passed)', cls: w.active ? 'amb' : 'dimv',
+               title: `Deploy gate waiver: ${w.rungs.join(', ')} · ${w.reason} · by ${w.who} · ${w.at}` };
     },
     openInv(d) {
       const a = ((d && (d.runs || {}).inventory) || {}).artifacts || {};

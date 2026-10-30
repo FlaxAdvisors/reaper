@@ -31,6 +31,13 @@ off target, L37's Mellanox card has its UEFI ROM off; the rest are at target. In
 served fake (fake_context_factory) R05's host stops answering ssh for the firmware
 reads (FW_HOST_DOWN), so its bios/mlx pairs render grey "not measured". One
 FakeRungs lives per rack for the server's life, so Discover's boots carry over.
+
+Deploy runs against FakeRungs' install/firstboot/flax_user/bond_config/ha_test stand-ins
+(the real solscan reads the canned console the install appends to the SOL file). In the
+served fake R05's inventory lacks the Mellanox line (POP_FAIL), so its population-check
+is red and Deploy needs a recorded waiver for it; R37's install console carries a
+"Buffer I/O error" line (SOL_FINDINGS), so its install-console fails (it never gates).
+Knobs for tests: install_fail, firstboot_fail, sol_findings, bond_fail, hatest_fail.
 """
 import subprocess
 
@@ -41,6 +48,8 @@ from .stages import OrderContext
 FAIL_POS = "C37"
 FW_HOST_DOWN = {"R05"}               # served fake only: ssh gone for the firmware reads
 LIVE_POS = "L05"                     # already in the live image when Discover starts
+POP_FAIL = {"R05"}                   # served fake: POP red (Deploy needs a recorded waiver)
+SOL_FINDINGS = {"R37"}               # served fake: an I/O error line in its install console
 SITE_PORTS = {"A": "Gi1/0/18", "B": "Gi1/0/17", "C": "Gi1/0/19"}
 
 
@@ -130,9 +139,12 @@ def fake_context_factory(rack_dir, g, db) -> OrderContext:
     # the live image when Firmware (or Qualify) runs next
     rungs = _RUNGS.get(g.kea_source)
     if rungs is None:
-        rungs = _RUNGS[g.kea_source] = FakeRungs(g, delay_s=0.5, poll_delay_s=2.5,
-                                                 slow={"R05": 2.5}, live={LIVE_POS})
+        # the wedges' fake mgmt IPs too: read_lldp finds its switch by them
+        rungs = _RUNGS[g.kea_source] = FakeRungs(with_wedge_ips(g), delay_s=0.5, poll_delay_s=2.5,
+                                                 slow={"R05": 2.5}, live={LIVE_POS},
+                                                 pop_fail=POP_FAIL)
         rungs.fw_host_down = set(FW_HOST_DOWN)
+        rungs.sol_findings = set(SOL_FINDINGS)
     kea = _KEAS.setdefault(g.kea_source, FakeKea(refuse))
     kea.dyn.update(rungs.switch_leases())
     if _PROFILE_DIR is None:
@@ -202,7 +214,7 @@ class FakeRungs:
 
     def __init__(self, g, *, fail_pxe=(), iperf_fail=None, delay_s=0.0, wrong_host=(),
                  poll_timeout=(), stop_fail=(), poll_delay_s=0.0, slow=None, sol_fail=(),
-                 live=(), fdb_runner=False):
+                 live=(), fdb_runner=False, pop_fail=()):
         from .addressing import plan_addresses
         self.g, self.fail_pxe, self.delay_s = g, set(fail_pxe), delay_s
         self.wrong_host, self.poll_timeout = set(wrong_host), set(poll_timeout)
@@ -219,6 +231,14 @@ class FakeRungs:
         self.fw_bios_ver = {"R37": "TPC_P26C"}
         self.fw_nic_uefi_off = {"L37"}
         self.fw_host_down: set[str] = set()   # hosts whose firmware-read ssh times out
+        self.pop_fail = set(pop_fail)          # inventory lacks the Mellanox line: POP red
+        # Deploy: installs that never power off, first boots refused, SOL error lines,
+        # bonds that do not come up, nodes whose ha-test fails
+        self.install_fail: set[str] = set()
+        self.firstboot_fail: set[str] = set()
+        self.sol_findings: set[str] = set()
+        self.bond_fail: set[str] = set()
+        self.hatest_fail: set[str] = set()
         self._discover_init(live)
 
     def _pause(self):
@@ -544,7 +564,9 @@ class FakeRungs:
                f"Tioga Pass Single Side\n Product Serial        : {sn}\n\n")
         out = {}
         for n in stages:
-            arts = {"macinv": _MACINV, "dmidecode": dmi, "ip-d-link": link, "lsblk": _LSBLK,
+            macinv = _MACINV if pos not in self.pop_fail else "".join(
+                ln + "\n" for ln in _MACINV.splitlines() if "Mellanox" not in ln)
+            arts = {"macinv": macinv, "dmidecode": dmi, "ip-d-link": link, "lsblk": _LSBLK,
                     "ip-d-address": addr, "ipmitool-fru": fru, "dimmsum": _DIMMSUM,
                     "tpmstate": _TPMSTATE} if n == "inventory" else {f"{n}": f"{n}: ok\n"}
             out[n] = RungResult("pass", {"stage": n, "run_id": run_id, "summary": {}}, arts)
@@ -694,6 +716,140 @@ class FakeRungs:
         det = {"bytes": n, "cipher": 17, "user": "u", "drops": 0}
         return RungResult("pass", det) if n else \
             RungResult("fail", {**det, "error": "no sol capture (0 bytes)"})
+
+
+    # ------------------------------------------------------------ Deploy stand-ins
+    def _sol_add(self, path, text):
+        if path is not None:
+            from pathlib import Path
+            p = Path(path)
+            if p.exists():                 # the capture is running (sol_start wrote it)
+                with open(p, "a") as f:
+                    f.write(text)
+
+    def install(self, bmc_ip, host_ip, hostname, creds, *, sol_path=None, deadline_s=None,
+                runner=None):
+        from flax_rungs.result import RungResult
+        pos = self.pos_of.get(host_ip)
+        self.calls.append(("install", pos, hostname))
+        self._pause()
+        con = ("Booting `Install Ubuntu 24.04`\nsubiquity/Meta/status_GET: running\n"
+               "curtin command install\n")
+        if pos in self.sol_findings:
+            con += "[  612.204118] Buffer I/O error on dev sr0, logical block 0, async page read\n"
+        rows = [["hostname file", f"/srv/pxe/ipxe/hostname-{hostname}.ipxe"],
+                ["boot override", "Pxe (redfish)"], ["power action", "cycle"],
+                ["tftp (iPXE binary)", "+20 s"], ["boot.ipxe fetched", "+31 s"],
+                ["hostname file fetched", "+32 s"], ["installer initrd", "+41 s"],
+                ["installer kernel", "+44 s"], ["installer ISO", "+70 s"],
+                ["autoinstall user-data", "+128 s"]]
+        arts = {f"hostname-{hostname}.ipxe": f"#!ipxe\n\n# {hostname} wiwynn-tp-hmc to do "
+                                             "ubuntu-24.04 created 20261030.020000\n"}
+        if pos in self.install_fail:
+            self._sol_add(sol_path, con + "Please enter the passphrase: \n")
+            why = (f"never powered off within {deadline_s} s (installer running; installer hung "
+                   "or waiting for input? see the SOL tail)")
+            return RungResult("fail", {
+                "headline": why, "error": why, "file_removed": True,
+                "rows": rows + [["powered off", "no"], ["hostname file removed", "yes"]],
+                "notes": [], "sol_tail": "Please enter the passphrase: "}, arts)
+        self._sol_add(sol_path, con + "reboot: Power down\n")
+        self.power[pos] = "off"
+        return RungResult("pass", {
+            "headline": "installed: powered off 912 s after power cycle", "off_after_s": 912,
+            "file_removed": True, "override": "Pxe (redfish)", "power_action": "cycle",
+            "rows": rows + [["powered off", "+912 s"], ["hostname file removed", "yes"]],
+            "notes": ["the autoinstall ends `shutdown -h now`: power off after the installer "
+                      "fetches = installed"]}, arts)
+
+    def firstboot(self, bmc_ip, host_ip, hostname, creds, *, expect_mac=None, sol_path=None,
+                  deadline_s=None, runner=None):
+        from flax_rungs.result import RungResult
+        pos = self.pos_of.get(host_ip)
+        self.calls.append(("firstboot", pos, expect_mac))
+        self._pause()
+        self.power[pos] = "on"
+        self._sol_add(sol_path, f"\nUbuntu 24.04.1 LTS {hostname} ttyS0\n\n{hostname} login: \n")
+        user = creds.host[0] if creds.host else "flax"
+        if pos in self.firstboot_fail:
+            why = (f"ssh as {user}@{host_ip} refused (password; the autoinstall's users differ "
+                   "from credentials-host.json?); no other user tried")
+            return RungResult("fail", {"headline": why, "error": why, "ssh_user": user,
+                                       "rows": [["ssh user", user], ["ssh after", "no answer"]],
+                                       "notes": []})
+        return RungResult("pass", {
+            "headline": f"Ubuntu 24.04 up as {user} after 188 s, / on nvme0n1",
+            "ssh_user": user, "ssh_after_s": 188, "version_id": "24.04", "disk": "nvme0n1",
+            "rows": [["boot override", "Hdd (redfish)"], ["power action", "on"],
+                     ["ssh user", user], ["ssh after", "188 s"], ["VERSION_ID", "24.04"],
+                     ["cmdline", "BOOT_IMAGE=/vmlinuz-6.8.0-45-generic root=/dev/mapper/vg0-root"],
+                     ["root", "/dev/mapper/vg0-root"], ["root disk", "nvme0n1"],
+                     ["hostname", hostname]],
+            "notes": ["the installed OS must answer ssh as flax after a fresh boot from disk"]})
+
+    def sol_scan(self, path):
+        from flax_rungs.solscan import scan_file
+        return scan_file(path)
+
+    def flax_user(self, hosts, user, pw, workdir, *, timeout=None, runner=None):
+        from flax_rungs.result import RungResult
+        self.calls.append(("flax_user", sorted(hosts)))
+        self._pause()
+        recap = "PLAY RECAP *********\n" + "".join(
+            f"{ip:16s}: ok=9    changed=4    unreachable=0    failed=0    skipped=1\n"
+            for ip in hosts.values())
+        rows = [["ok", "9"], ["changed", "4"], ["unreachable", "0"], ["failed", "0"]]
+        return {p: RungResult("pass", {"host": ip, "headline": "ok=9 changed=4", "rows": rows,
+                                       "notes": [f"ansible-playbook flax_user.yml as {user}"]},
+                              {"ansible-playbook.txt": recap})
+                for p, ip in hosts.items()}
+
+    def bond_config(self, host_ip, user, pw, side, cidr, *, runner=None):
+        from flax_rungs.bond import HA_MODE
+        from flax_rungs.result import RungResult
+        pos = self.pos_of.get(host_ip)
+        self.calls.append(("bond_config", pos, cidr, side["A"]["mac"], side["B"]["mac"]))
+        self._pause()
+        rows = [["primary (wedge A)", f"enp25s0f0np0 {side['A']['mac']}"],
+                ["backup (wedge B)", f"enp25s0f1np1 {side['B']['mac']}"],
+                ["bond0", f"active-backup, miimon 100 ms, {cidr}"],
+                ["mgmt ping across apply", "max gap 0 ms, 0/41 lost"]]
+        if pos in self.bond_fail:
+            why = "bond0: enp25s0f1np1 (wedge B) MII down"
+            return RungResult("fail", {"ha_mode": HA_MODE, "headline": why, "error": why,
+                                       "rows": rows}, {"bond0.txt": "MII Status: down\n"})
+        return RungResult("pass", {"ha_mode": HA_MODE, "address": cidr,
+                                   "headline": f"bond0 {cidr} active enp25s0f0np0 (wedge A)",
+                                   "rows": rows + [["active slave", "enp25s0f0np0 (primary)"]]},
+                          {"60-bond0.yaml": f"# rackpost Deploy (ha-config)\n# {cidr}\n",
+                           "bond0.txt": "Bonding Mode: fault-tolerance (active-backup)\n"})
+
+    def ha_test(self, nodes, server_pos, *, user, pw, runner=None):
+        from flax_rungs.bond import HA_MODE
+        from flax_rungs.hatest import NOTES
+        from flax_rungs.result import RungResult
+        self.calls.append(("ha_test", server_pos, sorted(n["pos"] for n in nodes)))
+        self._pause()
+        out = {}
+        for n in nodes:
+            srv = n["pos"] == server_pos
+            rows = [["cut A (enp25s0f0np0): active", "enp25s0f0np0 → enp25s0f1np1"],
+                    ["cut A: failover gap", "n/a (iperf server)" if srv else "≈200 ms (2/120 lost)"],
+                    ["cut A: iperf over bond0", "pass" if srv else "tx 23.1 / rx 23.0 Gbit/s"],
+                    ["A restored: active", "enp25s0f0np0"],
+                    ["cut B (enp25s0f1np1): active", "enp25s0f0np0 → enp25s0f0np0"],
+                    ["cut B: failover gap", "n/a (iperf server)" if srv else "≈0 ms (0/120 lost)"],
+                    ["B restored: active", "enp25s0f0np0"]]
+            det = {"ha_mode": HA_MODE, "rows": rows, "notes": list(NOTES)}
+            if n["pos"] in self.hatest_fail:
+                why = "cut A: failover gap 3400 ms (> 1000 ms)"
+                out[n["pos"]] = RungResult("fail", {**det, "headline": why, "error": why})
+            else:
+                out[n["pos"]] = RungResult("pass", {
+                    **det, "headline": ("iperf server" if srv else "failover gap ≤200 ms")
+                    + ", back on enp25s0f0np0"},
+                    {"ping-cut-A.txt": "120 packets transmitted, 118 received\n"} if not srv else {})
+        return out
 
 
 class _FakeRedfish:

@@ -232,9 +232,11 @@ def _safe(name) -> bool:
     return isinstance(name, str) and bool(_SEG.fullmatch(name)) and ".." not in name
 
 
-def _record(ctx, pos, rung, res: RungResult, stage=STAGE, run_seg=None) -> RungResult:
+def _record(ctx, pos, rung, res: RungResult, stage=STAGE, run_seg=None,
+            seg_prefix="q") -> RungResult:
     """One finished run row for a result obtained elsewhere; its artifacts (text) are
-    written under artifacts/<pos>/<run_seg>/<rung>/ and the row keeps their paths."""
+    written under artifacts/<pos>/<run_seg or seg_prefix+row id>/<rung>/ and the row
+    keeps their paths."""
     rid = ctx.db.start_run(pos, stage, rung)
     try:
         arts = res.artifacts or {}
@@ -246,7 +248,7 @@ def _record(ctx, pos, rung, res: RungResult, stage=STAGE, run_seg=None) -> RungR
             if len(keep) < len(arts):       # an agent-chosen name never picks a path
                 detail["dropped_artifacts"] = sorted(n for n in arts
                                                      if n.removesuffix(".txt") not in keep)
-            seg = run_seg if _safe(run_seg) else f"q{rid}"
+            seg = run_seg if _safe(run_seg) else f"{seg_prefix}{rid}"
             rel = dict(zip(keep, agent.save_artifacts(ctx.dir, pos, seg, rung, keep)))
         r = RungResult(res.verdict, detail, rel)
     except Exception as e:                  # noqa: BLE001 -- a row never stays 'running'
@@ -476,14 +478,17 @@ class _Dev:
 
 
 class _Progress:
-    """The current phase and its barrier, kept in order.db for the UI (best effort)."""
+    """The current phase and its barrier, kept in order.db for the UI (best effort).
+    Deploy passes its own phases and order.db setter."""
 
-    def __init__(self, ctx):
+    def __init__(self, ctx, phases=PHASES, save=None):
         self.ctx, self.mu, self.cur = ctx, threading.Lock(), None
+        self.phases = phases
+        self.save = save or ctx.db.set_qualify_progress
 
     def start(self, phase, poss):
         with self.mu:
-            self.cur = {"phase": phase, "n": PHASES.index(phase) + 1, "of": len(PHASES),
+            self.cur = {"phase": phase, "n": self.phases.index(phase) + 1, "of": len(self.phases),
                         "devices": len(poss), "done": 0, "waiting_on": sorted(poss)}
             self._save()
 
@@ -501,7 +506,7 @@ class _Progress:
 
     def _save(self):
         try:
-            self.ctx.db.set_qualify_progress(self.cur)
+            self.save(self.cur)
         except Exception:                   # noqa: BLE001 -- a view, never the job
             pass
 
