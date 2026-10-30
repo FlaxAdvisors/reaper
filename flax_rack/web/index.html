@@ -38,6 +38,11 @@
           <span class="hint" v-if="q">{{matchCount}} match{{matchCount===1?'':'es'}}</span>
         </div>
         <span class="ctx-at" :class="{run: s.stage_running}" :title="eventsTitle()">{{stageText()}}</span>
+        <span class="qphase" v-if="qprog" :title="qphaseTitle()">
+          <i v-for="p in (s.qualify_phases || [])" :class="qphaseCls(p)">{{p}}</i>
+          <b class="mono">{{qprog.done}}/{{qprog.devices}}</b>
+          <span class="qwait" v-if="(qprog.waiting_on || []).length">· {{qprog.waiting_on.slice(0, 3).join(' ')}}{{qprog.waiting_on.length > 3 ? ' …' : ''}}</span>
+        </span>
       </div>
       <div class="tr"><div class="ctx">
         <label>Customer <span class="ro">{{s.customer || '—'}}</span></label>

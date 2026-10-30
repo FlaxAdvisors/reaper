@@ -138,6 +138,18 @@ class OrderDB:
         return [dict(r) for r in self._all(
             "SELECT ts,kind,text FROM event ORDER BY id DESC LIMIT ?", (limit,))]
 
+    def set_qualify_progress(self, progress: dict | None) -> None:
+        """Qualify's current phase and barrier (None = no Qualify running)."""
+        if progress is None:
+            self._exec("DELETE FROM meta WHERE k='qualify_progress'")
+        else:
+            self._exec("INSERT OR REPLACE INTO meta(k,v) VALUES('qualify_progress',?)",
+                       (json.dumps(progress),))
+
+    def qualify_progress(self) -> dict | None:
+        r = self._all("SELECT v FROM meta WHERE k='qualify_progress'")
+        return json.loads(r[0]["v"]) if r else None
+
     def set_closed(self) -> None:
         self._exec("INSERT OR IGNORE INTO meta(k,v) VALUES('closed_at',?)", (_now(),))
 

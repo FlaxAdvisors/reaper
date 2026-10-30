@@ -59,7 +59,6 @@ class Device:
     links: dict[str, Link] = field(default_factory=dict)
     pop: str | None = None
     endpoints: dict[str, int] = field(default_factory=dict)   # {hosts, bmc, ioms}, all keys
-    agent_deadline_s: int | None = None   # Qualify battery poll deadline override
 
 
 @dataclass
@@ -175,13 +174,10 @@ def parse_geometry(data: dict) -> Geometry:
                 raise GeometryError(f"{ports[l]} and {pos} {name} share switch port "
                                     f"{l.switch}:{l.port}" + (f"/{l.lane}" if l.lane else ""))
             ports[l] = f"{pos} {name}"
-        dl = x.get("agent_deadline_s")
-        if dl is not None and (not isinstance(dl, int) or isinstance(dl, bool) or dl <= 0):
-            raise GeometryError(f"{pos}: agent_deadline_s must be a positive int, got {dl!r}")
         devices.append(Device(
             pos=pos, ou=int(_req(x, "ou", pos)), h=int(_req(x, "h", pos)), col=col,
             kind=kind, part=_req(x, "part", pos), links=links, pop=x.get("pop"),
-            endpoints=endpoints, agent_deadline_s=dl))
+            endpoints=endpoints))
 
     return Geometry(
         order=order, customer=_req(data, "customer", "geometry"),

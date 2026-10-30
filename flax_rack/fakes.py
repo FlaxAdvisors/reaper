@@ -7,11 +7,14 @@ row, so C37 fails its reserve rung and everything else passes. One stray MAC
 sits on the first mgmt port no slot or uplink claims, so the unexpected-MAC
 alert renders too.
 
-Qualify runs against FakeRungs (below): every node live-boots and passes its battery
-and POP (profiles written to a temp dir matching the canned macinv), LLDP shows every
-pcieN port where the geometry cables it, and C37's wedge-B iperf is slow. (C37's failed
-reserve also stops Qualify booting it -- pxe-live "discover first" -- so in the UI the
-Qualify fault shown is that gate.) The fixture's wedges get fake mgmt_ips so their LLDP can be "read".
+Qualify runs against FakeRungs (below): every node live-boots and passes each phase's
+battery and POP (profiles written to a temp dir matching the canned macinv), LLDP shows
+every pcieN port where the geometry cables it, and C37's wedge-B iperf is slow. (C37's
+failed reserve also stops Qualify booting it -- pxe-live "discover first" -- so in the UI
+the Qualify fault shown is that gate.) Each agent phase takes a few seconds and R05 is
+slower than the rest, so the header's phase/barrier indicator can be watched walking
+boot -> inventory -> storage -> burn -> network. The fixture's wedges get fake mgmt_ips
+so their LLDP can be "read".
 """
 import subprocess
 
@@ -100,7 +103,7 @@ def fake_context_factory(rack_dir, g, db) -> OrderContext:
 
     return OrderContext(rack_dir, g, db, kea,
                         Creds(("u", "p"), [("u", "p")], ("flax", "p"), [("u", "p")]), runner,
-                        FakeRungs(g, delay_s=0.5))
+                        FakeRungs(g, delay_s=0.5, poll_delay_s=2.5, slow={"R05": 2.5}))
 
 
 # ---------------------------------------------------------------- canned Qualify
@@ -109,6 +112,12 @@ _IFN = {"pcie0": "ens3f0np0", "pcie1": "ens3f1np1"}
 _MACINV = ("2 Processor Version: Intel(R) Xeon(R) Gold 6138 CPU @ 2.00GHz\n"
            "12 Memory Size: 32 GB, Type: DDR4\n"
            "2 Ethernet controller: Mellanox Technologies MT27710 Family [ConnectX-4 Lx]\n")
+# plain `lsblk` as the inventory captures it: two unmounted NVMe disks for fio
+_LSBLK = ("NAME        MAJ:MIN RM   SIZE RO TYPE MOUNTPOINTS\n"
+          "loop0         7:0    0 850.2M  1 loop /run/overlay/squashfs_container\n"
+          "nvme0n1     259:0    0   1.7T  0 disk \n"
+          "nvme1n1     259:1    0   1.7T  0 disk \n"
+          "└─nvme1n1p1 259:2    0   1.7T  0 part \n")
 FAKE_PROFILE_RULES = ("2 Processor Version: .*Gold 6138", "12 Memory Size: 32 GB",
                       "Ethernet controller: Mellanox.*ConnectX-4 Lx")
 
@@ -133,14 +142,18 @@ def with_wedge_ips(g):
 
 class FakeRungs:
     """Stand-ins for flax_rack.qualify.real_rungs(): every node boots, every battery
-    stage passes, LLDP shows each pcieN port where the geometry cables it."""
+    stage passes, LLDP shows each pcieN port where the geometry cables it. poll returns
+    the stages the last launch on that host asked for (FLAX_QUAL_STAGES); a host in
+    poll_timeout times out once cpu-mem-stress is among them (the burn phase)."""
 
     def __init__(self, g, *, fail_pxe=(), iperf_fail=None, delay_s=0.0, wrong_host=(),
-                 poll_timeout=(), stop_fail=()):
+                 poll_timeout=(), stop_fail=(), poll_delay_s=0.0, slow=None):
         from .addressing import plan_addresses
         self.g, self.fail_pxe, self.delay_s = g, set(fail_pxe), delay_s
         self.wrong_host, self.poll_timeout = set(wrong_host), set(poll_timeout)
         self.stop_fail = set(stop_fail)
+        self.poll_delay_s, self.slow = poll_delay_s, dict(slow or {})
+        self.stages_of: dict[str, list[str]] = {}
         self.iperf_fail = IPERF_FAIL if iperf_fail is None else iperf_fail
         self.pos_of = {a.ip: a.pos for a in plan_addresses(g)}
         self.calls = []
@@ -158,7 +171,8 @@ class FakeRungs:
                 out[ifn] = f"02:fb:{d.ou:02x}:{d.col or 0:02x}:00:{k:02x}"
         return out
 
-    def boot_live(self, bmc_ip, host_ip, creds, *, expect_mac=None, runner=None):
+    def boot_live(self, bmc_ip, host_ip, creds, *, expect_mac=None, deadline_s=None,
+                  runner=None):
         from flax_rungs.result import RungResult
         pos = self.pos_of.get(host_ip)
         self.calls.append(("boot_live", pos, expect_mac))
@@ -174,10 +188,14 @@ class FakeRungs:
         return RungResult("pass", {"override": "redfish", "power_action": "cycle",
                                    "ssh_after_s": 212, "cmdline_ok": True})
 
-    def launch(self, host_ip, user, pw, *, runner=None):
+    def launch(self, host_ip, user, pw, *, stages=None, runner=None):
+        from flax_rungs.agent import ORDER_STAGES
         from flax_rungs.result import RungResult
-        self.calls.append(("launch", self.pos_of.get(host_ip)))
-        return RungResult("pass", {"mode": "fresh"})
+        pos = self.pos_of.get(host_ip)
+        stages = stages or ORDER_STAGES
+        self.calls.append(("launch", pos, stages))
+        self.stages_of[pos] = stages.split(",")
+        return RungResult("pass", {"mode": "fresh", "stages": stages})
 
     def stop_agent(self, host_ip, user, pw, *, runner=None):
         from flax_rungs.result import RungResult
@@ -191,13 +209,17 @@ class FakeRungs:
         from flax_rungs.agent import ORDER_STAGES
         from flax_rungs.result import RungResult
         pos = self.pos_of[host_ip]
-        self.calls.append(("poll", pos, deadline_s))
+        stages = self.stages_of.get(pos) or ORDER_STAGES.split(",")
+        self.calls.append(("poll", pos, deadline_s, ",".join(stages)))
         self._pause()
-        if pos in self.poll_timeout:            # inventory done, stress still running
+        if self.poll_delay_s or pos in self.slow:
+            import time
+            time.sleep(self.poll_delay_s + self.slow.get(pos, 0.0))
+        if pos in self.poll_timeout and "cpu-mem-stress" in stages:   # stress still running
             d = self.g.device(pos)
             out = {}
-            for n in ORDER_STAGES.split(","):
-                done = n in ("sdr-pre", "sel-pre", "sel-clear", "tooling")
+            for n in stages:
+                done = n == "mem-pre"
                 out[n] = RungResult("pass" if done else "fail",
                                     {"stage": n, "run_id": f"fake{d.ou:02d}{d.col or 0}",
                                      **({} if done else {"error": "timeout"})})
@@ -214,8 +236,8 @@ class FakeRungs:
                f"\tVersion: {'F09_3A20' if head else 'F09_3A23'}\n\tRelease Date: "
                f"{'03/11/2020' if head else '07/29/2021'}\n\n")
         out = {}
-        for n in ORDER_STAGES.split(","):
-            arts = {"macinv": _MACINV, "dmidecode": dmi, "ip-d-link": link,
+        for n in stages:
+            arts = {"macinv": _MACINV, "dmidecode": dmi, "ip-d-link": link, "lsblk": _LSBLK,
                     "ip-d-address": addr} if n == "inventory" else {f"{n}": f"{n}: ok\n"}
             out[n] = RungResult("pass", {"stage": n, "run_id": run_id, "summary": {}}, arts)
         return out

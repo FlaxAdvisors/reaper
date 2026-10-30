@@ -275,6 +275,17 @@ function App() {
       const e = (this.s.events || [])[0];
       return e ? `${e.text} · ${new Date(e.ts).toLocaleTimeString()}` : 'no stage run yet';
     },
+    // Qualify's lockstep phase: which one, and how many devices wait at its barrier
+    get qprog() { return (this.s.qualify || {}).progress || null; },
+    qphaseCls(p) {
+      const i = (this.s.qualify_phases || []).indexOf(p), n = this.qprog.n - 1;
+      return i < n ? 'past' : i === n ? 'cur' : '';
+    },
+    qphaseTitle() {
+      const g = this.qprog, w = g.waiting_on || [];
+      return `Qualify phase ${g.n} of ${g.of} (${g.phase}): ${g.done} of ${g.devices} device(s) done, ` +
+        `waiting at the barrier` + (w.length ? ` for ${w.join(', ')}` : '');
+    },
     eventsTitle() { return (this.s.events || []).slice(0, 12).map((e) => `${e.ts} ${e.kind}: ${e.text}`).join('\n'); },
 
     // ---- tiles ----

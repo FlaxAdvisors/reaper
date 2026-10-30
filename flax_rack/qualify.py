@@ -1,32 +1,46 @@
-"""Qualify stage for a rack order (spec section 7).
+"""Qualify stage for a rack order (spec section 7), run in lockstep phases.
 
-Per host-bearing device, in parallel (at most MAX_PARALLEL at once):
-  pxe-live -> agent-launch -> agent-stages (poll the post.tgz battery; each battery
-  stage is then recorded as its own rung, its artifacts saved under
-  artifacts/<pos>/<agent run>/<stage>/) -> pop (inventory/macinv vs the profile),
-plus the report-only firmware rung fw-versions (stage "firmware").
-Then rack-level, after every device thread: lldp-<wedge> (pos "_rack"), ha-path,
-fabric-addr and iperf-mesh per device.
+The integrated rack is kept in step: five rack-wide phases, each started on every
+still-eligible device at once, with a barrier (wait for all) before the next:
 
-Identity first: a device is only booted when its latest Discover `reserve` and
-`bmc-reach` passed and order.db holds its host MAC (else pxe-live fails "discover
-first"); pxe-live then requires the live image's BOOTIF MAC to be that host MAC.
-The battery poll deadline is explicit: the CLI's --agent-deadline, else the device's
-geometry agent_deadline_s, else AGENT_DEADLINE_S. On a timeout the agent is stopped so
-stress cannot overlap the iperf mesh, and a node whose stop failed sits the mesh out.
+  boot       pxe-live (identity checked)                       BOOT_DEADLINE_S
+  inventory  agent: sdr-pre..inventory; then pop, fw-versions  INVENTORY_DEADLINE_S
+  storage    agent: fio                                        120 s + 120 s x disks
+  burn       agent: mem-pre, cpu-mem-stress .. sel-post        FLAX_STRESS_SECONDS + 900 s
+  network    rack: lldp-<wedge>; per device ha-path, fabric-addr, iperf-mesh
 
-A device whose pxe-live fails gets `skip` (with the reason) for every later rung;
-the rack carries on. `positions` re-runs only those devices' per-device rungs, then
-the rack-level ones for them plus the iperf server (whose fabric addresses are
-re-applied: they do not survive a reboot). The iperf server is geometry.iperf_server
-of THIS rack only; if it is not live every client fails "server <pos> not ready".
+Each agent phase relaunches the post.tgz agent with that phase's FLAX_QUAL_STAGES
+(agent.launch stops an agent running another stage list and starts it fresh), all
+devices in one launch wave, then polls them in parallel; each battery stage is
+recorded as its own rung as soon as its device finishes (artifacts under
+artifacts/<pos>/<agent run>/<stage>/), so a slow device delays only the barrier.
+agent-launch and agent-stages are recorded once per agent phase (detail.phase).
+The storage deadline counts the disks fio will read in the inventory's lsblk
+capture (fio_disks; 8 when there is none). On a deadline the agent is stopped, so
+nothing still runs when the next phase starts; a node whose stop failed is named.
+
+A device failing a phase (a `fail` on any of that phase's rungs; fw-versions is
+report-only and never gates) gets `skip` ("failed in phase <p>") on every rung of
+the later phases; the rest of the rack carries on. Identity first: a device is
+only booted when its latest Discover `reserve` and `bmc-reach` passed and order.db
+holds its host MAC (else pxe-live fails "discover first"); pxe-live then requires
+the live image's BOOTIF MAC to be that host MAC.
+
+`positions` re-runs every phase for those devices only; the network phase adds this
+rack's iperf server (geometry.iperf_server; its fabric addresses do not survive a
+reboot) when it passed every earlier phase. If the server is not ready every client
+fails "server <pos> not ready". The current phase and barrier count are kept in
+order.db (qualify_progress) for the UI and cleared when the stage ends.
 
 flax_rungs functions never touch order.db; this module records them. ctx.rungs
 (a namespace like real_rungs()) replaces them in tests and in RACKPOST_FAKE.
 """
 import os
 import re
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 
 from flax_post import population
@@ -40,9 +54,21 @@ from .stages import _rung, creds
 STAGE = "qualify"
 FW_STAGE = "firmware"
 AGENT_STAGES = tuple(agent.ORDER_STAGES.split(","))
-MAX_PARALLEL = 8
-AGENT_DEADLINE_S = 3600     # battery poll deadline unless the CLI or geometry sets one
+PHASES = ("boot", "inventory", "storage", "burn", "network")
+PHASE_STAGES = {    # the agent's FLAX_QUAL_STAGES per phase; together = ORDER_STAGES
+    "inventory": ("sdr-pre", "sel-pre", "sel-clear", "tooling", "inventory"),
+    "storage": ("fio",),
+    "burn": ("mem-pre", "cpu-mem-stress", "mem-post", "sdr-post", "sel-post"),
+}
+NET_RUNGS = ("ha-path", "fabric-addr", "iperf-mesh")
+MAX_PARALLEL = 8            # concurrent live boots (BMC power actions) in the boot phase
+BOOT_DEADLINE_S = 900
+INVENTORY_DEADLINE_S = 1200
+STORAGE_BASE_S, STORAGE_PER_DISK_S = 120, 120
+STORAGE_UNKNOWN_DISKS = 8   # no lsblk capture: assume this many
+BURN_SLACK_S = 900          # over FLAX_STRESS_SECONDS: mem-pre/post, sdr/sel reads
 _SEG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,127}")
+_FIO_DEV = re.compile(r"^(nvme\d+n\d+|sd[a-z]+)$")    # = qual_battery._fio's device rule
 
 
 def real_rungs():
@@ -78,6 +104,40 @@ def qualify_passed(db, g) -> tuple[bool, list[str]]:
         if not all((lr.get((d.pos, r)) or {}).get("verdict") == "pass" for r in need):
             bad.append(d.pos)
     return not bad, bad
+
+
+def stress_seconds() -> int:
+    """The agent's cpu-mem-stress duration (qual_battery reads the same variable; the
+    rendered flax-qual.env does not set it, so both default to 600)."""
+    try:
+        return int(os.environ.get("FLAX_STRESS_SECONDS") or 600)
+    except ValueError:
+        return 600
+
+
+def fio_disks(lsblk: str | None) -> int | None:
+    """How many disks the storage phase's fio reads, from the inventory's plain `lsblk`
+    capture: a top-level nvme*/sd* disk with no mountpoint of its own -- the rule
+    qual_battery._fio applies to `lsblk -ndo NAME,MOUNTPOINT` (child rows carry tree
+    glyphs, so they never match). None = no usable capture."""
+    lines = (lsblk or "").splitlines()
+    if not lines or not lines[0].lstrip().startswith("NAME"):
+        return None
+    n = 0
+    for line in lines[1:]:
+        f = line.split()        # NAME MAJ:MIN RM SIZE RO TYPE [MOUNTPOINTS]
+        if f and _FIO_DEV.match(f[0]) and len(f) < 7:
+            n += 1
+    return n
+
+
+def storage_deadline(lsblk: str | None) -> tuple[int, dict]:
+    n = fio_disks(lsblk)
+    det = {"disks": n, "disks_from": "lsblk"}
+    if n is None:
+        n = STORAGE_UNKNOWN_DISKS
+        det = {"disks": n, "disks_from": f"unknown (no lsblk capture; assumed {n})"}
+    return STORAGE_BASE_S + STORAGE_PER_DISK_S * n, det
 
 
 def _safe(name) -> bool:
@@ -208,69 +268,216 @@ def discover_gate(lr, dev_row) -> str | None:
     return ("discover first: " + ", ".join(bad)) if bad else None
 
 
-def _device(ctx, R, d, ips, cr, dev_row, lr, agent_deadline_s=None):
-    pos = d.pos
-    per_dev = ["agent-launch", "agent-stages", *AGENT_STAGES, "pop"]
-    why = discover_gate(lr, dev_row)
-    if why:                                 # never power-cycle an unproven BMC IP
-        _record(ctx, pos, "pxe-live", RungResult("fail", {"error": why}))
-        _skip(ctx, pos, per_dev, "pxe-live failed")
-        _skip(ctx, pos, ["fw-versions"], "pxe-live failed", FW_STAGE)
+
+
+# ---------------------------------------------------------------- phase plumbing
+@dataclass
+class _Dev:
+    """One target device's walk through the phases."""
+    d: object
+    ips: dict
+    row: dict
+    failed: str | None = None       # the phase it failed in (later phases skip it)
+    busy: bool = False              # an agent stop failed: its battery may still run
+    lsblk: str | None = None        # the inventory's lsblk capture (storage deadline)
+
+    @property
+    def pos(self) -> str:
+        return self.d.pos
+
+
+class _Progress:
+    """The current phase and its barrier, kept in order.db for the UI (best effort)."""
+
+    def __init__(self, ctx):
+        self.ctx, self.mu, self.cur = ctx, threading.Lock(), None
+
+    def start(self, phase, poss):
+        with self.mu:
+            self.cur = {"phase": phase, "n": PHASES.index(phase) + 1, "of": len(PHASES),
+                        "devices": len(poss), "done": 0, "waiting_on": sorted(poss)}
+            self._save()
+
+    def done(self, pos):
+        with self.mu:
+            if self.cur and pos in self.cur["waiting_on"]:
+                self.cur["waiting_on"].remove(pos)
+                self.cur["done"] += 1
+                self._save()
+
+    def clear(self):
+        with self.mu:
+            self.cur = None
+            self._save()
+
+    def _save(self):
+        try:
+            self.ctx.db.set_qualify_progress(self.cur)
+        except Exception:                   # noqa: BLE001 -- a view, never the job
+            pass
+
+
+def _phase_rungs(phase, d) -> list[tuple[str, str]]:
+    """(rung, stage) pairs `phase` records for device d: what a device that failed an
+    earlier phase gets `skip` on. agent-launch/agent-stages belong to the first agent
+    phase; a later agent phase re-records them only for a device that runs it."""
+    if phase == "boot":
+        return [("pxe-live", STAGE)]
+    if phase == "inventory":
+        return ([(r, STAGE) for r in ("agent-launch", "agent-stages",
+                                      *PHASE_STAGES["inventory"], "pop")]
+                + [("fw-versions", FW_STAGE)])
+    if phase in PHASE_STAGES:
+        return [(r, STAGE) for r in PHASE_STAGES[phase]]
+    return [(r, STAGE) for r in NET_RUNGS if r in device_rungs(d)]
+
+
+def _why_out(x) -> str:
+    return ("qual agent still running (stop failed)" if x.busy
+            else f"failed in phase {x.failed}")
+
+
+def _skip_phase(ctx, x, phase):
+    why = _why_out(x)
+    for rung, stage in _phase_rungs(phase, x.d):
+        _record(ctx, x.pos, rung, RungResult("skip", {"reason": why}), stage)
+
+
+def _wave(ctx, phase, xs, fn, workers, prog=None):
+    """fn(x) for every x at once (at most `workers` at a time); returns when all are
+    done. A device whose step raised is out of the phase; the rack carries on."""
+    if not xs:
         return
-    if d.endpoints["hosts"] > 1:
-        _record(ctx, pos, "pxe-live", RungResult("fail", {
+
+    def one(x):
+        try:
+            fn(x)
+        except Exception as e:              # noqa: BLE001 -- recording itself failed
+            x.failed = x.failed or phase
+            ctx.db.add_event("error", f"qualify {x.pos} {phase}: {type(e).__name__}: {e}")
+        finally:
+            if prog is not None:
+                prog.done(x.pos)
+
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, len(xs))),
+                            thread_name_prefix=f"qualify-{ctx.g.url_prefix}-{phase}") as ex:
+        list(ex.map(one, xs))
+
+
+def _phase_end(ctx, phase, xs):
+    ran = [x for x in xs if x.failed is None or x.failed == phase]
+    bad = [x.pos for x in ran if x.failed == phase]
+    ctx.db.add_event("qualify", f"phase {phase}: {len(ran) - len(bad)} passed"
+                                + (f", failed: {', '.join(bad)}" if bad else ""))
+
+
+def _with(r: RungResult, **extra) -> RungResult:
+    return RungResult(r.verdict, {**r.detail, **extra}, r.artifacts)
+
+
+# ---------------------------------------------------------------- boot phase
+def _boot(ctx, R, cr, lr, x):
+    pos, d = x.pos, x.d
+    why = discover_gate(lr, x.row)
+    host_ip, bmc_ip = x.ips.get("host"), x.ips.get("bmc")
+    if why:                                 # never power-cycle an unproven BMC IP
+        r = _record(ctx, pos, "pxe-live", RungResult("fail", {"error": why}))
+    elif d.endpoints["hosts"] > 1:
+        r = _record(ctx, pos, "pxe-live", RungResult("fail", {
             "error": f"{d.endpoints['hosts']}-host devices are not qualified yet "
                      "(no per-card live boot)"}))
-        _skip(ctx, pos, per_dev, "pxe-live failed")
-        _skip(ctx, pos, ["fw-versions"], "pxe-live failed", FW_STAGE)
-        return
-    host_ip, bmc_ip = ips.get("host"), ips.get("bmc")
-    if not bmc_ip:
+    elif not bmc_ip:
         r = _record(ctx, pos, "pxe-live", RungResult("fail", {"error": "no BMC to boot it with"}))
     else:
         r = _rung(ctx, pos, "pxe-live",
-                  lambda: R.boot_live(bmc_ip, host_ip, cr, expect_mac=dev_row["host_mac"],
-                                      runner=ctx.runner), STAGE)
+                  lambda: R.boot_live(bmc_ip, host_ip, cr, expect_mac=x.row["host_mac"],
+                                      deadline_s=BOOT_DEADLINE_S, runner=ctx.runner), STAGE)
     if r.verdict != "pass":
-        _skip(ctx, pos, per_dev, "pxe-live failed")
-        _skip(ctx, pos, ["fw-versions"], "pxe-live failed", FW_STAGE)
-        return
-    user, pw = cr.host
-    r = _rung(ctx, pos, "agent-launch",
-              lambda: R.launch(host_ip, user, pw, runner=ctx.runner), STAGE)
-    if r.verdict != "pass":
-        _skip(ctx, pos, per_dev[1:], "agent-launch failed")
-        _skip(ctx, pos, ["fw-versions"], "agent-launch failed", FW_STAGE)
-        return
+        x.failed = "boot"
 
+
+# ---------------------------------------------------------------- agent phases
+def _deadline(phase, x) -> tuple[int, dict]:
+    if phase == "storage":
+        dl, det = storage_deadline(x.lsblk)
+        return dl, {"deadline_by": f"{STORAGE_BASE_S} + {STORAGE_PER_DISK_S} x disks", **det}
+    if phase == "burn":
+        s = stress_seconds()
+        return s + BURN_SLACK_S, {"deadline_by": f"FLAX_STRESS_SECONDS {s} + {BURN_SLACK_S}"}
+    return INVENTORY_DEADLINE_S, {"deadline_by": "inventory phase"}
+
+
+def _agent_phase(ctx, R, cr, prog, phase, xs):
+    """Launch the agent with this phase's stages on every device in one wave, then poll
+    them all; each device's results are recorded the moment it finishes."""
+    prog.start(phase, [x.pos for x in xs])
+    if not xs:
+        return
+    want = PHASE_STAGES[phase]
+    stages = ",".join(want)
+    user, pw = cr.host
+    started: dict[str, float] = {}
+    mu = threading.Lock()
+
+    def launch(x):
+        r = _rung(ctx, x.pos, "agent-launch", lambda: _with(
+            R.launch(x.ips["host"], user, pw, stages=stages, runner=ctx.runner), phase=phase),
+            STAGE)
+        if r.verdict == "pass":
+            with mu:
+                started[x.pos] = time.monotonic()
+            return
+        x.failed = phase
+        _skip(ctx, x.pos, ["agent-stages", *want] + (["pop"] if phase == "inventory" else []),
+              "agent-launch failed")
+        if phase == "inventory":
+            _skip(ctx, x.pos, ["fw-versions"], "agent-launch failed", FW_STAGE)
+        prog.done(x.pos)
+
+    _wave(ctx, phase, xs, launch, len(xs))
+    for x in xs:
+        if x.failed == phase:
+            prog.done(x.pos)                # a launch that raised
+    if phase == "burn" and started:
+        order = sorted(started, key=started.get)
+        spread = started[order[-1]] - started[order[0]]
+        ctx.db.add_event("qualify", f"burn: stress launched on {len(order)} node(s) within "
+                                    f"{spread:.1f} s ({order[0]} first, {order[-1]} last)")
+    _wave(ctx, phase, [x for x in xs if x.pos in started],
+          lambda x: _poll(ctx, R, cr, phase, x), len(xs), prog)
+
+
+def _poll(ctx, R, cr, phase, x):
+    pos, host_ip = x.pos, x.ips["host"]
+    want = PHASE_STAGES[phase]
+    user, pw = cr.host
+    dl, by = _deadline(phase, x)
     got: dict[str, RungResult] = {}
 
     def poll():
-        dl, by = ((agent_deadline_s, "cli") if agent_deadline_s else
-                  (d.agent_deadline_s, "geometry") if d.agent_deadline_s else
-                  (AGENT_DEADLINE_S, "default"))
-        sized = {"deadline_s": dl, "deadline_by": by}
+        sized = {"phase": phase, "deadline_s": dl, **by}
         got.update(R.poll(host_ip, deadline_s=dl))
-        if any(x.detail.get("error") == "timeout" for x in got.values()):
-            # the battery may still be running fio/stress: stop it before the mesh
+        if any(r.detail.get("error") == "timeout" for r in got.values()):
+            # the agent may still be running fio/stress: stop it before the next phase
             st = R.stop_agent(host_ip, user, pw, runner=ctx.runner)
             sized["agent_stop"] = ("stopped" if st.verdict == "pass"
                                    else st.detail.get("error") or "stop failed")
+            x.busy = st.verdict != "pass"
         if "agent" in got:
             return RungResult("fail", {**got.pop("agent").detail, **sized})
         names = list(got)
-        run_id = next((x.detail.get("run_id") for x in got.values() if x.detail.get("run_id")),
+        run_id = next((r.detail.get("run_id") for r in got.values() if r.detail.get("run_id")),
                       None)
         detail = {"run_id": run_id, "stages": names, **sized}
         if "agent_stop" in sized:
-            detail["error"] = (f"battery timed out after {dl}s; agent "
+            detail["error"] = (f"{phase} phase timed out after {dl}s; agent "
                                + ("stopped" if sized["agent_stop"] == "stopped"
                                   else f"NOT stopped: {sized['agent_stop']}"))
             return RungResult("fail", detail)
-        if names != list(AGENT_STAGES):
-            missing = [n for n in AGENT_STAGES if n not in got]
-            extra = [n for n in names if n not in AGENT_STAGES]
-            detail["error"] = ("agent stages differ from the order list:"
+        if names != list(want):
+            missing = [n for n in want if n not in got]
+            extra = [n for n in names if n not in want]
+            detail["error"] = (f"agent stages differ from the {phase} list:"
                                + (f" missing {','.join(missing)}" if missing else "")
                                + (f" extra {','.join(extra)}" if extra else "")
                                + ("" if missing or extra else " (order differs)"))
@@ -278,23 +485,31 @@ def _device(ctx, R, d, ips, cr, dev_row, lr, agent_deadline_s=None):
         return RungResult("pass", detail)
 
     ar = _rung(ctx, pos, "agent-stages", poll, STAGE)
+    failed = ar.verdict != "pass"
     run_seg = (ar.detail or {}).get("run_id")
-    for name in AGENT_STAGES:
+    for name in want:
         if name in got:
-            _record(ctx, pos, name, got[name], STAGE, run_seg)
+            r = _record(ctx, pos, name, got[name], STAGE, run_seg)
         elif got:
-            _record(ctx, pos, name, RungResult("fail", {"error": f"agent did not report {name}"}))
+            r = _record(ctx, pos, name, RungResult("fail", {"error": f"agent did not report {name}"}))
         else:
-            _record(ctx, pos, name, RungResult("skip", {"reason": "agent-stages failed"}))
-    inv = got.get("inventory")
-    arts = inv.artifacts if inv else {}
-    _rung(ctx, pos, "fw-versions",
-          lambda: fw_versions(arts.get("dmidecode"), R.mc_info(bmc_ip, cr.bmc, runner=ctx.runner)),
-          FW_STAGE)
-    _rung(ctx, pos, "pop", lambda: pop_rung(ctx, d, arts.get("macinv")), STAGE)
+            r = _record(ctx, pos, name, RungResult("skip", {"reason": "agent-stages failed"}))
+        failed = failed or r.verdict == "fail"
+    if phase == "inventory":
+        inv = got.get("inventory")
+        arts = inv.artifacts if inv else {}
+        x.lsblk = arts.get("lsblk")
+        _rung(ctx, pos, "fw-versions",      # report only: never gates the next phase
+              lambda: fw_versions(arts.get("dmidecode"),
+                                  R.mc_info(x.ips.get("bmc"), cr.bmc, runner=ctx.runner)),
+              FW_STAGE)
+        p = _rung(ctx, pos, "pop", lambda: pop_rung(ctx, x.d, arts.get("macinv")), STAGE)
+        failed = failed or p.verdict != "pass"
+    if failed:
+        x.failed = phase
 
 
-# ---------------------------------------------------------------- rack-level rungs
+# ---------------------------------------------------------------- network phase
 def _host_lookup(ctx, R, lr, pos, host_ip, user, pw, art, cmd, parse):
     """Parse the saved inventory artifact `art`; over ssh `cmd` when it is missing."""
     text = _artifact(ctx, lr, pos, "inventory", art)
@@ -305,27 +520,29 @@ def _host_lookup(ctx, R, lr, pos, host_ip, user, pw, art, cmd, parse):
     return res
 
 
-def _rack_level(ctx, R, targets, ips, cr):
+def server_not_ready(lr, d) -> str | None:
+    """Why an iperf server outside this run's positions may not serve (None = it may):
+    every earlier-phase rung's latest run must be a pass, its agent not left running."""
+    stop = ((lr.get((d.pos, "agent-stages")) or {}).get("detail") or {}).get("agent_stop")
+    if stop not in (None, "stopped"):
+        return "its qual agent is still running (stop failed)"
+    for r in device_rungs(d):
+        if r not in NET_RUNGS and (lr.get((d.pos, r)) or {}).get("verdict") != "pass":
+            return f"its {r} did not pass"
+    return None
+
+
+def _network(ctx, R, prog, scope, ips, cr, not_ready):
+    """not_ready: pos -> (skip reason, server reason) for devices out of this phase."""
     g = ctx.g
     lr = ctx.db.latest_runs()
-    live = {d.pos for d in g.devices if d.endpoints.get("hosts")
-            and (lr.get((d.pos, "pxe-live")) or {}).get("verdict") == "pass"}
-    # a battery that timed out and could not be stopped is still loading the node
-    busy = {p for p in live if ((lr.get((p, "agent-stages")) or {}).get("detail") or {})
-            .get("agent_stop") not in (None, "stopped")}
-    live -= busy
     srv = g.iperf_server
-    scope = list(targets)
     srv_dev = next((d for d in g.devices if d.pos == srv), None)
-    if srv_dev is not None and srv in live and srv_dev not in scope:
-        scope.append(srv_dev)               # its fabric addresses are not persistent
-    up = [d for d in scope if d.pos in live]
+    up = [d for d in scope if d.pos not in not_ready]
     for d in scope:
-        if d.pos not in live:
-            _skip(ctx, d.pos, [r for r in ("ha-path", "fabric-addr", "iperf-mesh")
-                               if r in device_rungs(d)],
-                  "qual agent still running (stop failed)" if d.pos in busy
-                  else "pxe-live did not pass")
+        if d.pos in not_ready:
+            _skip(ctx, d.pos, [r for r in NET_RUNGS if r in device_rungs(d)], not_ready[d.pos][0])
+    prog.start("network", [d.pos for d in up])
     user, pw = cr.host if cr.host else ("", "")
 
     # -- wedge LLDP -> HA path -> fabric addressing
@@ -392,10 +609,8 @@ def _rack_level(ctx, R, targets, ips, cr):
         why = "no iperf_server in geometry.json"
     elif srv_dev is None or not srv_dev.endpoints.get("hosts"):
         why = f"server {srv} not ready: not a host-bearing device of this rack"
-    elif srv in busy:
-        why = f"server {srv} not ready: its qual agent is still running (stop failed)"
-    elif srv not in live:
-        why = f"server {srv} not ready: its pxe-live did not pass"
+    elif srv in not_ready:
+        why = f"server {srv} not ready: {not_ready[srv][1]}"
     server = None
     if why is None:
         server = node(srv_dev)
@@ -412,11 +627,11 @@ def _rack_level(ctx, R, targets, ips, cr):
             out = {p: RungResult("fail", {"error": f"{type(e).__name__}: {e}"}) for p in rids}
     for p, rid in rids.items():
         ctx.db.finish_run(rid, out.get(p) or RungResult("fail", {"error": "no iperf result"}))
+        prog.done(p)
 
 
 # ---------------------------------------------------------------- stage
-def run_qualify(ctx, *, positions: list[str] | None = None,
-                agent_deadline_s: int | None = None) -> None:
+def run_qualify(ctx, *, positions: list[str] | None = None) -> None:
     if ctx.db.closed_at():
         raise RuntimeError("order is closed")
     g = ctx.g
@@ -436,16 +651,32 @@ def run_qualify(ctx, *, positions: list[str] | None = None,
     ctx.db.add_event("qualify", f"qualify started: {', '.join(d.pos for d in targets) or 'none'}")
     lr = ctx.db.latest_runs()               # Discover's verdicts, read before anything runs
     rows = {x["pos"]: x for x in ctx.db.devices()}
-    with ThreadPoolExecutor(max_workers=max(1, min(MAX_PARALLEL, len(targets))),
-                            thread_name_prefix=f"qualify-{g.url_prefix}") as ex:
-        futs = {d.pos: ex.submit(_device, ctx, R, d, ips.get(d.pos, {}), cr,
-                                 rows.get(d.pos) or {"pos": d.pos}, lr, agent_deadline_s)
-                for d in targets}
-    for pos, f in futs.items():
-        if f.exception() is not None:       # recording itself failed; the rack carries on
-            ctx.db.add_event("error", f"qualify {pos}: {type(f.exception()).__name__}: "
-                                      f"{f.exception()}")
-    _rack_level(ctx, R, targets, ips, cr)
+    xs = [_Dev(d, ips.get(d.pos, {}), rows.get(d.pos) or {"pos": d.pos}) for d in targets]
+    prog = _Progress(ctx)
+    try:
+        prog.start("boot", [x.pos for x in xs])
+        _wave(ctx, "boot", xs, lambda x: _boot(ctx, R, cr, lr, x), MAX_PARALLEL, prog)
+        _phase_end(ctx, "boot", xs)
+        for phase in PHASE_STAGES:          # inventory, storage, burn: barrier between each
+            for x in xs:
+                if x.failed:
+                    _skip_phase(ctx, x, phase)
+            _agent_phase(ctx, R, cr, prog, phase, [x for x in xs if not x.failed])
+            _phase_end(ctx, phase, xs)
+        not_ready = {x.pos: (_why_out(x), "its qual agent is still running (stop failed)"
+                             if x.busy else f"failed in phase {x.failed}")
+                     for x in xs if x.failed}
+        scope = [x.d for x in xs]
+        srv = next((d for d in g.devices if d.pos == g.iperf_server), None)
+        if srv is not None and srv.endpoints.get("hosts") and srv not in scope:
+            why = server_not_ready(ctx.db.latest_runs(), srv)
+            if why is None:
+                scope.append(srv)           # its fabric addresses are not persistent
+            else:
+                not_ready[srv.pos] = (why, why)
+        _network(ctx, R, prog, scope, ips, cr, not_ready)
+    finally:
+        prog.clear()
     ok, bad = qualify_passed(ctx.db, g)
     ctx.db.add_event("qualify", "qualify done; rack passed" if ok
                      else f"qualify done; not passed: {', '.join(bad)}")

@@ -40,7 +40,8 @@ from .geometry import Geometry, load_geometry
 from .kea_client import KeaError
 from .orderdb import OrderDB
 from .poller import INTERVAL_S, BmcPoller
-from .qualify import AGENT_STAGES, device_rungs, pop_default, qualify_passed, run_qualify
+from .qualify import (AGENT_STAGES, PHASES as QUALIFY_PHASES, device_rungs, pop_default,
+                      qualify_passed, run_qualify)
 from .stages import close_order, run_discover
 from .version import __version__
 
@@ -178,6 +179,7 @@ class Rack:
         if self.lock.acquire():
             try:
                 n = self.db.mark_interrupted()
+                self.db.set_qualify_progress(None)   # no Qualify runs: its phase is stale
                 if n:
                     self.db.add_event("restart", f"{n} rung(s) interrupted by a daemon restart")
             finally:
@@ -293,7 +295,9 @@ def rack_state(r: Rack) -> dict:
         "stage_running": r.lock.locked(), "stage": r.stage if r.lock.locked() else None,
         "phases": list(PHASES), "discover_rungs": list(DISCOVER_RUNGS),
         "firmware_rungs": list(FIRMWARE_RUNGS), "agent_stages": list(AGENT_STAGES),
-        "qualify": {"passed": passed, "not_passed": not_passed},
+        "qualify_phases": list(QUALIFY_PHASES),
+        "qualify": {"passed": passed, "not_passed": not_passed,
+                    "progress": db.qualify_progress()},
         "poll_interval_s": INTERVAL_S, "profiles": sorted(profiles),
         "switches": switches, "devices": devices, "rack_runs": rack_runs,
         "unexpected": [{"port": u["port"], "mac": _fmt_mac(u["mac"])} for u in unexpected],
