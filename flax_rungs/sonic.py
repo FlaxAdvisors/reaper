@@ -190,7 +190,9 @@ def read_syseeprom(host, user, password, *, runner=subprocess.run) -> RungResult
 # The live link monitor's one-session read: three read-only show commands in ONE ssh
 # (one login per switch per poll), split by echoed marker lines. stdin stays empty.
 _LIVE_MARK = "@@flax-live:{}@@"
-LIVE_CMD = "; ".join(("show interfaces status", f"echo '{_LIVE_MARK.format('lldp')}'",
+# `sudo -n`: as a plain user the Dell N3248TE's intfutil dies reading the platform EEPROM
+# ("Eeprom is not Programmed"); sudo is passwordless on these SONiC builds.
+LIVE_CMD = "; ".join(("sudo -n show interfaces status </dev/null", f"echo '{_LIVE_MARK.format('lldp')}'",
                       "show lldp table", f"echo '{_LIVE_MARK.format('mac')}'", "show mac"))
 
 
