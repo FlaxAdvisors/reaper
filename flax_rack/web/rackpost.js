@@ -443,11 +443,9 @@ function App() {
     curPhase(d) { return this.hasRuns(d, 'done') ? 'done' : this.hasRuns(d, 'deploy') ? 'deploy' : this.hasRuns(d, 'qualify') ? 'qualify' : 'discover'; },
     phaseState(d, p) {
       const v = this.stepEntries(d, p).map((x) => x.state);
-      if (!v.length) {
-        // nothing to do for this endpoint (n/a): green once the phase before it is
-        const i = this.s.phases.indexOf(p);
-        return i <= 0 || this.phaseState(d, this.s.phases[i - 1]) === 'done' ? 'done' : '';
-      }
+      // nothing to do for this endpoint (a BC IOM's Qualify/Deploy/Done, a switch's): complete,
+      // whatever the phase before it says (operator 2026-10-30: never looks like waiting)
+      if (!v.length) return 'done';
       if (v.includes('fault')) return 'fault';
       if (v.every((x) => x === 'done' || x === 'skip')) return 'done';
       // finished, but a step's target did not answer: grey (not measured), never done
