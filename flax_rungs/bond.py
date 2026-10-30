@@ -28,7 +28,7 @@ NETPLAN = "/etc/netplan/60-bond0.yaml"
 MGMT_IF = "enp94s0np0"
 MIIMON = 100
 PING_MS = 100
-MGMT_GAP_MS = 3000        # the apply never touches the mgmt NIC; this is slack, not a budget
+MGMT_GAP_MS = 10000       # ssh must survive; R37 stalls 4-8 s on any mgmt reconfigure (C37 ~0), recorded either way
 SETTLE_S = 30
 HA_MODE = "active-backup (no MLAG peer link)"
 
