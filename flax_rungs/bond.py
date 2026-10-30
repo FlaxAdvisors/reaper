@@ -27,7 +27,7 @@ NETPLAN = "/etc/netplan/60-bond0.yaml"
 MGMT_IF = "enp94s0np0"
 MIIMON = 100
 PING_MS = 100
-MGMT_GAP_MS = 1000
+MGMT_GAP_MS = 3000        # netplan apply restarts networkd: R37 saw 1.9 s with ssh intact
 SETTLE_S = 30
 HA_MODE = "active-backup (no MLAG peer link)"
 

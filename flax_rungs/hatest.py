@@ -32,7 +32,7 @@ from . import bond, hostssh, iperf
 from .remote import unreachable
 from .result import UNMEASURED, RungResult
 
-FAILOVER_GAP_MS = 1000
+FAILOVER_GAP_MS = 3000    # whole-wedge cut: every bond and the server fail over at once (2.7 s seen)
 PING_S = 12             # each ping runs this long (covers lead + cut + recovery)
 LEAD_S = 2              # pings run this long before the cut
 SETTLE_S = 10           # failover must show in /proc/net/bonding within this
@@ -98,6 +98,12 @@ class _Run:
         return bond.status(x.n["host_ip"], self.user, self.pw, runner=self.runner)
 
     # -- before anything is cut: every bond at its primary, ports by permanent MAC
+    def ensure_iperf(self) -> None:
+        """The installed OS has no iperf3 (the live image did): apt it in where missing."""
+        _par(lambda x: self.ssh(x, "command -v iperf3 >/dev/null || DEBIAN_FRONTEND=noninteractive "
+                                   "apt-get install -y -q iperf3 >/dev/null 2>&1\n", timeout=300),
+             self.st.values())
+
     def precheck(self) -> list[_Node]:
         ready = []
         for pos, (rc, b, _addr, raw) in _par(self.status, self.st.values()).items():
@@ -319,6 +325,7 @@ def run(nodes: list[dict], server_pos: str, *, user: str, pw: str, mesh=iperf.me
     prefix; macs as bond.sides()). server_pos must be one of them. One RungResult per pos."""
     R = _Run(nodes, server_pos, user, pw, mesh, runner, sleep, clock, ping_s, lead_s,
              settle_s, restore_s, mesh_seconds, deadman_s)
+    R.ensure_iperf()
     ready = R.precheck()
     server = next((x for x in ready if x.pos == server_pos), None)
     if server is None:
