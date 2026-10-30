@@ -47,13 +47,13 @@ def population_check(dump, profile, dimmsum=None, baseboard=None) -> dict:
 
 def qualify_verdict(status, pop, checks=None) -> "str | None":
     """pass = node battery passed AND population green AND (when given) every
-    ship check passed; fail = any of them failed; else None. checks=None keeps
-    the old two-input rule."""
+    ship check passed or was skipped (disabled); fail = any of them failed; else
+    None. checks=None keeps the old two-input rule."""
     node = (status or {}).get("verdict")
     popv = (pop or {}).get("verdict")
     cs = [((checks or {}).get(n) or {}).get("status") for n in shipchecks.SHIP_CHECKS]
     if node == "fail" or popv == "red" or (checks is not None and "fail" in cs):
         return "fail"
-    if node == "pass" and popv == "green" and (checks is None or all(c == "pass" for c in cs)):
+    if node == "pass" and popv == "green" and (checks is None or all(c in ("pass", "skip") for c in cs)):
         return "pass"
     return None

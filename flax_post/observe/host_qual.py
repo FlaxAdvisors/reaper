@@ -142,6 +142,13 @@ def _battery_done(qual) -> bool:
     return ((qual or {}).get("overall") or {}).get("status") == "done"
 
 
+# Ship checks judged and recorded but not gating: status `skip`, the judged
+# verdict kept as `judged`. smbios-serial: the Wiwynn P26F BIOS never copies the
+# FRU serial into SMBIOS on Quanta boards (0 of ~226 runs, 2026-10-30); off
+# until triage writes it (operator 2026-10-30).
+DISABLED_CHECKS = ("smbios-serial",)
+
+
 def ship_checks(store, bmc_mac, run_id, inventory_terminal) -> dict:
     """{smbios-serial: {...}, tpm-state: {...}} judged from this run's inventory
     artifacts (spec 2026-10-29); pending until the inventory stage is terminal.
@@ -151,8 +158,11 @@ def ship_checks(store, bmc_mac, run_id, inventory_terminal) -> dict:
     art = lambda name: store.get_artifact(bmc_mac, run_id, "inventory", name)
     out = {"smbios-serial": shipchecks.smbios_serial(art("ipmitool-fru"), art("dmidecode")),
            "tpm-state": shipchecks.tpm_state(art("tpmstate"))}
-    for c in out.values():
+    for name, c in out.items():
         c["checker"] = "flax-post " + __version__
+        if name in DISABLED_CHECKS:
+            c["judged"] = ("%s: %s" % (c["status"], c["reason"])).rstrip(": ")
+            c["status"], c["reason"] = "skip", "disabled"
     return out
 
 

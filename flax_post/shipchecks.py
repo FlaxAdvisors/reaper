@@ -132,6 +132,8 @@ def evidence_text(name, c) -> str:
     the run's artifacts prove the state was checked (operator 2026-10-29)."""
     lines = ["check: %s" % name, "checked by: %s" % (c.get("checker") or "unknown"),
              "status: %s" % c.get("status"), "reason: %s" % (c.get("reason") or "")]
+    if c.get("judged"):
+        lines.append("judged: %s" % c["judged"])
     if name == "smbios-serial":
         lines.append("FRU 0 serials: %s" % (", ".join(c.get("fru0_serials") or []) or "none"))
         for k, v in (c.get("dmi_serials") or {}).items():
