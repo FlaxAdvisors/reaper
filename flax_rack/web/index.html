@@ -239,7 +239,7 @@
         <template v-for="r in identReadRows(selObj)"><span class="lbl">{{r[0]}}</span><span class="mono">{{r[1]}}</span></template>
       </div>
       <div class="arts-line" v-if="artList(identOf(selObj)).length"><span class="lbl">raw</span>
-        <a class="art" v-for="a in artList(identOf(selObj))" :href="a.url" target="_blank" rel="noopener" :title="a.url">{{a.name}}</a></div>
+        <span class="art" v-for="a in artList(identOf(selObj))" :title="a.url" @click="openArt(a)">{{a.name}}</span></div>
     </div>
 
     <!-- ---- versions (Firmware's bmc-checked; report only for Facebook OpenBMC) ---- -->
@@ -250,7 +250,7 @@
         <template v-if="selKind==='sw'"><span class="lbl">NOS</span><span class="mono">{{selObj?.sw?.nos}} ({{selObj?.sw?.model}})</span></template>
       </div>
       <div class="arts-line" v-if="artList(fwViewOf(selObj)).length"><span class="lbl">raw</span>
-        <a class="art" v-for="a in artList(fwViewOf(selObj))" :href="a.url" target="_blank" rel="noopener" :title="a.url">{{a.name}}</a></div>
+        <span class="art" v-for="a in artList(fwViewOf(selObj))" :title="a.url" @click="openArt(a)">{{a.name}}</span></div>
     </div>
 
     <div v-if="selKind==='dev' && fwOf(selDev)">
@@ -297,7 +297,7 @@
         <div class="steps" v-if="stepEntries(selObj,p).length">
           <div class="step evable" v-for="st in stepEntries(selObj,p)" :class="st.state" :title="st.title" @click="openStep(selObj, p, st)">
             <span class="si">{{stepIcon(st.state)}}</span>{{st.name}}<span class="note" v-if="st.note"> · {{st.note}}</span>
-            <a class="art" v-for="a in st.arts" :href="a.url" target="_blank" rel="noopener" :title="a.url" @click.stop>{{a.name}}</a></div>
+            <span class="art" v-for="a in st.arts" :title="a.url" @click.stop="openStepArt(selObj, p, st, a)">{{a.name}}</span></div>
         </div>
         <div class="steps" v-else><div class="step pending"><span class="si">·</span>{{selKind==='dev' ? 'later plan' : 'none for this endpoint'}}</div></div>
         <div v-if="p==='firmware' && selKind==='dev'"><div class="ep-fw" v-for="x in endpointFw(selDev)">
@@ -305,7 +305,7 @@
           <div class="steps">
             <div class="step evable" v-for="st in x.entries" :class="st.state" :title="st.title" @click="openStep(selDev, 'firmware ' + x.ep.toUpperCase(), st)">
               <span class="si">{{stepIcon(st.state)}}</span>{{st.name}}<span class="note" v-if="st.note"> · {{st.note}}</span>
-              <a class="art" v-for="a in st.arts" :href="a.url" target="_blank" rel="noopener" :title="a.url" @click.stop>{{a.name}}</a></div>
+              <span class="art" v-for="a in st.arts" :title="a.url" @click.stop="openStepArt(selDev, 'firmware ' + x.ep.toUpperCase(), st, a)">{{a.name}}</span></div>
           </div>
         </div></div>
       </div>
@@ -313,7 +313,8 @@
 
     <div class="section-l">alerts</div>
     <div class="alert-grid">
-      <div class="alert-box" v-for="f in faults(selObj)" :class="{bad: f.bad}">
+      <div class="alert-box clk" v-for="f in faults(selObj)" :class="{bad: f.bad}" title="click for the evidence"
+           @click="openStep(selObj, f.phase, f.st)">
         <div class="ab-h">{{f.rung}}<span class="ab-tag" v-if="f.bad"> · !</span></div>
         <div class="ab-b">{{f.text}}</div></div>
       <div class="alert-box" v-if="!faults(selObj).length"><div class="ab-h">rungs</div>
@@ -371,7 +372,7 @@
   </div>
 
   <!-- ================= step evidence modal (Post's stepinfo; stepM?. — petite-vue evaluates during teardown) ================= -->
-  <div class="m-scrim" v-if="stepM" @click="stepM=null">
+  <div class="m-scrim" v-if="stepM && !artM" @click="stepM=null">
     <div class="m-box" @click.stop>
       <div class="m-h"><span class="m-title">{{stepM?.who}} · {{stepM?.phase}} · {{stepM?.name}}</span>
         <span class="x" @click="stepM=null">✕</span></div>
@@ -385,8 +386,29 @@
         </div>
         <p class="pending-note" v-for="n in (stepM?.notes || [])">{{n}}</p>
         <div class="arts-line" v-if="(stepM?.arts || []).length"><span class="lbl">artifacts</span>
-          <a class="art" v-for="a in (stepM?.arts || [])" :href="a.url" target="_blank" rel="noopener" :title="a.url">{{a.name}}</a></div>
+          <span class="art" v-for="a in (stepM?.arts || [])" :title="a.url" @click="openArt(a, true)">{{a.name}}</span></div>
+        <p class="pending-note" v-if="stepM?.ran && !(stepM?.arts || []).length">no artifacts saved for this step</p>
       </div>
+    </div>
+  </div>
+
+  <!-- ================= artifact viewer (in-page; artM?. — petite-vue evaluates during teardown) ================= -->
+  <div class="m-scrim" v-if="artM" @click="closeArt()">
+    <div class="m-box art-box" @click.stop>
+      <div class="m-h"><span class="m-title mono">{{artM?.name}}</span>
+        <span class="art-info">{{artInfo()}}</span>
+        <span class="x" @click="closeArt()">✕</span></div>
+      <div class="art-bar">
+        <button class="press" v-if="artM?.fromStep" @click="backArt()" title="back to the step's evidence">‹ Back</button>
+        <button class="press" :disabled="!artM?.text" @click="copyArt()">Copy</button>
+        <a class="press" :href="artM?.url || ''" :download="(artM?.url || '').split('/').pop()">Download</a>
+        <span class="art-copied" v-if="artM?.copied">{{artM?.copied}}</span>
+        <span class="art-path mono">{{artM?.url}}</span>
+      </div>
+      <p class="pending-note" v-if="artM?.loading">loading…</p>
+      <p class="m-sub bad" v-if="artM?.error">could not load: {{artM?.error}}</p>
+      <p class="m-sub amb" v-if="artM?.truncated">truncated — the first 2 MiB is shown; Download for the full file</p>
+      <pre class="console art-pre" v-if="!artM?.loading && !artM?.error">{{artM?.text || '(empty)'}}</pre>
     </div>
   </div>
 

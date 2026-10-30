@@ -8,7 +8,8 @@
 // a device `R05`, one JBOD IOM `JBOD01.iom2`, a switch `_sw-A`, a wedge's BMC
 // `_sw-A.bmc`. Each is an object carrying pos (= the sel key), runs and
 // qualify_rungs, so one set of pipeline functions serves them all. A step row
-// opens the evidence modal (Post's stepinfo: headline, rows, notes, artifacts).
+// opens the evidence modal (Post's stepinfo: headline, rows, notes, artifacts);
+// an artifact opens the in-page viewer (artM) over it, never a raw tab.
 
 const POLL_MS = 5000;
 // geometry cols are ints 1..5 (L/C/R = 1/2/3); a group of rows is drawn with
@@ -23,6 +24,8 @@ const KIND = { 'bc-head-tp': 'BC head' };
 const SWKIND = { mgmt: 'mgmt 1G', tor: 'TOR' };
 // a wedge BMC's own Discover rows (the rest of the switch ladder is the SONiC half)
 const BMC_STEPS = ['switchportlink', 'bmc-mac-seen', 'bmc-reserved', 'bmc-leased', 'bmc-pinged', 'serial', 'bmc-ready'];
+// the viewer reads at most this much of an artifact (the rest: Download)
+const ART_MAX = 2 * 1024 * 1024;
 const STEP_WORD = { done: 'done', cur: 'in progress', fault: 'fault', pending: 'not run', skip: 'skipped', unknown: 'unknown' };
 
 const iomObj = (d, ep) => ({ type: 'iom', pos: `${d.pos}.${ep}`, dev: d, ep, n: Number(ep.slice(3)),
@@ -139,7 +142,7 @@ function App() {
   return {
     s: { switches: [], devices: [], phases: ['discover', 'firmware', 'qualify', 'deploy', 'done'], profiles: [], rack_runs: {}, events: [] },
     live: null, sel: selFromHash(), filter: null, q: '', popOpen: null, now: Date.now(),
-    actionMsg: null, hdrMsg: null, stepM: null, closing: false, confirmText: '', closeMsg: null, busy: false,
+    actionMsg: null, hdrMsg: null, stepM: null, artM: null, artSeq: 0, closing: false, confirmText: '', closeMsg: null, busy: false,
     qualifying: false, qualText: '', discovering: false, discText: '',
     metricList: [
       { key: 'discover', label: 'discover', title: 'devices in Discover' },
@@ -153,7 +156,7 @@ function App() {
     async mounted() {
       document.addEventListener('keydown', (e) => {
         if (e.key !== 'Escape') return;
-        if (this.stepM) this.stepM = null; else if (this.qualifying) this.qualifying = false; else if (this.discovering) this.discovering = false; else if (this.closing) this.closing = false; else if (this.popOpen) this.popOpen = null; else this.close();
+        if (this.artM) this.closeArt(); else if (this.stepM) this.stepM = null; else if (this.qualifying) this.qualifying = false; else if (this.discovering) this.discovering = false; else if (this.closing) this.closing = false; else if (this.popOpen) this.popOpen = null; else this.close();
       });
       await this.refresh(); setInterval(() => this.refresh(), POLL_MS);
     },
@@ -230,6 +233,65 @@ function App() {
         arts: st.arts || [], ran: !!run,
         when: run ? [run.started_at && `started ${run.started_at}`, run.finished_at && `finished ${run.finished_at}`].filter(Boolean).join(' · ') : '' };
     },
+    // ---- artifact viewer: the text in-page (first ART_MAX bytes), Copy / Download / Back ----
+    // fromStep: Back returns to the evidence modal under it; Esc / ✕ / the scrim close both.
+    async openArt(a, fromStep) {
+      if (!a || !a.url) return;
+      const seq = ++this.artSeq;
+      this.artM = { name: a.name, url: a.url, fromStep: !!fromStep, loading: true, text: '',
+                    error: null, size: null, loaded: 0, lines: 0, truncated: false, copied: '' };
+      try {
+        const r = await fetch(a.url, { cache: 'no-store' });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const total = Number(r.headers.get('Content-Length')) || null;
+        const dec = new TextDecoder();
+        let text = '', n = 0, cut = false;
+        if (r.body && r.body.getReader) {
+          const rd = r.body.getReader();
+          for (;;) {                                   // stop at the first byte past ART_MAX
+            const { done, value } = await rd.read();
+            if (done) break;
+            const take = Math.min(value.length, ART_MAX - n);
+            text += dec.decode(value.subarray(0, take), { stream: true }); n += take;
+            if (take < value.length) { cut = true; rd.cancel().catch(() => {}); break; }
+          }
+          text += dec.decode();
+        } else {
+          const b = new Uint8Array(await r.arrayBuffer());
+          cut = b.length > ART_MAX; n = Math.min(b.length, ART_MAX); text = dec.decode(b.subarray(0, n));
+        }
+        if (seq !== this.artSeq) return;               // a newer artifact was opened
+        const lines = text ? text.split('\n').length - (text.endsWith('\n') ? 1 : 0) : 0;
+        this.artM = { ...this.artM, loading: false, text, loaded: n, size: total ?? n, lines, truncated: cut };
+      } catch (e) {
+        if (seq === this.artSeq && this.artM) this.artM = { ...this.artM, loading: false, error: e.message };
+      }
+    },
+    // Back: to the evidence modal it was opened from; close: the viewer and that modal
+    backArt() { this.artSeq++; this.artM = null; },
+    closeArt() { const f = this.artM && this.artM.fromStep; this.artSeq++; this.artM = null; if (f) this.stepM = null; },
+    // a step row's artifact chip: the step's evidence modal with the viewer over it
+    openStepArt(o, phase, st, a) { this.openStep(o, phase, st); this.openArt(a, true); },
+    artInfo() {
+      const m = this.artM; if (!m || m.loading || m.error) return '';
+      const kb = (b) => (b == null ? '?' : b < 10240 ? `${b} B` : b < 1048576 ? `${(b / 1024).toFixed(1)} KiB` : `${(b / 1048576).toFixed(1)} MiB`);
+      return `${m.lines} line${m.lines === 1 ? '' : 's'} · ${kb(m.size)}` + (m.truncated ? ` · first ${kb(m.loaded)} shown` : '');
+    },
+    // the clipboard API needs a secure context (this page is often plain http): fall back
+    async copyArt() {
+      const m = this.artM; if (!m || !m.text) return;
+      let ok = false;
+      try { if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(m.text); ok = true; } }
+      catch (e) { /* fall back below */ }
+      if (!ok) {
+        const ta = document.createElement('textarea');
+        ta.value = m.text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select();
+        try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+        ta.remove();
+      }
+      if (this.artM === m) this.artM = { ...m, copied: ok ? (m.truncated ? 'copied (shown part)' : 'copied') : 'copy failed' };
+    },
     whoName(o) {
       if (!o) return '';
       return o.type === 'iom' ? `${o.dev.pos} ${o.ep.toUpperCase()}` : o.type === 'sw' ? `SW ${o.sw.id}`
@@ -278,9 +340,9 @@ function App() {
     statusStyle(d) { const c = RGB[this.phaseKey(d)] || RGB.discover; return `background:rgba(${c},.15);color:rgb(${c})`; },
     faults(d) {
       if (!d) return [];
-      return ['discover', 'firmware', 'qualify'].flatMap((p) => this.stepEntries(d, p))
+      return ['discover', 'firmware', 'qualify'].flatMap((p) => this.stepEntries(d, p).map((x) => ({ ...x, phase: p })))
         .filter((x) => x.state === 'fault' || x.state === 'unknown')
-        .map((x) => ({ rung: x.name, text: x.note, bad: x.state === 'fault' }));
+        .map((x) => ({ rung: x.name, text: x.note, bad: x.state === 'fault', phase: x.phase, st: x }));
     },
     popRun(d) { return d && (d.runs || {})['population-check']; },
     popMark(d) {
@@ -449,11 +511,11 @@ function App() {
     open(c) { if (c && !c.empty) this.select(this.cellObj(c).pos); },
     // toggle a drawer by its key (device pos, <pos>.iomN, _sw-<id>, _sw-<id>.bmc)
     select(key) {
-      this.actionMsg = null; this.stepM = null;
+      this.actionMsg = null; this.stepM = null; this.artM = null;
       this.sel = this.sel === key ? null : key;
       history.replaceState(null, '', this.sel ? '#sel=' + this.sel : location.pathname);
     },
-    close() { this.sel = null; this.stepM = null; history.replaceState(null, '', location.pathname); },
+    close() { this.sel = null; this.stepM = null; this.artM = null; history.replaceState(null, '', location.pathname); },
     // drawer header sub-line per kind
     subLine(o) {
       if (!o) return '';
@@ -579,7 +641,11 @@ function App() {
       catch (e) { this.actionMsg = 'qualify: ' + e.message; }
       await this.refresh();
     },
-    openInv(d) { const u = this.invUrl(d); if (u) window.open(u, '_blank', 'noopener'); },
+    openInv(d) {
+      const a = ((d && (d.runs || {}).inventory) || {}).artifacts || {};
+      const n = a['macinv-v'] ? 'macinv-v' : 'macinv';
+      if (a[n]) this.openArt({ name: n, url: a[n] });
+    },
     invUrl(d) {
       const a = ((d && (d.runs || {}).inventory) || {}).artifacts || {};
       return a['macinv-v'] || a.macinv || null;

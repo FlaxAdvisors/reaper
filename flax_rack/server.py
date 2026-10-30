@@ -470,10 +470,18 @@ class App:
             hosts = {d.pos for d in r.g.devices if d.endpoints.get("hosts")}
             if not (isinstance(pos, list) and pos and all(isinstance(p, str) for p in pos)):
                 return 400, {"error": "positions must be a non-empty list of positions"}
-            bad = sorted(set(pos) - hosts)
-            if bad:
-                return 400, {"error": f"not a host-bearing position: {', '.join(bad)}"}
-            return self._start_stage(r, "qualify", run_qualify, positions=sorted(set(pos)))
+            unknown = sorted(set(pos) - {d.pos for d in r.g.devices})
+            if unknown:
+                return 400, {"error": f"unknown position: {', '.join(unknown)}"}
+            # a JBOD (no host) has nothing to qualify: skip it, run the rest
+            skipped = sorted(set(pos) - hosts)
+            run = sorted(set(pos) & hosts)
+            if not run:
+                return 400, {"error": f"not a host-bearing position: {', '.join(skipped)}"}
+            code, body = self._start_stage(r, "qualify", run_qualify, positions=run)
+            if skipped and code == 202:
+                body["skipped"] = skipped
+            return code, body
         return self._start_stage(r, "qualify", run_qualify)
 
     # -- BMC pollers: one per served rack; a disabled/vanished rack's poller stops --

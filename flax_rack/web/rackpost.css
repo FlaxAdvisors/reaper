@@ -123,3 +123,17 @@ a.tile{display:block;color:inherit;text-decoration:none}
 .tile.sw .sw-rows{grid-template-columns:minmax(0,.8fr) minmax(0,1.2fr) minmax(0,1.2fr)}
 .tile.sw .t-row .k{width:auto;min-width:2.2rem;margin-right:.35rem}
 .kv-grid .amb{color:var(--amber)}
+
+/* artifacts open in-page: chips in step rows / raw lines / the evidence modal, and the viewer */
+.step .art,.arts-line .art{cursor:pointer}
+.alert-box.clk:hover{border-color:var(--accent)}
+.art-box{width:min(1100px,94vw);max-width:94vw;height:84vh;display:flex;flex-direction:column;overflow:hidden}
+.art-box .m-h{flex-shrink:0}
+.art-box .art-info{font-size:.7rem;color:var(--dim);font-weight:400;white-space:nowrap}
+.art-bar{display:flex;align-items:center;gap:.4rem;padding:.5rem .9rem;border-bottom:1px solid var(--border);flex-shrink:0;min-width:0}
+.art-bar .press{width:auto;padding:.25rem .7rem;font:600 .74rem system-ui,sans-serif;text-decoration:none;display:inline-block}
+.art-bar .art-copied{font-size:.7rem;color:var(--green)}
+.art-bar .art-path{margin-left:auto;font-size:.66rem;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.art-box > .m-sub,.art-box > .pending-note{margin:.5rem .9rem 0}
+.art-box .amb{color:var(--amber)} .art-box .bad{color:var(--red)}
+.art-pre{flex:1;min-height:0;margin:.6rem .9rem .9rem;white-space:pre;overflow:auto;tab-size:8}
