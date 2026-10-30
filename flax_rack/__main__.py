@@ -105,9 +105,8 @@ def _discover(a) -> int:
 
 
 def _firmware(a) -> int:
-    from flax_rungs.fwsteps import FW_STEPS
     from .creds import CredsError
-    from .firmware import run_firmware
+    from .firmware import FIRMWARE_RUNGS, run_firmware
     ctx, lock = _order_ctx()
     try:
         run_firmware(ctx, positions=a.pos or None)
@@ -116,13 +115,13 @@ def _firmware(a) -> int:
     finally:
         lock.release()
     lr = ctx.db.latest_runs()
-    keys = sorted({k for k, rung in lr if rung in FW_STEPS})
+    keys = sorted({k for k, rung in lr if rung in FIRMWARE_RUNGS})
     for key in keys:
-        for rung in FW_STEPS:
+        for rung in FIRMWARE_RUNGS:
             r = lr.get((key, rung))
             if r:
                 det = r["detail"] or {}
-                print(f"{key:12s} {rung:13s} {r['verdict'] or r['status']:5s} "
+                print(f"{key:12s} {rung:18s} {r['verdict'] or r['status']:5s} "
                       f"{det.get('state') or '':8s} {det.get('headline') or ''}")
     return 0
 

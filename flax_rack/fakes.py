@@ -30,7 +30,10 @@ Firmware (detect only) runs the real fwcheck readers against FakeRungs' manifest
 fake Redfish BMC and canned dmidecode/mstflint output: R05's BMC and R37's BIOS are
 off target, L37's Mellanox card has its UEFI ROM off; the rest are at target. In the
 served fake (fake_context_factory) R05's host stops answering ssh for the firmware
-reads (FW_HOST_DOWN), so its bios/mlx pairs render grey "not measured". One
+reads (FW_HOST_DOWN), so its bios/mlx pairs render grey "not measured". The backup
+BMC chip reads the target everywhere (so R05's differs from its active 1.1.3); in the
+served fake L37's backup read fails (FW_BACKUP_ERR: grey, no version). A host up on
+its installed OS answers ethtool -i for the installed-OS NIC read. One
 FakeRungs lives per rack for the server's life, so Discover's boots carry over.
 
 Deploy runs against FakeRungs' install/firstboot/flax_user/bond_config/ha_test stand-ins
@@ -56,6 +59,7 @@ from .stages import OrderContext
 
 FAIL_POS = "C37"
 FW_HOST_DOWN = {"R05"}               # served fake only: ssh gone for the firmware reads
+FW_BACKUP_ERR = {"L37": "reader_canary_failed"}   # served fake: backup BMC chip not read
 LIVE_POS = "L05"                     # already in the live image when Discover starts
 POP_FAIL = {"R05"}                   # served fake: POP red (Deploy needs a recorded waiver)
 SOL_FINDINGS = {"R37"}               # served fake: an I/O error line in its install console
@@ -169,6 +173,7 @@ def fake_context_factory(rack_dir, g, db) -> OrderContext:
                                                  slow={"R05": 2.5}, live={LIVE_POS},
                                                  pop_fail=POP_FAIL)
         rungs.fw_host_down = set(FW_HOST_DOWN)
+        rungs.fw_backup_err = dict(FW_BACKUP_ERR)
         rungs.sol_findings = set(SOL_FINDINGS)
         rungs.sel_nonbenign = set(SEL_NONBENIGN)
         rungs.pull_file = Path(rack_dir) / ".fake-pull"
@@ -285,6 +290,8 @@ class FakeRungs:
         self.fw_bios_ver = {"R37": "TPC_P26C"}
         self.fw_nic_uefi_off = {"L37"}
         self.fw_host_down: set[str] = set()   # hosts whose firmware-read ssh times out
+        self.fw_backup_ver: dict[str, str] = {}   # pos -> backup chip version (else target)
+        self.fw_backup_err: dict[str, str] = {}   # pos -> bmc-backup-flash's error
         self.pop_fail = set(pop_fail)          # inventory lacks the Mellanox line: POP red
         # Deploy: installs that never power off, first boots refused, SOL error lines,
         # bonds that do not come up, nodes whose ha-test fails
@@ -819,9 +826,31 @@ class FakeRungs:
         from flax_rungs import fwcheck
         return fwcheck.nic(host_ip, user, pw, matcher, run=run or self.host_run, runner=runner)
 
+    def fw_nic_installed(self, host_ip, user, pw, matcher, macs, *, run=None, runner=None):
+        from flax_rungs import fwcheck
+        return fwcheck.nic_installed(host_ip, user, pw, matcher, macs,
+                                     run=run or self.host_run, runner=runner)
+
+    def fw_backup(self, bmc_ip, *, runner=None):
+        """The real bmc_backup over a canned `bmc-backup-flash version` JSON line."""
+        import json
+        from flax_rungs import fwcheck
+        pos = self.pos_of.get(bmc_ip)
+        self.calls.append(("fw_backup", pos))
+        active = self.fw_bmc_ver.get(pos, self.FW_BMC_TARGET)
+        err = self.fw_backup_err.get(pos)
+        j = {"backup_version": None if err else self.fw_backup_ver.get(pos, self.FW_BMC_TARGET),
+             "active_version": active, "net_file": "present", "net_pin": "none",
+             "net_mtime": 1793119281, **({"error": err} if err else {})}
+
+        def run(argv, **kw):
+            return subprocess.CompletedProcess(argv, 1 if err else 0, json.dumps(j) + "\n", "")
+        return fwcheck.bmc_backup(bmc_ip, runner=run)
+
     def _fw_host(self, pos, script):
         """Canned dmidecode / mstflint output for fwcheck's host scripts (None: another)."""
         from flax_post.nicd.driver import QUERY_SCRIPT
+        from flax_rungs import fwcheck
         if pos is None:
             return None
         if script.startswith("dmidecode -t system"):
@@ -832,6 +861,16 @@ class FakeRungs:
             v = self.fw_bios_ver.get(pos, self.FW_BIOS_TARGET)
             return ("Handle 0x0000, DMI type 0, 26 bytes\nBIOS Information\n\tVendor: American "
                     f"Megatrends Inc.\n\tVersion: {v}\n\tRelease Date: 02/23/2021\n")
+        if script == fwcheck.ETHTOOL_SCRIPT:
+            psid, ver = self.FW_NIC
+            d = self.g.device(pos)
+            ports = {"enp94s0np0": self.host_macs.get(pos) or _mac(d.ou, d.col, 0x10),
+                     **{k: m for k, m in self._macs(pos).items() if k != "eno1"}}
+            return "".join(
+                f"===IF {ifn}===\naddress: {m}\nPermanent address: {m}\ndriver: mlx5_core\n"
+                f"version: 6.8.0-45-generic\nfirmware-version: {ver} ({psid})\n"
+                f"bus-info: 0000:{'5e' if ifn.startswith('enp94') else '3b'}:00.{k}\n"
+                for k, (ifn, m) in enumerate(ports.items()))
         if script == QUERY_SCRIPT:
             psid, ver = self.FW_NIC
             uefi = "False(0)" if pos in self.fw_nic_uefi_off else "True(1)"

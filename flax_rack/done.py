@@ -20,6 +20,10 @@ three rungs recorded with stage `done`:
                node would PXE-boot at the customer): a fail, the override still cleared.
                No efibootmgr capture (never deployed) is a row, not a fail.
 
+A device with no Firmware result in the current pass is flagged: the event `done: no
+Firmware result this pass: <pos ...>` and a `firmware` row + note on its components
+rung (the CSV's version cells for it are blank: versions are this pass's reads).
+
 Then report.write rewrites customer-devices.csv / customer-components.csv in the order
 dir (every device, IOM and switch row; from each row's own latest runs) and the event
 `done: csv written (<n> devices)` is logged. A positions run re-reads those devices only
@@ -74,7 +78,26 @@ def _rung(ctx, pos, rung, fn) -> RungResult:
 
 
 # ---------------------------------------------------------------- rungs
+NO_FIRMWARE = "no Firmware result this pass: the CSV's version cells are blank"
+
+
+def has_firmware(lr, key) -> bool:
+    """A Firmware row for key in the current pass (latest_runs is pass-scoped)."""
+    return any(k[0] == key and r.get("stage") == "firmware" for k, r in lr.items())
+
+
 def components(ctx, lr, pos) -> RungResult:
+    res = _components(ctx, lr, pos)
+    if has_firmware(lr, pos):
+        return res
+    d = dict(res.detail)
+    d["rows"] = [*(d.get("rows") or []), ["firmware", NO_FIRMWARE]]
+    d["notes"] = [*(d.get("notes") or []), "run Firmware, then Done again, to fill bmc/bios/"
+                  "nic/backup versions"]
+    return RungResult(res.verdict, d, res.artifacts)
+
+
+def _components(ctx, lr, pos) -> RungResult:
     text = report.inventory_text(ctx.dir, lr, pos)
     if text is None:
         ctx.db.set_components(pos, [], 0)   # an older Done's rows are not this inventory's
@@ -201,6 +224,10 @@ def run(ctx, positions: list[str] | None = None) -> dict:
             x["host_ip"], x["hostname"] = a.ip, a.name
     ctx.db.add_event("done", "done started: " + ", ".join(xs))
     lr = ctx.db.latest_runs()
+    nofw = [p for p in xs if not has_firmware(lr, p)]
+    if nofw:
+        ctx.db.add_event("done", "done: no Firmware result this pass: " + ", ".join(nofw)
+                         + " (CSV version cells blank)")
 
     def one(x):
         try:

@@ -12,11 +12,13 @@ ran a rung has "" there, not a neighbour's value. Sources:
   chassis_serial      Post's FRU ID 0 ship serial in the latest inventory's macinv-v
   bmc_mac / host_mac  Discover's MACs (order.db device; IOM n = iom_macs[n-1]; a
                       switch's from its latest passed bmc-leased)
-  fabric_*            the latest passed Deploy ha-config (bond0 MACs per wedge side,
-                      the A-side address); a device without one: the MAC of the port
-                      Qualify's latest ha-path saw on each wedge (inventory ip-d-link),
-                      no address
+  fabric_*_mac        the latest passed Deploy ha-config (bond0 MACs per wedge side); a
+                      device without one: the MAC of the port Qualify's latest ha-path
+                      saw on each wedge (inventory ip-d-link)
   *_version           the latest Firmware <x>-checked slice's current version
+  bmc_backup_version  the latest passed Firmware bmc-backup-checked's backup_version (a
+                      TiogaPass's backup BMC chip, an IOM's fw-util ROM Version); an
+                      unread backup is "" -- never the active version in its place
   qualify / deploy    qualify.qualify_why / deploy.deploy_why: pass, fail, or
                       unmeasured ("not measured: ..."); "" before the stage ran
   ha_mode             order.db ha_mode's mode for a device whose ha-test passed
@@ -35,12 +37,13 @@ from flax_rungs import bond
 from .addressing import plan_addresses
 from .deploy import deploy_rungs, deploy_why
 from .discover_ladder import DISCOVER_STEPS
+from .firmware import BACKUP_STEP
 from .qualify import device_rungs, parse_ip_link, qualify_why
 
 DEVICE_COLUMNS = ("order", "rack", "pos", "ou", "kind", "part", "hostname",
                   "chassis_serial", "bmc_mac", "host_mac", "fabric_a_mac", "fabric_b_mac",
-                  "fabric_a_ip", "bmc_version", "bios_version", "nic_firmware", "qualify",
-                  "deploy", "ha_mode", "done")
+                  "bmc_version", "bmc_backup_version", "bios_version", "nic_firmware",
+                  "qualify", "deploy", "ha_mode", "done")
 COMPONENT_COLUMNS = ("order", "rack", "pos", "kind", "model", "serial", "slot")
 DEVICES_CSV = "customer-devices.csv"
 COMPONENTS_CSV = "customer-components.csv"
@@ -169,6 +172,13 @@ def _fw(lr, key, prefix) -> str:
     return str(sl.get("current") or sl.get("current_version") or "")
 
 
+def _backup(lr, key) -> str:
+    """The backup BMC version this pass's Firmware read ("" unless it passed)."""
+    r = _done(lr, key, BACKUP_STEP)
+    return str((r.get("detail") or {}).get("backup_version") or "") \
+        if r.get("verdict") == "pass" else ""
+
+
 def _row_value(detail, label) -> str:
     return next((str(v) for k, v in (detail or {}).get("rows") or [] if k == label), "")
 
@@ -207,8 +217,6 @@ def device_rows(order_dir, g, db) -> list[dict]:
             qualify = _from_why(qwhy.get(d.pos)) if ran else ""
         dr = deploy_rungs(d)
         deploy = (_from_why(dwhy.get(d.pos)) if any((d.pos, r) in lr for r in dr) else "")
-        hac = _done(lr, d.pos, "ha-config")
-        fab = (hac.get("detail") or {}) if hac.get("verdict") == "pass" else {}
         fmac = _fabric_macs(order_dir, lr, d.pos)
         hosts = [names[k] for k in sorted(names) if k[0] == d.pos and k[1].startswith("host")]
         out.append(_blank(
@@ -216,8 +224,8 @@ def device_rows(order_dir, g, db) -> list[dict]:
             hostname=" ".join(hosts), chassis_serial=fru.get("serial") or "",
             bmc_mac=_mac(row.get("bmc_mac")), host_mac=_mac(row.get("host_mac")),
             fabric_a_mac=fmac.get("A", ""), fabric_b_mac=fmac.get("B", ""),
-            fabric_a_ip=(fab.get("address") or "").split("/")[0],
-            bmc_version=_fw(lr, d.pos, "bmc"), bios_version=_fw(lr, d.pos, "bios"),
+            bmc_version=_fw(lr, d.pos, "bmc"), bmc_backup_version=_backup(lr, d.pos),
+            bios_version=_fw(lr, d.pos, "bios"),
             nic_firmware=_fw(lr, d.pos, "mlx"), qualify=qualify, deploy=deploy,
             ha_mode=ha.get("mode", "") if d.pos in (ha.get("devices") or []) else "",
             done=_done_verdict(lr, d.pos)))
@@ -228,7 +236,8 @@ def device_rows(order_dir, g, db) -> list[dict]:
                 order=g.order, rack=g.rack, pos=key, ou=d.ou, kind="iom", part=d.part,
                 hostname=names.get((d.pos, f"iom{n}"), ""),
                 bmc_mac=_mac(ioms[n - 1] if n <= len(ioms) else None),
-                bmc_version=_fw(lr, key, "bmc"), done=_done_verdict(lr, key)))
+                bmc_version=_fw(lr, key, "bmc"), bmc_backup_version=_backup(lr, key),
+                done=_done_verdict(lr, key)))
     for s in g.switches:
         key = f"_sw-{s.id}"
         leased = _done(lr, key, "bmc-leased")

@@ -7,7 +7,8 @@ BMC endpoint (a TiogaPass BMC, each JBOD IOM, a wedge's BMC) gets its own
             FRU 0, IOM `fruid-util iom`, wedge `weutil`, SONiC `show platform syseeprom`)
   fw        the Firmware reads: `bmc-checked`'s {component: version} for Facebook OpenBMC
             (fw-util / issue+cpld, report only) + not-present parts, and each manifest
-            part's current/target/phase (TiogaPass BMC, BIOS, each Mellanox card)
+            part's current/target/phase (TiogaPass BMC, BMC backup chip, BIOS, each
+            Mellanox card)
 
 and a switch its mgmt / BMC MAC+IP (Discover's *-mac-seen / *-leased) and a per-port
 table: mgmt switch = FDB MACs per port -> the geometry device cabled there + link state
@@ -74,8 +75,13 @@ def firmware(runs: dict) -> dict | None:
         p = _part(f"NIC {c.get('pci')}", c)
         if p:
             parts.append(p)
+    bk = runs.get("bmc-backup-checked")     # a TiogaPass's backup chip (read, else none)
+    if bk and bk.get("status") == "done" and bk.get("verdict") == "pass" \
+            and _detail(bk).get("backup_version"):
+        parts.insert(1, {"part": "BMC backup", "current": _detail(bk)["backup_version"],
+                         "target": None, "phase": None})
     if sl.get("versions"):                  # Facebook OpenBMC: the versions are the read
-        parts = [p for p in parts if p["part"] != "BMC"]
+        parts = [p for p in parts if p["part"] not in ("BMC", "BMC backup")]
     return {"phase": d.get("phase") or sl.get("phase"), "versions": sl.get("versions") or {},
             "not_present": sl.get("not_present") or {}, "parts": parts,
             "headline": d.get("headline"), "artifacts": r.get("artifacts") or {}}

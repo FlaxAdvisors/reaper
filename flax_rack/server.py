@@ -72,7 +72,6 @@ from pathlib import Path
 
 from flax_rungs import sol
 from flax_rungs.bond import clean_ha
-from flax_rungs.fwsteps import FW_STEPS
 from flax_rungs.pxeboot import PXE_DIR
 
 from . import devview, process_report, report
@@ -82,7 +81,7 @@ from .deploy import (_REASON_MAX, FROM_PHASES, PHASES as DEPLOY_PHASES, GateErro
                      plan as deploy_plan, run_deploy, sweep_interrupted_installs)
 from .done import DONE_RUNGS, done_rungs, run as run_done, targets as done_targets
 from .discover_ladder import DISCOVER_STEPS, OLD_DISCOVER_RUNGS, wanted as stage_positions
-from .firmware import run_firmware
+from .firmware import FIRMWARE_RUNGS, run_firmware
 from .geometry import Geometry, load_geometry
 from .kea_client import KeaError
 from . import linkmon
@@ -102,7 +101,6 @@ DRAINING = "rackpost is being updated (daemon restart pending); try again in a m
 
 PHASES = ("discover", "firmware", "qualify", "deploy", "done")
 DISCOVER_RUNGS = DISCOVER_STEPS            # Post's 16 steps; OLD_DISCOVER_RUNGS from history
-FIRMWARE_RUNGS = FW_STEPS                  # Post's 6 firmware steps (detect only)
 # Qualify's old fw-versions read (removed; the Firmware stage covers it): its order.db
 # rows stay in `runs` but no step list names them, so they are never drawn
 FIRMWARE_OLD_RUNGS = ()

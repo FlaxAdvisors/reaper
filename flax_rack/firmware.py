@@ -11,6 +11,11 @@ Evidence is Post's stepinfo shape; raw reads are saved as
 artifacts/<key>/f<run>/<step>/<name>.txt. Rackpost never flashes: an off-target
 version is `needs_update` (triage flashes it).
 
+Beside Post's six, rackpost's own `bmc-backup-checked` (after bmc-updated): the
+backup BMC's version, report only -- a TiogaPass's backup chip (`bmc-backup-flash
+version`, read-only), an IOM's fw-util ROM Version; unread = `unmeasured` with no
+version (the CSV cell stays blank, never the active version). n/a `skip` elsewhere.
+
 Not lockstepped: every device (and switch) runs on its own, at most MAX_PARALLEL at once.
 
   Every BMC/IOM read first needs that endpoint's latest Discover bmc-leased and
@@ -21,8 +26,12 @@ Not lockstepped: every device (and switch) runs on its own, at most MAX_PARALLEL
   TiogaPass host+BMC (compute-tp, bc-head-tp): BMC = fwd's Redfish probe against the
     BMC manifest; BIOS + Mellanox = biosd/nicd's reads over ssh to the host, only when
     Discover's host-ssh passed AND a re-read now shows the live image with this
-    device's BOOTIF (else those 4 steps `skip` "host not in live image"; an ssh that
-    no longer answers is Post's `unreachable`).
+    device's BOOTIF. A host up on its installed OS instead (Discover's proof: Ubuntu
+    24.04, / on an internal disk, the discovered host MAC on a NIC) is read there:
+    BIOS = the same dmidecode, Mellanox = ethtool -i of the mezz + fabric ports by MAC
+    (fwcheck.nic_installed); the slice's `source` row says which. Anything else: those
+    4 steps `skip` "host not in live image"; an ssh that no longer answers is Post's
+    `unreachable`.
   JBOD (bc-jbod): each IOM is its own row set (key <pos>.iomN): bmc-checked = its
     fw-util versions (identity.iom), phase `unsupported` (report only); bios/mlx
     `skip`. The device's rows roll its IOMs up.
@@ -42,19 +51,25 @@ from flax_rungs.fwsteps import FW_STEPS
 from flax_rungs.result import UNMEASURED, RungResult, not_passed
 
 from .addressing import plan_addresses
-from .discover_ladder import _rollup, run_step, wanted
+from .discover_ladder import _installed_os, _rollup, run_step, wanted
 from .stages import cancelled, creds
 
 STAGE = "firmware"
 MAX_PARALLEL = 8
 TP_KINDS = ("compute-tp", "bc-head-tp")      # TiogaPass OpenBMC + host: Post's three daemons
 _STATE_RANK = ("fault", "cur", "pending", "done")
+BACKUP_STEP = "bmc-backup-checked"
+# Post's six + the backup BMC read, in recording (and display) order
+FIRMWARE_RUNGS = (*FW_STEPS[:2], BACKUP_STEP, *FW_STEPS[2:])
+LIVE_SRC = "live image: flax-post daemons' probes"
+INSTALLED_SRC = "installed OS (ssh flax, sudo -n)"
 
 
 def real_rungs():
     return SimpleNamespace(
         fw_manifests=fwcheck.load_manifests, fw_bmc=fwcheck.tp_bmc,
-        fw_bios=fwcheck.bios, fw_nic=fwcheck.nic, host_run=hostssh.run,
+        fw_bios=fwcheck.bios, fw_nic=fwcheck.nic, fw_nic_installed=fwcheck.nic_installed,
+        fw_backup=fwcheck.bmc_backup, host_run=hostssh.run,
         iom=identity.iom, wedge_bmc=identity.wedge_bmc, wall=time.time)
 
 
@@ -90,6 +105,15 @@ class _Rows:
     def skip(self, prefix, why, na=False):
         self.pair(prefix, lambda: fwcheck.skipped(why, na))
 
+    def one(self, step, fn):
+        """A single step (the backup read): `skip` "cancelled" once the rack is cancelled."""
+        if cancelled(self.ctx):
+            fn = lambda: fwcheck.skipped("cancelled")[0]      # noqa: E731
+        self.res[step] = run_step(self.ctx, self.key, step, fn, STAGE)
+
+    def skip_one(self, step, why, na=False):
+        self.one(step, lambda: fwcheck.skipped(why, na)[0])
+
 
 GATE_STEPS = ("bmc-leased", "bmc-pinged")
 
@@ -122,7 +146,15 @@ def _live_host(ctx, R, cr, lr, d, host_ip):
     _bid, _up, cmdline = liveboot.parse_probe(out)
     bootif = liveboot.bootif_mac(cmdline)
     if "BOOTIF=" not in cmdline or "pxeaddr=" not in cmdline:
-        return "skip", f"host not in live image ({host_ip} answers without BOOTIF/pxeaddr)"
+        why = f"host not in live image ({host_ip} answers without BOOTIF/pxeaddr)"
+        p = _installed_os(ctx, SimpleNamespace(R=R, cr=cr), host_ip)
+        if p is None:
+            return "skip", why
+        if not want or want not in p["macs"]:
+            return "skip", f"{why}; an installed OS without the discovered host MAC " \
+                           f"{want or 'none'}"
+        return "installed", (f"installed OS (Ubuntu {p['version_id']}, / on {p['disk']}, "
+                             f"host {p['hostname']})")
     if not want or bootif != want:
         return "skip", (f"host not in live image of this device (BOOTIF {bootif or 'unparsed'}"
                         f" != discovered {want or 'none'})")
@@ -142,8 +174,10 @@ def _tp(ctx, R, cr, M, lr, d, ips) -> _Rows:
     why = discover_gate(lr, d.pos)
     if why:
         rows.skip("bmc", why)
+        rows.skip_one(BACKUP_STEP, why)
     else:
         rows.pair("bmc", bmc)
+        rows.one(BACKUP_STEP, lambda: R.fw_backup(bmc_ip, runner=ctx.runner))
     if cancelled(ctx):
         rows.skip("bios", "cancelled")
         rows.skip("mlx", "cancelled")
@@ -153,31 +187,71 @@ def _tp(ctx, R, cr, M, lr, d, ips) -> _Rows:
         rows.skip("bios", gate[1])
         rows.skip("mlx", gate[1])
         return rows
-    if gate:     # ssh to the live image no longer answers (unmeasured) or the probe failed
+    if gate and gate[0] != "installed":  # ssh no longer answers (unmeasured) or the probe failed
         down = {"phase": "unreachable", "fault_reason": gate[1],
                 "ssh_unreachable": gate[0] == "unreachable"}
         rows.pair("bios", lambda: fwcheck.steps("bios", {**down, "current": None}))
         rows.pair("mlx", lambda: fwcheck.steps("nic", {**down, "devices": []}))
         return rows
     kw = dict(run=R.host_run, runner=ctx.runner)
+    installed = bool(gate)                  # ("installed", what): read on the installed OS
+    src = f"{INSTALLED_SRC}: {gate[1]}" if installed else LIVE_SRC
+
+    def sourced(sl_arts):
+        sl, arts = sl_arts
+        return {**sl, "source": sl.get("source") or src}, arts
+
     rows.pair("bios", lambda: fwcheck.steps(
-        "bios", *R.fw_bios(host_ip, *cr.host, M.bios, **kw), M.sources,
+        "bios", *sourced(R.fw_bios(host_ip, *cr.host, M.bios, **kw)), M.sources,
         ["read with flax-post-biosd's probe: dmidecode -t system -> family map -> "
          "bios-firmware-versions.json; dmidecode -t bios"]))
-    rows.pair("mlx", lambda: fwcheck.steps(
-        "nic", *R.fw_nic(host_ip, *cr.host, M.nic, **kw), M.sources,
-        ["read with flax-post-nicd's query: mstflint query + mstconfig EXP_ROM_UEFI_x86_ENABLE "
-         "per card, against nic-firmware-versions.json (keyed by PSID)"]))
+    if installed:
+        macs = _nic_macs(ctx, d)
+        rows.pair("mlx", lambda: fwcheck.steps(
+            "nic", *sourced(R.fw_nic_installed(host_ip, *cr.host, M.nic, macs, **kw)),
+            M.sources,
+            ["installed OS (no mstflint): ethtool -i firmware-version \"<version> (<PSID>)\" "
+             "of the ports BY MAC: " + ", ".join(f"{k} {v}" for k, v in macs.items())
+             + "; against nic-firmware-versions.json (keyed by PSID); the UEFI ROM bit is "
+             "not readable there"]))
+    else:
+        rows.pair("mlx", lambda: fwcheck.steps(
+            "nic", *sourced(R.fw_nic(host_ip, *cr.host, M.nic, **kw)), M.sources,
+            ["read with flax-post-nicd's query: mstflint query + mstconfig "
+             "EXP_ROM_UEFI_x86_ENABLE per card, against nic-firmware-versions.json "
+             "(keyed by PSID)"]))
     return rows
+
+
+def _nic_macs(ctx, d) -> dict:
+    """{label: mac} of the ports the installed-OS NIC read takes: the mezz (Discover's
+    host MAC) and the fabric ports Deploy bonded (else those Qualify's ha-path saw)."""
+    from .report import _fabric_macs        # report imports this module
+    row = next((x for x in ctx.db.devices() if x["pos"] == d.pos), {})
+    out = {"mezz": row.get("host_mac")} if row.get("host_mac") else {}
+    for side, mac in sorted(_fabric_macs(ctx.dir, ctx.db.latest_runs(), d.pos).items()):
+        out[f"fabric {side}"] = mac
+    return out
 
 
 # ---------------------------------------------------------------- report-only BMCs
 _NO_HOST = "no host BIOS/NIC firmware here"
 
 
-def _report_only(ctx, key, read, notes, host_why) -> _Rows:
+def _report_only(ctx, key, read, notes, host_why, backup) -> _Rows:
+    """backup: the backup-version step from the same read, or a str: why it is n/a."""
     rows = _Rows(ctx, key)
-    rows.pair("bmc", lambda: fwcheck.steps("bmc", *fwcheck.report_only(read()), notes=notes))
+    got = {}
+
+    def bmc():
+        got["r"] = read()
+        return fwcheck.steps("bmc", *fwcheck.report_only(got["r"]), notes=notes)
+    rows.pair("bmc", bmc)
+    if callable(backup):
+        rows.one(BACKUP_STEP, lambda: backup(got["r"]) if "r" in got else
+                 fwcheck.iom_rom(RungResult("fail", {"error": "bmc-checked did not read"})))
+    else:
+        rows.skip_one(BACKUP_STEP, backup, na=True)
     rows.skip("bios", host_why, na=True)
     rows.skip("mlx", host_why, na=True)
     return rows
@@ -189,6 +263,7 @@ def _iom(ctx, R, cr, lr, d, n, ip) -> _Rows:
     if why:
         rows = _Rows(ctx, key)
         rows.skip("bmc", why)
+        rows.skip_one(BACKUP_STEP, why)
         rows.skip("bios", "an IOM has no host", na=True)
         rows.skip("mlx", "an IOM has no host", na=True)
         return rows
@@ -201,7 +276,7 @@ def _iom(ctx, R, cr, lr, d, n, ip) -> _Rows:
     return _report_only(ctx, key, read,
                         [f"IOM{n} at {ip}: /usr/bin/fw-util bmc --version and all --version "
                          "(Facebook OpenBMC; no firmware manifest exists for it)"],
-                        "an IOM has no host")
+                        "an IOM has no host", backup=fwcheck.iom_rom)
 
 
 def _jbod(ctx, R, cr, lr, d, ips):
@@ -214,7 +289,7 @@ def _jbod(ctx, R, cr, lr, d, ips):
         st = next((s for s in _STATE_RANK if s in sts), None)
         return {"state": st} if st else {}
 
-    _rollup(ctx, d.pos, walks, worst, FW_STEPS, STAGE)
+    _rollup(ctx, d.pos, walks, worst, FIRMWARE_RUNGS, STAGE)
 
 
 def _switch(ctx, R, cr, lr, s):
@@ -222,14 +297,17 @@ def _switch(ctx, R, cr, lr, s):
     host_why = "a switch has no host BIOS/NIC firmware manifest"
     if not s.endpoints.get("bmc"):
         rows = _Rows(ctx, key)
-        for p in ("bmc", "bios", "mlx"):
-            rows.skip(p, f"no BMC ({s.model} endpoints: {', '.join(s.endpoints) or 'none'})"
-                      if p == "bmc" else host_why, na=True)
+        no_bmc = f"no BMC ({s.model} endpoints: {', '.join(s.endpoints) or 'none'})"
+        rows.skip("bmc", no_bmc, na=True)
+        rows.skip_one(BACKUP_STEP, no_bmc, na=True)
+        for p in ("bios", "mlx"):
+            rows.skip(p, host_why, na=True)
         return rows
     why = discover_gate(lr, key)
     if why:
         rows = _Rows(ctx, key)
         rows.skip("bmc", why)
+        rows.skip_one(BACKUP_STEP, "no backup BMC reader for a switch", na=True)
         rows.skip("bios", host_why, na=True)
         rows.skip("mlx", host_why, na=True)
         return rows
@@ -244,13 +322,17 @@ def _switch(ctx, R, cr, lr, s):
         return R.wedge_bmc(ip, *cr.obmc, runner=ctx.runner)
     return _report_only(ctx, key, read,
                         [f"wedge BMC at {ip or '?'}: /etc/issue + /usr/local/bin/cpld_rev.sh "
-                         "(Facebook OpenBMC; no firmware manifest exists for it)"], host_why)
+                         "(Facebook OpenBMC; no firmware manifest exists for it)"], host_why,
+                        "no backup BMC reader for a switch")
 
 
 def _other(ctx, d):
     rows = _Rows(ctx, d.pos)
-    for p in ("bmc", "bios", "mlx"):
-        rows.skip(p, f"no firmware reader for kind {d.kind}", na=True)
+    why = f"no firmware reader for kind {d.kind}"
+    rows.skip("bmc", why, na=True)
+    rows.skip_one(BACKUP_STEP, why, na=True)
+    for p in ("bios", "mlx"):
+        rows.skip(p, why, na=True)
 
 
 # ---------------------------------------------------------------- stage
@@ -296,7 +378,7 @@ def run_firmware(ctx, *, positions: list[str] | None = None) -> None:
     lr = ctx.db.latest_runs()
     off, bad, unm = [], [], []
     for key in [d.pos for d in devs] + [f"_sw-{s.id}" for s in sws if s.endpoints]:
-        sts = {st: (lr.get((key, st)) or {}) for st in FW_STEPS}
+        sts = {st: (lr.get((key, st)) or {}) for st in FIRMWARE_RUNGS}
         if any((r.get("detail") or {}).get("phase") == "needs_update" for r in sts.values()):
             off.append(key)
         elif any(r.get("verdict") == "fail" for r in sts.values()):

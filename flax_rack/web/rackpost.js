@@ -528,18 +528,24 @@ function App() {
     fwOf(d) {
       const parts = ((d && d.fw) || {}).parts || [];
       const cur = (n) => (parts.find((p) => p.part === n) || {}).current;
-      return cur('BIOS') || cur('BMC') ? { bios_version: cur('BIOS') || '?', bmc_firmware: cur('BMC') || '?' } : null;
+      return cur('BIOS') || cur('BMC') ? { bios_version: cur('BIOS') || '?', bmc_firmware: cur('BMC') || '?', backup: cur('BMC backup') || '' } : null;
     },
-    fwKey(f) { return `${f.bios_version}|${f.bmc_firmware}`; },
+    // the backup BMC chip shows only when it differs from the active image
+    fwBackup(f) { return f.backup && f.backup !== f.bmc_firmware ? f.backup : ''; },
+    fwKey(f) { return `${f.bios_version}|${f.bmc_firmware}|${this.fwBackup(f)}`; },
     get fwGroups() {
       const keys = [...new Set((this.s.devices || []).map((d) => this.fwOf(d)).filter(Boolean).map((f) => this.fwKey(f)))].sort();
       return Object.fromEntries(keys.map((k, i) => [k, 'grp-' + (i % 9)]));
     },
-    fwText(d) { const f = this.fwOf(d); return f ? `${f.bios_version} · ${f.bmc_firmware}` : ''; },
+    fwText(d) {
+      const f = this.fwOf(d); if (!f) return '';
+      const b = this.fwBackup(f);
+      return `${f.bios_version} · ${f.bmc_firmware}` + (b ? ` · ${b}` : '');
+    },
     fwCls(d) { const f = this.fwOf(d); return f ? this.fwGroups[this.fwKey(f)] : ''; },
     fwTitle(d) {
       const f = this.fwOf(d);
-      return f ? `BIOS ${f.bios_version} · BMC ${f.bmc_firmware} · Firmware stage (detect only)` : '';
+      return f ? `BIOS ${f.bios_version} · BMC ${f.bmc_firmware} · backup BMC ${f.backup || 'not read'} · Firmware stage (detect only)` : '';
     },
 
     // ---- BMC power chip from the poller (stale after 3 intervals -> grey ?) ----
