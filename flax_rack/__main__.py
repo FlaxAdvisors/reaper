@@ -127,7 +127,7 @@ def _firmware(a) -> int:
 
 def _qualify(a) -> int:
     from .creds import CredsError
-    from .qualify import device_rungs, qualify_passed, run_qualify
+    from .qualify import device_rungs, qualify_passed, qualify_why, run_qualify
     if not a.pos and a.confirm is None:
         sys.exit("a rack-wide qualify power-cycles every host: --confirm <order id> "
                  "(or --pos for some positions)")
@@ -142,7 +142,7 @@ def _qualify(a) -> int:
     for d in ctx.g.devices:
         if a.pos and d.pos not in a.pos:
             continue
-        for rung in device_rungs(d) + ["fw-versions"]:
+        for rung in device_rungs(d):
             r = lr.get((d.pos, rung))
             if r:
                 det = r["detail"] or {}
@@ -150,7 +150,9 @@ def _qualify(a) -> int:
                 print(f"{d.pos:8s} {rung:14s} {r['verdict'] or r['status']}"
                       + (f"  {why}" if why else ""))
     ok, bad = qualify_passed(ctx.db, ctx.g)
-    print("qualify: rack passed" if ok else f"qualify: not passed: {', '.join(bad)}")
+    why = qualify_why(lr, ctx.g)
+    print("qualify: rack passed" if ok else "qualify: not passed: "
+          + ", ".join(f"{p} ({why[p]})" if p in why else p for p in bad))
     return 0 if ok else 1
 
 

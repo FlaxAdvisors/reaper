@@ -253,16 +253,6 @@
         <span class="art" v-for="a in artList(fwViewOf(selObj))" :title="a.url" @click="openArt(a)">{{a.name}}</span></div>
     </div>
 
-    <div v-if="selKind==='dev' && fwOf(selDev)">
-      <div class="section-l">firmware (Qualify's read, report only)</div>
-      <div class="facets">
-        <span class="lbl">BIOS</span><span class="mono fwv" :class="fwCls(selDev)">{{fwOf(selDev)?.bios_version}}</span>
-        <span class="no">{{fwOf(selDev)?.bios_date}}</span>
-        <span class="lbl">BMC</span><span class="mono fwv" :class="fwCls(selDev)">{{fwOf(selDev)?.bmc_firmware}}</span>
-        <span class="no">{{fwOf(selDev)?.bmc_aux || ''}}</span>
-      </div>
-    </div>
-
     <div v-if="selKind==='dev'">
       <div class="section-l">links (BOM → seen)</div>
       <div class="ha">
@@ -291,7 +281,7 @@
     <!-- ---- pipeline: Post's step names per phase; a step opens its evidence ---- -->
     <div class="section-l">pipeline</div>
     <div class="checklist">
-      <div class="phase" v-for="p in s.phases" :class="{bad: phaseState(selObj,p)==='fault'}">
+      <div class="phase" v-for="p in s.phases" :class="{bad: phaseState(selObj,p)==='fault', unm: phaseState(selObj,p)==='unmeasured'}">
         <div class="phase-h"><span class="dot" :class="phaseDot(selObj,p)"></span>{{p}}
           <span class="pct">{{phasePct(selObj,p)}}</span></div>
         <div class="steps" v-if="stepEntries(selObj,p).length">

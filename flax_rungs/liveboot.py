@@ -16,7 +16,7 @@ import subprocess
 import time
 
 from . import bmc, hostssh, redfish
-from .result import RungResult
+from .result import UNMEASURED, RungResult
 
 _PROBE = ("cat /proc/sys/kernel/random/boot_id\n"
           "cut -d' ' -f1 /proc/uptime\n"
@@ -65,9 +65,9 @@ def boot_live(bmc_ip: str, host_ip: str, creds, *, expect_mac: str | None = None
     info: dict = {}
     state = bmc.power_status(bmc_ip, creds.bmc, info=info, runner=runner)
     detail["cipher"] = info.get("cipher")
-    if state is None:
-        return RungResult("fail", {**detail, "error": "power state unknown (no IPMI answer "
-                                                      "on any credential/cipher); not acting"})
+    if state is None:       # no IPMI session: the boot was never tried (unmeasured)
+        why = "power state unknown (no IPMI answer on any credential/cipher); not acting"
+        return RungResult(UNMEASURED, {**detail, "error": why, "headline": why, "reason": why})
     ov = redfish.set_boot_pxe(bmc_ip, creds.redfish, ipmi_creds=creds.bmc, runner=runner)
     detail["override"] = ov.detail.get("method") if ov.verdict == "pass" else None
     if ov.verdict != "pass":

@@ -8,7 +8,7 @@ import shlex
 import subprocess
 
 from . import hostssh
-from .result import RungResult
+from .result import UNMEASURED, RungResult
 
 NETS = ("mgmt", "A", "B")
 THRESHOLD = 0.8
@@ -106,14 +106,15 @@ def mesh(server: dict, clients: list[dict], *, user: str, pw: str, port: int = 1
     ports = _ports(server, port)
     if not ports:
         msg = f"server {server['pos']} not ready: no networks"
-        return {c["pos"]: RungResult("fail", {"error": msg}) for c in clients} | \
-               {server["pos"]: RungResult("fail", {"error": msg})}
+        return {c["pos"]: RungResult(UNMEASURED, {"error": msg, "headline": msg, "reason": msg})
+                for c in clients} | {server["pos"]: RungResult("fail", {"error": msg})}
     try:                    # always stop, even on a partial start or an error
         ok, why, pids = _start(server, ports, user, pw, runner)
-        if not ok:
+        if not ok:          # no server to measure against: no client was judged
             msg = f"server {server['pos']} not ready: {why}"
             for c in clients:
-                out[c["pos"]] = RungResult("fail", {"error": msg})
+                out[c["pos"]] = RungResult(UNMEASURED, {"error": msg, "headline": msg,
+                                                        "reason": msg})
             out[server["pos"]] = RungResult("fail", {"error": msg})
             return out
         all_served = True

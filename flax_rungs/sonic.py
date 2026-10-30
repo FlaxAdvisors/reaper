@@ -3,8 +3,8 @@ import re
 import subprocess
 from dataclasses import asdict, dataclass
 
-from .remote import RemoteError, ssh_cmd, ssh_run
-from .result import RungResult
+from .remote import RemoteError, ssh_cmd, ssh_run, unreachable
+from .result import UNMEASURED, RungResult
 
 _MAC_ROW = re.compile(
     r"^\s*\d+\s+(\d+)\s+((?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})\s+(\S+)")
@@ -116,9 +116,13 @@ def parse_show_lldp_table(text: str) -> list[LldpEntry]:
 
 
 def read_lldp(host, user, password, *, runner=subprocess.run) -> RungResult:
+    """`show lldp table`; a switch that does not answer ssh is `unmeasured`."""
     try:
         text = ssh_run(host, user, password, "show lldp table", runner=runner)
     except RemoteError as e:
+        if e.unreachable:
+            return RungResult(UNMEASURED, {"error": str(e), "headline":
+                                           f"{host} did not answer ssh: {e}"})
         return RungResult("fail", {"error": str(e)})
     entries = parse_show_lldp_table(text)
     return RungResult("pass", {"lldp": [asdict(e) for e in entries]},
@@ -157,6 +161,10 @@ def read_syseeprom(host, user, password, *, runner=subprocess.run) -> RungResult
     arts = {"syseeprom.txt": out + err}
     if rc != 0:
         e = f"rc={rc} {(err or out).strip()[-300:]}"
+        if unreachable(rc):         # nothing judged: the switch never answered ssh
+            head = f"{host} did not answer ssh"
+            return RungResult(UNMEASURED, {"error": e, "headline": head, "reason": head,
+                                           "rows": [], "notes": [e]}, arts)
         return RungResult("fail", {"error": e, "headline": f"syseeprom not read from {host}",
                                    "rows": [], "notes": [e]}, arts)
     f = parse_syseeprom(out)

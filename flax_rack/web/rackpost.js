@@ -1,8 +1,9 @@
 // flax_rack/web/rackpost.js: petite-vue app for one rack order (layout = mockup rack-v3).
 // Polls api/state (relative: the page lives at /<prefix>/) every 5 s. Only the
 // populated OUs are drawn; a dashed marker stands for each run of skipped OUs.
-// Phases with rungs: discover, firmware (Post's 6 steps, detect only; Qualify's old
-// fw-versions read when it ran), qualify (the device's qualify_rungs from the server).
+// Phases with rungs: discover, firmware (Post's 6 steps, detect only), qualify (the
+// device's qualify_rungs from the server). A step whose target did not answer is
+// `unmeasured` (verdict): grey "not measured", never a fault and never done.
 // deploy/done render empty/grey (Plan 3/4).
 // Every switch and every BMC endpoint opens its own drawer (sel in the URL hash):
 // a device `R05`, one JBOD IOM `JBOD01.iom2`, a switch `_sw-A`, a wedge's BMC
@@ -19,14 +20,15 @@ const COLTAG = { 1: 'L', 2: 'C', 3: 'R' };
 const colHead = (c, n) => (n <= 3 ? COLNAME[c] : `col ${c}`);
 const emptyLabel = (c, ou) => (COLTAG[c] ? COLTAG[c] + pad(ou) : `col${c} · ${pad(ou)}`);
 const RGB = { discover: '163,113,247', firmware: '88,166,255', qualify: '210,153,34',
-              deploy: '57,197,207', done: '63,185,80', fault: '248,81,73', grey: '110,118,129' };
+              deploy: '57,197,207', done: '63,185,80', fault: '248,81,73', grey: '110,118,129',
+              unmeasured: '110,118,129' };
 const KIND = { 'bc-head-tp': 'BC head' };
 const SWKIND = { mgmt: 'mgmt 1G', tor: 'TOR' };
 // a wedge BMC's own Discover rows (the rest of the switch ladder is the SONiC half)
 const BMC_STEPS = ['switchportlink', 'bmc-mac-seen', 'bmc-reserved', 'bmc-leased', 'bmc-pinged', 'serial', 'bmc-ready'];
 // the viewer reads at most this much of an artifact (the rest: Download)
 const ART_MAX = 2 * 1024 * 1024;
-const STEP_WORD = { done: 'done', cur: 'in progress', fault: 'fault', pending: 'not run', skip: 'skipped', unknown: 'unknown' };
+const STEP_WORD = { done: 'done', cur: 'in progress', fault: 'fault', pending: 'not run', skip: 'skipped', unknown: 'unknown', unmeasured: 'not measured' };
 
 const iomObj = (d, ep) => ({ type: 'iom', pos: `${d.pos}.${ep}`, dev: d, ep, n: Number(ep.slice(3)),
   runs: (d.endpoint_runs || {})[ep] || {}, qualify_rungs: [], view: (d.ioms || {})[ep] || {} });
@@ -50,6 +52,8 @@ function stepState(run) {
   if (!run) return 'pending';
   if (run.status === 'running') return 'cur';
   if (run.status === 'interrupted') return 'unknown';
+  // the target did not answer: grey, whatever Post's own state (a Firmware row keeps it)
+  if (run.verdict === 'unmeasured') return 'unmeasured';
   // Firmware rows carry Post's own step state (needs_update = cur, not a red fault)
   const st = (run.detail || {}).state;
   if (POST_STATES.includes(st)) return st;
@@ -62,10 +66,10 @@ function stepNote(run, name) {
   if (!run) return '';
   if (run.status === 'interrupted') return 'interrupted';
   const d = run.detail || {};
+  if (run.verdict === 'unmeasured') return d.headline || d.reason || d.error || 'not measured';
   if (d.state && d.headline) return d.headline;
   if (run.verdict === 'fail') return d.error || [d.status, d.note].filter(Boolean).join(' ') || 'fail';
   if (run.verdict === 'skip') return d.reason || 'skipped';
-  if (name === 'fw-versions') return `BIOS ${d.bios_version} · BMC ${d.bmc_firmware}`;
   if (name === 'population-check') return d.profile || '';
   if (name === 'smbios-serial') return `SN ${(d.fru0_serials || [])[0] || '?'}`;
   if (name === 'tpm-state') return `TPM ${d.version || '?'} cleared`;
@@ -228,7 +232,7 @@ function App() {
       const run = st.run, d = (run && run.detail) || {};
       this.stepM = {
         who: this.whoName(o), phase, name: st.name, state: st.state,
-        word: run && run.verdict ? `${STEP_WORD[st.state] || st.state} · ${run.verdict}` : (STEP_WORD[st.state] || st.state),
+        word: run && run.verdict && st.state !== 'unmeasured' ? `${STEP_WORD[st.state] || st.state} · ${run.verdict}` : (STEP_WORD[st.state] || st.state),
         headline: run ? (d.headline || st.note || '') : '', rows: d.rows || [], notes: d.notes || [],
         arts: st.arts || [], ran: !!run,
         when: run ? [run.started_at && `started ${run.started_at}`, run.finished_at && `finished ${run.finished_at}`].filter(Boolean).join(' · ') : '' };
@@ -304,6 +308,8 @@ function App() {
       const v = this.stepEntries(d, p).map((x) => x.state);
       if (v.includes('fault')) return 'fault';
       if (v.length && v.every((x) => x === 'done' || x === 'skip')) return 'done';
+      // finished, but a step's target did not answer: grey (not measured), never done
+      if (v.includes('unmeasured') && v.every((x) => ['done', 'skip', 'unmeasured'].includes(x))) return 'unmeasured';
       if (v.some((x) => x !== 'pending')) return 'cur';
       return '';
     },
@@ -311,22 +317,24 @@ function App() {
     stepSegs(d) {
       if (!d) return [];
       return this.stepEntries(d, this.curPhase(d)).map((x) => (x.state === 'done' || x.state === 'skip') ? 'done'
-        : x.state === 'fault' ? 'fault' : x.state === 'cur' ? 'cur' : '');
+        : ['fault', 'cur', 'unmeasured'].includes(x.state) ? x.state : '');
     },
     faulted(d) { return !!d && ['discover', 'firmware', 'qualify'].some((p) => this.phaseState(d, p) === 'fault'); },
     phaseKey(d) {
       if (!d) return 'grey';
       if (this.faulted(d)) return 'fault';
-      if (this.hasRuns(d, 'qualify')) return this.phaseState(d, 'qualify') === 'done' ? 'done' : 'qualify';
+      const cp = this.phaseState(d, this.curPhase(d));
+      if (cp === 'unmeasured') return 'unmeasured';
+      if (this.hasRuns(d, 'qualify')) return cp === 'done' ? 'done' : 'qualify';
       return Object.keys(d.runs || {}).length ? 'discover' : 'grey';
     },
     dotCls(d) { return this.phaseKey(d); },
-    phaseDot(d, p) { const st = this.phaseState(d, p); return st === 'done' ? 'done' : st === 'fault' ? 'fault' : st === 'cur' ? p : 'grey'; },
+    phaseDot(d, p) { const st = this.phaseState(d, p); return ['done', 'fault', 'unmeasured'].includes(st) ? st : st === 'cur' ? p : 'grey'; },
     phasePct(d, p) {
       const v = this.stepEntries(d, p); if (!v.length) return '';
       return `${v.filter((x) => x.state === 'done' || x.state === 'skip').length}/${v.length}`;
     },
-    stepIcon(st) { return { done: '✓', cur: '◉', fault: '✕', pending: '·', skip: '–', unknown: '?' }[st] || '·'; },
+    stepIcon(st) { return { done: '✓', cur: '◉', fault: '✕', pending: '·', skip: '–', unknown: '?', unmeasured: '○' }[st] || '·'; },
     statusText(d) {
       if (!d) return '';
       for (const p of ['discover', 'firmware', 'qualify']) {
@@ -335,7 +343,7 @@ function App() {
       }
       const p = this.curPhase(d);
       const cur = this.stepEntries(d, p).find((x) => x.state !== 'done' && x.state !== 'skip');
-      return cur ? `${p} · ${cur.name}` : `${p} ✓`;
+      return !cur ? `${p} ✓` : cur.state === 'unmeasured' ? `${p} · ${cur.name} not measured` : `${p} · ${cur.name}`;
     },
     statusStyle(d) { const c = RGB[this.phaseKey(d)] || RGB.discover; return `background:rgba(${c},.15);color:rgb(${c})`; },
     faults(d) {
@@ -351,15 +359,17 @@ function App() {
       const x = r.detail || {};
       if (r.verdict === 'pass') return { t: '✓', cls: 'ok', title: `POP ${x.profile}: every rule found` };
       if (r.verdict === 'skip') return { t: '–', cls: '', title: 'POP skipped: ' + (x.reason || '') };
+      if (r.verdict === 'unmeasured') return { t: '○', cls: 'unm', title: 'POP not measured: ' + (x.headline || x.reason || '') };
       return { t: '✕', cls: 'bad', title: 'POP: ' + (x.error || 'fail') };
     },
     openPop(d) { if (this.popRun(d) && this.popRun(d).detail) this.popOpen = d.pos; },
     get popDev() { return this.popOpen ? (this.s.devices.find((d) => d.pos === this.popOpen) || null) : null; },
 
-    // ---- firmware versions (report only): equal versions share a colour, like INV ----
+    // ---- firmware versions (the Firmware stage's reads): equal versions share a colour, like INV ----
     fwOf(d) {
-      const r = d && (d.runs || {})['fw-versions'];
-      return r && r.verdict === 'pass' && r.detail ? r.detail : null;
+      const parts = ((d && d.fw) || {}).parts || [];
+      const cur = (n) => (parts.find((p) => p.part === n) || {}).current;
+      return cur('BIOS') || cur('BMC') ? { bios_version: cur('BIOS') || '?', bmc_firmware: cur('BMC') || '?' } : null;
     },
     fwKey(f) { return `${f.bios_version}|${f.bmc_firmware}`; },
     get fwGroups() {
@@ -370,7 +380,7 @@ function App() {
     fwCls(d) { const f = this.fwOf(d); return f ? this.fwGroups[this.fwKey(f)] : ''; },
     fwTitle(d) {
       const f = this.fwOf(d);
-      return f ? `BIOS ${f.bios_version} (${f.bios_date}) · BMC ${f.bmc_firmware}${f.bmc_aux ? ' aux ' + f.bmc_aux : ''} · report only` : '';
+      return f ? `BIOS ${f.bios_version} · BMC ${f.bmc_firmware} · Firmware stage (detect only)` : '';
     },
 
     // ---- BMC power chip from the poller (stale after 3 intervals -> grey ?) ----
@@ -400,9 +410,10 @@ function App() {
       return f === 'discover';
     },
     qualifyTitle() {
-      const q = this.s.qualify || {};
+      const q = this.s.qualify || {}, why = q.why || {};
       const base = 'run Qualify: SOL capture + live boot → battery → population-check, smbios-serial, tpm-state per node, then wedge LLDP → HA path → fabric addresses → iperf mesh';
-      return q.passed ? base + ' · rack passed' : (q.not_passed || []).length ? `${base} · not passed: ${q.not_passed.join(', ')}` : base;
+      const np = (q.not_passed || []).map((p) => (why[p] ? `${p} (${why[p]})` : p));
+      return q.passed ? base + ' · rack passed' : np.length ? `${base} · not passed: ${np.join(', ')}` : base;
     },
     stageText() {
       if (this.s.closed_at) return 'closed ' + new Date(this.s.closed_at).toLocaleString();
@@ -435,7 +446,8 @@ function App() {
       }
       const r = this.swRun(sw);
       if (!sw.mgmt_ip && !r) return 'grey';
-      return !r ? 'grey' : r.status === 'running' ? (sw.role === 'tor' ? 'qualify' : 'discover') : r.verdict === 'pass' ? 'done' : 'fault';
+      return !r ? 'grey' : r.status === 'running' ? (sw.role === 'tor' ? 'qualify' : 'discover')
+        : r.verdict === 'pass' ? 'done' : r.verdict === 'unmeasured' ? 'unmeasured' : 'fault';
     },
     swObj(sw) { return swObj(sw); },
     swBmcObj(sw) { return swBmcObj(sw); },

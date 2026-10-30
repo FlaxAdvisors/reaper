@@ -14,7 +14,11 @@ The manifests and family map are the loose-node daemons' own /etc/flax files.
 
 Each read returns (slice, artifacts): the slice is the row the Post daemon would
 have written (phase, current/target, fault_reason; nic: devices), artifacts the raw
-outputs. steps() turns a slice into the (checked, updated) RungResults."""
+outputs. steps() turns a slice into the (checked, updated) RungResults.
+
+A slice whose phase is `unreachable` (the BMC's Redfish or the host's ssh did not
+answer: nothing was read) makes BOTH steps `unmeasured`; detail.state keeps Post's own
+state (fwsteps, equal to Post's tables), so only the verdict is rackpost's."""
 import os
 from types import SimpleNamespace
 
@@ -29,7 +33,7 @@ from flax_post.nicd import driver as nic_driver
 from flax_post.nicd import manifest as nic_manifest
 
 from . import fwsteps, hostssh
-from .result import RungResult
+from .result import UNMEASURED, RungResult
 
 CONFIG_DIR = os.environ.get("FLAX_CONFIG_DIR", "/etc/flax")     # = fwd/biosd/nicd config
 DMI_SCRIPT = "dmidecode -t system"                               # = biosd.service.DMI_SCRIPT
@@ -41,6 +45,7 @@ HOST_TIMEOUT_S = 120
 # version unread (unreachable) or off target (needs_update; triage flashes) -- a
 # finished detect-only stage reports it as a fail; detail.state keeps Post's colour.
 VERDICT = {"done": "pass", "fault": "fail", "cur": "fail", "pending": "skip", "skip": "skip"}
+UNREACHABLE = "unreachable"     # the phase whose steps are `unmeasured`
 
 
 # ---------------------------------------------------------------- Post's evidence (copies)
@@ -108,7 +113,8 @@ class LoggedRedfish:
 
 def tp_bmc(bmc_ip, creds, matcher, *, client_factory=fwd_redfish.RedfishClient):
     """fwd's probe_one against one TiogaPass BMC (Redfish basic auth with the
-    credentials-bmc.json pairs, as flax-post-fwd). -> (slice, artifacts)."""
+    credentials-bmc.json pairs, as flax-post-fwd). -> (slice, artifacts). A BMC whose
+    firmware inventory does not answer is probe_one's own `unreachable` (unmeasured)."""
     row: dict = {}
 
     def set_row(_port, **f):
@@ -123,7 +129,9 @@ def tp_bmc(bmc_ip, creds, matcher, *, client_factory=fwd_redfish.RedfishClient):
 def report_only(r: RungResult):
     """A Facebook-OpenBMC version read (identity.iom / identity.wedge_bmc) as a fw
     slice: versions read -> `unsupported` (no manifest: report only), else
-    `unreachable`. -> (slice, artifacts)."""
+    `unreachable` -- measured (fail) unless the read itself was unmeasured (the BMC
+    did not answer ssh): a missing login or a failing command is a real failure.
+    -> (slice, artifacts)."""
     d = r.detail or {}
     versions = d.get("versions") or {}
     if versions:
@@ -132,7 +140,7 @@ def report_only(r: RungResult):
               "current": versions.get("BMC Version") or versions.get("OpenBMC"),
               "fault_reason": ""}
     else:
-        sl = {"phase": "unreachable", "versions": {},
+        sl = {"phase": UNREACHABLE, "versions": {}, "ssh_unreachable": r.verdict == UNMEASURED,
               "fault_reason": d.get("error") or d.get("headline") or "versions not read"}
     return sl, dict(r.artifacts or {})
 
@@ -184,13 +192,13 @@ def nic(host_ip, user, pw, matcher, *, run=hostssh.run, runner=None):
 
 
 # ---------------------------------------------------------------- slice -> steps
-def _ev(state, headline, rows, notes, arts=None, **extra) -> RungResult:
-    verdict = VERDICT[state]
+def _ev(state, headline, rows, notes, arts=None, verdict=None, **extra) -> RungResult:
+    verdict = verdict or VERDICT[state]
     d = {"headline": headline, "rows": [[k, str(v)] for k, v in rows if v not in (None, "")],
          "notes": list(notes), "state": state, **extra}
     if verdict == "fail":
         d.setdefault("error", headline)
-    if verdict == "skip":
+    if verdict in ("skip", UNMEASURED):
         d.setdefault("reason", headline)
     return RungResult(verdict, d, arts or {})
 
@@ -318,5 +326,16 @@ def steps(key: str, sl: dict, arts: dict | None = None, sources=None,
     nts += list(notes)
     nts.append("detect only: rackpost reads versions and never flashes")
     extra = {"phase": sl.get("phase"), "slice": sl}
-    return (_ev(chk, _checked_head(key, sl), rows, nts, arts, **extra),
-            _ev(upd, _updated_head(key, sl, upd), rows, nts, **extra))
+    head = _checked_head(key, sl)
+    if measured(sl):
+        return (_ev(chk, head, rows, nts, arts, **extra),
+                _ev(upd, _updated_head(key, sl, upd), rows, nts, **extra))
+    return (_ev(chk, head, rows, nts, arts, UNMEASURED, **extra),
+            _ev(upd, "not measured: " + head, rows, nts, verdict=UNMEASURED, **extra))
+
+
+def measured(sl: dict) -> bool:
+    """False when the slice is `unreachable` (Post's phase: the BMC's Redfish or the
+    host's read did not answer): its steps are `unmeasured`. Rackpost's own slices set
+    ssh_unreachable False when the device answered but the read failed (a real fail)."""
+    return not (sl.get("phase") == UNREACHABLE and sl.get("ssh_unreachable", True))

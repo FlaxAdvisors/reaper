@@ -4,7 +4,10 @@ Step names are Post's (bmc-checked, bmc-updated, bios-checked, bios-updated,
 mlx-checked, mlx-updated); each pair's states come from the phase the loose-node
 daemon would have written (flax_rungs.fwsteps = blades._FW_BMC/_FW_BIOS/_nic_steps)
 and ride in detail.state; the verdict is done -> pass, fault/cur -> fail, pending ->
-skip (fwcheck.VERDICT). Evidence is Post's stepinfo shape; raw reads are saved as
+skip (fwcheck.VERDICT), and a pair whose target never answered (Post's `unreachable`:
+Redfish transport error, ssh to the live image gone, an OpenBMC that does not answer
+ssh) is `unmeasured` on both rows (fwcheck.measured; detail.state stays Post's).
+Evidence is Post's stepinfo shape; raw reads are saved as
 artifacts/<key>/f<run>/<step>/<name>.txt. Rackpost never flashes: an off-target
 version is `needs_update` (triage flashes it).
 
@@ -34,9 +37,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
-from flax_rungs import fwcheck, hostssh, identity, liveboot
+from flax_rungs import fwcheck, hostssh, identity, liveboot, remote
 from flax_rungs.fwsteps import FW_STEPS
-from flax_rungs.result import RungResult
+from flax_rungs.result import UNMEASURED, RungResult, not_passed
 
 from .addressing import plan_addresses
 from .discover_ladder import _rollup, run_step, wanted
@@ -96,7 +99,7 @@ def discover_gate(lr, key) -> str | None:
     latest bmc-leased (the discovered MAC holds an active lease on the planned IP) and
     bmc-pinged must be pass -- before that the IP may be someone else's."""
     v = {r: (lr.get((key, r)) or {}).get("verdict") for r in GATE_STEPS}
-    bad = [f"{r} {v[r] or 'not run'}" for r in GATE_STEPS if v[r] != "pass"]
+    bad = [not_passed(r, v[r]) for r in GATE_STEPS if v[r] != "pass"]
     return ("discover first: " + ", ".join(bad)) if bad else None
 
 
@@ -114,7 +117,8 @@ def _live_host(ctx, R, cr, lr, d, host_ip):
     want = next((x.get("host_mac") for x in ctx.db.devices() if x["pos"] == d.pos), None)
     rc, out, err = R.host_run(host_ip, *cr.host, liveboot._PROBE, timeout=20, runner=ctx.runner)
     if rc != 0:
-        return "unreachable", f"ssh {host_ip} rc={rc} {hostssh.tail(out, err, 160)}".strip()
+        return ("unreachable" if remote.unreachable(rc) else "fault",
+                f"ssh {host_ip} rc={rc} {hostssh.tail(out, err, 160)}".strip())
     _bid, _up, cmdline = liveboot.parse_probe(out)
     bootif = liveboot.bootif_mac(cmdline)
     if "BOOTIF=" not in cmdline or "pxeaddr=" not in cmdline:
@@ -149,8 +153,9 @@ def _tp(ctx, R, cr, M, lr, d, ips) -> _Rows:
         rows.skip("bios", gate[1])
         rows.skip("mlx", gate[1])
         return rows
-    if gate:                                 # ssh to the live image no longer answers
-        down = {"phase": "unreachable", "fault_reason": gate[1]}
+    if gate:     # ssh to the live image no longer answers (unmeasured) or the probe failed
+        down = {"phase": "unreachable", "fault_reason": gate[1],
+                "ssh_unreachable": gate[0] == "unreachable"}
         rows.pair("bios", lambda: fwcheck.steps("bios", {**down, "current": None}))
         rows.pair("mlx", lambda: fwcheck.steps("nic", {**down, "devices": []}))
         return rows
@@ -289,15 +294,18 @@ def run_firmware(ctx, *, positions: list[str] | None = None) -> None:
                                 thread_name_prefix=f"firmware-{g.url_prefix}") as ex:
             list(ex.map(one, jobs))
     lr = ctx.db.latest_runs()
-    off, bad = [], []
+    off, bad, unm = [], [], []
     for key in [d.pos for d in devs] + [f"_sw-{s.id}" for s in sws if s.endpoints]:
         sts = {st: (lr.get((key, st)) or {}) for st in FW_STEPS}
         if any((r.get("detail") or {}).get("phase") == "needs_update" for r in sts.values()):
             off.append(key)
         elif any(r.get("verdict") == "fail" for r in sts.values()):
             bad.append(key)
+        elif any(r.get("verdict") == UNMEASURED for r in sts.values()):
+            unm.append(key)
     ctx.db.add_event("firmware", ("firmware cancelled" if cancelled(ctx) else "firmware done")
                      + " (detect only)"
                      + (f"; needs update: {', '.join(off)}" if off else "")
                      + (f"; faulted: {', '.join(bad)}" if bad else "")
-                     + ("" if off or bad else "; every device at target or report only"))
+                     + (f"; not measured: {', '.join(unm)}" if unm else "")
+                     + ("" if off or bad or unm else "; every device at target or report only"))

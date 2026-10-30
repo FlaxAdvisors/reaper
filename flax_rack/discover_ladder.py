@@ -58,7 +58,7 @@ from types import SimpleNamespace
 
 from flax_post.observe import bootlog, family_map_live, fru
 from flax_rungs import agent, bmc, hostssh, identity, ios, liveboot, redfish, sonic
-from flax_rungs.result import RungResult
+from flax_rungs.result import UNMEASURED, RungResult
 from flax_rungs.sonic import FdbEntry
 
 from .addressing import plan_addresses
@@ -125,7 +125,7 @@ def ev(verdict, headline, rows=(), notes=(), arts=None, **extra) -> RungResult:
          "notes": list(notes), **extra}
     if verdict == "fail":
         d.setdefault("error", headline)
-    if verdict == "skip":
+    if verdict in ("skip", UNMEASURED):
         d.setdefault("reason", headline)
     return RungResult(verdict, d, arts or {})
 
@@ -237,8 +237,9 @@ def run_step(ctx, key, step, fn, stage=STAGE) -> RungResult:
 
 class Walk:
     """One endpoint's ladder: every DISCOVER_STEPS step recorded once, in order. After
-    a gating fail every later step() is `skip` ("<step> failed"); skip() records a
-    structural skip (no host on an IOM, ...) whatever came before."""
+    a gating fail every later step() is `skip` ("<step> failed"; "<step> not measured"
+    after an unmeasured one); skip() records a structural skip (no host on an IOM, ...)
+    whatever came before."""
 
     def __init__(self, ctx, key):
         self.ctx, self.key, self.blocked, self.res = ctx, key, None, {}
@@ -247,10 +248,11 @@ class Walk:
         if cancelled(self.ctx):
             return self.skip(name, "cancelled")
         if self.blocked:
-            return self.skip(name, f"{self.blocked} failed")
+            word = "not measured" if self.res[self.blocked].verdict == UNMEASURED else "failed"
+            return self.skip(name, f"{self.blocked} {word}")
         r = run_step(self.ctx, self.key, name, fn)
         self.res[name] = r
-        if r.verdict == "fail" and gate:
+        if r.verdict in ("fail", UNMEASURED) and gate:
             self.blocked = name
         return r
 
@@ -387,8 +389,14 @@ def _fru_ev(r: RungResult, bmc_ip, step) -> tuple[RungResult, dict | None]:
     """tp_fru's read through Post's fru.read_baseboard (family-aware serial field)."""
     text = (r.artifacts or {}).get("fru0.txt")
     if not text:
-        return ev("fail", r.detail.get("error") or f"FRU 0 not read from {bmc_ip}",
-                  [["BMC IP", bmc_ip]], ["`ipmitool fru print 0` out of band (cipher 17, then 3)"]), None
+        # serial: no IPMI answer is `unmeasured` (nothing judged); bmc-ready is the
+        # reachability measurement itself, so there it stays a fail
+        no_answer = step == "serial" and r.verdict == UNMEASURED
+        why = r.detail.get("error") or f"FRU 0 not read from {bmc_ip}"
+        return ev(UNMEASURED if no_answer else "fail",
+                  f"FRU 0 not read: no IPMI answer from {bmc_ip}" if no_answer else why,
+                  [["BMC IP", bmc_ip], ["last error", why if no_answer else None]],
+                  ["`ipmitool fru print 0` out of band (cipher 17, then 3)"]), None
     bb = fru.read_baseboard(text, family_map_live.current())
     field_ = bb.get("serial_field") or "Product Serial"
     state = {"ok": "ok", "no_serial": "no ship serial",
@@ -837,14 +845,17 @@ def _iom_ladder(ctx, env, d, n, ip) -> Walk:
 def _rollup(ctx, pos, walks: dict[str, Walk], extra_of=None, steps=DISCOVER_STEPS,
             stage=STAGE):
     """The device's own row per step: pass when every endpoint passed (or skipped with
-    one passing), fail when one failed, skip when all skipped. `walks` values need only
-    a .res {step: RungResult} (Firmware passes its own)."""
+    one passing), fail when one failed, else unmeasured when one was not measured, skip
+    when all skipped. `walks` values need only a .res {step: RungResult} (Firmware
+    passes its own)."""
     for step in steps:
         res = {k: w.res.get(step) for k, w in walks.items()}
         vs = [r.verdict for r in res.values() if r]
-        verdict = "fail" if "fail" in vs else "skip" if all(v == "skip" for v in vs) else "pass"
+        verdict = ("fail" if "fail" in vs else UNMEASURED if UNMEASURED in vs
+                   else "skip" if all(v == "skip" for v in vs) else "pass")
         rows = [[k, f"{r.verdict}: {r.detail.get('headline')}"] for k, r in res.items() if r]
-        bad = [k for k, r in res.items() if r and r.verdict == "fail"]
+        bad = [k for k, r in res.items() if r and r.verdict == verdict
+               and verdict in ("fail", UNMEASURED)]
         heads = {r.detail.get("headline") for r in res.values() if r}
         if bad:
             head = f"{', '.join(bad)}: " + "; ".join(res[k].detail.get("headline") for k in bad)
@@ -1191,9 +1202,13 @@ def run_discover(ctx, *, positions: list[str] | None = None) -> None:
                             thread_name_prefix=f"discover-{g.url_prefix}") as ex:
         list(ex.map(one, jobs))
     lr = ctx.db.latest_runs()
-    bad = [d.pos for d in devs
-           if any((lr.get((d.pos, s)) or {}).get("verdict") == "fail" for s in DISCOVER_STEPS)]
+    vs = {d.pos: {(lr.get((d.pos, s)) or {}).get("verdict") for s in DISCOVER_STEPS}
+          for d in devs}
+    bad = [p for p, v in vs.items() if "fail" in v]
+    unm = [p for p, v in vs.items() if UNMEASURED in v and "fail" not in v]
     n_unexp = len(env.match.unexpected) if env.match else 0
     ctx.db.add_event("discover", ("discover cancelled" if cancelled(ctx) else "discover done")
                      + f"; {n_unexp} unexpected MAC(s)"
-                     + (f"; faulted: {', '.join(bad)}" if bad else "; every device passed"))
+                     + (f"; faulted: {', '.join(bad)}" if bad else "")
+                     + (f"; not measured: {', '.join(unm)}" if unm else "")
+                     + ("" if bad or unm else "; every device passed"))

@@ -27,7 +27,9 @@ so their LLDP can be "read".
 
 Firmware (detect only) runs the real fwcheck readers against FakeRungs' manifests, a
 fake Redfish BMC and canned dmidecode/mstflint output: R05's BMC and R37's BIOS are
-off target, L37's Mellanox card has its UEFI ROM off; the rest are at target. One
+off target, L37's Mellanox card has its UEFI ROM off; the rest are at target. In the
+served fake (fake_context_factory) R05's host stops answering ssh for the firmware
+reads (FW_HOST_DOWN), so its bios/mlx pairs render grey "not measured". One
 FakeRungs lives per rack for the server's life, so Discover's boots carry over.
 """
 import subprocess
@@ -37,6 +39,7 @@ from .kea_client import KeaConflict
 from .stages import OrderContext
 
 FAIL_POS = "C37"
+FW_HOST_DOWN = {"R05"}               # served fake only: ssh gone for the firmware reads
 LIVE_POS = "L05"                     # already in the live image when Discover starts
 SITE_PORTS = {"A": "Gi1/0/18", "B": "Gi1/0/17", "C": "Gi1/0/19"}
 
@@ -129,6 +132,7 @@ def fake_context_factory(rack_dir, g, db) -> OrderContext:
     if rungs is None:
         rungs = _RUNGS[g.kea_source] = FakeRungs(g, delay_s=0.5, poll_delay_s=2.5,
                                                  slow={"R05": 2.5}, live={LIVE_POS})
+        rungs.fw_host_down = set(FW_HOST_DOWN)
     kea = _KEAS.setdefault(g.kea_source, FakeKea(refuse))
     kea.dyn.update(rungs.switch_leases())
     if _PROFILE_DIR is None:
@@ -214,6 +218,7 @@ class FakeRungs:
         self.fw_bmc_ver = {"R05": "flax-onetree-1.1.3"}
         self.fw_bios_ver = {"R37": "TPC_P26C"}
         self.fw_nic_uefi_off = {"L37"}
+        self.fw_host_down: set[str] = set()   # hosts whose firmware-read ssh times out
         self._discover_init(live)
 
     def _pause(self):
@@ -591,11 +596,6 @@ class FakeRungs:
         out[server["pos"]] = RungResult("pass", {"served": [c["pos"] for c in clients]})
         return out
 
-    def mc_info(self, bmc_ip, creds, *, runner=None):
-        pos = self.pos_of.get(bmc_ip)
-        head = pos and self.g.device(pos).kind.startswith("bc-head")
-        return {"firmware": "2.61" if head else "2.66", "aux": "0x00 0x00 0x00 0x00"}
-
     def host_run(self, host_ip, user, pw, script, *, timeout=None, runner=None):
         from flax_rungs.liveboot import _PROBE
         self.calls.append(("host_run", self.pos_of.get(host_ip), script.split("\n")[0][:40]))
@@ -605,7 +605,7 @@ class FakeRungs:
             return (0, out, "") if out else (255, "", "ssh: connect to host: No route to host")
         fw = self._fw_host(pos, script)
         if fw is not None:
-            if self._probe_out(pos, host_ip) is None:
+            if self._probe_out(pos, host_ip) is None or pos in self.fw_host_down:
                 return 255, "", "ssh: connect to host: No route to host"
             return 0, fw, ""
         return 0, "", ""

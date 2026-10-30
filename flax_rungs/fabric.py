@@ -5,7 +5,8 @@ import shlex
 import subprocess
 
 from . import hostssh
-from .result import RungResult
+from .remote import unreachable
+from .result import UNMEASURED, RungResult
 
 _NET = {"A": 201, "B": 202}
 
@@ -45,6 +46,9 @@ def apply(host_ip: str, user: str, pw: str, assigns: dict[str, str], *,
                      f"&& ip -4 -o addr show dev {q} | grep -qF {shlex.quote(' ' + cidr.split('/')[0] + '/')} "
                      f"&& echo OK {q} || echo FAIL {q}")
     rc, out, err = hostssh.run(host_ip, user, pw, "\n".join(lines) + "\n", runner=runner)
+    if unreachable(rc):     # the host never ran a line: nothing judged
+        why = f"{host_ip} did not answer ssh (rc={rc}): {hostssh.tail('', err, 200)}"
+        return RungResult(UNMEASURED, {**assigns, "error": why, "headline": why, "reason": why})
     ok = {ln.split()[1] for ln in out.splitlines() if ln.startswith("OK ")}
     bad = [i for i in assigns if i not in ok]
     detail = dict(assigns)

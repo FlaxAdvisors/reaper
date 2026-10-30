@@ -137,3 +137,12 @@ a.tile{display:block;color:inherit;text-decoration:none}
 .art-box > .m-sub,.art-box > .pending-note{margin:.5rem .9rem 0}
 .art-box .amb{color:var(--amber)} .art-box .bad{color:var(--red)}
 .art-pre{flex:1;min-height:0;margin:.6rem .9rem .9rem;white-space:pre;overflow:auto;tab-size:8}
+
+/* unmeasured: the target did not answer, nothing was judged -- grey "not measured",
+   never red/amber (a fault) and never green (done) */
+.seg.unmeasured{background:var(--grey);border-color:transparent}
+.dot.unmeasured{background:var(--grey)}
+.step.unmeasured{color:var(--muted)} .step.unmeasured .si{color:var(--grey)}
+.pop-badge.st-unmeasured{color:var(--muted);background:rgba(110,118,129,.22)}
+.popv.unm{color:var(--grey)}
+.phase.unm{border-color:rgba(110,118,129,.45)}

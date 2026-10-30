@@ -46,14 +46,16 @@ from .kea_client import KeaError
 from .orderdb import OrderDB
 from .poller import INTERVAL_S, BmcPoller
 from .qualify import (AGENT_STAGES, OLD_RUNG_NAMES, PHASES as QUALIFY_PHASES, device_rungs,
-                      pop_default, qualify_passed, run_qualify)
+                      pop_default, qualify_passed, qualify_why, run_qualify)
 from .stages import close_order, run_discover
 from .version import __version__
 
 PHASES = ("discover", "firmware", "qualify", "deploy", "done")
 DISCOVER_RUNGS = DISCOVER_STEPS            # Post's 16 steps; OLD_DISCOVER_RUNGS from history
 FIRMWARE_RUNGS = FW_STEPS                  # Post's 6 firmware steps (detect only)
-FIRMWARE_OLD_RUNGS = ("fw-versions",)      # Qualify's version read: shown when it ran
+# Qualify's old fw-versions read (removed; the Firmware stage covers it): its order.db
+# rows stay in `runs` but no step list names them, so they are never drawn
+FIRMWARE_OLD_RUNGS = ()
 # v1 hand-written profile names (spec 5.4); a geometry `pop` or an override may add others
 PROFILES = ("f4-compute-tp", "f4-bc-head-tp", "f4-bc-head-25g", "f4-bc-jbod", "ovh-bare-tp")
 _PROFILE_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
@@ -207,6 +209,8 @@ def _seen_ha(name, ha) -> dict:
         return {"state": "", "text": ha["status"]}
     if ha["verdict"] == "skip":
         return {"state": "", "text": "skipped"}
+    if ha["verdict"] == "unmeasured":
+        return {"state": "", "text": "not measured"}
     row = next((x for x in (ha["detail"] or {}).get("links") or [] if x.get("link") == name), None)
     if row is None:
         return {"state": "bad", "text": (ha["detail"] or {}).get("error") or "not checked"}
@@ -335,7 +339,7 @@ def rack_state(r: Rack) -> dict:
         "agent_stages": list(AGENT_STAGES),
         "qualify_phases": list(QUALIFY_PHASES),
         "qualify": {"passed": passed, "not_passed": not_passed,
-                    "progress": db.qualify_progress()},
+                    "why": qualify_why(raw, g), "progress": db.qualify_progress()},
         "poll_interval_s": INTERVAL_S, "profiles": sorted(profiles),
         "switches": switches, "devices": devices, "rack_runs": rack_runs,
         "unexpected": [{"port": u["port"], "mac": _fmt_mac(u["mac"])} for u in unexpected],

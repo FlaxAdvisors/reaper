@@ -13,8 +13,8 @@ Every result carries Post's stepinfo shape (headline/rows/notes); artifacts = ra
 import subprocess
 
 from .bmc import CIPHERS, _ipmi
-from .remote import ssh_cmd
-from .result import RungResult
+from .remote import ssh_cmd, unreachable
+from .result import UNMEASURED, RungResult
 
 FRUID_IOM = "/usr/local/bin/fruid-util iom"
 FWUTIL_BMC = "/usr/bin/fw-util bmc --version"
@@ -62,6 +62,13 @@ def _fail(headline: str, error: str, arts=None, **extra) -> RungResult:
                                "notes": [], **extra}, arts or {})
 
 
+def _no_answer(headline: str, error: str, arts=None) -> RungResult:
+    """The device never answered (ssh unreachable / no IPMI session): `unmeasured`,
+    nothing judged. `error` is kept for the callers that test its text."""
+    return RungResult(UNMEASURED, {"error": error, "headline": headline, "reason": headline,
+                                   "rows": [], "notes": []}, arts or {})
+
+
 # ---------------------------------------------------------------- TiogaPass FRU 0
 def tp_fru(bmc_ip: str, creds: list[tuple[str, str]], *, runner=subprocess.run) -> RungResult:
     """Out-of-band FRU 0 (`ipmitool fru print 0`), first credential x cipher that
@@ -79,8 +86,9 @@ def tp_fru(bmc_ip: str, creds: list[tuple[str, str]], *, runner=subprocess.run) 
                 last = (p.stderr or p.stdout or f"rc={p.returncode}").strip()[-300:]
                 continue
             return _tp_result(p.stdout, user, cipher)
-    return _fail(f"FRU 0 not read from {bmc_ip}",
-                 f"{last} (ciphers {'/'.join(map(str, CIPHERS))})")
+    # no credential x cipher got FRU 0 text: no IPMI session, nothing judged
+    why = f"{last} (ciphers {'/'.join(map(str, CIPHERS))})"
+    return _no_answer(f"FRU 0 not read from {bmc_ip}: no IPMI answer", why)
 
 
 def _tp_result(text: str, user: str, cipher: int) -> RungResult:
@@ -111,8 +119,10 @@ def iom(bmc_ip: str, user: str, pw: str, *, runner=subprocess.run) -> RungResult
     rc, out, err = ssh_cmd(bmc_ip, user, pw, FRUID_IOM, runner=runner)
     arts = {"fruid-util-iom.txt": out + err}
     if rc != 0:
-        return _fail(f"IOM {bmc_ip} not read", f"fruid-util: rc={rc} {(err or out).strip()[-300:]}",
-                     arts)
+        why = f"fruid-util: rc={rc} {(err or out).strip()[-300:]}"
+        if unreachable(rc):
+            return _no_answer(f"IOM {bmc_ip} did not answer ssh", why, arts)
+        return _fail(f"IOM {bmc_ip} not read", why, arts)
     f = parse_fields(out)
     serial = _value(f, "Board Serial")
     versions, absent, errors = {}, {}, {}
@@ -155,8 +165,10 @@ def wedge_bmc(bmc_ip: str, user: str, pw: str, *, syseeprom: dict | None = None,
     rc, out, err = ssh_cmd(bmc_ip, user, pw, WEUTIL, runner=runner)
     arts = {"weutil.txt": out + err}
     if rc != 0:
-        return _fail(f"wedge BMC {bmc_ip} not read", f"weutil: rc={rc} {(err or out).strip()[-300:]}",
-                     arts)
+        why = f"weutil: rc={rc} {(err or out).strip()[-300:]}"
+        if unreachable(rc):
+            return _no_answer(f"wedge BMC {bmc_ip} did not answer ssh", why, arts)
+        return _fail(f"wedge BMC {bmc_ip} not read", why, arts)
     f = parse_fields(out)
     serial = _value(f, "Product Serial Number")
     versions, errors = {}, {}

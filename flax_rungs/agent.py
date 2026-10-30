@@ -6,7 +6,7 @@ from pathlib import Path
 from flax_post.qualclient import QualClient, QualUnreachable
 
 from . import hostssh
-from .result import RungResult
+from .result import UNMEASURED, RungResult
 
 # Every default stage except iperf (the mesh rung owns iperf). Order is the agent's own.
 ORDER_STAGES = ("sdr-pre,sel-pre,sel-clear,tooling,inventory,fio,mem-pre,"
@@ -114,10 +114,11 @@ def poll(host_ip, *, deadline_s: int, client_factory=QualClient, poll_s=20,
     client = client_factory(f"http://{host_ip}:{AGENT_PORT}")
     end = clock() + deadline_s
     last_err = "agent never answered"
-    names, run_id = [], None
+    names, run_id, answered = [], None, False
     while True:
         try:
             h = client.health()
+            answered = True
             if not h.get("ok"):
                 return {"agent": RungResult("fail", {"error": f"agent unhealthy: {h.get('error')}",
                                                      "run_id": h.get("run_id")})}
@@ -137,6 +138,10 @@ def poll(host_ip, *, deadline_s: int, client_factory=QualClient, poll_s=20,
             break
         sleep(poll_s)
     if not names:
+        if not answered:    # not one health read in the deadline: nothing was judged
+            head = f"agent never answered in {deadline_s}s: {last_err}"
+            return {"agent": RungResult(UNMEASURED, {"error": "timeout", "last": last_err,
+                                                     "headline": head, "reason": head})}
         return {"agent": RungResult("fail", {"error": "timeout", "last": last_err})}
     out = {}
     for n in names:                         # deadline: keep what finished, fail the rest

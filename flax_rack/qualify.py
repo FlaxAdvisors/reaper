@@ -5,7 +5,7 @@ still-eligible device at once, with a barrier (wait for all) before the next:
 
   boot       pxe-live (identity checked)                       BOOT_DEADLINE_S
   inventory  agent: sdr-pre..inventory; then population-check,  INVENTORY_DEADLINE_S
-             smbios-serial, tpm-state, fw-versions
+             smbios-serial, tpm-state
   storage    agent: fio                                        120 s + 120 s x disks
   burn       agent: mem-pre, cpu-mem-stress .. sel-post        FLAX_STRESS_SECONDS + 900 s
   network    rack: lldp-<wedge>; per device ha-path, fabric-addr, iperf-mesh
@@ -28,14 +28,21 @@ ship serial), smbios-serial / tpm-state are flax_post.shipchecks on the inventor
 ipmitool-fru / dmidecode / tpmstate captures (evidence stored as their `check`
 artifact), and a device's verdict is qualify_rules.qualify_verdict fed the battery,
 the population and the ship checks. Post's iperf (to the bang) is this rack's
-ha-path, fabric-addr, iperf-mesh; pxe-live and fw-versions are rackpost's own.
+ha-path, fabric-addr, iperf-mesh; pxe-live is rackpost's own. (Firmware versions are
+the Firmware stage's; the old Qualify `fw-versions` read is gone -- its order.db rows
+stay, harmless, and are never shown.)
 `console` is the node's SOL captured (flax_rungs.sol) from just before its live boot
 until it leaves Qualify, saved as artifacts/<pos>/q<run>/console/sol.txt.
 
-A device failing a phase (a `fail` on any of that phase's rungs; fw-versions,
+A device failing a phase (a `fail` or `unmeasured` on any of that phase's rungs;
 population-check and the ship checks never gate -- their fail still fails the device in
-qualify_passed) gets `skip` ("failed in phase <p>") on every rung of the later phases;
-the rest of the rack carries on. Identity first: a device is
+qualify_passed) gets `skip` ("failed in phase <p>", or "not measured in phase <p>" when
+its target stopped answering) on every rung of the later phases; the rest of the rack
+carries on. `unmeasured` (flax_rungs.result) = the target did not answer, nothing was
+judged: pxe-live with no IPMI answer, agent-stages when the agent never answered,
+population-check with no FRU 0 from the BMC, ha-path with no wedge's LLDP readable,
+fabric-addr with the host gone from ssh, iperf-mesh when its server is not ready. It
+never passes: qualify_passed names it "not measured: <rung>". Identity first: a device is
 only booted when its latest Discover bmc-reserved, bmc-leased, bmc-pinged and
 host-reserved passed and order.db holds its host MAC (else pxe-live fails "discover
 first"); pxe-live then requires the live image's BOOTIF MAC to be that host MAC.
@@ -68,8 +75,8 @@ from types import SimpleNamespace
 
 from flax_post import population, qualify_rules, shipchecks
 from flax_post.observe import family_map_live, fru
-from flax_rungs import agent, bmc, fabric, ha, hostssh, identity, iperf, liveboot, sol, sonic
-from flax_rungs.result import RungResult
+from flax_rungs import agent, fabric, ha, hostssh, identity, iperf, liveboot, sol, sonic
+from flax_rungs.result import UNMEASURED, RungResult, not_passed
 from flax_rungs.sonic import LldpEntry
 
 from .addressing import plan_addresses
@@ -78,7 +85,6 @@ from .stages import _rung, cancelled, creds
 from .version import __version__
 
 STAGE = "qualify"
-FW_STAGE = "firmware"
 AGENT_STAGES = tuple(agent.ORDER_STAGES.split(","))
 PHASES = ("boot", "inventory", "storage", "burn", "network")
 PHASE_STAGES = {    # the agent's FLAX_QUAL_STAGES per phase; together = ORDER_STAGES
@@ -107,7 +113,7 @@ def real_rungs():
         boot_live=liveboot.boot_live, launch=agent.launch, poll=agent.poll,
         stop_agent=agent.stop,
         read_lldp=sonic.read_lldp, apply_fabric=fabric.apply, mesh=iperf.mesh,
-        mc_info=bmc.mc_info, host_run=hostssh.run, sol_start=sol.start, sol_stop=sol.stop,
+        host_run=hostssh.run, sol_start=sol.start, sol_stop=sol.stop,
         tp_fru=identity.tp_fru)
 
 
@@ -154,22 +160,38 @@ def qualify_passed(db, g) -> tuple[bool, list[str]]:
     """(rack passed?, positions not passed). A host device passes when Post's verdict
     (device_verdict) is pass and every rackpost rung (pxe-live, agent plumbing, the
     network rungs, console) last finished `pass`; an IOM-only device (no host) counts
-    via its Discover ladder (bmc-pinged and serial passed, no step failed)."""
-    lr = db.latest_runs()
-    bad = []
+    via its Discover ladder (bmc-pinged and serial passed, no step failed). An
+    `unmeasured` rung is never a pass (qualify_why names it)."""
+    why = qualify_why(db.latest_runs(), g)
+    bad = [d.pos for d in g.devices if d.pos in why]
+    return not bad, bad
+
+
+def qualify_why(lr, g) -> dict[str, str]:
+    """pos -> why it has not passed Qualify (absent = passed): its first rung (in step
+    order) that is not passed, as result.not_passed words it ("not measured: <rung>"
+    for an unmeasured one); Post's verdict when every rung looks passed but it is not."""
+    out = {}
     for d in g.devices:
         need = device_rungs(d)
+        run = lambda r: lr.get((d.pos, r)) or {}    # noqa: E731
         if not need:
-            vs = {s: (lr.get((d.pos, s)) or {}).get("verdict") for s in DISCOVER_STEPS}
-            ok = (vs["bmc-pinged"] == vs["serial"] == "pass"
-                  and all(x in ("pass", "skip") for x in vs.values()))
+            bad = [s for s in DISCOVER_STEPS
+                   if run(s).get("verdict") not in ("pass", "skip")
+                   or (s in ("bmc-pinged", "serial") and run(s).get("verdict") != "pass")]
         else:
             rest = [r for r in need if r not in AGENT_STAGES and r not in ENGINE_CHECKS]
-            ok = device_verdict(lr, d) == "pass" and all(
-                (lr.get((d.pos, r)) or {}).get("verdict") == "pass" for r in rest)
-        if not ok:
-            bad.append(d.pos)
-    return not bad, bad
+            if device_verdict(lr, d) == "pass" and all(run(r).get("verdict") == "pass"
+                                                       for r in rest):
+                continue
+            bad = [r for r in need if not (_stage_ok(run(r)) if r in AGENT_STAGES
+                                           else run(r).get("verdict") == "pass")]
+            if not bad:
+                out[d.pos] = f"verdict {device_verdict(lr, d) or 'none'}"
+                continue
+        if bad:
+            out[d.pos] = not_passed(bad[0], run(bad[0]).get("verdict"))
+    return out
 
 
 def stress_seconds() -> int:
@@ -277,18 +299,6 @@ def iface_of(text: str, ip: str) -> str | None:
     return None
 
 
-def parse_bios(dmidecode: str) -> dict:
-    """{"version", "date"} from dmidecode's `BIOS Information` section."""
-    out = {"version": None, "date": None}
-    sec = re.search(r"^BIOS Information\s*\n((?:[ \t]+.*\n?)*)", dmidecode or "", re.M)
-    if sec:
-        for key, k in (("Version", "version"), ("Release Date", "date")):
-            m = re.search(rf"^\s+{key}:\s*(.+?)\s*$", sec.group(1), re.M)
-            if m:
-                out[k] = m.group(1)
-    return out
-
-
 # ---------------------------------------------------------------- per-device rungs
 def _pop_label(rule: str) -> str:
     """stepinfo's labels for a failed population rule."""
@@ -317,9 +327,11 @@ def oob_fru0(R, cr, bmc_ip, *, runner=None) -> tuple[str | None, str | None]:
 def population_rung(ctx, d, arts: dict, fru0=(None, "not read")) -> RungResult:
     """population-check: Post's qualify_rules.population_check on the inventory's macinv
     (count form), dimmsum and the out-of-band FRU 0 (`fru0` = oob_fru0()). Rackpost never
-    passes on nothing (spec A4.6): a missing or empty profile, no macinv, or no FRU 0 from
-    the BMC (Post's no-backfill rule: never the in-band capture) is a fail before the
-    judge runs. The FRU 0 text read is the check's `fru0` artifact."""
+    passes on nothing (spec A4.6): a missing or empty profile, no macinv, or a FRU 0 the
+    BMC reports not present is a fail before the judge runs; no FRU 0 text at all (the
+    BMC gave no IPMI answer) is `unmeasured` -- nothing judged, never a pass, and never
+    backfilled from the in-band capture (Post's no-backfill rule). The FRU 0 text read
+    is the check's `fru0` artifact."""
     ovr = next((x["pop_override"] for x in ctx.db.devices() if x["pos"] == d.pos), None)
     p = ovr or pop_default(ctx.g, d)
     path = os.path.join(population.PROFILE_DIR, p)
@@ -338,11 +350,12 @@ def population_rung(ctx, d, arts: dict, fru0=(None, "not read")) -> RungResult:
     if bb is None or bb["state"] == "absent":
         why = (f"FRU 0 not read out of band: {fru_err}" if bb is None
                else f"FRU 0 not present: {bb.get('reason') or 'no FRU 0'}")
-        return RungResult("fail", {**head, "error": why, "headline": why,
-                                   "rows": [["profile", p], ["FRU 0", why]],
-                                   "notes": ["FRU 0 comes from the BMC (`ipmitool fru print 0`, "
-                                             "Post's IPMI lane); it is never taken from the "
-                                             "in-band capture"]}, fart)
+        return RungResult("fail" if bb else UNMEASURED,
+                          {**head, "error": why, "headline": why, "reason": why,
+                           "rows": [["profile", p], ["FRU 0", why]],
+                           "notes": ["FRU 0 comes from the BMC (`ipmitool fru print 0`, "
+                                     "Post's IPMI lane); it is never taken from the "
+                                     "in-band capture"]}, fart)
     pop = qualify_rules.population_check(macinv, p, arts.get("dimmsum"), bb)
     ev = population.evaluate(rules, macinv)
     failed = pop.get("failed_rules") or []
@@ -393,21 +406,6 @@ def ship_check_rung(name: str, arts: dict) -> RungResult:
     return RungResult(c["status"], detail, {"check": shipchecks.evidence_text(name, c)})
 
 
-def fw_versions(dmidecode: str | None, mc: dict | None) -> RungResult:
-    """Report only: pass whenever both versions were read; never enforced or flashed."""
-    b = parse_bios(dmidecode or "")
-    mc = mc or {}
-    detail = {"bios_version": b["version"], "bios_date": b["date"],
-              "bmc_firmware": mc.get("firmware"), "bmc_aux": mc.get("aux"),
-              "bmc_cipher": mc.get("cipher")}
-    missing = [w for w, v in (("BIOS version (dmidecode)", b["version"]),
-                              ("BMC firmware (mc info)", mc.get("firmware"))) if not v]
-    if missing:
-        detail["error"] = "unreadable: " + ", ".join(missing)
-        return RungResult("fail", detail)
-    return RungResult("pass", detail)
-
-
 GATE_STEPS = ("bmc-reserved", "bmc-leased", "bmc-pinged", "host-reserved")
 
 
@@ -417,7 +415,7 @@ def discover_gate(lr, dev_row) -> str | None:
     and answers; the host reservation exists) must be pass and order.db must hold its
     host MAC. A row from before Plan 2b (reserve/bmc-reach) does not count."""
     v = {r: (lr.get((dev_row["pos"], r)) or {}).get("verdict") for r in GATE_STEPS}
-    bad = [f"{r} {v[r] or 'not run'}" for r in v if v[r] != "pass"]
+    bad = [not_passed(r, v[r]) for r in v if v[r] != "pass"]
     if not bad and not dev_row.get("host_mac"):
         bad.append("no host MAC matched")
     return ("discover first: " + ", ".join(bad)) if bad else None
@@ -464,6 +462,8 @@ class _Dev:
     ips: dict
     row: dict
     failed: str | None = None       # the phase it failed in (later phases skip it)
+    unmeasured: bool = False        # ... because a rung there was not measured (no fail)
+    hard: bool = False              # a rung of that phase failed outright
     busy: bool = False              # an agent stop failed: its battery may still run
     lsblk: str | None = None        # the inventory's lsblk capture (storage deadline)
     sol: object = None              # the running SOL capture (console rung)
@@ -513,9 +513,8 @@ def _phase_rungs(phase, d) -> list[tuple[str, str]]:
     if phase == "boot":
         return [("pxe-live", STAGE)]
     if phase == "inventory":
-        return ([(r, STAGE) for r in ("agent-reachable", "agent-stages",
-                                      *PHASE_STAGES["inventory"], *ENGINE_CHECKS)]
-                + [("fw-versions", FW_STAGE)])
+        return [(r, STAGE) for r in ("agent-reachable", "agent-stages",
+                                     *PHASE_STAGES["inventory"], *ENGINE_CHECKS)]
     if phase in PHASE_STAGES:
         return [(r, STAGE) for r in PHASE_STAGES[phase]]
     return [(r, STAGE) for r in NET_RUNGS if r in device_rungs(d)]
@@ -524,7 +523,9 @@ def _phase_rungs(phase, d) -> list[tuple[str, str]]:
 def _why_out(x) -> str:
     if x.busy:
         return "qual agent still running (stop failed)"
-    return "cancelled" if x.failed == "cancelled" else f"failed in phase {x.failed}"
+    if x.failed == "cancelled":
+        return "cancelled"
+    return f"{'not measured' if x.unmeasured else 'failed'} in phase {x.failed}"
 
 
 def _cancel_out(ctx, xs) -> bool:
@@ -563,11 +564,22 @@ def _wave(ctx, phase, xs, fn, workers, prog=None):
         list(ex.map(one, xs))
 
 
+def _out(x, phase, r: RungResult):
+    """x is out of the phase on r (any verdict but pass); unmeasured says why."""
+    x.failed = x.failed or phase
+    if x.failed != phase:
+        return
+    x.hard = x.hard or r.verdict != UNMEASURED
+    x.unmeasured = not x.hard
+
+
 def _phase_end(ctx, phase, xs):
     ran = [x for x in xs if x.failed is None or x.failed == phase]
-    bad = [x.pos for x in ran if x.failed == phase]
-    ctx.db.add_event("qualify", f"phase {phase}: {len(ran) - len(bad)} passed"
-                                + (f", failed: {', '.join(bad)}" if bad else ""))
+    bad = [x.pos for x in ran if x.failed == phase and not x.unmeasured]
+    unm = [x.pos for x in ran if x.failed == phase and x.unmeasured]
+    ctx.db.add_event("qualify", f"phase {phase}: {len(ran) - len(bad) - len(unm)} passed"
+                                + (f", failed: {', '.join(bad)}" if bad else "")
+                                + (f", not measured: {', '.join(unm)}" if unm else ""))
 
 
 def _with(r: RungResult, **extra) -> RungResult:
@@ -604,7 +616,7 @@ def _boot(ctx, R, cr, lr, x):
                             deadline_s=BOOT_DEADLINE_S, runner=ctx.runner), rebooted_because=why),
                 STAGE)
     if r.verdict != "pass":
-        x.failed = "boot"
+        _out(x, "boot", r)
 
 
 # ---------------------------------------------------------------- console (SOL)
@@ -702,8 +714,6 @@ def _agent_phase(ctx, R, cr, prog, phase, xs):
         x.failed = phase
         _skip(ctx, x.pos, ["agent-stages", *want]
               + (list(ENGINE_CHECKS) if phase == "inventory" else []), "agent-reachable failed")
-        if phase == "inventory":
-            _skip(ctx, x.pos, ["fw-versions"], "agent-reachable failed", FW_STAGE)
         prog.done(x.pos)
 
     _wave(ctx, phase, xs, launch, len(xs))
@@ -735,8 +745,9 @@ def _poll(ctx, R, cr, phase, x):
             sized["agent_stop"] = ("stopped" if st.verdict == "pass"
                                    else st.detail.get("error") or "stop failed")
             x.busy = st.verdict != "pass"
-        if "agent" in got:
-            return RungResult("fail", {**got.pop("agent").detail, **sized})
+        if "agent" in got:      # unmeasured when the agent never answered at all
+            a = got.pop("agent")
+            return RungResult(a.verdict, {**a.detail, **sized})
         names = list(got)
         run_id = next((r.detail.get("run_id") for r in got.values() if r.detail.get("run_id")),
                       None)
@@ -757,24 +768,23 @@ def _poll(ctx, R, cr, phase, x):
         return RungResult("pass", detail)
 
     ar = _rung(ctx, pos, "agent-stages", poll, STAGE)
-    failed = ar.verdict != "pass"
+    if ar.verdict != "pass":
+        _out(x, phase, ar)
     run_seg = (ar.detail or {}).get("run_id")
+    word = "not measured" if ar.verdict == UNMEASURED else "failed"
     for name in want:
         if name in got:
             r = _record(ctx, pos, name, got[name], STAGE, run_seg)
         elif got:
             r = _record(ctx, pos, name, RungResult("fail", {"error": f"agent did not report {name}"}))
         else:
-            r = _record(ctx, pos, name, RungResult("skip", {"reason": "agent-stages failed"}))
-        failed = failed or r.verdict == "fail"
+            r = _record(ctx, pos, name, RungResult("skip", {"reason": f"agent-stages {word}"}))
+        if r.verdict in ("fail", UNMEASURED):
+            _out(x, phase, r)
     if phase == "inventory":
         inv = got.get("inventory")
         arts = inv.artifacts if inv else {}
         x.lsblk = arts.get("lsblk")
-        _rung(ctx, pos, "fw-versions",      # report only: never gates the next phase
-              lambda: fw_versions(arts.get("dmidecode"),
-                                  R.mc_info(x.ips.get("bmc"), cr.bmc, runner=ctx.runner)),
-              FW_STAGE)
         # POP and the ship checks never gate either (a missing profile must not keep the
         # iperf server out of burn/network); their fail still fails the device in
         # qualify_passed. The check evidence goes beside the battery's artifacts.
@@ -790,8 +800,6 @@ def _poll(ctx, R, cr, phase, x):
             except Exception as e:          # noqa: BLE001 -- a judge never sinks the phase
                 res = RungResult("fail", {"error": f"{type(e).__name__}: {e}"})
             _record(ctx, pos, name, res, STAGE, run_seg)
-    if failed:
-        x.failed = phase
 
 
 # ---------------------------------------------------------------- network phase
@@ -817,7 +825,8 @@ def server_not_ready(lr, d) -> str | None:
             continue
         run = lr.get((d.pos, r))
         if not (_stage_ok(run) if r in AGENT_STAGES else (run or {}).get("verdict") == "pass"):
-            return f"its {r} did not pass"
+            return ("not measured: its " + r if (run or {}).get("verdict") == UNMEASURED
+                    else f"its {r} did not pass")
     return None
 
 
@@ -838,7 +847,7 @@ def _network(ctx, R, prog, scope, ips, cr, not_ready):
     fab_ifaces: dict[str, dict] = {}
     cabled = [d for d in up if "ha-path" in device_rungs(d)]
     if cabled:
-        lldp, unread = {}, []
+        lldp, unread, unanswered = {}, [], set()
         for s in (s for s in g.switches if s.role == "tor"):
             if not s.mgmt_ip:
                 res = RungResult("fail", {"error": f"switch {s.id} has no mgmt_ip in geometry.json"})
@@ -853,6 +862,8 @@ def _network(ctx, R, prog, scope, ips, cr, not_ready):
                 lldp[s.id] = [LldpEntry(**e) for e in r.detail.get("lldp", [])]
             else:
                 unread.append(s.id)
+                if r.verdict == UNMEASURED:
+                    unanswered.add(s.id)
         macs = {}
         for d in cabled:
             macs[d.pos] = _host_lookup(ctx, R, lr, d.pos, ips[d.pos]["host"], user, pw,
@@ -860,7 +871,12 @@ def _network(ctx, R, prog, scope, ips, cr, not_ready):
         checked = ha.check(g, lldp, macs)
         for d in cabled:
             res = checked.get(d.pos) or RungResult("fail", {"error": "no HA result"})
-            if unread:
+            if unread and not lldp and all(x in unanswered for x in unread):
+                # no wedge answered: nothing was judged (one that answered still judges)
+                why = f"LLDP not read: {', '.join(unread)} did not answer ssh"
+                res = RungResult(UNMEASURED, {**res.detail, "error": why, "headline": why,
+                                              "reason": why})
+            elif unread:
                 det = dict(res.detail)
                 det["error"] = (f"LLDP unreadable on {', '.join(unread)}"
                                 + (f"; {det['error']}" if det.get("error") else ""))
@@ -893,11 +909,11 @@ def _network(ctx, R, prog, scope, ips, cr, not_ready):
             ifaces["mgmt"] = (mif, hip)
         return {"pos": d.pos, "host_ip": hip, "ifaces": ifaces}
 
-    why = None
+    why, config = None, False       # config: a geometry defect (fail), else unmeasured
     if not srv:
-        why = "no iperf_server in geometry.json"
+        why, config = "no iperf_server in geometry.json", True
     elif srv_dev is None or not srv_dev.endpoints.get("hosts"):
-        why = f"server {srv} not ready: not a host-bearing device of this rack"
+        why, config = f"server {srv} not ready: not a host-bearing device of this rack", True
     elif srv in not_ready:
         why = f"server {srv} not ready: {not_ready[srv][1]}"
     server = None
@@ -906,8 +922,11 @@ def _network(ctx, R, prog, scope, ips, cr, not_ready):
         if "mgmt" not in server["ifaces"]:
             why = f"server {srv} not ready: no interface holds {server['host_ip']}"
     rids = {d.pos: ctx.db.start_run(d.pos, STAGE, "iperf-mesh") for d in meshed}
-    if why is not None:
+    if why is not None and config:
         out = {p: RungResult("fail", {"error": why}) for p in rids}
+    elif why is not None:   # the server is not ready: nothing judged for any client
+        out = {p: RungResult(UNMEASURED, {"error": why, "headline": why, "reason": why})
+               for p in rids}
     else:
         try:
             clients = [node(d) for d in meshed if d.pos != srv]
@@ -957,7 +976,8 @@ def run_qualify(ctx, *, positions: list[str] | None = None) -> None:
             _console_end(ctx, R, [x for x in xs if x.failed])
         stop = _cancel_out(ctx, xs)
         not_ready = {x.pos: (_why_out(x), "its qual agent is still running (stop failed)"
-                             if x.busy else f"failed in phase {x.failed}")
+                             if x.busy else ("not measured" if x.unmeasured else "failed")
+                             + f" in phase {x.failed}")
                      for x in xs if x.failed}
         scope = [x.d for x in xs]
         srv = next((d for d in g.devices if d.pos == g.iperf_server), None)
