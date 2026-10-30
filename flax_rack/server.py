@@ -682,7 +682,7 @@ class App:
         if not r.lock.acquire():
             return 409, {"error": "a stage is running for this rack"}
         try:
-            n = close_order(self.factory(r.dir, r.g, r.db))
+            out = close_order(self.factory(r.dir, r.g, r.db))
         except KeaError as e:
             r.db.add_event("error", f"close: {e}")
             return 502, {"error": str(e)}
@@ -691,7 +691,7 @@ class App:
             return 500, {"error": f"{type(e).__name__}: {e}"}
         finally:
             r.lock.release()
-        return 200, {"closed_at": r.db.closed_at(), "released": n}
+        return 200, {"closed_at": r.db.closed_at(), **out}
 
     # -- index --
     def index(self) -> dict:

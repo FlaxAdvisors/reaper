@@ -8,8 +8,11 @@ flax-control replaces this (order_id, rack)'s rows in the rackpost.* tables
               "not deployed: <deploy_why>"; "n/a" for a device without Deploy rungs
               (JBOD, IOM, switch)
   macs        {pos, role, mac}: host / bmc of a device, iom<n> of an IOM row, switch of
-              a switch row, fabric_a / fabric_b from a passed ha-config. Blanks skipped.
-  components  order.db's component rows (Done's components rung)
+              a switch row, fabric_a / fabric_b (report.device_rows: a passed ha-config,
+              else Qualify's ha-path ports). Blanks skipped.
+  components  report.latest_components: each device's LATEST Qualify inventory's parts
+              (Done's rows only when they came from that run; never with an older run's
+              parts beside the latest run's chassis serial)
   rungs       the latest run per (pos, stage, rung): verdict, finished_at and the
               artifact PATHS (relative to order_dir). Never the artifact text: logs stay
               in the order dir (spec §8.2).
@@ -51,8 +54,7 @@ def payload(g, db, order_dir, *, closed_at: str | None = None) -> dict:
             roles = (("host", "host_mac"), ("bmc", "bmc_mac"))
         roles += (("fabric_a", "fabric_a_mac"), ("fabric_b", "fabric_b_mac"))
         macs += [{"pos": pos, "role": role, "mac": row[col]} for role, col in roles if row[col]]
-    comps = [{"pos": c["pos"], "kind": c["kind"], "model": c["model"],
-              "serial": c["serial"], "slot": c["slot"]} for c in db.components()]
+    comps = report.latest_components(order_dir, db, lr)
     rungs = [{"pos": r["pos"], "stage": r["stage"], "rung": r["rung"],
               "verdict": r["verdict"], "finished_at": r["finished_at"],
               "artifacts": sorted(r["artifacts"].values())}

@@ -3,8 +3,10 @@ itself is discover_ladder (Post's 16-step ladder per device).
 
 Close archives the rack (flax-control's rackpost.* tables) and then deletes the order's
 Kea rows, both through flax-control; the order is marked closed only after both
-succeed, so a failure leaves it open, reservations kept, and Close re-runnable. Then
-the Deploy stage's per-run ansible inventory (the live hosts' IPs) leaves the order dir.
+succeed, so a failure leaves it open, reservations kept, and Close re-runnable (a
+first close whose release fails withdraws the archive it just wrote). Then the Deploy
+stage's per-run ansible inventory (the live hosts' IPs) leaves the order dir (best
+effort: an `error` event if it cannot).
 Close needs Kea only: `creds` may be a zero-arg loader, called the first time a
 Discover rung needs the switch or BMC login, so missing creds never block Close.
 """
@@ -71,14 +73,45 @@ def run_discover(ctx, *, positions: list[str] | None = None) -> None:
     _run(ctx, positions=positions)
 
 
-def close_order(ctx) -> int:
+def _retract(ctx, p) -> str:
+    """Undo a first close's archive write (the same route, no rows: flax-control deletes
+    this (order, rack)'s rows and inserts none). -> the event's clause."""
+    try:
+        ctx.kea.archive({**p, "devices": [], "macs": [], "components": [], "rungs": []})
+        return "archive withdrawn"
+    except Exception as e:                     # noqa: BLE001 -- reported, the order stays open
+        return (f"archive NOT withdrawn ({type(e).__name__}: {e}): the archive lists the "
+                "order closed until Close is re-run")
+
+
+def close_order(ctx) -> dict:
+    """Close -> {"released": n reservations, "archived": flax-control's row counts}.
+
+    The archive is written first and carries the close time; if releasing the
+    reservations then fails, a FIRST close withdraws that archive again (so the archive
+    never shows an order closed while it is open with live reservations), logs an
+    `error` event saying so and re-raises: the order stays open, Close re-runnable. A
+    re-close never withdraws (the order is already closed and archived). Dropping the
+    Deploy ansible inventory after set_closed is best effort: a failure is an event,
+    the close stands."""
     from . import archive                       # archive -> report -> deploy -> stages
+    first = ctx.db.closed_at() is None
     at = ctx.db.closed_at() or archive.now()    # a re-close keeps the first close time
     p = archive.payload(ctx.g, ctx.db, ctx.dir, closed_at=at)
-    ctx.kea.archive(p)                          # raises KeaError -> order stays open
-    n = ctx.kea.delete_source(source(ctx))      # raises KeaError -> order stays open
+    counts = ctx.kea.archive(p)                 # raises KeaError -> order stays open
+    try:
+        n = ctx.kea.delete_source(source(ctx))
+    except Exception as e:
+        undo = _retract(ctx, p) if first else "archive kept (order already closed)"
+        ctx.db.add_event("error", f"close: reservations NOT released ({e}); {undo}; "
+                                  "order stays open")
+        raise
     ctx.db.set_closed(at)
-    (Path(ctx.dir) / INVENTORY).unlink(missing_ok=True)
-    ctx.db.add_event("close", f"closed; archived {len(p['devices'])} device(s); "
+    try:
+        (Path(ctx.dir) / INVENTORY).unlink(missing_ok=True)
+    except OSError as e:
+        ctx.db.add_event("error", f"close: Deploy inventory {INVENTORY} not removed: {e}")
+    ndev = (counts or {}).get("devices", len(p["devices"]))
+    ctx.db.add_event("close", f"closed; archived {ndev} device(s); "
                               f"{n} reservation(s) released")
-    return n
+    return {"released": n, "archived": counts or {}}

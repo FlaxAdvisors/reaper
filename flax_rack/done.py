@@ -15,7 +15,10 @@ three rungs recorded with stage `done`:
                out of band only). Raw text under artifacts/<pos>/done<run>/end-summary/.
   boot-reset   pxeboot.remove of the device's hostname iPXE file (a power-on must not
                reinstall) + redfish.clear_boot_override (target None): the node boots
-               its own UEFI order. Both must succeed.
+               its own UEFI order. Both must succeed, and that order (this Done's
+               end-summary efibootmgr -v) must not start with a network/PXE entry (the
+               node would PXE-boot at the customer): a fail, the override still cleared.
+               No efibootmgr capture (never deployed) is a row, not a fail.
 
 Then report.write rewrites customer-devices.csv / customer-components.csv in the order
 dir (every device, IOM and switch row; from each row's own latest runs) and the event
@@ -39,7 +42,7 @@ from flax_rungs.result import RungResult
 
 from . import report
 from .addressing import plan_addresses
-from .qualify import _record as _qrecord
+from .qualify import _artifact as _qartifact, _record as _qrecord
 from .stages import cancelled, creds
 
 STAGE = "done"
@@ -125,10 +128,21 @@ def boot_reset(ctx, R, cr, x) -> RungResult:
     rows = [["hostname file", f"hostname-{name}.ipxe gone" if gone else f"NOT removed: {err}"],
             ["boot override", f"None (redfish, as {ovd.get('user')})" if ov.verdict == "pass"
              else f"NOT cleared: {ovd.get('error') or ov.verdict}"]]
+    # the persistent UEFI order the node falls back to once the override is gone: this
+    # Done run's end-summary efibootmgr -v (in band; none for a node that never deployed)
+    text = _qartifact(ctx, ctx.db.latest_runs(), x["pos"], "end-summary", "bootorder")
+    bid, line, net = endsummary.first_boot(text or "")
+    if bid is None:
+        rows.append(["boot order", "not read (no in-band efibootmgr -v this Done)"])
+    elif net:
+        rows.append(["boot order", f"NETWORK FIRST: {line}: the node would PXE-boot at "
+                                   "the customer"])
+    else:
+        rows.append(["boot order", f"first {line or 'Boot' + bid + ' (no entry line)'}"])
     notes = ["no power action: the node stays as the operator left it"]
-    bad = [r[1] for r in rows if r[1].startswith("NOT ")]
+    bad = [f"{k} {v}" for k, v in rows if v.startswith(("NOT ", "NETWORK FIRST"))]
     if bad:
-        why = "; ".join(f"{k} {v}" for k, v in rows if v.startswith("NOT "))
+        why = "; ".join(bad)
         return RungResult("fail", {"error": why, "headline": why, "rows": rows, "notes": notes})
     return RungResult("pass", {"headline": "hostname file gone, boot override None",
                                "rows": rows, "notes": notes})

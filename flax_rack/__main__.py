@@ -261,13 +261,14 @@ def _close(a) -> int:
     from .stages import close_order
     ctx, lock = _order_ctx(a.confirm)
     try:
-        n = close_order(ctx)
+        out = close_order(ctx)
     except KeaError as e:
         print(f"close failed, order stays open: {e}", file=sys.stderr)
         return 1
     finally:
         lock.release()
-    print(f"closed {ctx.g.order}; {n} reservation(s) released")
+    print(f"closed {ctx.g.order}; archived {out['archived'].get('devices', 0)} device(s); "
+          f"{out['released']} reservation(s) released")
     return 0
 
 

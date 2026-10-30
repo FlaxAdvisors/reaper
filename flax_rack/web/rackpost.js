@@ -364,11 +364,17 @@ function App() {
       if (this.faulted(d)) return 'fault';
       const cp = this.phaseState(d, this.curPhase(d));
       if (cp === 'unmeasured') return 'unmeasured';
-      if (this.hasRuns(d, 'done')) return 'done';
+      if (this.hasRuns(d, 'done')) {
+        // Done never makes a tile green on its own: a node that never deployed is not delivered
+        if (this.deployOk(d)) return 'done';
+        return this.hasRuns(d, 'deploy') ? 'deploy' : this.hasRuns(d, 'qualify') ? 'qualify' : 'discover';
+      }
       if (this.hasRuns(d, 'deploy')) return cp === 'done' ? 'done' : 'deploy';
       if (this.hasRuns(d, 'qualify')) return cp === 'done' ? 'done' : 'qualify';
       return Object.keys(d.runs || {}).length ? 'discover' : 'grey';
     },
+    // Deploy passed (every step done/skipped), or the device has no Deploy steps
+    deployOk(d) { return !this.stepEntries(d, 'deploy').length || this.phaseState(d, 'deploy') === 'done'; },
     dotCls(d) { return this.phaseKey(d); },
     phaseDot(d, p) { const st = this.phaseState(d, p); return ['done', 'fault', 'unmeasured'].includes(st) ? st : st === 'cur' ? p : 'grey'; },
     phasePct(d, p) {
@@ -383,6 +389,7 @@ function App() {
         if (bad) return `${p} · ${bad.name}`;
       }
       const p = this.curPhase(d);
+      if (p === 'done' && !this.deployOk(d)) return 'done · not deployed';
       const cur = this.stepEntries(d, p).find((x) => x.state !== 'done' && x.state !== 'skip');
       return !cur ? `${p} ✓` : cur.state === 'unmeasured' ? `${p} · ${cur.name} not measured` : `${p} · ${cur.name}`;
     },
@@ -807,7 +814,7 @@ function App() {
       this.busy = true; this.closeMsg = 'closing…';
       try {
         const r = await api('api/close', { confirm: this.confirmText });
-        this.closeMsg = `closed; ${r.released} reservation(s) released`;
+        this.closeMsg = `closed; ${(r.archived || {}).devices || 0} device(s) archived; ${r.released} reservation(s) released`;
       } catch (e) { this.closeMsg = 'close failed, order stays open: ' + e.message; }
       this.busy = false;
       await this.refresh();

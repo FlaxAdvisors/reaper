@@ -2,8 +2,9 @@
 
 customer-devices.csv     one row per geometry device (pos), per JBOD IOM (<pos>.iom<n>)
                          and per switch (_sw-<id>), DEVICE_COLUMNS.
-customer-components.csv  order.db's component rows (Done's `components` rung, parsed
-                         from the latest Qualify inventory's macinv -v), COMPONENT_COLUMNS.
+customer-components.csv  latest_components: the parts of each device's LATEST Qualify
+                         inventory (macinv -v; order.db's rows when Done's `components`
+                         rung read that same run), COMPONENT_COLUMNS.
 
 Every cell comes from that row's own device and its LATEST run of the rung named
 (order.db latest_runs; never an older run, never another device): a device that never
@@ -12,7 +13,9 @@ ran a rung has "" there, not a neighbour's value. Sources:
   bmc_mac / host_mac  Discover's MACs (order.db device; IOM n = iom_macs[n-1]; a
                       switch's from its latest passed bmc-leased)
   fabric_*            the latest passed Deploy ha-config (bond0 MACs per wedge side,
-                      the A-side address)
+                      the A-side address); a device without one: the MAC of the port
+                      Qualify's latest ha-path saw on each wedge (inventory ip-d-link),
+                      no address
   *_version           the latest Firmware <x>-checked slice's current version
   qualify / deploy    qualify.qualify_why / deploy.deploy_why: pass, fail, or
                       unmeasured ("not measured: ..."); "" before the stage ran
@@ -27,11 +30,12 @@ import re
 from pathlib import Path
 
 from flax_post import inventory
+from flax_rungs import bond
 
 from .addressing import plan_addresses
 from .deploy import deploy_rungs, deploy_why
 from .discover_ladder import DISCOVER_STEPS
-from .qualify import device_rungs, qualify_why
+from .qualify import device_rungs, parse_ip_link, qualify_why
 
 DEVICE_COLUMNS = ("order", "rack", "pos", "ou", "kind", "part", "hostname",
                   "chassis_serial", "bmc_mac", "host_mac", "fabric_a_mac", "fabric_b_mac",
@@ -85,6 +89,25 @@ def components_from_inventory(verbose_text: str) -> list[dict]:
     return out
 
 
+def latest_components(order_dir, db, lr=None) -> list[dict]:
+    """[{pos, kind, model, serial, slot}] of every pos with a Qualify inventory run, from
+    its LATEST inventory: order.db's rows when Done read them from that run (source_run),
+    else parsed again from that run's macinv-v (no artifact: none). Never an older
+    run's parts beside the latest run's chassis serial (a blade reseated and
+    re-qualified after Done, or Done never run)."""
+    lr = db.latest_runs() if lr is None else lr
+    out = []
+    for pos in sorted({k[0] for k in lr if k[1] == INVENTORY_RUNG}):
+        rid = db.latest_run_id(pos, INVENTORY_RUNG)
+        rows = db.components(pos)
+        if not rows or any(r["source_run"] != rid for r in rows):
+            text = inventory_text(order_dir, lr, pos)
+            rows = components_from_inventory(text) if text else []
+        out += [{"pos": pos, **{k: r[k] for k in ("kind", "model", "serial", "slot")}}
+                for r in rows]
+    return out
+
+
 def inventory_text(order_dir, lr, pos) -> str | None:
     """The latest Qualify inventory run's macinv-v artifact for pos (None: no such run,
     no artifact, or unreadable)."""
@@ -102,6 +125,26 @@ def _mac(h: str | None) -> str:
     """order.db's 12-hex MAC as aa:bb:cc:dd:ee:ff ("" for none)."""
     h = re.sub(r"[^0-9a-fA-F]", "", h or "").lower()
     return ":".join(h[i:i + 2] for i in range(0, 12, 2)) if len(h) == 12 else ""
+
+
+def _fabric_macs(order_dir, lr, pos) -> dict[str, str]:
+    """{"A": mac, "B": mac}: the bond0 MACs of the latest passed Deploy ha-config, else
+    the ports Qualify's latest ha-path saw on each wedge, MAC'd by the latest inventory's
+    ip-d-link (a device that never deployed). A side with no such evidence is absent."""
+    hac = _done(lr, pos, "ha-config")
+    if hac.get("verdict") == "pass":
+        return {k: v for k, v in ((hac.get("detail") or {}).get("macs") or {}).items() if v}
+    links = (_done(lr, pos, "ha-path").get("detail") or {}).get("links") or []
+    rel = ((lr.get((pos, INVENTORY_RUNG)) or {}).get("artifacts") or {}).get("ip-d-link")
+    if not links or not rel:
+        return {}
+    try:
+        ifmac = parse_ip_link((Path(order_dir) / rel).read_text())
+    except OSError:
+        return {}
+    side, _err = bond.sides(links, ifmac)
+    macs = {k: v["mac"] for k, v in side.items()}
+    return {} if macs.get("A") and macs.get("A") == macs.get("B") else macs
 
 
 def _done(lr, key, rung):
@@ -166,13 +209,13 @@ def device_rows(order_dir, g, db) -> list[dict]:
         deploy = (_from_why(dwhy.get(d.pos)) if any((d.pos, r) in lr for r in dr) else "")
         hac = _done(lr, d.pos, "ha-config")
         fab = (hac.get("detail") or {}) if hac.get("verdict") == "pass" else {}
+        fmac = _fabric_macs(order_dir, lr, d.pos)
         hosts = [names[k] for k in sorted(names) if k[0] == d.pos and k[1].startswith("host")]
         out.append(_blank(
             order=g.order, rack=g.rack, pos=d.pos, ou=d.ou, kind=d.kind, part=d.part,
             hostname=" ".join(hosts), chassis_serial=fru.get("serial") or "",
             bmc_mac=_mac(row.get("bmc_mac")), host_mac=_mac(row.get("host_mac")),
-            fabric_a_mac=(fab.get("macs") or {}).get("A") or "",
-            fabric_b_mac=(fab.get("macs") or {}).get("B") or "",
+            fabric_a_mac=fmac.get("A", ""), fabric_b_mac=fmac.get("B", ""),
             fabric_a_ip=(fab.get("address") or "").split("/")[0],
             bmc_version=_fw(lr, d.pos, "bmc"), bios_version=_fw(lr, d.pos, "bios"),
             nic_firmware=_fw(lr, d.pos, "mlx"), qualify=qualify, deploy=deploy,
@@ -216,5 +259,6 @@ def write(order_dir: Path, g, db) -> dict[str, Path]:
     comps = order_dir / COMPONENTS_CSV
     _write_csv(devs, DEVICE_COLUMNS, device_rows(order_dir, g, db))
     _write_csv(comps, COMPONENT_COLUMNS,
-               [{"order": g.order, "rack": g.rack, **c} for c in db.components()])
+               [{"order": g.order, "rack": g.rack, **c}
+                for c in latest_components(order_dir, db)])
     return {"devices": devs, "components": comps}

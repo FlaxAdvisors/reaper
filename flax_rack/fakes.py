@@ -44,7 +44,7 @@ BENIGN_SEL rule; the in-band captures only when Done passes a host IP), pxe_remo
 real pxeboot.remove under pxe_dir when set, else recorded only) and clear_override. In
 the served fake R37's SEL holds a correctable-ECC entry (SEL_NONBENIGN): its end-summary
 is red. Knobs: sel_nonbenign, sel_unread (SEL not read: unmeasured), override_fail,
-pxe_dir.
+pxe_first (the installed BootOrder starts with a PXE entry), pxe_dir.
 """
 import subprocess
 
@@ -282,6 +282,7 @@ class FakeRungs:
         self.sel_nonbenign: set[str] = set()
         self.sel_unread: set[str] = set()
         self.override_fail: set[str] = set()
+        self.pxe_first: set[str] = set()        # efibootmgr BootOrder starts with PXE
         self.pxe_dir = None
         self._discover_init(live)
 
@@ -927,8 +928,11 @@ class FakeRungs:
             arts.update({"net.txt": "bond0  UP  02:fb:25:01:00:01\nbond0  UP  10.201.37.51/16\n",
                          "disks.txt": "NAME     MODEL                SERIAL        SIZE TYPE\n"
                                       "nvme0n1  WD_BLACK SN850X 1TB  222815805096  931.5G disk\n",
-                         "bootorder.txt": "BootCurrent: 0003\nBootOrder: 0003,0001\n"
-                                          "Boot0003* ubuntu\tHD(1,GPT,...)/File(\\EFI\\ubuntu\\shimx64.efi)\n",
+                         "bootorder.txt": ("BootCurrent: 0003\nBootOrder: "
+                                           + ("0001,0003" if pos in self.pxe_first else "0003,0001")
+                                           + "\nBoot0001* UEFI: PXE IP4 Mellanox Network Adapter"
+                                             "\tPciRoot(0x0)/Pci(0x1,0x0)/MAC(98039b000001,1)/IPv4(0.0.0.0)\n"
+                                             "Boot0003* ubuntu\tHD(1,GPT,...)/File(\\EFI\\ubuntu\\shimx64.efi)\n"),
                          "dimms.txt": "Memory Device\n\tSize: 32 GB\n\tLocator: DIMM A0\n"})
             rows.append(["in-band", f"{host_ip}: net.txt, disks.txt, bootorder.txt, dimms.txt"])
         else:
