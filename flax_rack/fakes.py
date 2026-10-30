@@ -637,6 +637,39 @@ class FakeRungs:
         return RungResult("pass", {"lldp": [asdict(e) for e in rows], "count": len(rows)},
                           {"show-lldp-table.txt": text})
 
+    def read_live(self, host, user, pw, *, runner=None, timeout=25):
+        """The live link monitor's one-session read. Mgmt switch: the canned FDB (a
+        booted host shows its host MAC too), a port up when it carries a MAC or is an
+        uplink. Wedge: a geometry pcieN lane is up (with an LLDP row naming the first
+        booted device cabled there) once that device has booted, else down. A switch
+        id in live_down does not answer (unmeasured)."""
+        from flax_rungs.result import UNMEASURED, RungResult
+        from flax_rungs.sonic import IfStatus, LldpEntry, parse_show_mac, wedge_iface
+        s = next(s for s in self.g.switches if s.mgmt_ip == host)
+        self.calls.append(("read_live", s.id))
+        if s.id in getattr(self, "live_down", ()):
+            return RungResult(UNMEASURED, {"headline": f"{host} did not answer ssh"})
+        booted = {p for p, b in self.boots.items() if b["kernel"] <= self.t}
+        ifaces, lldp, fdb = {}, [], []
+        if s.role == "mgmt":
+            fdb = [e for e in parse_show_mac(canned_fdb(self.g, hosts_up=booted)[0])]
+            busy = {e.iface for e in fdb} | {f"Ethernet{p - 1}" for p in s.uplink_ports}
+            ifaces = {f"Ethernet{p}": IfStatus("up" if f"Ethernet{p}" in busy else "down",
+                                               "up", "1G") for p in range(52)}
+        else:
+            ifaces = {f"Ethernet{n}": IfStatus("down", "up", "25G") for n in range(128)}
+            for d in self.g.devices:
+                for name, l in sorted(d.links.items()):
+                    if name not in _IFN or l.switch != s.id or d.pos not in booted:
+                        continue
+                    ifn = wedge_iface(l.port, l.lane)
+                    if ifaces[ifn].oper == "up":
+                        continue                   # one neighbour per lane
+                    ifaces[ifn] = IfStatus("up", "up", "25G")
+                    lldp.append(LldpEntry(ifn, f"{self.g.prefix}{d.pos.lower()}",
+                                          self._macs(d.pos)[_IFN[name]], _IFN[name]))
+        return RungResult("pass", {"ifaces": ifaces, "lldp": lldp, "fdb": fdb})
+
     def apply_fabric(self, host_ip, user, pw, assigns, *, runner=None):
         from flax_rungs.result import RungResult
         self.calls.append(("apply_fabric", self.pos_of.get(host_ip), dict(assigns)))

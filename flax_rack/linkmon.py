@@ -1,0 +1,336 @@
+"""Live link monitor: every 30 s each rack switch is read once (one ssh session:
+`show interfaces status; show lldp table; show mac`, flax_rungs.sonic.read_live) and
+every geometry link is judged against that snapshot. Read-only: no switch config, no
+power action, never a `run` row.
+
+Per link (evaluate):
+  ok       oper up + the expected identity on that interface: an LLDP system name that
+           is the device's hostname (<prefix><pos>, e.g. rr101-l37, or <name>-...), or
+           one of the device's order.db MACs (host / BMC / IOMs) in the port's FDB
+  up       oper up, no identity evidence (an active-backup backup port is up but
+           silent: no FDB entry, maybe no LLDP) -- green, never "missing"
+  wrong    oper up and the port carries an identity of ANOTHER device of this rack
+           (LLDP name or FDB MAC; one the geometry does not also put on this interface),
+           an LLDP name that looks like a rackpost hostname but no device of this rack,
+           or (mgmt switch only, the device's MACs known) MACs of no device of this rack
+           and none of its own. `text` names what is seen.
+  down     oper down
+  unknown  the switch's snapshot is missing (did not answer / no mgmt IP / not read
+           yet) or older than STALE_S -- never `down`: nothing was observed
+
+Switch links (key "_sw-<id>"): uplink<N> (up/down/unknown from the switch's own
+status) and `site` (ok while the switch answers ssh at its mgmt IP, which is reached
+through its site port; unknown otherwise -- the site turtle is not read here).
+
+LinkPoller: one thread per served rack. Each tick starts a read for every switch that
+has none in flight (a slow ssh never piles up; other switches still update), keeps
+the snapshots in memory (a restarted daemon rebuilds them within one poll: nothing
+stale carried over), and appends each state change to order.db `link_event` plus an
+event `link <pos> <link>: <old> → <new>`. A link whose switch has not been read yet in
+this process is not logged (a restart does not log ok → unknown → ok).
+"""
+import re
+import threading
+import time
+from dataclasses import asdict, is_dataclass
+from datetime import datetime, timezone
+
+from flax_rungs import sonic
+from flax_rungs.sonic import wedge_iface
+
+from .stages import creds
+
+INTERVAL_S = 30
+STALE_S = 90
+STATES = ("ok", "up", "down", "wrong", "unknown")
+# a rackpost hostname of some rack: <2 letters><3 digits>[rack letter]-...
+_RACKISH = re.compile(r"[a-z]{2}\d{3}[a-z]?-")
+_NO_NAME = {"", "localhost", "(none)", "none"}
+
+
+def _iso(t):
+    return datetime.fromtimestamp(t, timezone.utc).isoformat(timespec="seconds") \
+        if t is not None else None
+
+
+def _d(x):
+    return asdict(x) if is_dataclass(x) else dict(x)
+
+
+def _colon(m):
+    return ":".join(m[i:i + 2] for i in range(0, 12, 2)) if m and len(m) == 12 else m
+
+
+def link_iface(sw, port: int, lane: int | None) -> str:
+    """Geometry port (+lane) on switch `sw` -> SONiC interface name."""
+    if sw.model == "wedge100s":
+        return wedge_iface(port, lane)
+    return f"Ethernet{port - 1}"           # N3248TE: front port N = EthernetN-1
+
+
+def device_names(g) -> dict[str, str]:
+    """pos -> the device's base hostname (<prefix><pos>; multi-host cards add -nK)."""
+    return {d.pos: f"{g.prefix}{d.pos.lower()}" for d in g.devices}
+
+
+def device_macs(db) -> dict[str, set[str]]:
+    """pos -> the device's MACs order.db knows (host, BMC, IOMs; 12 hex lower)."""
+    out = {}
+    for x in db.devices():
+        out[x["pos"]] = {m for m in (x.get("host_mac"), x.get("bmc_mac"),
+                                     *(x.get("iom_macs") or [])) if m}
+    return out
+
+
+def _snap_view(snap):
+    """(ifaces {iface: {oper, admin, speed}}, lldp {iface: [names]}, fdb {iface: [macs]})"""
+    ifaces = {k: _d(v) for k, v in (snap.get("ifaces") or {}).items()}
+    lldp, fdb = {}, {}
+    for e in snap.get("lldp") or []:
+        e = _d(e)
+        lldp.setdefault(e.get("local_iface"), []).append((e.get("remote_device") or "").strip())
+    for e in snap.get("fdb") or []:
+        e = _d(e)
+        m = (e.get("mac") or "").replace(":", "").lower()
+        if m not in fdb.setdefault(e.get("iface"), []):
+            fdb[e["iface"]].append(m)
+    return ifaces, lldp, fdb
+
+
+def evaluate(g, snapshots: dict, macs: dict, names: dict, now: float) -> dict:
+    """Pure: {pos: {link: {"state", "text", "seen": {"lldp", "macs"}, "at", "switch",
+    "iface"}}} for every geometry device link, plus "_sw-<id>" for each switch's
+    uplinks and site port. snapshots: switch id -> {"at": epoch, "ifaces", "lldp",
+    "fdb"} (dataclasses or dicts) or None; "at" is the snapshot's time (None without)."""
+    sws = {s.id: s for s in g.switches}
+    views, fresh = {}, {}
+    for sid, snap in snapshots.items():
+        if snap and snap.get("at") is not None:
+            views[sid] = _snap_view(snap)
+            fresh[sid] = now - snap["at"] <= STALE_S
+    # who the geometry puts on each (switch, iface): a BOM that repeats a lane must not
+    # turn one device's correct cable into another's "wrong"
+    claim: dict[tuple[str, str], set[str]] = {}
+    for d in g.devices:
+        for l in d.links.values():
+            if l.switch in sws:
+                claim.setdefault((l.switch, link_iface(sws[l.switch], l.port, l.lane)),
+                                 set()).add(d.pos)
+    mac_owner = {m: pos for pos, ms in macs.items() for m in ms}
+
+    def name_owner(n):
+        n = n.lower()
+        for pos, base in names.items():
+            if n == base or n.startswith(base + "-"):
+                return pos
+        return None
+
+    def unknown(sid, iface, why):
+        snap = snapshots.get(sid)
+        return {"state": "unknown", "text": why, "seen": {"lldp": None, "macs": []},
+                "at": _iso((snap or {}).get("at")), "switch": sid, "iface": iface}
+
+    def judge(sid, iface, pos=None):
+        sw = sws.get(sid)
+        if sw is None:
+            return unknown(sid, iface, f"no switch {sid} in geometry")
+        snap = snapshots.get(sid)
+        if sid not in views:
+            return unknown(sid, iface, f"switch {sid} not answering" if sid in snapshots
+                           else f"switch {sid} not read yet")
+        if not fresh[sid]:
+            return unknown(sid, iface, f"switch {sid} last read {int(now - snap['at'])} s ago")
+        ifaces, lldp, fdb = views[sid]
+        st = ifaces.get(iface)
+        nb = [n for n in lldp.get(iface, []) if n.lower() not in _NO_NAME]
+        seen_macs = fdb.get(iface, [])
+        base = {"seen": {"lldp": (lldp.get(iface) or [None])[0],
+                         "macs": [_colon(m) for m in seen_macs]},
+                "at": _iso(snap["at"]), "switch": sid, "iface": iface}
+        if st is None:
+            return {**base, "state": "unknown", "text": f"no {iface} on {sid}"}
+        if st.get("oper") != "up":
+            adm = "" if st.get("admin") in (None, "up") else f" (admin {st.get('admin')})"
+            return {**base, "state": "down", "text": f"{iface} {st.get('oper') or 'down'}{adm}"}
+        if pos is None:                       # a switch uplink: no identity expected
+            return {**base, "state": "up", "text": f"{iface} up"
+                    + (f" · {nb[0]}" if nb else "")}
+        mine = macs.get(pos) or set()
+        others = claim.get((sid, iface), set())
+        ok = [n for n in nb if name_owner(n) == pos] + \
+             [_colon(m) for m in seen_macs if m in mine]
+        foreign = []
+        for n in nb:
+            o = name_owner(n)
+            if o is None and _RACKISH.match(n.lower()):
+                foreign.append(f"{n} (not this rack)")
+            elif o is not None and o != pos and o not in others:
+                foreign.append(f"{n} ({o})")
+        for m in seen_macs:
+            o = mac_owner.get(m)
+            if o is not None and o != pos and o not in others:
+                foreign.append(f"{_colon(m)} ({o})")
+            elif o is None and sw.role == "mgmt" and mine and not ok:
+                foreign.append(f"{_colon(m)} (not this rack)")
+        if ok:
+            return {**base, "state": "ok", "text": f"{iface} up · {ok[0]}"
+                    + (f" · also {', '.join(foreign)}" if foreign else "")}
+        if foreign:
+            return {**base, "state": "wrong", "text": "sees " + ", ".join(foreign)}
+        shared = sorted(o for n in nb if (o := name_owner(n)) and o != pos)
+        return {**base, "state": "up", "text": f"{iface} up · "
+                + (f"{nb[0]} (geometry also puts {shared[0]} here)" if shared
+                   else (nb[0] if nb else "no identity seen"))}
+
+    out: dict[str, dict] = {}
+    for d in g.devices:
+        out[d.pos] = {}
+        for name, l in sorted(d.links.items()):
+            sw = sws.get(l.switch)
+            iface = link_iface(sw, l.port, l.lane) if sw else f"{l.switch}:{l.port}"
+            out[d.pos][name] = judge(l.switch, iface, d.pos)
+    for s in g.switches:
+        links = {f"uplink{p}": judge(s.id, link_iface(s, p, None)) for p in s.uplink_ports}
+        if s.site_port:
+            sp = f"{s.site_port['switch']} {s.site_port['port']}"
+            if s.id in views and fresh[s.id]:
+                links["site"] = {"state": "ok", "text": f"answers ssh (via {sp})",
+                                 "seen": {"lldp": None, "macs": []},
+                                 "at": _iso(snapshots[s.id]["at"]), "switch": s.id,
+                                 "iface": sp}
+            else:
+                links["site"] = unknown(s.id, sp, f"switch {s.id} not answering")
+        out[f"_sw-{s.id}"] = links
+    return out
+
+
+def presence(links: dict) -> str:
+    """present if any link is ok/up/wrong; absent if every link is down; else unknown."""
+    states = [v["state"] for v in links.values()]
+    if any(s in ("ok", "up", "wrong") for s in states):
+        return "present"
+    if states and all(s == "down" for s in states):
+        return "absent"
+    return "unknown"
+
+
+def switch_ips(ctx) -> dict[str, str | None]:
+    """Switch id -> its SONiC mgmt IP: geometry mgmt_ip, else Discover's lease."""
+    runs = None
+    out = {}
+    for s in ctx.g.switches:
+        ip = s.mgmt_ip
+        if not ip:
+            if runs is None:
+                runs = ctx.db.latest_runs()
+            ip = (((runs.get((f"_sw-{s.id}", "host-leased")) or {}).get("detail")) or {}).get("ip")
+        out[s.id] = ip
+    return out
+
+
+class LinkPoller(threading.Thread):
+    """ctx_factory() is called every tick (a re-parsed geometry is picked up)."""
+
+    def __init__(self, ctx_factory, interval_s=INTERVAL_S, name="link-poller", clock=time.time):
+        super().__init__(name=name, daemon=True)
+        self.ctx_factory = ctx_factory
+        self.interval_s = interval_s
+        self.clock = clock
+        self._stop_ev = threading.Event()
+        self._mu = threading.Lock()           # snapshots / errors / in-flight
+        self._log_mu = threading.Lock()       # transition logging
+        self._snaps: dict[str, dict | None] = {}
+        self._errors: dict[str, str | None] = {}
+        self._inflight: dict[str, threading.Thread] = {}
+        self._attempted: set[str] = set()
+        self._last: dict | None = None        # (pos, link) -> state last logged
+
+    # -- views (server) --
+    def snapshots(self) -> dict:
+        with self._mu:
+            return dict(self._snaps)
+
+    def switch_live(self, sid: str, now: float | None = None) -> dict:
+        """{"at": last good read (iso) | None, "ok": that read is fresh, "error"}."""
+        with self._mu:
+            snap, err = self._snaps.get(sid), self._errors.get(sid)
+        now = self.clock() if now is None else now
+        at = (snap or {}).get("at")
+        return {"at": _iso(at), "ok": at is not None and now - at <= STALE_S, "error": err}
+
+    # -- polling --
+    def _read(self, ctx, s, ip) -> None:
+        snap, err = None, None
+        try:
+            if not ip:
+                err = f"no mgmt IP for switch {s.id} (Discover has not found it)"
+            else:
+                user, pw = creds(ctx).sonic
+                read = getattr(ctx.rungs, "read_live", None) or sonic.read_live
+                r = read(ip, user, pw, runner=ctx.runner)
+                if r.verdict == "pass":
+                    snap = {**r.detail, "at": self.clock()}
+                else:
+                    err = r.detail.get("headline") or r.detail.get("error") or r.verdict
+        except Exception as e:                # noqa: BLE001 -- unknown until the next read
+            err = f"{type(e).__name__}: {e}"
+        with self._mu:
+            self._snaps[s.id] = snap          # a failed read: unknown now, not at 90 s
+            self._errors[s.id] = err
+            self._attempted.add(s.id)
+        try:
+            self.log_transitions(ctx)
+        except Exception:                     # noqa: BLE001
+            pass
+
+    def tick(self, block=False) -> None:
+        try:
+            ctx = self.ctx_factory()
+            ips = switch_ips(ctx)
+            started = []
+            with self._mu:
+                for s in ctx.g.switches:
+                    t = self._inflight.get(s.id)
+                    if t is not None and t.is_alive():
+                        continue              # one read in flight per switch
+                    t = threading.Thread(target=self._read, args=(ctx, s, ips.get(s.id)),
+                                         name=f"{self.name}-{s.id}", daemon=True)
+                    self._inflight[s.id] = t
+                    started.append(t)
+            for t in started:
+                t.start()
+            if block:
+                for t in started:
+                    t.join()
+            self.log_transitions(ctx)         # a stale snapshot turns unknown here
+        except Exception:                     # noqa: BLE001
+            pass
+
+    def log_transitions(self, ctx) -> dict:
+        """Evaluate now; append each changed (pos, link) to link_event + an event."""
+        with self._log_mu:
+            g, db = ctx.g, ctx.db
+            with self._mu:
+                snaps, attempted = dict(self._snaps), set(self._attempted)
+            res = evaluate(g, snaps, device_macs(db), device_names(g), self.clock())
+            if self._last is None:
+                self._last = db.last_link_states()
+            for pos, links in res.items():
+                for link, v in links.items():
+                    if v["switch"] not in attempted:
+                        continue
+                    old = self._last.get((pos, link), "unknown")
+                    if old == v["state"]:
+                        continue
+                    db.add_link_event(pos, link, v["state"], v["text"])
+                    db.add_event("link", f"link {pos} {link}: {old} → {v['state']}")
+                    self._last[(pos, link)] = v["state"]
+            return res
+
+    def run(self) -> None:
+        while not self._stop_ev.is_set():
+            self.tick()
+            self._stop_ev.wait(self.interval_s)
+
+    def stop(self) -> None:
+        self._stop_ev.set()

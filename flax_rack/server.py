@@ -13,7 +13,9 @@ parses or now conflicts). Nothing is adopted from an older scan.
 
 Artifacts saved by Qualify and Deploy are served read-only at
 /<prefix>/artifacts/<pos>/<run>/<stage>/<name>.txt, path-checked like static files.
-A BmcPoller thread per served rack (started by `serve`) keeps each tile's power chip.
+A BmcPoller thread per served rack (started by `serve`) keeps each tile's power chip,
+and a LinkPoller (flax_rack.linkmon) its live switch links: /api/state carries per
+device `live_links` + `presence`, per switch `live` {at, ok} + `live_links`.
 
 POST api/stage/deploy starts Deploy (flax_rack.deploy): rack-wide with the typed order
 id, a positions run with {"confirm": true}; {"from": "firstboot"} skips the install,
@@ -42,6 +44,7 @@ import os
 import re
 import sqlite3
 import threading
+import time
 import urllib.parse
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -61,6 +64,8 @@ from .discover_ladder import DISCOVER_STEPS, OLD_DISCOVER_RUNGS, wanted as stage
 from .firmware import run_firmware
 from .geometry import Geometry, load_geometry
 from .kea_client import KeaError
+from . import linkmon
+from .linkmon import LinkPoller
 from .orderdb import OrderDB
 from .poller import INTERVAL_S, BmcPoller
 from .qualify import (AGENT_STAGES, OLD_RUNG_NAMES, PHASES as QUALIFY_PHASES, device_rungs,
@@ -206,6 +211,7 @@ class Rack:
         self.stage = None                        # name of the stage this daemon runs
         self.cancel = threading.Event()          # Cancel pressed for that stage
         self.mtime = mtime
+        self.linkmon = None                      # the rack's LinkPoller (set by the App)
         self.db.init(g)
         # a 'running' row left by a previous daemon is interrupted -- unless another
         # process (a CLI discover) holds the stage lock right now
@@ -325,6 +331,10 @@ def rack_state(r: Rack) -> dict:
     unexpected = ((by_pos.get("_rack", {}).get("slot-match") or {}).get("detail") or {}) \
         .get("unexpected") or []
     waivers = db.waivers()
+    lm = getattr(r, "linkmon", None)
+    now = time.time()
+    live = linkmon.evaluate(g, lm.snapshots() if lm else {}, linkmon.device_macs(db),
+                            linkmon.device_names(g), now)
     devices = []
     for d in g.devices:
         x = dbdev.get(d.pos, {})
@@ -350,6 +360,7 @@ def rack_state(r: Rack) -> dict:
             "iom_macs": [_fmt_mac(m) for m in x.get("iom_macs") or []],
             "addrs": addrs.get(d.pos, {}), "names": names.get(d.pos, {}),
             "bmc_live": x.get("bmc_live") or {"reachable": None, "power": None, "at": None},
+            "live_links": live.get(d.pos, {}), "presence": linkmon.presence(live.get(d.pos, {})),
             "qualify_rungs": device_rungs(d),
             # Deploy: its rungs, the gate (None = may enter), the Qualify rungs a waiver
             # would have to name, and its latest recorded waiver (active = still needed)
@@ -371,6 +382,8 @@ def rack_state(r: Rack) -> dict:
         sw["endpoints"] = s.endpoints
         sw["runs"] = by_pos.get(f"_sw-{s.id}", {})     # the switch's own Discover ladder
         sw.update(devview.switch_view(g, s, sw["runs"], raw))
+        sw["live"] = lm.switch_live(s.id, now) if lm else {"at": None, "ok": False, "error": None}
+        sw["live_links"] = live.get(f"_sw-{s.id}", {})
         switches.append(sw)
     return {
         "order": g.order, "customer": g.customer, "vid": g.vid, "site": g.site, "rack": g.rack,
@@ -391,7 +404,7 @@ def rack_state(r: Rack) -> dict:
                    "why": dwhy, "progress": db.deploy_progress(), "ha_mode": db.ha_mode(),
                    "waivers": db.waivers(history=True)},
         "done_rungs": list(DONE_RUNGS), "done": {"csv_at": _csv_at(r.dir)},
-        "poll_interval_s": INTERVAL_S, "profiles": sorted(profiles),
+        "poll_interval_s": INTERVAL_S, "link_interval_s": linkmon.INTERVAL_S, "profiles": sorted(profiles),
         "switches": switches, "devices": devices, "rack_runs": rack_runs,
         "unexpected": [{"port": u["port"], "mac": _fmt_mac(u["mac"])} for u in unexpected],
         "events": db.events(30)}
@@ -419,6 +432,7 @@ class App:
         self._scan = Scan({}, [])
         self._racks: dict[Path, Rack] = {}
         self._pollers: dict[Path, BmcPoller] = {}
+        self._linkmons: dict[Path, LinkPoller] = {}
 
     def rescan(self) -> Scan:
         s = self.registry.scan()
@@ -635,7 +649,7 @@ class App:
                     pass
                 if self._poll_stop.wait(interval_s):
                     break
-            for p in list(self._pollers.values()):
+            for p in [*self._pollers.values(), *self._linkmons.values()]:
                 p.stop()
 
         t = threading.Thread(target=supervise, name="bmc-poller-supervisor", daemon=True)
@@ -645,26 +659,34 @@ class App:
     def sync_pollers(self, interval_s=INTERVAL_S) -> None:
         s = self.rescan()
         served = set(s.racks.values())
-        for d, p in list(self._pollers.items()):
-            if d not in served:
-                p.stop()
-                del self._pollers[d]
+        for polls in (self._pollers, self._linkmons):
+            for d, p in list(polls.items()):
+                if d not in served:
+                    p.stop()
+                    del polls[d]
         for prefix, d in s.racks.items():
-            if d in self._pollers:
+            if d in self._pollers and d in self._linkmons:
                 continue
             r = self.rack(prefix)
             if r is None:
                 continue
-            p = BmcPoller(lambda r=r: self.factory(r.dir, r.g, r.db), interval_s,
-                          name=f"bmc-poller-{prefix}")
-            self._pollers[d] = p
-            p.start()
+            if d not in self._pollers:
+                p = BmcPoller(lambda r=r: self.factory(r.dir, r.g, r.db), interval_s,
+                              name=f"bmc-poller-{prefix}")
+                self._pollers[d] = p
+                p.start()
+            if d not in self._linkmons:
+                # its own 30 s period (operator: links live within ~30 s)
+                lp = LinkPoller(lambda r=r: self.factory(r.dir, r.g, r.db),
+                                name=f"link-poller-{prefix}")
+                self._linkmons[d] = r.linkmon = lp
+                lp.start()
 
     def stop_pollers(self) -> None:
         ev = getattr(self, "_poll_stop", None)
         if ev is not None:
             ev.set()
-        for p in list(self._pollers.values()):
+        for p in [*self._pollers.values(), *self._linkmons.values()]:
             p.stop()
 
     def set_pop(self, r: Rack, body: dict):

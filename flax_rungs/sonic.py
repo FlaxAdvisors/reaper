@@ -185,3 +185,43 @@ def read_syseeprom(host, user, password, *, runner=subprocess.run) -> RungResult
         return RungResult("fail", {**detail, "error": "syseeprom has no Serial Number",
                                    "headline": "switch EEPROM has no Serial Number"}, arts)
     return RungResult("pass", {**detail, "headline": f"SN {serial}"}, arts)
+
+
+# The live link monitor's one-session read: three read-only show commands in ONE ssh
+# (one login per switch per poll), split by echoed marker lines. stdin stays empty.
+_LIVE_MARK = "@@flax-live:{}@@"
+LIVE_CMD = "; ".join(("show interfaces status", f"echo '{_LIVE_MARK.format('lldp')}'",
+                      "show lldp table", f"echo '{_LIVE_MARK.format('mac')}'", "show mac"))
+
+
+def _live_sections(text: str) -> dict[str, str]:
+    out, cur = {"ifaces": [], "lldp": [], "mac": []}, "ifaces"
+    for line in text.splitlines():
+        s = line.strip()
+        if s == _LIVE_MARK.format("lldp"):
+            cur = "lldp"
+        elif s == _LIVE_MARK.format("mac"):
+            cur = "mac"
+        else:
+            out[cur].append(line)
+    return {k: "\n".join(v) + "\n" for k, v in out.items()}
+
+
+def read_live(host, user, password, *, runner=subprocess.run, timeout=25) -> RungResult:
+    """`show interfaces status; show lldp table; show mac` in one ssh session.
+    pass: detail {"ifaces": {iface: IfStatus}, "lldp": [LldpEntry], "fdb": [FdbEntry]};
+    unmeasured: the switch did not answer ssh; fail: it answered but no interface
+    status came back (a missing lldp/mac section is just empty)."""
+    rc, out, err = ssh_cmd(host, user, password, LIVE_CMD, runner=runner, timeout=timeout)
+    arts = {"show-live.txt": out + err}
+    if rc != 0 and unreachable(rc):
+        return RungResult(UNMEASURED, {"error": f"rc={rc} {(err or out).strip()[-300:]}",
+                                       "headline": f"{host} did not answer ssh"}, arts)
+    sec = _live_sections(out)
+    ifaces = parse_interfaces_status(sec["ifaces"])
+    if not ifaces:
+        e = f"rc={rc} {(err or out).strip()[-300:]}"
+        return RungResult("fail", {"error": e, "headline": f"no interface status from {host}"},
+                          arts)
+    return RungResult("pass", {"ifaces": ifaces, "lldp": parse_show_lldp_table(sec["lldp"]),
+                               "fdb": parse_show_mac(sec["mac"])}, arts)

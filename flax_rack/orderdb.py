@@ -1,5 +1,5 @@
 """order.db: per-rack SQLite store (devices, MACs, rung runs, events, gate waivers,
-Done's component list)."""
+Done's component list, the live link monitor's state transitions)."""
 import dataclasses
 import json
 import re
@@ -28,6 +28,10 @@ CREATE TABLE IF NOT EXISTS component(
   id INTEGER PRIMARY KEY, pos TEXT NOT NULL, kind TEXT NOT NULL, model TEXT, serial TEXT,
   slot TEXT, source_run INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS component_pos ON component(pos, id);
+CREATE TABLE IF NOT EXISTS link_event(
+  id INTEGER PRIMARY KEY, at TEXT NOT NULL, pos TEXT NOT NULL, link TEXT NOT NULL,
+  state TEXT NOT NULL, text TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS link_event_pos ON link_event(pos, link, id);
 """
 # columns added after Plan 1 shipped: an existing order.db gains them on init
 _ADDED = (("device", "bmc_reachable", "INTEGER"), ("device", "bmc_power", "TEXT"),
@@ -235,3 +239,18 @@ class OrderDB:
         rows = (self._all(q + " WHERE pos=? ORDER BY id", (pos,)) if pos is not None
                 else self._all(q + " ORDER BY pos, id"))
         return [dict(r) for r in rows]
+
+    def add_link_event(self, pos, link, state, text, at: str | None = None) -> None:
+        """One live-link transition (linkmon); never a run row. Rows are never rewritten."""
+        self._exec("INSERT INTO link_event(at,pos,link,state,text) VALUES(?,?,?,?,?)",
+                   (at or _now(), pos, link, state, text))
+
+    def last_link_states(self) -> dict[tuple[str, str], str]:
+        """(pos, link) -> the state of its latest link_event row."""
+        rows = self._all("SELECT pos,link,state FROM link_event WHERE id IN "
+                         "(SELECT MAX(id) FROM link_event GROUP BY pos, link)")
+        return {(r["pos"], r["link"]): r["state"] for r in rows}
+
+    def link_events(self, limit=200) -> list[dict]:
+        return [dict(r) for r in self._all(
+            "SELECT at,pos,link,state,text FROM link_event ORDER BY id DESC LIMIT ?", (limit,))]
