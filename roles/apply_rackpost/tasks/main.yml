@@ -67,6 +67,7 @@
     - "{{ apply_rackpost_dest_dir }}/flax_post/nicd"
     - "{{ apply_rackpost_dest_dir }}/flax_post/web"
     - "{{ apply_rackpost_dest_dir }}/flax_post/web/static"
+    - "{{ apply_rackpost_dest_dir }}/flax_post/web/static/vendor"
 
 - name: Deploy flax_rack and flax_rungs
   become: true

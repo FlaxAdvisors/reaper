@@ -23,6 +23,11 @@
 // qualify_rungs, so one set of pipeline functions serves them all. A step row
 // opens the evidence modal (Post's stepinfo: headline, rows, notes, artifacts);
 // an artifact opens the in-page viewer (artM) over it, never a raw tab.
+// Serial console: the shared flax-post-sol relay holds the BMC's one SOL session.
+// While a device's console / install-console rung runs, the drawer tails the relay's
+// capture file (api/console/<pos>, every CON_MS); the SOL button opens the Post UI's
+// live terminal (sol.js + xterm over the relay's /socket.io/, loaded on first use):
+// both only watch the relay's session, never open a second one.
 
 const POLL_MS = 5000;
 // geometry cols are ints 1..5 (L/C/R = 1/2/3); a group of rows is drawn with
@@ -40,6 +45,22 @@ const SWKIND = { mgmt: 'mgmt 1G', tor: 'TOR' };
 const BMC_STEPS = ['switchportlink', 'bmc-mac-seen', 'bmc-reserved', 'bmc-leased', 'bmc-pinged', 'serial', 'bmc-ready'];
 // the viewer reads at most this much of an artifact (the rest: Download)
 const ART_MAX = 2 * 1024 * 1024;
+const CON_MS = 2000;
+const CON_KEEP = 256 * 1024;          // the live viewer keeps this much of the tail
+const CON_RUNGS = ['console', 'install-console'];
+// terminal escapes (colour, cursor moves, charset picks) and bare CRs out of the
+// relay's raw capture: the viewer is a <pre>, not a terminal
+const stripAnsi = (t) => t.replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]|\x1b[()][0-9A-Za-z]|\x1b[=>78DEHMc]|\r/g, '');
+const loaded = {};
+function loadAsset(src) {
+  if (!loaded[src]) loaded[src] = new Promise((ok, bad) => {
+    const css = src.endsWith('.css'), el = document.createElement(css ? 'link' : 'script');
+    if (css) { el.rel = 'stylesheet'; el.href = src; } else { el.src = src; }
+    el.onload = ok; el.onerror = () => { delete loaded[src]; bad(new Error('could not load ' + src)); };
+    document.head.appendChild(el);
+  });
+  return loaded[src];
+}
 const STEP_WORD = { done: 'done', cur: 'in progress', fault: 'fault', pending: 'not run', skip: 'skipped', held: 'skipped (upstream)', unknown: 'unknown', unmeasured: 'not measured' };
 // live link state -> pill class
 const LINK_CLS = { ok: 'ok', up: 'up', down: 'bad', wrong: 'bad', unknown: 'unk' };
@@ -187,6 +208,9 @@ function App() {
     // per-device Deploy modal: depM = {pos, msg} while open; its inputs are top-level so
     // v-model never reads through a null depM while the modal tears down
     depM: null, devFrom: 'install', devReinText: '', devWaive: {}, devReason: '',
+    // live console tail (con) of the selected device while its console rung runs; the
+    // SOL terminal modal (solM = {pos, ip}) and its lock/log state (as the Post UI's)
+    con: null, solM: null, solHeld: false, solHolder: null, solClientId: null, solLog: [], solIdle: null, solErr: null,
     // header counters: what each counts is counted() (its filter shows the same set)
     metricList: [
       { key: 'discover', label: 'discover', title: 'devices whose Discover passed: every step of their latest run done (or n/a for the kind)' },
@@ -200,9 +224,10 @@ function App() {
     async mounted() {
       document.addEventListener('keydown', (e) => {
         if (e.key !== 'Escape') return;
-        if (this.artM) this.backArt(); else if (this.stepM) this.stepM = null; else if (this.depM) this.depM = null; else if (this.finishing) this.finishing = false; else if (this.freshing) this.freshing = false; else if (this.deploying) this.deploying = false; else if (this.qualifying) this.qualifying = false; else if (this.discovering) this.discovering = false; else if (this.closing) this.closing = false; else if (this.popOpen) this.popOpen = null; else this.close();
+        if (this.solM) this.closeSol(); else if (this.artM) this.backArt(); else if (this.stepM) this.stepM = null; else if (this.depM) this.depM = null; else if (this.finishing) this.finishing = false; else if (this.freshing) this.freshing = false; else if (this.deploying) this.deploying = false; else if (this.qualifying) this.qualifying = false; else if (this.discovering) this.discovering = false; else if (this.closing) this.closing = false; else if (this.popOpen) this.popOpen = null; else this.close();
       });
       await this.refresh(); setInterval(() => this.refresh(), POLL_MS);
+      setInterval(() => this.tickConsole(), CON_MS);
     },
     async refresh() {
       try {
@@ -346,6 +371,67 @@ function App() {
         ta.remove();
       }
       if (this.artM === m) this.artM = { ...m, copied: ok ? (m.truncated ? 'copied (shown part)' : 'copied') : 'copy failed' };
+    },
+    // ---- serial console (flax-post-sol relay) ----
+    // the console rung now running for d (its name), else null
+    conRung(d) {
+      const runs = (d && d.runs) || {};
+      return CON_RUNGS.find((r) => runs[r] && runs[r].status === 'running') || null;
+    },
+    async tickConsole() {
+      const d = this.selDev, rung = this.conRung(d);
+      if (!rung) { if (this.con && (!d || this.con.pos !== d.pos)) this.con = null; else if (this.con) this.con.live = false; return; }
+      const c = this.con && this.con.pos === d.pos ? this.con : { pos: d.pos, ino: null, offset: null, text: '', live: true };
+      const q = c.ino != null ? `?offset=${c.offset}&ino=${c.ino}` : '';
+      try {
+        const t = await api(`api/console/${encodeURIComponent(d.pos)}${q}`);
+        if (!this.selDev || this.selDev.pos !== c.pos) return;     // drawer moved on meanwhile
+        const pre = document.getElementById('rp-contail');
+        const atEnd = !pre || pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 8;
+        const text = ((t.reset ? '' : c.text) + stripAnsi(t.text || '')).slice(-CON_KEEP);
+        this.con = { pos: c.pos, ino: t.ino, offset: t.offset, text, ip: t.ip, rung, live: true, at: Date.now(), err: null };
+        if (atEnd) setTimeout(() => { const p = document.getElementById('rp-contail'); if (p) p.scrollTop = p.scrollHeight; }, 0);
+      } catch (e) { this.con = { ...c, rung, err: e.message }; }
+    },
+    conInfo() {
+      const c = this.con; if (!c) return '';
+      if (c.err) return `could not read: ${c.err}`;
+      if (c.ino == null) return `no relay capture for ${c.ip || 'its BMC'} yet`;
+      return `${c.ip}.txt · ${c.text.split('\n').length - 1} lines shown · ${c.live ? 'live' : 'stopped'}`;
+    },
+    // the SOL button: the Post UI's terminal, attached to the relay's session
+    async openSol(d) {
+      const ip = d && (d.addrs || {}).bmc; if (!ip) return;
+      this.closeSol();
+      this.solM = { pos: d.pos, ip }; this.solLog = []; this.solErr = null;
+      try {
+        await Promise.all(['static/vendor/xterm.css', 'static/vendor/xterm.js', 'static/vendor/socket.io.min.js'].map(loadAsset));
+        await loadAsset('static/sol.js');
+      } catch (e) { this.solErr = e.message; return; }
+      if (!this.solM || this.solM.ip !== ip) return;               // closed while loading
+      const el = document.getElementById('rp-solterm'); if (!el || !window.SolConsole) return;
+      this.solHeld = false; this.solHolder = null; this.solClientId = null;
+      window.SolConsole.open(el, null, ip, {
+        onLock: (holder, held) => { this.solHolder = holder; this.solHeld = held; },
+        onEvent: (m) => { this.solLog.unshift(m); if (this.solLog.length > 200) this.solLog.pop(); },
+        onClient: (sid) => { this.solClientId = sid; },
+      });
+      this._solIdle = setInterval(() => { this.solIdle = window.SolConsole ? window.SolConsole.idleSeconds() : null; }, 1000);
+    },
+    closeSol() {
+      try { if (window.SolConsole) window.SolConsole.close(); } catch (e) { console.error(e); }
+      if (this._solIdle) { clearInterval(this._solIdle); this._solIdle = null; }
+      this.solM = null; this.solIdle = null; this.solHolder = null; this.solHeld = false; this.solClientId = null;
+    },
+    solLockState() { return !this.solHolder ? 'request' : this.solHeld ? 'release' : 'requestRelease'; },
+    solLockLabel() { return { request: 'Request Lock', release: 'Release Lock', requestRelease: 'Request Lock Release' }[this.solLockState()]; },
+    solLock() {
+      if (!window.SolConsole) return;
+      const st = this.solLockState();
+      if (st === 'request') window.SolConsole.lock(); else if (st === 'release') window.SolConsole.unlock(); else window.SolConsole.requestRelease();
+    },
+    solRelaunch() {
+      if (window.SolConsole && window.confirm(`Relaunch the relay's SOL session to ${this.solM && this.solM.ip}? (it restarts the BMC-side SOL; a running capture keeps going)`)) window.SolConsole.relaunch();
     },
     whoName(o) {
       if (!o) return '';

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { fetchBladeReach, makeReconciler } from "./reconcile";
+import { fetchAllReach, fetchBladeReach, makeReconciler } from "./reconcile";
 
 const blade = (o: any) => ({ port:"et5b1", bmc_mac:"aa", bmc_ip:"10.0.0.1", bmc_pinged:true, ...o });
 
@@ -18,9 +18,31 @@ describe("fetchBladeReach", () => {
   });
 });
 
+describe("fetchAllReach", () => {
+  const byUrl = (feeds: Record<string, any[] | null>) => (async (u: string) => {
+    const slots = feeds[u];
+    if (slots === null) throw new Error("connection refused");
+    return { ok: true, json: async () => ({ slots }) };
+  }) as any;
+
+  it("unions the post blades and the rackpost targets", async () => {
+    const f = byUrl({ post: [blade({})],
+                      rack: [blade({ port: "rackpost:rr101:L37", bmc_mac: "cc", bmc_ip: "172.32.37.11" })] });
+    const r = await fetchAllReach(["post", "rack"], f);
+    expect(r.map(b => [b.port, b.ip])).toEqual([["et5b1", "10.0.0.1"], ["rackpost:rr101:L37", "172.32.37.11"]]);
+  });
+  it("keeps the feed that answered when the other is down", async () => {
+    const r = await fetchAllReach(["post", "rack"], byUrl({ post: [blade({})], rack: null }));
+    expect(r.map(b => b.port)).toEqual(["et5b1"]);
+  });
+  it("throws only when every feed fails", async () => {
+    await expect(fetchAllReach(["post", "rack"], byUrl({ post: null, rack: null }))).rejects.toThrow();
+  });
+});
+
 describe("makeReconciler", () => {
   const deps = () => { const calls:any[]=[]; const live=new Set<string>(); return { calls, live,
-    d: { bladesUrl:"x",
+    d: { bladesUrls:["x"],
          hasSession:(ip:string)=>live.has(ip),
          start:(ip:string)=>{ calls.push(["start",ip]); live.add(ip); },
          replace:(o:string,n:string)=>{ calls.push(["replace",o,n]); live.delete(o); live.add(n); },
@@ -64,5 +86,16 @@ describe("makeReconciler", () => {
     feed(d,[blade({})]); await r.tick();
     d.fetchFn = (async()=>{throw new Error("down");}) as any; await r.tick();
     expect(calls).toEqual([["start","10.0.0.1"]]);
+  });
+  it("starts rackpost targets beside post blades; rackpost down pauses only its own slots", async () => {
+    const {calls,d}=deps(); const r=makeReconciler(d);
+    d.bladesUrls = ["post", "rack"];
+    const rack = blade({ port: "rackpost:rr101:L37", bmc_mac: "cc", bmc_ip: "172.32.37.11" });
+    d.fetchFn = (async (u: string) => ({ ok: true, json: async () => ({ slots: u === "post" ? [blade({})] : [rack] }) })) as any;
+    await r.tick();
+    d.fetchFn = (async (u: string) => { if (u === "rack") throw new Error("down");
+      return { ok: true, json: async () => ({ slots: [blade({}), blade({ port: "et5b2", bmc_mac: "dd", bmc_ip: "10.0.0.2" })] }) }; }) as any;
+    await r.tick();
+    expect(calls).toEqual([["start","10.0.0.1"],["start","172.32.37.11"],["start","10.0.0.2"]]);
   });
 });

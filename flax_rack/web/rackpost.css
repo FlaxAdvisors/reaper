@@ -175,3 +175,5 @@ textarea.confirm-in{font:inherit;font-size:.8rem;resize:vertical}
 .pres.present{background:var(--green);border-color:var(--green)}
 .pres.absent{background:var(--red);border-color:var(--red)}
 .step.held{color:var(--muted)} .step.held .si{color:var(--grey)}
+/* live console tail (the relay's capture while a console rung runs) */
+.con-live{max-height:22rem;overflow:auto;white-space:pre-wrap;margin:.3rem 0 .6rem;font-size:12px}

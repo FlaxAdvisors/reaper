@@ -608,7 +608,7 @@ def _boot(ctx, R, cr, lr, x):
     elif not bmc_ip:
         r = _record(ctx, pos, "pxe-live", RungResult("fail", {"error": "no BMC to boot it with"}))
     else:
-        _console_start(ctx, R, cr, x)       # capture the boot itself
+        _console_start(ctx, R, x)       # capture the boot itself
         try:
             skip, why = reboot_skip(ctx, R, cr, lr, x)
         except Exception as e:              # noqa: BLE001 -- unproven: boot as before
@@ -629,7 +629,7 @@ def _sol_rel(pos, rid) -> str:
     return f"artifacts/{pos}/q{rid}/console/sol.txt"
 
 
-def _console_start(ctx, R, cr, x):
+def _console_start(ctx, R, x):
     """Open the console row ('running' for the UI) and start the SOL capture into the
     order dir. A capture that cannot start is recorded failed at once; it never stops
     the boot (console does not gate, as in Post)."""
@@ -637,15 +637,15 @@ def _console_start(ctx, R, cr, x):
         return
     x.sol_rid = ctx.db.start_run(x.pos, STAGE, "console")
     try:
-        x.sol = R.sol_start(x.ips["bmc"], cr.bmc, ctx.dir / _sol_rel(x.pos, x.sol_rid),
-                            runner=ctx.runner)
+        x.sol = R.sol_start(x.ips["bmc"], ctx.dir / _sol_rel(x.pos, x.sol_rid),
+                            reason="rackpost-qualify")
     except Exception as e:                  # noqa: BLE001
         x.sol = RungResult("fail", {"error": f"sol start: {type(e).__name__}: {e}"})
 
 
 def _console_stop(ctx, R, x):
-    """Stop the capture (sol deactivate, always) and finish the console row: pass when
-    the stored capture holds bytes."""
+    """Stop the capture (the rest of the relay's console copied in) and finish the
+    console row: pass when the stored capture holds bytes."""
     if x.sol_rid is None:
         return
     rid, cap = x.sol_rid, x.sol
@@ -663,10 +663,10 @@ def _console_stop(ctx, R, x):
     det.update(headline=(f"SOL captured: {n} bytes" if res.verdict == "pass"
                          else det.get("error") or "no sol capture"),
                rows=[["capture", "sol.txt" if n else "none"], ["bytes", str(n)],
-                     ["cipher", str(det.get("cipher") or "")],
-                     ["session drops", str(det.get("drops") or 0)]],
-               notes=["SOL from just before the live boot until the node leaves Qualify; "
-                      "the session is deactivated at the end"])
+                     ["source", str(det.get("source") or "")],
+                     ["file rotations", str(det.get("rotations") or 0)]],
+               notes=["SOL from just before the live boot until the node leaves Qualify, "
+                      "read from the flax-post-sol relay (marked at the start)"])
     ctx.db.finish_run(rid, RungResult(res.verdict, det, {"sol": rel} if n else {}))
 
 

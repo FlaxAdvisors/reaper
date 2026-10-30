@@ -1,7 +1,11 @@
 /* src/reconcile.ts
  *
- * Drives session lifecycle from the post viewer's per-slot BMC-reachability
- * feed (/api/v1/blades), not from client connects and not from node power.
+ * Drives session lifecycle from per-slot BMC-reachability feeds, not from
+ * client connects and not from node power: the post viewer's /api/v1/blades
+ * (POST_BLADES_URL) and, when RACKPOST_SOL_TARGETS_URL is set, rackpost's
+ * /rackpost/api/sol-targets (the host BMCs of every enabled customer rack, same
+ * {slots: [...]} shape, ports "rackpost:<prefix>:<pos>"). The feeds are unioned
+ * per tick; one that fails is skipped for that tick, the others still act.
  * A BMC is powered on AC even when its node is off, so starting SOL as soon
  * as the BMC is reachable means `sol activate` is already listening and
  * captures POST from byte one. Sessions are ONLY created/destroyed here; a
@@ -68,8 +72,26 @@ export async function fetchBladeReach(
   return out;
 }
 
+/** Union of every feed that answered (in url order); throws only when ALL fail,
+ *  so one service being down (rackpost restarting) never pauses the other's. */
+export async function fetchAllReach(
+  urls: string[],
+  fetchFn: typeof fetch = fetch
+): Promise<BladeReach[]> {
+  const got = await Promise.allSettled(urls.map((u) => fetchBladeReach(u, fetchFn)));
+  const out: BladeReach[] = [];
+  const errs: string[] = [];
+  got.forEach((g, i) => {
+    if (g.status === "fulfilled") out.push(...g.value);
+    else errs.push(`${urls[i]}: ${g.reason}`);
+  });
+  if (errs.length && errs.length === urls.length) throw new Error(errs.join("; "));
+  for (const e of errs) logger.warn(`[reconcile] feed skipped this tick: ${e}`);
+  return out;
+}
+
 export interface ReconcileDeps {
-  bladesUrl: string;
+  bladesUrls: string[];
   /** a live session exists for this ip. */
   hasSession: (ip: string) => boolean;
   start: (ip: string) => void;
@@ -91,7 +113,7 @@ export function makeReconciler(deps: ReconcileDeps) {
   async function tick(): Promise<void> {
     let blades: BladeReach[];
     try {
-      blades = await fetchBladeReach(deps.bladesUrl, deps.fetchFn);
+      blades = await fetchAllReach(deps.bladesUrls, deps.fetchFn);
     } catch (e) {
       logger.warn(`[reconcile] blades fetch failed, keeping sessions: ${e}`);
       return;

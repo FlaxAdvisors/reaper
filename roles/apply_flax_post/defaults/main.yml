@@ -14,6 +14,10 @@ apply_flax_post_fwd_port: 8447
 apply_flax_post_fwd_probe_s: 60
 apply_flax_post_sol_image_tag: "0.9.119"
 apply_flax_post_sol_port: 8448
+# rackpost's host-BMC feed (flax_rack server, apply_rackpost_port): the relay unions
+# it with the post blades so rackpost's console rungs read this relay's captures.
+# "" = post blades only.
+apply_flax_post_sol_rackpost_targets_url: "http://127.0.0.1:8452/rackpost/api/sol-targets"
 apply_flax_post_fwd_workers: 48   # probe pass fan-out (parallel Redfish sessions); 1 = sequential
 apply_flax_post_share_base: "http://bang/export/share"
 apply_flax_post_fw_mode: "detect"

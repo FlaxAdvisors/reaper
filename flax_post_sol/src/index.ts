@@ -64,10 +64,14 @@ setIo(io);
 // reconciliation (existing sessions and their retained buffers are left
 // alone) rather than tearing anything down; power-off/unreachable/vanished
 // blades are keep-on-loss — never auto-torn-down.
+// RACKPOST_SOL_TARGETS_URL (optional) adds the customer racks' host BMCs from
+// rackpost, so rackpost's console rungs mark + read this relay's capture files
+// instead of opening a second `sol activate` of their own.
 const BLADES_URL = process.env.POST_BLADES_URL ?? 'http://127.0.0.1:8446/api/v1/blades';
+const FEEDS = [BLADES_URL, process.env.RACKPOST_SOL_TARGETS_URL].filter((u): u is string => !!u);
 const RECONCILE_MS = Number(process.env.POST_SOL_RECONCILE_SECS ?? 15) * 1000;
 startReconcileLoop(
-  { bladesUrl: BLADES_URL, hasSession: hasLiveSession, start: startSession, replace: replaceSession },
+  { bladesUrls: FEEDS, hasSession: hasLiveSession, start: startSession, replace: replaceSession },
   RECONCILE_MS
 );
 

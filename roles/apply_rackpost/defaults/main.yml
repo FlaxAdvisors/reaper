@@ -13,6 +13,11 @@ apply_rackpost_post_static:
   - rack.css
   - petite-vue.iife.js
   - flax-logo.svg
+  # the drawer's SOL button: the Post UI's terminal over the flax-post-sol relay
+  - sol.js
+  - vendor/xterm.js
+  - vendor/xterm.css
+  - vendor/socket.io.min.js
 # flax_post modules the Qualify rungs import: the population judge, the qual
 # client, and Post's own Qualify judges (qualify_rules -> blocklist, shipchecks;
 # FRU 0 via observe/fru + the family map); the loose-node firmware detectors'

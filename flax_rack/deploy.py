@@ -383,7 +383,7 @@ def _sol_path(ctx, x):
     return ctx.dir / _sol_rel(x.pos, x.sol_rid) if x.sol_rid is not None else None
 
 
-def _sol_start(ctx, R, cr, x):
+def _sol_start(ctx, R, x):
     """Open the install-console row ('running') and start the SOL capture into the
     order dir; a capture that cannot start never stops the install (the scan then
     finds nothing to scan: not measured)."""
@@ -391,14 +391,15 @@ def _sol_start(ctx, R, cr, x):
         return
     x.sol_rid = ctx.db.start_run(x.pos, STAGE, CONSOLE)
     try:
-        x.sol = R.sol_start(x.ips["bmc"], cr.bmc, _sol_path(ctx, x), runner=ctx.runner)
+        x.sol = R.sol_start(x.ips["bmc"], _sol_path(ctx, x), reason="rackpost-deploy")
     except Exception as e:                  # noqa: BLE001
         x.sol = RungResult("fail", {"error": f"sol start: {type(e).__name__}: {e}"})
 
 
 def _sol_stop(ctx, R, x):
-    """Stop the capture (sol deactivate, always) and finish install-console with the
-    solscan verdict over the whole capture; the raw SOL is its `sol` artifact."""
+    """Stop the capture (the rest of the relay's console copied in) and finish
+    install-console with the solscan verdict over the whole capture; the raw SOL is its
+    `sol` artifact."""
     if x.sol_rid is None:
         return
     rid, cap = x.sol_rid, x.sol
@@ -419,13 +420,13 @@ def _sol_stop(ctx, R, x):
         n = 0
     cd = capres.detail
     det = dict(scan.detail)
-    det["capture"] = {k: cd.get(k) for k in ("bytes", "cipher", "user", "seconds", "drops",
+    det["capture"] = {k: cd.get(k) for k in ("bytes", "source", "seconds", "rotations",
                                              "error", "note") if cd.get(k) is not None}
     if capres.verdict != "pass" and scan.verdict == UNMEASURED and cd.get("error"):
         det["headline"] = det["reason"] = det["error"] = f"{cd['error']}; nothing to scan"
     det["rows"] = [["capture", f"sol.txt, {n} bytes" if n else "none"],
-                   ["cipher", str(cd.get("cipher") or "")],
-                   ["session drops", str(cd.get("drops") or 0)]] + list(det.get("rows") or [])
+                   ["source", str(cd.get("source") or "")],
+                   ["file rotations", str(cd.get("rotations") or 0)]] + list(det.get("rows") or [])
     det["notes"] = ["SOL from just before the install power action until the first boot of "
                     "the installed OS was proven (or the device left Deploy)"] + \
         list(det.get("notes") or [])
@@ -457,7 +458,7 @@ def _install(ctx, R, cr, x):
         r = _record(ctx, x.pos, "install", RungResult("fail", {
             "error": "no BMC/host address or hostname in the address plan"}))
     else:
-        _sol_start(ctx, R, cr, x)           # capture the whole install
+        _sol_start(ctx, R, x)           # capture the whole install
         r = _rung(ctx, x.pos, "install", lambda: R.install(
             bmc_ip, host_ip, x.hostname, cr, sol_path=_sol_path(ctx, x),
             deadline_s=DEADLINES["install"], runner=ctx.runner))
@@ -465,7 +466,7 @@ def _install(ctx, R, cr, x):
 
 
 def _firstboot(ctx, R, cr, x):
-    _sol_start(ctx, R, cr, x)               # --from firstboot: the capture starts here
+    _sol_start(ctx, R, x)               # --from firstboot: the capture starts here
     r = _rung(ctx, x.pos, "firstboot", lambda: R.firstboot(
         x.ips["bmc"], x.ips["host"], x.hostname, cr, expect_mac=x.row.get("host_mac"),
         sol_path=_sol_path(ctx, x), deadline_s=DEADLINES["firstboot"], runner=ctx.runner))

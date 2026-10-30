@@ -179,7 +179,9 @@
     <div class="d-sub">{{subLine(selObj)}}</div>
 
     <div class="actions" v-if="selKind==='dev'">
-      <button disabled title="later plan">PWR</button><button disabled title="later plan">SOL</button>
+      <button disabled title="later plan">PWR</button>
+      <button :disabled="!(selDev?.addrs || {}).bmc" @click="openSol(selDev)"
+              title="the live serial console: the flax-post-sol relay's session to this BMC (watching never opens a second SOL)">SOL</button>
       <button :disabled="!invUrl(selDev)" @click="openInv(selDev)"
               title="the inventory stage's macinv (detail form when present)">INV</button>
       <button :disabled="!popRun(selDev)" @click="openPop(selDev)" title="POP rules of the last Qualify">POP</button>
@@ -323,6 +325,13 @@
             <span class="note" v-if="p.note">{{p.note}}</span></td></tr></tbody>
       </table>
       <p class="pending-note" v-else>no port read yet</p>
+    </div>
+
+    <!-- ---- live console: the relay's capture while a console rung runs ---- -->
+    <div v-if="selKind==='dev' && conRung(selDev)">
+      <div class="section-l">console (live) · {{conRung(selDev)}}
+        <span class="note mono">{{con && con.pos===selDev?.pos ? conInfo() : 'reading…'}}</span></div>
+      <pre id="rp-contail" class="console con-live">{{con && con.pos===selDev?.pos ? (con.text || '(nothing yet)') : ''}}</pre>
     </div>
 
     <!-- ---- pipeline: Post's step names per phase; a step opens its evidence ---- -->
@@ -517,6 +526,25 @@
       <p class="m-sub bad" v-if="artM?.error">could not load: {{artM?.error}}</p>
       <p class="m-sub amb" v-if="artM?.truncated">truncated — the first 2 MiB is shown; Download for the full file</p>
       <pre class="console art-pre" v-if="!artM?.loading && !artM?.error">{{artM?.text || '(empty)'}}</pre>
+    </div>
+  </div>
+
+  <!-- ================= SOL terminal (the Post UI's sol.js over the relay's /socket.io/) ================= -->
+  <div class="m-scrim" v-if="solM" @click="closeSol()">
+    <div class="m-box m-sol" @click.stop>
+      <div class="m-h"><span class="m-title">{{solM?.pos}} · SOL console · <span class="mono">{{solM?.ip}}</span></span>
+        <span class="x" @click="closeSol()">✕</span></div>
+      <div class="m-b">
+        <p class="m-sub bad" v-if="solErr">{{solErr}}</p>
+        <div class="sol-controls">
+          <button class="sol-lock" :class="'lk-'+solLockState()" @click="solLock()">{{solLockLabel()}}</button>
+          <button class="sol-relaunch" @click="solRelaunch()">Relaunch</button>
+          <span class="sol-idle" v-if="solIdle !== null" :class="{stale: solIdle > 120}">last console byte {{solIdle}}s ago</span>
+          <span class="sol-client">Client: {{solClientId || '—'}}</span>
+        </div>
+        <div id="rp-solterm" class="sol-terminal"></div>
+        <div class="sol-log"><div v-for="m in solLog" class="sol-log-line">{{m}}</div></div>
+      </div>
     </div>
   </div>
 

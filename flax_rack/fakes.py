@@ -17,7 +17,8 @@ unexpected-MAC alert renders too.
 Qualify runs against FakeRungs (below): every node live-boots and passes each phase's
 battery, population-check (profiles written to a temp dir matching the canned macinv)
 and the ship checks (canned FRU 0 serial = SMBIOS serial, a cleared TPM 2.0); its SOL
-"capture" is a few canned console lines written to the order dir. LLDP shows
+capture is the real flax_rungs.sol over a fake relay dir (the mark writes a few canned
+console lines; install and first boot append more, line by line in the served fake). LLDP shows
 every pcieN port where the geometry cables it, and C37's wedge-B iperf is slow. (C37's
 failed reserve also stops Qualify booting it -- pxe-live "discover first" -- so in the UI
 the Qualify fault shown is that gate.) Each agent phase takes a few seconds and R05 is
@@ -143,6 +144,16 @@ _RUNGS: dict[str, "FakeRungs"] = {}
 _PROFILE_DIR = None
 
 
+_SOL_DIR = None
+
+
+def _fake_sol_dir() -> str:
+    global _SOL_DIR
+    import tempfile
+    _SOL_DIR = tempfile.mkdtemp(prefix="rackpost-fake-sol-")
+    return _SOL_DIR
+
+
 def fake_context_factory(rack_dir, g, db) -> OrderContext:
     global _PROFILE_DIR
     from flax_post import population
@@ -161,6 +172,10 @@ def fake_context_factory(rack_dir, g, db) -> OrderContext:
         rungs.sol_findings = set(SOL_FINDINGS)
         rungs.sel_nonbenign = set(SEL_NONBENIGN)
         rungs.pull_file = Path(rack_dir) / ".fake-pull"
+        # every rack's fake relay writes where the server's live console viewer reads
+        from flax_rungs import sol
+        rungs.sol_dir = sol.CAPTURE_DIR = _SOL_DIR or _fake_sol_dir()
+        rungs.sol_drip_s = 1.0
     kea = _KEAS.setdefault(g.kea_source, FakeKea(refuse))
     kea.dyn.update(rungs.switch_leases())
     if _PROFILE_DIR is None:
@@ -288,6 +303,11 @@ class FakeRungs:
         self.override_fail: set[str] = set()
         self.pxe_first: set[str] = set()        # efibootmgr BootOrder starts with PXE
         self.pxe_dir = None
+        self.sol_dir = None                    # the fake relay's capture dir (relay_dir())
+        self.sol_live: set[str] = set()        # BMC ips whose capture is running
+        self.sol_drip_s = 0.0                  # pause after each relay console line
+        import threading
+        self._sol_mu = threading.Lock()
         self._discover_init(live)
 
     def _pause(self):
@@ -817,35 +837,55 @@ class FakeRungs:
                     f"===UEFI 5e:00.0===\n         EXP_ROM_UEFI_x86_ENABLE             {uefi}\n")
         return None
 
-    def sol_start(self, bmc_ip, creds, path, *, runner=None):
-        """A canned console in place of `sol activate`; sol_fail positions get none."""
-        from pathlib import Path
+    # ------------------------------------------------------------ SOL (a fake relay)
+    def relay_dir(self) -> str:
+        """The fake flax-post-sol capture dir (<bmc ip>.txt), made on first use."""
+        with self._sol_mu:                  # captures start in parallel threads
+            if self.sol_dir is None:
+                import tempfile
+                self.sol_dir = tempfile.mkdtemp(prefix="rackpost-fake-sol-")
+            return self.sol_dir
+
+    def sol_start(self, bmc_ip, path, *, reason="rackpost"):
+        """The real flax_rungs.sol capture over a fake relay: the mark rotates the
+        relay file and the "session" writes a canned console into it (the install and
+        first boot append more); sol_fail positions' relay never answers (no bytes)."""
+        from flax_rungs import sol
         pos = self.pos_of.get(bmc_ip)
         self.calls.append(("sol_start", pos))
-        if pos not in self.sol_fail:
-            Path(path).parent.mkdir(parents=True, exist_ok=True)
-            Path(path).write_text(f"[SOL {bmc_ip}] Booting `flax live`\nWelcome to openSUSE Leap\n")
-        return {"pos": pos, "path": str(path)}
+
+        def mark(ip, why):
+            if pos in self.sol_fail:
+                return {"ok": False, "reason": "connection refused"}
+            cur = Path(self.relay_dir()) / f"{ip}.txt"
+            if cur.exists():
+                cur.replace(cur.with_name(f"{ip}.prev.txt"))
+            cur.write_text(f"=== flax-post mark {why} ===\n[SOL {ip}] Booting `flax live`\n"
+                           "Welcome to openSUSE Leap\n")
+            self.sol_live.add(ip)
+            return {"ok": True, "ip": ip}
+        return sol.start(bmc_ip, path, reason=reason, capture_dir=self.relay_dir(), mark_fn=mark)
 
     def sol_stop(self, cap):
-        from pathlib import Path
-        from flax_rungs.result import RungResult
-        self.calls.append(("sol_stop", cap["pos"]))
-        p = Path(cap["path"])
-        n = p.stat().st_size if p.exists() else 0
-        det = {"bytes": n, "cipher": 17, "user": "u", "drops": 0}
-        return RungResult("pass", det) if n else \
-            RungResult("fail", {**det, "error": "no sol capture (0 bytes)"})
+        from flax_rungs import sol
+        self.calls.append(("sol_stop", self.pos_of.get(cap.ip)))
+        self.sol_live.discard(cap.ip)
+        return sol.stop(cap)
+
+    def _sol_add(self, bmc_ip, text):
+        """The relay's session writing console lines while a capture runs (one line per
+        sol_drip_s: the served fake's 1 s lets the UI's live viewer be watched)."""
+        if bmc_ip not in self.sol_live:
+            return
+        import time
+        for line in text.splitlines(keepends=True):
+            with open(Path(self.relay_dir()) / f"{bmc_ip}.txt", "a") as f:
+                f.write(line)
+            if self.sol_drip_s:
+                time.sleep(self.sol_drip_s)
 
 
     # ------------------------------------------------------------ Deploy stand-ins
-    def _sol_add(self, path, text):
-        if path is not None:
-            from pathlib import Path
-            p = Path(path)
-            if p.exists():                 # the capture is running (sol_start wrote it)
-                with open(p, "a") as f:
-                    f.write(text)
 
     def install(self, bmc_ip, host_ip, hostname, creds, *, sol_path=None, deadline_s=None,
                 runner=None):
@@ -866,14 +906,14 @@ class FakeRungs:
         arts = {f"hostname-{hostname}.ipxe": f"#!ipxe\n\n# {hostname} wiwynn-tp-hmc to do "
                                              "ubuntu-24.04 created 20261030.020000\n"}
         if pos in self.install_fail:
-            self._sol_add(sol_path, con + "Please enter the passphrase: \n")
+            self._sol_add(bmc_ip, con + "Please enter the passphrase: \n")
             why = (f"never powered off within {deadline_s} s (installer running; installer hung "
                    "or waiting for input? see the SOL tail)")
             return RungResult("fail", {
                 "headline": why, "error": why, "file_removed": True,
                 "rows": rows + [["powered off", "no"], ["hostname file removed", "yes"]],
                 "notes": [], "sol_tail": "Please enter the passphrase: "}, arts)
-        self._sol_add(sol_path, con + "reboot: Power down\n")
+        self._sol_add(bmc_ip, con + "reboot: Power down\n")
         self.power[pos] = "off"
         return RungResult("pass", {
             "headline": "installed: powered off 912 s after power cycle", "off_after_s": 912,
@@ -889,7 +929,7 @@ class FakeRungs:
         self.calls.append(("firstboot", pos, expect_mac))
         self._pause()
         self.power[pos] = "on"
-        self._sol_add(sol_path, f"\nUbuntu 24.04.1 LTS {hostname} ttyS0\n\n{hostname} login: \n")
+        self._sol_add(bmc_ip, f"\nUbuntu 24.04.1 LTS {hostname} ttyS0\n\n{hostname} login: \n")
         user = creds.host[0] if creds.host else "flax"
         if pos in self.firstboot_fail:
             why = (f"ssh as {user}@{host_ip} refused (password; the autoinstall's users differ "

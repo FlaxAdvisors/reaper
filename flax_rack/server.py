@@ -39,6 +39,14 @@ deleted), refused like a stage start while one runs or the daemon drains. GET
 api/report/process.html (re)writes and serves the internal process report (every
 attempt of every pass; Close writes it too, before archiving).
 
+Serial consoles come from the shared flax-post-sol relay (flax_rungs.sol): GET
+/rackpost/api/sol-targets lists every open served rack's host BMCs in the relay's feed
+shape ({slots: [{port, bmc_mac, bmc_ip, bmc_pinged}]}, no credentials: the relay reads
+/etc/flax/credentials-bmc.json itself, as rackpost does), and GET
+api/console/<pos>?offset=&ino= tails the relay's capture file of that device's BMC for
+the drawer's live viewer. The drawer's SOL button attaches the Post UI's terminal
+(sol.js over the relay's /socket.io/, which nginx already proxies on this vhost).
+
 Stages run in daemon threads under one lock per rack dir (RackLock: a thread lock
 plus a flock on <dir>/.stage.lock, so a CLI `discover` and the daemon exclude each
 other too). Different racks run in parallel. A stage's exception lands in that
@@ -61,6 +69,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from flax_rungs import sol
 from flax_rungs.bond import clean_ha
 from flax_rungs.fwsteps import FW_STEPS
 from flax_rungs.pxeboot import PXE_DIR
@@ -767,6 +776,37 @@ class App:
         return {"version": __version__, "orders": [orders[k] for k in sorted(orders)],
                 "conflicts": s.conflicts}
 
+    def sol_targets(self) -> dict:
+        """Every open served rack's host BMCs for the flax-post-sol relay (its
+        POST_BLADES_URL shape; no secrets). A BMC Discover has not seen (no MAC) is left
+        out, as the relay would drop it; bmc_pinged is the BMC poller's last answer."""
+        slots = []
+        for prefix in sorted(self.rescan().racks):
+            r = self.rack(prefix)
+            if r is None or r.db.closed_at():
+                continue
+            dev = {x["pos"]: x for x in r.db.devices()}
+            for a in plan_addresses(r.g):
+                x = dev.get(a.pos) or {}
+                if a.role != "bmc" or not x.get("bmc_mac"):
+                    continue
+                slots.append({"port": f"rackpost:{prefix}:{a.pos}", "bmc_mac": x["bmc_mac"],
+                              "bmc_ip": a.ip,
+                              "bmc_pinged": bool((x.get("bmc_live") or {}).get("reachable"))})
+        return {"slots": slots}
+
+    def console_tail(self, r: Rack, pos: str, query: str):
+        """The relay's capture of pos's host BMC from ?offset= (same ?ino=), else its tail."""
+        ip = next((a.ip for a in plan_addresses(r.g) if a.pos == pos and a.role == "bmc"), None)
+        if ip is None:
+            return 404, {"error": f"{pos}: no host BMC"}
+        q = urllib.parse.parse_qs(query)
+
+        def num(k):
+            v = (q.get(k) or [""])[0]
+            return int(v) if v.isdigit() else None
+        return 200, {"pos": pos, "ip": ip, **sol.tail(ip, offset=num("offset"), ino=num("ino"))}
+
     def artifact_file(self, r: Rack, rest: str) -> Path | None:
         """artifacts/<pos>/<run>/<stage>/<name>.txt inside the order dir, nothing else."""
         segs = rest.split("/")
@@ -782,11 +822,13 @@ class App:
         return p if p.is_file() else None
 
     def static_file(self, name: str) -> Path | None:
-        if not _STATIC_RE.fullmatch(name) or ".." in name:
+        """A file of a static dir, or of its vendor/ (the Post UI's xterm + socket.io)."""
+        sub, _, leaf = name.rpartition("/")
+        if sub not in ("", "vendor") or not _STATIC_RE.fullmatch(leaf) or ".." in leaf:
             return None
         for base in self.static_dirs:
             p = (base / name).resolve()
-            if p.parent == base and p.is_file():
+            if p.parent == (base / sub if sub else base) and p.is_file():
                 return p
         return None
 
@@ -920,6 +962,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._send(200, index_html(app.index()).encode(), _CTYPES[".html"])
             if method == "GET" and rest == "api/racks":
                 return self._json(200, app.index())
+            if method == "GET" and rest == "api/sol-targets":
+                return self._json(200, app.sol_targets())
             if method == "GET" and rest.startswith("static/"):
                 return self._static(rest[len("static/"):])
             return self._json(404, {"error": "not found"})
@@ -935,6 +979,9 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._static(rest[len("static/"):])
             if rest == "api/state":
                 return self._json(200, rack_state(r))
+            if rest.startswith("api/console/"):
+                return self._json(*app.console_tail(r, rest[len("api/console/"):],
+                                                    urllib.parse.urlsplit(self.path).query))
             if rest == "api/report/process.html":
                 return self._send(200, app.process_report(r), _CTYPES[".html"])
             if rest.startswith("api/report/"):

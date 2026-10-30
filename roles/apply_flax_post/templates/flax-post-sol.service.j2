@@ -11,6 +11,9 @@ ExecStart=/usr/bin/docker run --rm --init --name flax-post-sol \
     --network host \
     -e PORT={{ apply_flax_post_sol_port }} \
     -e POST_BLADES_URL=http://127.0.0.1:{{ apply_flax_post_web_port }}/api/v1/blades \
+{% if apply_flax_post_sol_rackpost_targets_url %}
+    -e RACKPOST_SOL_TARGETS_URL={{ apply_flax_post_sol_rackpost_targets_url }} \
+{% endif %}
     -e POST_SOL_CAPTURE_DIR={{ apply_flax_post_sol_capture_dir }} \
     -e PATH=/opt/flax/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     -v /etc/flax/credentials-bmc.json:/etc/flax/credentials-bmc.json:ro \
