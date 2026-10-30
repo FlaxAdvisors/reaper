@@ -90,7 +90,7 @@
   <!-- ================= Run strip (the current pass's latest Run) ================= -->
   <div class="run-strip" v-if="s.run && !s.closed_at" :class="'rs-' + s.run.state" :title="runTitle()">
     <span class="rs-main">run: {{runText()}}</span>
-    <span class="rs-held" v-for="(bs, k) in (s.run.state === 'held' ? s.run.held : {})"><b>{{k}}</b> {{bs.join('; ')}}</span>
+    <span class="rs-held" v-for="x in runStrip()" :class="x.cls"><b>{{x.k}}</b> {{x.text}}</span>
     <span class="rs-held out" v-for="(why, k) in (['done', 'running'].includes(s.run.state) ? (s.run.out || {}) : {})"><b>{{k}}</b> left out: {{why}}</span>
     <span class="rs-held rs-fw" v-if="runFw().length" :title="runFwTitle()">firmware: {{runFw().length}} to note</span>
     <button class="discbtn depbtn" v-if="s.run.can_continue" :disabled="s.stage_running" @click="openContinue()">Continue to Deploy…</button>
@@ -432,10 +432,13 @@
       <div class="m-h"><span class="m-title">Continue run {{s.run?.id}} to Deploy</span>
         <span class="x" @click="contM=null">✕</span></div>
       <div class="m-b">
-        <p class="m-sub">Deploy then Done. The Deploy gate is read again at this click{{s.run?.reinstall ? ' (reinstall chosen at the start)' : ': installed nodes deploy from firstboot'}}.
+        <p class="m-sub" v-if="runResumes()">The Run was interrupted in {{s.run?.stage}}: Continue runs {{s.run?.stage}} again
+          and goes on as the Run would (held again before Deploy on any blocker).</p>
+        <p class="m-sub" v-else>Deploy then Done{{(s.run?.requalify || []).length ? ', after Firmware + Qualify for ' + s.run.requalify.join(', ') + ' (not qualified in this Run)' : ''}}.
+          The Deploy gate is read again at this click over this Run's results only{{s.run?.reinstall ? ' (reinstall chosen at the start)' : ': installed nodes deploy from firstboot, a node with no install record only onto a disk proven blank'}}.
           A device still blocked then is left out of Deploy; Done covers the whole rack.</p>
         <div v-for="k in contKeys()">
-          <p class="m-sub bad"><b class="mono">{{k}}</b> {{(s.run?.held?.[k] || []).join('; ')}}</p>
+          <p class="m-sub bad"><b class="mono">{{k}}</b> {{(runBlocked()[k] || []).join('; ')}}</p>
           <label class="m-sub mono" v-for="r in Object.keys(contWaive[k] || {})"><input type="checkbox" v-model="contWaive[k][r]"> waive {{r}}</label>
         </div>
         <input class="confirm-in" name="rp-contreason" autocomplete="off" v-if="contWaived().length" v-model="contReason"

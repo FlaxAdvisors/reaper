@@ -19,11 +19,19 @@ Each stage is the existing stage function; the Run adds no stage logic of its ow
   deploy    run_deploy. Targets are the hosts with no Discover blocker NOW whose gate is
             open NOW, with the waivers sent at that click (recorded by run_deploy). A
             device still blocked is left out and named in the Run's `out`; rack-wide
-            only when none is left out. reinstall=no: installed nodes start at firstboot,
-            never-installed ones at install (not a reinstall). reinstall=<order id>
-            (typed up front): every target from install, except one this Run already
-            installed (a Continue after an interrupted Deploy never wipes it twice).
+            only when none is left out. reinstall=no: installed nodes (any record or
+            Discover proof, deploy.installed_positions) start at firstboot; one with no
+            install record starts at install (not a reinstall) ONLY when this Run's
+            Qualify inventory proves its install disk blank (deploy.disk_blank: lsblk
+            and blkid of the live image); otherwise it is a blocker (NOT_BLANK) that only
+            a Run with the typed reinstall gets past. reinstall=<order id> (typed up
+            front): every target from install, except one this Run already installed (a
+            Continue after an interrupted Deploy never wipes it twice).
   done      run_done, rack-wide (the customer CSVs list every device).
+
+This Run's results only: every gate a Run reads (Discover blockers, the Deploy gate,
+the blank-disk proof) reads the rows with an id above the Run's run_after (this_run),
+never an earlier stage's. A device with no such row is "not run in this Run".
 
 Lock rule: the caller holds the rack's stage lock for a Run's whole execution
 (Discover through Qualify, then Deploy through Done), so nothing interleaves and the
@@ -33,18 +41,23 @@ Continue takes the lock again like any stage start (refused while another stage 
 or the daemon drains). Continue re-reads the gate at the click, never the hold's copy.
 
 State is order.db's run_plan row (orderdb). A daemon that starts and finds a 'running'
-Run marks it `interrupted` with the stage it was in and never resumes it; Continue
-from there goes to Deploy (or only Done, when it was interrupted in Done). Cancel
-stops a running Run (the stage's own Cancel, then the Run stops), and ends a held or
+Run marks it `interrupted` with the stage it was in and never resumes it on its own.
+Continue on an interrupted Run re-runs the stage it was interrupted in and goes on from
+there as the Run would have (so it may hold again before Deploy). Continue on a held Run
+first runs Firmware + Qualify for the hosts that pass Discover now but have no Qualify
+of this Run (a device re-discovered while held: it must pass this Run's Qualify, and
+running it here keeps the one-click Continue), then Deploy -> Done. Cancel stops a
+running Run (the stage's own Cancel, then the Run stops), and ends a held or
 interrupted one.
 """
 from flax_rungs.result import UNMEASURED, not_passed
 
-from .deploy import (GateError, check_waivers, gate_why, installed_positions, run_deploy)
+from .deploy import (NOT_BLANK, GateError, check_waivers, disk_blank, gate_blockers, gate_why,
+                     installed_positions, run_deploy)
 from .discover_ladder import DISCOVER_STEPS
 from .done import run as run_done
 from .firmware import FIRMWARE_RUNGS, run_firmware
-from .qualify import run_qualify
+from .qualify import device_rungs, run_qualify
 from .stages import cancelled, run_discover
 
 STAGE = "run"
@@ -84,10 +97,22 @@ def _bad(lr, key, steps, stage) -> list[str]:
     return out
 
 
-def discover_blockers(lr, g) -> dict[str, list[str]]:
-    """key (device pos or _sw-<id>) -> its Discover blockers, from the latest runs."""
-    keys = [d.pos for d in g.devices] + _sw_keys(g)
-    return {k: b for k in keys if (b := _bad(lr, k, DISCOVER_STEPS, "discover"))}
+def this_run(lr, after: int) -> dict:
+    """The rows of latest_runs() a Run produced (id above its run_after)."""
+    return {k: v for k, v in lr.items() if (v.get("id") or 0) > after}
+
+
+def discover_blockers(lr, g, *, in_run=False) -> dict[str, list[str]]:
+    """key (device pos or _sw-<id>) -> its Discover blockers, from `lr` (this_run's rows
+    when in_run: a key with no Discover row there is "not run in this Run")."""
+    out = {}
+    for k in [d.pos for d in g.devices] + _sw_keys(g):
+        b = _bad(lr, k, DISCOVER_STEPS, "discover")
+        if not b and in_run and not any((k, st) in lr for st in DISCOVER_STEPS):
+            b = ["discover: not run in this Run"]
+        if b:
+            out[k] = b
+    return out
 
 
 def firmware_findings(lr, keys) -> dict[str, list[str]]:
@@ -96,29 +121,55 @@ def firmware_findings(lr, keys) -> dict[str, list[str]]:
     return {k: b for k in keys if (b := _bad(lr, k, FIRMWARE_RUNGS, "firmware"))}
 
 
+def run_gate_why(lr_run, d, waived=()) -> str | None:
+    """The Deploy gate over this Run's rows: a host with no Qualify row of this Run is
+    not qualified (an earlier Qualify, even passed, never opens it)."""
+    if not any((d.pos, r) in lr_run for r in device_rungs(d)):
+        return "qualify not run in this Run (earlier results do not count)"
+    return gate_why(lr_run, d, waived)
+
+
 def deploy_choice(db, g, row: dict, waive=None) -> dict:
-    """What a Run's Deploy does NOW (the gate at the click, never the hold's copy):
-    {targets, out {pos: why}, firstboot [pos], from_phase, reinstall, waive}. Raises
+    """What a Run's Deploy does NOW (the gate at the click, never the hold's copy), from
+    this Run's rows: {targets, out {pos: why}, blockers {key: [why]} (every host left
+    out plus the switches Discover blocks: the Run's hold), waivable {pos: [rung]} (the
+    gate-blocked hosts' rungs not passed), requalify [pos] (hosts Discover passes with
+    no Qualify of this Run), firstboot [pos], from_phase, reinstall, waive}. Raises
     GateError on a malformed waiver."""
     lr = db.latest_runs()
+    run_lr = this_run(lr, row["run_after"])
     hosts = _hosts(g)
     w = check_waivers(g, waive, [d.pos for d in hosts])
-    disc = discover_blockers(lr, g)
-    targets, out = [], {}
+    disc = discover_blockers(run_lr, g, in_run=True)
+    reinstall = g.order if row["options"].get("reinstall") else None
+    installed = installed_positions(db, lr)
+    blockers = {k: b for k, b in disc.items() if k.startswith("_sw-")}
+    targets, out, waivable, requalify = [], {}, {}, []
     for d in hosts:
         if d.pos in disc:
             out[d.pos] = "; ".join(disc[d.pos])
-        elif why := gate_why(lr, d, w.get(d.pos, {}).get("rungs", ())):
+            blockers[d.pos] = disc[d.pos]
+        elif why := run_gate_why(run_lr, d, w.get(d.pos, {}).get("rungs", ())):
             out[d.pos] = why
+            blockers[d.pos] = [f"deploy gate: {why}"]
+            if not any((d.pos, r) in run_lr for r in device_rungs(d)):
+                requalify.append(d.pos)
+            else:
+                waivable[d.pos] = [r for r in gate_blockers(run_lr, d)
+                                   if not r.startswith("verdict ")]
+        elif not reinstall and d.pos not in installed \
+                and (blank := disk_blank(db.path.parent, run_lr, d.pos))[0] is not True:
+            out[d.pos] = f"{NOT_BLANK} ({blank[1]})"
+            blockers[d.pos] = [f"deploy: {out[d.pos]}"]
         else:
             targets.append(d.pos)
-    reinstall = g.order if row["options"].get("reinstall") else None
     if reinstall:
         # only what this Run installed already starts at firstboot (no second wipe)
         fb = db.ever_passed(("install",), after=row["run_after"]) & set(targets)
     else:
-        fb = installed_positions(db, lr) & set(targets)
-    return {"targets": targets, "out": out, "firstboot": sorted(fb),
+        fb = installed & set(targets)
+    return {"targets": targets, "out": out, "blockers": blockers, "waivable": waivable,
+            "requalify": requalify, "firstboot": sorted(fb),
             "from_phase": "firstboot" if targets and fb == set(targets) else "install",
             "reinstall": reinstall, "waive": {p: x for p, x in w.items() if p in targets}}
 
@@ -172,35 +223,32 @@ def run(ctx, *, who: str = "?", reinstall: bool = False, on_stage=None) -> int:
     return x.rid
 
 
-def _run(x: _Run):
+def _run(x: _Run, start: str = "discover"):
+    """The Run from `start` (a fresh Run: discover; a Continue of an interrupted one: the
+    stage it was in, re-run) through Qualify, then the hold or Deploy -> Done."""
     ctx, db, g = x.ctx, x.db, x.ctx.g
-    held: dict[str, list[str]] = {}
-    x.stage("discover")
-    run_discover(ctx)
-    if x.stopped():
-        return
-    held.update(discover_blockers(db.latest_runs(), g))
-    fw = [d.pos for d in g.devices if d.pos not in held] + \
-         [k for k in _sw_keys(g, firmware=True) if k not in held]
-    x.stage("firmware")
-    if fw:
-        run_firmware(ctx, positions=None if not held else fw)
+    after = db.run_plan(x.rid)["run_after"]
+    i = STAGES.index(start)
+    if i <= 0:
+        x.stage("discover")
+        run_discover(ctx)
         if x.stopped():
             return
-        if found := firmware_findings(db.latest_runs(), fw):
-            db.add_event(STAGE, f"run {x.rid} firmware findings (report only, not held): "
-                                + "; ".join(f"{k} ({', '.join(b)})" for k, b in found.items()))
+    disc = discover_blockers(this_run(db.latest_runs(), after), g, in_run=True)
+    if i <= 1:
+        fw = [d.pos for d in g.devices if d.pos not in disc] + \
+             [k for k in _sw_keys(g, firmware=True) if k not in disc]
+        x.stage("firmware")
+        if fw and not _firmware(x, None if not disc else fw):
+            return
     hosts = _hosts(g)
-    ok = [d for d in hosts if not any(b.startswith("discover:") for b in held.get(d.pos, []))]
+    ok = [d.pos for d in hosts if d.pos not in disc]
     x.stage("qualify")
     if ok:
-        run_qualify(ctx, positions=None if len(ok) == len(hosts) else [d.pos for d in ok])
+        run_qualify(ctx, positions=None if len(ok) == len(hosts) else ok)
         if x.stopped():
             return
-        lr = db.latest_runs()
-        for d in ok:
-            if why := gate_why(lr, d):
-                held.setdefault(d.pos, []).append(f"deploy gate: {why}")
+    held = deploy_choice(db, g, db.run_plan(x.rid))["blockers"]
     if held:
         db.set_run_plan(x.rid, state="held", stage="deploy", held=held)
         db.add_event(STAGE, f"run {x.rid} held before deploy: "
@@ -209,15 +257,50 @@ def _run(x: _Run):
     _deploy_done(x, None, None)
 
 
+def _firmware(x: _Run, positions) -> bool:
+    """run_firmware (report only); False when the Run was cancelled."""
+    run_firmware(x.ctx, positions=positions)
+    if x.stopped():
+        return False
+    keys = positions or [d.pos for d in x.ctx.g.devices] + _sw_keys(x.ctx.g, firmware=True)
+    if found := firmware_findings(x.db.latest_runs(), keys):
+        x.db.add_event(STAGE, f"run {x.rid} firmware findings (report only, not held): "
+                              + "; ".join(f"{k} ({', '.join(b)})" for k, b in found.items()))
+    return True
+
+
 def cont(ctx, rid: int, *, waive=None, who: str = "?", on_stage=None) -> None:
-    """Continue a held / interrupted Run: Deploy (the gate at this click, with `waive`)
-    then Done; only Done when it was interrupted in Done. The caller holds the lock."""
+    """Continue a held / interrupted Run (the caller holds the lock). Interrupted: re-run
+    the stage it was in and go on as the Run would have (Deploy / Done straight on when
+    it was in one of those). Held: Firmware + Qualify for the hosts with no Qualify of
+    this Run that Discover passes now, then Deploy (the gate at this click, with
+    `waive`) -> Done."""
     row = ctx.db.run_plan(rid)
     if row is None or row["state"] not in CONTINUABLE:
         raise GateError(f"run {rid} is not held or interrupted")
     x = _Run(ctx, rid, on_stage)
     ctx.db.add_event(STAGE, f"run {rid}: continue by {who} (was {row['state']} in {row['stage']})")
-    x.guard(lambda: _deploy_done(x, waive, who) if row["stage"] != "done" else _done(x))
+    st = row["stage"] or "discover"
+    if row["state"] == "interrupted" and st in ("discover", "firmware", "qualify"):
+        x.guard(lambda: _run(x, start=st))
+    elif st == "done":
+        x.guard(lambda: _done(x))
+    else:
+        x.guard(lambda: _requalify_deploy_done(x, waive, who))
+
+
+def _requalify_deploy_done(x: _Run, waive, who):
+    rq = deploy_choice(x.db, x.ctx.g, x.db.run_plan(x.rid))["requalify"]
+    if rq:
+        x.db.add_event(STAGE, f"run {x.rid}: qualify in this Run first: {', '.join(rq)}")
+        x.stage("firmware")
+        if not _firmware(x, rq):
+            return
+        x.stage("qualify")
+        run_qualify(x.ctx, positions=rq)
+        if x.stopped():
+            return
+    _deploy_done(x, waive, who)
 
 
 def _deploy_done(x: _Run, waive, who):
@@ -226,7 +309,7 @@ def _deploy_done(x: _Run, waive, who):
     ch = deploy_choice(db, g, row, waive)
     db.set_run_plan(x.rid, out=ch["out"])
     if not ch["targets"]:
-        db.set_run_plan(x.rid, state="held", stage="deploy")
+        db.set_run_plan(x.rid, state="held", stage="deploy", held=ch["blockers"])
         db.add_event(STAGE, f"run {x.rid} held: no device passes the Deploy gate: "
                             + "; ".join(f"{p} ({y})" for p, y in ch["out"].items()))
         return

@@ -179,6 +179,7 @@ textarea.confirm-in{font:inherit;font-size:.8rem;resize:vertical}
 .run-strip.rs-held,.run-strip.rs-interrupted{border-color:rgba(210,153,34,.55)} .run-strip.rs-held .rs-main,.run-strip.rs-interrupted .rs-main{color:var(--amber)}
 .run-strip.rs-done .rs-main{color:var(--green)}
 .run-strip .rs-held{color:var(--muted)} .run-strip .rs-held b{color:var(--text);font-family:ui-monospace,monospace}
+.run-strip .rs-held.ok{color:var(--green)}
 .runbtn{border-color:rgba(63,185,80,.6);color:var(--green)}
 /* Plan 6 Task 3: a running step (blue, "running…"; amber stays "needs attention"), the
    lit phase chip of the stage running now, the console panel */

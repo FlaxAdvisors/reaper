@@ -116,17 +116,24 @@ describe("makeReconciler", () => {
     await r.tick();
     expect(calls).toEqual([["start","10.0.0.1"],["start","172.32.37.11"],["start","10.0.0.2"]]);
   });
-  it("ends a rackpost target's session once it has left the answering feed (closed rack)", async () => {
+  it("ends a rackpost target's session only once rackpost reports its rack closed", async () => {
     const {calls,d}=deps(); const r=makeReconciler(d);
     d.bladesUrls = ["post", "rack"]; d.endOnLeave = ["rack"];
     const rack = blade({ port: "rackpost:rr101:L37", bmc_mac: "cc", bmc_ip: "172.32.37.11" });
     let feeds: Record<string, any[] | null> = { post: [blade({})], rack: [rack] };
+    let racks: any[] = [{ prefix: "rr101", state: "open" }];
     d.fetchFn = (async (u: string) => { if (feeds[u] === null) throw new Error("down");
-      return { ok: true, json: async () => ({ slots: feeds[u] }) }; }) as any;
+      return { ok: true, json: async () => ({ slots: feeds[u], ...(u === "rack" ? { racks } : {}) }) }; }) as any;
     await r.tick();
     feeds = { post: [], rack: null };                     // rackpost down: nothing ends
     for (let i = 0; i < LEAVE_TICKS + 2; i++) await r.tick();
-    feeds = { post: [], rack: [] };                        // rack closed: ends after LEAVE_TICKS
+    feeds = { post: [], rack: [] };                        // absent, rack unparsed / not reported: nothing ends
+    for (const k of [[{ prefix: "rr101", state: "unparsed" }], [], [{ prefix: "rr101", state: "open" }]]) {
+      racks = k;
+      for (let i = 0; i < LEAVE_TICKS + 2; i++) await r.tick();
+    }
+    expect(calls).toEqual([["start","10.0.0.1"],["start","172.32.37.11"]]);
+    racks = [{ prefix: "rr101", state: "closed" }];       // rack closed: ends after LEAVE_TICKS
     for (let i = 0; i < LEAVE_TICKS - 1; i++) await r.tick();
     expect(calls).toEqual([["start","10.0.0.1"],["start","172.32.37.11"]]);
     await r.tick();

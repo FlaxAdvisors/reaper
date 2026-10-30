@@ -67,7 +67,8 @@ setIo(io);
 // RACKPOST_SOL_TARGETS_URL (optional) adds the customer racks' host BMCs from
 // rackpost, so rackpost's console rungs mark + read this relay's capture files
 // instead of opening a second `sol activate` of their own. Its ports are targets,
-// not hardware: one that leaves the answering feed (rack closed/disabled) ends.
+// not hardware: one ends only when rackpost reports its rack closed/disabled
+// (a rack whose geometry does not parse keeps its sessions).
 const BLADES_URL = process.env.POST_BLADES_URL ?? 'http://127.0.0.1:8446/api/v1/blades';
 const RACKPOST_URL = process.env.RACKPOST_SOL_TARGETS_URL;
 const FEEDS = [BLADES_URL, RACKPOST_URL].filter((u): u is string => !!u);

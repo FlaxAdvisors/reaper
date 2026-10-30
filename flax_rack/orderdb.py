@@ -167,7 +167,7 @@ class OrderDB:
             "SELECT * FROM run WHERE id IN (SELECT MAX(id) FROM run "
             f"WHERE id > {_RUN_AFTER} GROUP BY pos, rung)")
         return {(r["pos"], r["rung"]): {
-            "stage": r["stage"], "status": r["status"], "verdict": r["verdict"],
+            "id": r["id"], "stage": r["stage"], "status": r["status"], "verdict": r["verdict"],
             "detail": json.loads(r["detail"]) if r["detail"] else None,
             "artifacts": json.loads(r["artifacts"]) if r["artifacts"] else {},
             "started_at": r["started_at"], "finished_at": r["finished_at"]} for r in rows}

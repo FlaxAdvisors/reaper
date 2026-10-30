@@ -23,9 +23,14 @@
  * the operator can read the console around a disappearance/crash. Only an
  * explicit, reachable device replacement (bmc_mac change) tears down/relaunches.
  * Exception: a feed listed in `endOnLeave` (rackpost's) is a list of targets,
- * not of hardware: when it ANSWERS without a port it started, LEAVE_TICKS times
- * in a row (the rack was closed or disabled; one odd answer is not enough), that
- * port's session is stopped (history kept).
+ * not of hardware, and it reports each rack's state beside its slots
+ * (`racks: [{prefix, state: open|closed|disabled|unparsed}]`). A port it started
+ * ("rackpost:<prefix>:<pos>") ends only on that EXPLICIT signal: the feed answers
+ * with the port's rack `closed` or `disabled`, LEAVE_TICKS times in a row (one odd
+ * answer is not enough); then the session is stopped (history kept). A port missing
+ * for any other reason (a geometry.json that does not parse, a rack absent from
+ * `racks`, a device dropped from an open rack) is keep-on-loss like a post blade:
+ * a transient parse error never ends a capture.
  */
 import { logger } from "./utils/logger";
 
@@ -59,17 +64,39 @@ interface BladesResponseSlot {
 
 interface BladesResponse {
   slots?: BladesResponseSlot[];
+  /** rackpost only: every rack it knows and its state */
+  racks?: { prefix?: string; state?: string }[];
+}
+
+/** rack states that end a target's session (explicit, never inferred) */
+const ENDED_STATES = new Set(["closed", "disabled"]);
+
+export interface Feed {
+  blades: BladeReach[];
+  /** rack prefix -> state, as the feed reported it (empty for post's blades) */
+  racks: Map<string, string>;
 }
 
 export async function fetchBladeReach(
   bladesUrl: string,
   fetchFn: typeof fetch = fetch
 ): Promise<BladeReach[]> {
+  return (await fetchFeed(bladesUrl, fetchFn)).blades;
+}
+
+export async function fetchFeed(
+  bladesUrl: string,
+  fetchFn: typeof fetch = fetch
+): Promise<Feed> {
   const res = await fetchFn(bladesUrl);
   if (!res.ok) {
     throw new Error(`blades fetch failed: ${bladesUrl} -> ${res.status}`);
   }
   const body = (await res.json()) as BladesResponse;
+  const racks = new Map<string, string>();
+  for (const k of body.racks ?? []) {
+    if (k && typeof k.prefix === "string" && typeof k.state === "string") racks.set(k.prefix, k.state);
+  }
   const out: BladeReach[] = [];
   for (const s of body.slots ?? []) {
     if (!s || s.empty || !s.bmc_ip || !s.bmc_mac) continue;
@@ -81,13 +108,15 @@ export async function fetchBladeReach(
       reachable: !!s.bmc_pinged,
     });
   }
-  return out;
+  return { blades: out, racks };
 }
 
 export interface Reach {
   /** union of every feed that answered, in url order, each tagged with its feed */
   blades: BladeReach[];
   answered: Set<string>;
+  /** url -> its rack prefix -> state (answered feeds only) */
+  racks: Map<string, Map<string, string>>;
   /** url -> why it did not answer this tick */
   errors: Map<string, string>;
 }
@@ -98,12 +127,13 @@ export async function fetchAllReach(
   urls: string[],
   fetchFn: typeof fetch = fetch
 ): Promise<Reach> {
-  const got = await Promise.allSettled(urls.map((u) => fetchBladeReach(u, fetchFn)));
-  const r: Reach = { blades: [], answered: new Set(), errors: new Map() };
+  const got = await Promise.allSettled(urls.map((u) => fetchFeed(u, fetchFn)));
+  const r: Reach = { blades: [], answered: new Set(), racks: new Map(), errors: new Map() };
   got.forEach((g, i) => {
     if (g.status === "fulfilled") {
       r.answered.add(urls[i]);
-      r.blades.push(...g.value.map((b) => ({ ...b, feed: urls[i] })));
+      r.racks.set(urls[i], g.value.racks);
+      r.blades.push(...g.value.blades.map((b) => ({ ...b, feed: urls[i] })));
     } else r.errors.set(urls[i], String(g.reason));
   });
   return r;
@@ -143,7 +173,8 @@ export interface ReconcileDeps {
   hasSession: (ip: string) => boolean;
   start: (ip: string) => void;
   replace: (oldIp: string, newIp: string) => void;
-  /** stop a session (history kept): a port that left an endOnLeave feed */
+  /** stop a session (history kept): a port whose rack an endOnLeave feed reports
+   *  closed or disabled */
   stop?: (ip: string) => void;
   /** feeds whose ports are targets, not hardware (rackpost's sol-targets) */
   endOnLeave?: string[];
@@ -182,20 +213,22 @@ export function makeReconciler(deps: ReconcileDeps) {
     }
     // unreachable/vanished blades: no action (keep-on-loss); portState retained
     // so the eventual replacement (a new reachable mac) is still detected.
-    // A target feed that answered without a port it started, LEAVE_TICKS times in a
-    // row: that target is gone (rack closed/disabled), so its session ends -- unless
-    // another listed port still uses the same BMC ip.
+    // A target feed that answered, without a port it started, reporting that port's
+    // rack closed or disabled, LEAVE_TICKS times in a row: the target is gone, so its
+    // session ends -- unless another listed port still uses the same BMC ip. Any other
+    // absence (unparsed, rack not reported, device dropped) counts nothing.
     const endOnLeave = new Set(deps.endOnLeave ?? []);
     const listed = new Set(r.blades.map((b) => b.port));
     const ips = new Set(r.blades.map((b) => b.ip));
     for (const [port, st] of portState) {
       if (!st.feed || !endOnLeave.has(st.feed) || !r.answered.has(st.feed)) continue;
-      if (listed.has(port)) { st.gone = 0; continue; }
+      const state = r.racks.get(st.feed)?.get(port.split(":")[1] ?? "");
+      if (listed.has(port) || !state || !ENDED_STATES.has(state)) { st.gone = 0; continue; }
       st.gone = (st.gone ?? 0) + 1;
       if (st.gone < LEAVE_TICKS) continue;
       portState.delete(port);
       if (ips.has(st.ip)) continue;
-      logger.info(`[reconcile] ${port} left ${st.feed}: ending the session to ${st.ip}`);
+      logger.info(`[reconcile] ${port}: rack ${state} in ${st.feed}: ending the session to ${st.ip}`);
       deps.stop?.(st.ip);
     }
   }

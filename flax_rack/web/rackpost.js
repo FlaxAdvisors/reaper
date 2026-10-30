@@ -950,7 +950,7 @@ function App() {
     async cancelStage() {
       const what = this.runRunning ? `run (now in ${this.s.stage})` : this.s.stage;
       if (!window.confirm(`Cancel the running ${what}? It stops after the steps now running.`)) return;
-      const st = this.s.stage;
+      const st = this.runRunning ? 'run' : this.s.stage;   // the Run, whatever stage it is in now
       try { await api('api/stage/cancel', { confirm: true, stage: st }); this.started(st, `${st} cancelling…`); }
       catch (e) { this.refused('cancel: ' + e.message); }
       await this.refresh();
@@ -1026,8 +1026,12 @@ function App() {
       const r = this.s.run; if (!r) return '';
       const st = `${r.stage || 'start'} (${r.n}/${r.of})`;
       if (r.state === 'running') return `${st}${this.s.cancelling ? ' cancelling…' : ' running…'}`;
-      if (r.state === 'held') return `held before deploy · ${Object.keys(r.held || {}).length} blocked`;
-      if (r.state === 'interrupted') return `interrupted in ${st} (daemon restart: not resumed)`;
+      if (r.state === 'held') {
+        const now = Object.keys(this.runBlocked()).length, then = Object.keys(r.held || {}).length;
+        return `held before deploy · ${now} blocked now` + (now !== then ? ` (${then} at the hold)` : '');
+      }
+      if (r.state === 'interrupted') return `interrupted in ${st} (not resumed: Continue ` +
+        (this.runResumes() ? `re-runs ${r.stage})` : 'goes on)');
       return `${r.state}${r.state === 'done' ? '' : ' in ' + st}`;
     },
     runTitle() {
@@ -1045,15 +1049,24 @@ function App() {
       catch (e) { this.refused('run: ' + e.message); }
       await this.refresh();
     },
-    // the held devices, and per host one its current Deploy-gate blockers to waive (not
-    // for a device Discover failed: it stays out of Deploy whatever is waived)
-    contKeys() { return Object.keys((this.s.run || {}).held || {}); },
+    // the blockers NOW (the server re-reads the gate over this Run's results each poll;
+    // `held` is the hold's copy): a held key no longer blocked shows as cleared
+    runBlocked() { const r = this.s.run || {}; return r.blocked_now || r.held || {}; },
+    runResumes() { const r = this.s.run || {}; return r.state === 'interrupted' && ['discover', 'firmware', 'qualify'].includes(r.stage); },
+    runStrip() {
+      const r = this.s.run || {}, now = this.runBlocked(), rq = r.requalify || [];
+      if (r.state !== 'held') return [];
+      const keys = [...new Set([...Object.keys(now), ...Object.keys(r.held || {})])];
+      return keys.map((k) => now[k]
+        ? { k, text: now[k].join('; ') + (rq.includes(k) ? ' (Continue qualifies it first)' : ''), cls: '' }
+        : { k, text: 'cleared since the hold', cls: 'ok' });
+    },
+    // the devices blocked now, and per host its current Deploy-gate rungs to waive (the
+    // server's `waivable`: every gate-blocked host, none Discover blocks)
+    contKeys() { return Object.keys(this.runBlocked()); },
     openContinue() {
-      const w = {}, held = (this.s.run || {}).held || {};
-      for (const k of this.contKeys()) {
-        if ((held[k] || []).some((b) => b.startsWith('discover:'))) continue;
-        const d = (this.s.devices || []).find((x) => x.pos === k);
-        const rs = ((d && d.gate_blockers) || []).filter((r) => !r.startsWith('verdict '));
+      const w = {}, wv = (this.s.run || {}).waivable || {};
+      for (const [k, rs] of Object.entries(wv)) {
         if (rs.length) w[k] = Object.fromEntries(rs.map((r) => [r, false]));
       }
       this.contWaive = w; this.contReason = ''; this.contM = { msg: null };
@@ -1065,8 +1078,11 @@ function App() {
       this.busy = true;
       try {
         const r = await api('api/run/continue', body);
-        const out = Object.keys(r.out || {});
-        this.contM = null; this.started('run', `run continued: deploy ${r.deploy.join(', ')}` + (out.length ? ` · left out: ${out.join(', ')}` : ''));
+        const out = Object.keys(r.out || {}), rq = r.requalify || [];
+        this.contM = null;
+        this.started('run', r.resume ? `run continued: ${r.resume} again` :
+          `run continued: ` + (rq.length ? `qualify ${rq.join(', ')} first · ` : '') + `deploy ${r.deploy.join(', ') || 'after that'}` +
+          (out.length ? ` · left out: ${out.join(', ')}` : ''));
       } catch (e) { this.contM = { msg: e.message }; }
       this.busy = false;
       await this.refresh();

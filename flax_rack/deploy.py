@@ -64,6 +64,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 from flax_rungs import (agent, ansible, bond, fabric, hatest, install, pxeboot, sol, solscan,
@@ -114,14 +115,14 @@ def deploy_rungs(d) -> list[str]:
 
 def deploy_why(lr, g) -> dict[str, str]:
     """pos -> why it is not deployed (absent = deployed): its first Deploy rung (step
-    order) whose latest run is not pass. An install not run in this pass is no blocker
-    when this pass's firstboot passed (a Deploy from firstboot of a disk installed in an
-    earlier pass: the first boot proved the installed OS)."""
+    order) whose latest run is not pass. An install not run in this pass, or skipped (a
+    Deploy from firstboot kept the installed disk), is no blocker when this pass's
+    firstboot passed (the first boot proved the installed OS)."""
     out = {}
     for d in g.devices:
         for r in deploy_rungs(d):
             v = (lr.get((d.pos, r)) or {}).get("verdict")
-            if r == "install" and v is None \
+            if r == "install" and v in (None, "skip") \
                     and (lr.get((d.pos, "firstboot")) or {}).get("verdict") == "pass":
                 continue
             if v != "pass":
@@ -212,14 +213,54 @@ def _installed_now(lr) -> set[str]:
         or (rung in ("power-on", "host-ssh") and (r.get("detail") or {}).get("installed_os")))}
 
 
+# the wiwynn-tp autoinstall's storage config writes this disk (path: /dev/nvme0n1, gpt,
+# wipe: superblock); its first boot proves "/ on nvme0n1"
+INSTALL_DISK = "nvme0n1"
+_BLKID_DISK = re.compile(rf"^/dev/{INSTALL_DISK}(p\d+)?:", re.M)
+NOT_BLANK = "disk not blank / unknown — reinstall needs the typed order id"
+
+
+def disk_blank(odir, lr, pos) -> tuple[bool | None, str]:
+    """Is the install disk (INSTALL_DISK) of `pos` blank, by the live image's inventory
+    in `lr` (its lsblk + blkid captures)? (True, why): lsblk lists it as a disk with no
+    child row (no partition, LVM, md, dm) and blkid names no signature on it or its
+    partitions. (False, why): something is on it. (None, why): not known (no inventory
+    row, a capture missing or empty, the disk not listed)."""
+    arts = (lr.get((pos, "inventory")) or {}).get("artifacts") or {}
+
+    def text(name):
+        try:
+            return (Path(odir) / arts[name]).read_text() if arts.get(name) else None
+        except OSError:
+            return None
+    lsblk, blkid = text("lsblk"), text("blkid")
+    if not lsblk or not lsblk.lstrip().startswith("NAME") or not (blkid or "").strip():
+        return None, f"no inventory lsblk/blkid capture for {INSTALL_DISK}"
+    lines = lsblk.splitlines()[1:]
+    at = next((i for i, ln in enumerate(lines) if ln.split()[:1] == [INSTALL_DISK]), None)
+    if at is None or "disk" not in lines[at].split()[5:6]:
+        return None, f"{INSTALL_DISK} not listed as a disk by lsblk"
+    nxt = lines[at + 1] if at + 1 < len(lines) else ""
+    if nxt and not nxt[:1].isalnum():
+        return False, f"{INSTALL_DISK} has {nxt.split()[0].lstrip('├└│─ ')} (lsblk)"
+    if m := _BLKID_DISK.search(blkid):
+        return False, f"blkid: {m.group(0).rstrip(':')} has a signature"
+    return True, f"{INSTALL_DISK} blank (lsblk: no partition; blkid: no signature)"
+
+
+def blank_positions(odir, lr, positions) -> set[str]:
+    return {p for p in positions if disk_blank(odir, lr, p)[0] is True}
+
+
 def plan(lr, g, *, positions=None, from_phase="install", reinstall=None, waive=None,
-         installed=None, firstboot=()):
+         installed=None, firstboot=(), blank=None):
     """(target devices, waivers, {pos: why} of the other host devices not passed). Raises
     GateError when the run may not start: unknown position, the gate (with the waivers),
     or an installed disk (`installed`: installed_positions(db), across passes; this pass's
     runs when None) without reinstall=<order id>. `firstboot`: targets of an install run
     that start at firstboot instead (installed disks a Run does not reinstall); each must
-    be installed."""
+    be installed. `blank` (blank_positions; None = not checked): without reinstall, an
+    install target with no install record must have its install disk proven blank."""
     if installed is None:
         installed = _installed_now(lr)
     if from_phase not in FROM_PHASES:
@@ -252,6 +293,11 @@ def plan(lr, g, *, positions=None, from_phase="install", reinstall=None, waive=N
                 f"already installed: {', '.join(done)}; a reinstall wipes their disks -- "
                 f"confirm with reinstall {g.order} (CLI --reinstall {g.order}), or deploy "
                 f"from firstboot (CLI --from firstboot)")
+        unknown = [d.pos for d in targets
+                   if blank is not None and reinstall != g.order and d.pos not in installed
+                   and d.pos not in fb and d.pos not in blank]
+        if unknown:
+            raise GateError(f"{', '.join(unknown)}: {NOT_BLANK} (CLI --reinstall {g.order})")
     else:
         fb = tset
     # a first boot of a never-installed disk boots whatever is on it, then fails slowly
@@ -813,6 +859,8 @@ def run_deploy(ctx, *, positions: list[str] | None = None, from_phase: str = "in
     targets, waivers, incomplete = plan(lr, g, positions=positions, from_phase=from_phase,
                                         reinstall=reinstall, waive=waive,
                                         installed=installed_positions(ctx.db, lr),
+                                        blank=blank_positions(ctx.dir, lr,
+                                                              [d.pos for d in g.devices]),
                                         firstboot=firstboot)
     fb = set(firstboot) if from_phase == "install" else set()
     who = clean_who(who)
@@ -841,6 +889,10 @@ def run_deploy(ctx, *, positions: list[str] | None = None, from_phase: str = "in
     xs = [_Dev(d, ips.get(d.pos, {}), rows.get(d.pos) or {"pos": d.pos}, names.get(d.pos))
           for d in targets]
     prog = _Progress(ctx, PHASES, ctx.db.set_deploy_progress)
+    for x in xs:        # an installed disk kept: its install row says so (deploy_why)
+        if from_phase == "firstboot" or x.pos in fb:
+            why = "installed disk kept: deployed from firstboot (no reinstall)"
+            _record(ctx, x.pos, "install", RungResult("skip", {"reason": why, "headline": why}))
     try:
         for phase in PHASES[PHASES.index(from_phase):]:
             if phase != "install":          # install checks Cancel per device

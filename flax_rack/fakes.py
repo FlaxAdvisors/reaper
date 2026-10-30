@@ -232,6 +232,14 @@ _LSBLK = ("NAME        MAJ:MIN RM   SIZE RO TYPE MOUNTPOINTS\n"
           "nvme0n1     259:0    0   1.7T  0 disk \n"
           "nvme1n1     259:1    0   1.7T  0 disk \n"
           "└─nvme1n1p1 259:2    0   1.7T  0 part \n")
+# `blkid` as the inventory captures it: the live image's loops; nvme0n1 (the install
+# disk) blank
+_BLKID = ('/dev/loop0: TYPE="squashfs"\n'
+          '/dev/nvme1n1p1: UUID="0f1e2d3c" TYPE="ext4" PARTUUID="a1b2c3d4-01"\n')
+_LSBLK_USED = _LSBLK.replace("nvme0n1     259:0    0   1.7T  0 disk \n",
+                             "nvme0n1     259:0    0   1.7T  0 disk \n"
+                             "└─nvme0n1p1 259:3    0   1.7T  0 part \n")
+_BLKID_USED = _BLKID + '/dev/nvme0n1p1: UUID="4e5f" TYPE="ntfs" PARTUUID="d00d-01"\n'
 _DIMMSUM = "  32 GB  DIMM A0  _Node0_Channel0_Dimm0  2666   Samsung  0000F00D  M393A4K40CB2-CTD\n"
 _TPMSTATE = "device=present\nowned=0 phEnable=1 shEnable=1 ehEnable=1 phEnableNV=1 disableClear=0\n"
 FAKE_PROFILE_RULES = ("2 Processor Version: .*Gold 6138", "12 Memory Size: 32 GB",
@@ -293,6 +301,8 @@ class FakeRungs:
         self.fw_backup_ver: dict[str, str] = {}   # pos -> backup chip version (else target)
         self.fw_backup_err: dict[str, str] = {}   # pos -> bmc-backup-flash's error
         self.pop_fail = set(pop_fail)          # inventory lacks the Mellanox line: POP red
+        self.disk_used: set[str] = set()       # the live image sees partitions on nvme0n1
+        self.disk_unread: set[str] = set()     # the inventory has no blkid capture
         # Deploy: installs that never power off, first boots refused, SOL error lines,
         # bonds that do not come up, nodes whose ha-test fails
         self.install_fail: set[str] = set()
@@ -653,9 +663,12 @@ class FakeRungs:
                 ln + "\n" for ln in _MACINV.splitlines() if "Mellanox" not in ln)
             arts = {"macinv": macinv, "macinv-v": _macinv_v(sn, d.ou * 4 + (d.col or 0),
                                                           pos not in self.pop_fail),
-                    "dmidecode": dmi, "ip-d-link": link, "lsblk": _LSBLK,
+                    "dmidecode": dmi, "ip-d-link": link, "lsblk": _LSBLK_USED if pos in self.disk_used else _LSBLK,
+                    "blkid": _BLKID_USED if pos in self.disk_used else _BLKID,
                     "ip-d-address": addr, "ipmitool-fru": fru, "dimmsum": _DIMMSUM,
                     "tpmstate": _TPMSTATE} if n == "inventory" else {f"{n}": f"{n}: ok\n"}
+            if n == "inventory" and pos in self.disk_unread:
+                del arts["blkid"]
             out[n] = RungResult("pass", {"stage": n, "run_id": run_id, "summary": {}}, arts)
         return out
 

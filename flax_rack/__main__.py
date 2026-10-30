@@ -265,9 +265,12 @@ def _run(a) -> int:
     from .server import DRAIN_FILE, DRAINING
     from . import run as runmod
     if a.cont == (a.confirm is not None):
-        sys.exit("run --confirm <order id> [--reinstall], or run --continue")
-    if a.cont and a.reinstall:
+        sys.exit("run --confirm <order id> [--reinstall <order id>], or run --continue")
+    if a.cont and a.reinstall is not None:
         sys.exit("--reinstall is chosen when the Run starts, not at --continue")
+    if a.reinstall is not None and a.reinstall != a.confirm:
+        sys.exit("--reinstall wipes installed disks: type the order id again "
+                 "(--reinstall <order id>)")
     if DRAIN_FILE.exists():
         sys.exit(DRAINING)
     waive = _waive_arg(a.waive, a.reason)
@@ -284,7 +287,7 @@ def _run(a) -> int:
         else:
             if waive:
                 sys.exit("--waive goes with --continue (the gate is read at the hold)")
-            rid = runmod.run(ctx, who=_who(a.by), reinstall=a.reinstall)
+            rid = runmod.run(ctx, who=_who(a.by), reinstall=a.reinstall == ctx.g.order)
     except (CredsError, GateError, RuntimeError) as e:
         sys.exit(str(e))
     finally:
@@ -408,9 +411,9 @@ def main(argv=None) -> int:
     p = sub.add_parser("run", help="Run: Discover -> Firmware -> Qualify -> Deploy -> Done; "
                                     "held before Deploy on any failure (then --continue)")
     p.add_argument("--confirm", metavar="ORDER", help="the order id (starts a Run)")
-    p.add_argument("--reinstall", action="store_true",
-                   help="reinstall nodes already installed (wipes their disks); default: "
-                        "installed nodes deploy from firstboot")
+    p.add_argument("--reinstall", metavar="ORDER",
+                   help="the order id again: reinstall nodes already installed (wipes their "
+                        "disks); default: installed nodes deploy from firstboot")
     p.add_argument("--continue", dest="cont", action="store_true",
                    help="continue the held / interrupted Run to Deploy -> Done")
     p.add_argument("--waive", action="append", metavar="POS:RUNG[,RUNG]",

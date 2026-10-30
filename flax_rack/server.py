@@ -50,7 +50,9 @@ serves that copy unchanged).
 
 Serial consoles come from the shared flax-post-sol relay (flax_rungs.sol): GET
 /rackpost/api/sol-targets lists every open served rack's host BMCs in the relay's feed
-shape ({slots: [{port, bmc_mac, bmc_ip, bmc_pinged}]}, no credentials: the relay reads
+shape ({slots: [{port, bmc_mac, bmc_ip, bmc_pinged}]}, plus racks: [{prefix, state}]
+so the relay ends a session only for a rack reported closed/disabled; a rack whose
+geometry stops parsing keeps its last good targets; no credentials: the relay reads
 /etc/flax/credentials-bmc.json itself, as rackpost does), and GET
 api/console/<pos>?offset=&ino= tails the relay's capture file of that device's BMC for
 the drawer's live viewer. The drawer's SOL button attaches the Post UI's terminal
@@ -85,7 +87,7 @@ from flax_rungs.pxeboot import PXE_DIR
 from . import devview, process_report, report
 from .addressing import plan_addresses
 from .deploy import (_REASON_MAX, CONSOLE as INSTALL_CONSOLE, FROM_PHASES, PHASES as DEPLOY_PHASES,
-                     GateError, clean_who, deploy_rungs,
+                     GateError, blank_positions, clean_who, deploy_rungs,
                      deploy_why, gate_blockers, gate_why, ha_mode_of, installed_positions,
                      plan as deploy_plan, run_deploy, sweep_interrupted_installs)
 from .done import DONE_RUNGS, done_rungs, run as run_done, targets as done_targets
@@ -229,6 +231,29 @@ class RackLock:
 
     def locked(self) -> bool:
         return self._t.locked()
+
+    def held_elsewhere(self) -> bool:
+        """Another process (a CLI stage or Run) holds the flock: a non-blocking probe,
+        released at once. False while this process holds it."""
+        if self._t.locked():
+            return False
+        try:
+            fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o644)
+        except OSError:
+            return False
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return True
+        else:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            return False
+        finally:
+            os.close(fd)
+
+    def busy(self) -> bool:
+        """A stage runs for this rack: in this daemon or in a CLI process."""
+        return self._t.locked() or self.held_elsewhere()
 
 
 class Rack:
@@ -458,7 +483,7 @@ def rack_state(r: Rack) -> dict:
         "order": g.order, "customer": g.customer, "vid": g.vid, "site": g.site, "rack": g.rack,
         "prefix": g.url_prefix, "version": __version__, "closed_at": db.closed_at(),
         "iperf_server": g.iperf_server, "pass": _pass_view(db), "run": _run_view(r, raw),
-        "stage_running": r.lock.locked(), "stage": r.stage if r.lock.locked() else None,
+        "stage_running": r.lock.busy(), "stage": r.stage if r.lock.locked() else None,
         "cancelling": bool(r.stage and r.cancel.is_set()),
         "phases": list(PHASES), "discover_rungs": list(DISCOVER_RUNGS),
         "discover_old_rungs": list(OLD_DISCOVER_RUNGS),
@@ -495,21 +520,33 @@ def _switch_facts(sw: dict, last: dict) -> None:
 
 
 def _run_view(r: Rack, lr: dict | None = None) -> dict | None:
-    """The current pass's latest Run for the strip ('running' with no lock held = its
-    process died: shown interrupted, as the next daemon start records it). `firmware`:
-    the Firmware findings now (report only: they never hold the Run)."""
+    """The current pass's latest Run for the strip ('running' with no lock held here or
+    by a CLI = its process died: shown interrupted, as the next daemon start records
+    it). `firmware`: the Firmware findings now (report only: they never hold the Run).
+    A held / interrupted Run also carries the gate NOW (run.deploy_choice): `blocked_now`
+    {key: [why]}, `waivable` {pos: [rung]}, `requalify` [pos] -- `held` is the hold's
+    copy."""
     x = r.db.run_plan()
     if x is None:
         return None
     state = x["state"]
-    if state == "running" and not r.lock.locked():
+    if state == "running" and not r.lock.busy():
         state = "interrupted"
     st = x["stage"]
+    now = {}
+    if state in runmod.CONTINUABLE:
+        try:
+            ch = runmod.deploy_choice(r.db, r.g, x)
+            now = {k: ch[k] for k in ("blockers", "waivable", "requalify")}
+        except Exception as e:                  # noqa: BLE001 -- the strip still shows the hold
+            now = {"error": f"{type(e).__name__}: {e}"}
+        now["blocked_now"] = now.pop("blockers", None)
     return {"id": x["id"], "state": state, "stage": st,
             "n": runmod.STAGES.index(st) + 1 if st in runmod.STAGES else 0,
             "of": len(runmod.STAGES), "reinstall": bool(x["options"].get("reinstall")),
             "who": x["who"], "started_at": x["started_at"], "finished_at": x["finished_at"],
             "held": x["held"], "out": x["out"], "can_continue": state in runmod.CONTINUABLE,
+            **now,
             "firmware": runmod.firmware_findings(
                 r.db.latest_runs() if lr is None else lr,
                 [d.pos for d in r.g.devices] + runmod._sw_keys(r.g, firmware=True))}
@@ -642,7 +679,7 @@ class App:
         if body.get("confirm") is not True:
             return 400, {"error": "confirm the cancel"}
         stage = r.stage
-        if stage is None and not r.lock.locked():
+        if stage is None and not r.lock.busy():
             rp = r.db.run_plan()
             if rp and rp["state"] in (*runmod.CONTINUABLE, "running"):    # 'running': died
                 r.db.set_run_plan(rp["id"], state="cancelled")
@@ -651,7 +688,11 @@ class App:
         if stage is None:
             return 409, {"error": "a CLI run holds this rack: stop it there" if r.lock.locked()
                          else "no stage is running"}
-        if body.get("stage") not in (None, stage):     # the operator confirmed another stage
+        rp = r.db.run_plan()
+        in_run = bool(rp and rp["state"] == "running")
+        # the operator confirmed another stage ("run" = the Run, whatever its inner stage)
+        if body.get("stage") not in (None, stage) and not (body.get("stage") == runmod.STAGE
+                                                           and in_run):
             return 409, {"error": f"the running stage is {stage}, not {body.get('stage')}"}
         if not r.cancel.is_set():
             r.cancel.set()
@@ -719,7 +760,8 @@ class App:
         try:
             lr = r.db.latest_runs()
             deploy_plan(lr, r.g, positions=kw.get("positions"), from_phase=frm,
-                        reinstall=rein, waive=waive, installed=installed_positions(r.db, lr))
+                        reinstall=rein, waive=waive, installed=installed_positions(r.db, lr),
+                        blank=blank_positions(r.dir, lr, [d.pos for d in r.g.devices]))
         except GateError as e:
             return 409, {"error": str(e)}
         kw.update(from_phase=frm, reinstall=rein, waive=waive, who=clean_who(by or who))
@@ -751,8 +793,9 @@ class App:
         return code, out
 
     def continue_run(self, r: Rack, body: dict, who: str = "?"):
-        """Continue a held / interrupted Run to Deploy -> Done (the gate at this click,
-        with the waivers sent now)."""
+        """Continue a held / interrupted Run (run.cont): an interrupted one re-runs the
+        stage it was in; a held one qualifies its not-yet-qualified hosts, then Deploy
+        (the gate at this click, with the waivers sent now) -> Done."""
         if body.get("confirm") is not True:
             return 400, {"error": "confirm the continue"}
         by = body.get("by")
@@ -761,8 +804,11 @@ class App:
         if r.db.closed_at():
             return 409, {"error": "order is closed"}
         rp = r.db.run_plan()
-        if rp and rp["state"] == "running" and not r.lock.locked():
-            rp = r.db.interrupt_run_plan() or rp            # its process died
+        if rp and rp["state"] == "running":
+            if r.lock.held_elsewhere():
+                return 409, {"error": "a CLI run holds this rack: it is still running"}
+            if not r.lock.locked():
+                rp = r.db.interrupt_run_plan() or rp        # its process died
         if not rp or rp["state"] not in runmod.CONTINUABLE:
             return 409, {"error": "no held or interrupted Run to continue"}
         waive = body.get("waive")
@@ -770,7 +816,8 @@ class App:
             ch = runmod.deploy_choice(r.db, r.g, rp, waive)
         except GateError as e:
             return 400, {"error": str(e)}
-        if rp["stage"] != "done" and not ch["targets"]:
+        resume = rp["state"] == "interrupted" and rp["stage"] in ("discover", "firmware", "qualify")
+        if not resume and rp["stage"] != "done" and not ch["targets"] and not ch["requalify"]:
             return 409, {"error": "no device passes the Deploy gate: "
                                   + "; ".join(f"{p} ({y})" for p, y in ch["out"].items())}
         who = clean_who(by or who)
@@ -781,7 +828,8 @@ class App:
         code, out = self._start_stage(r, runmod.STAGE, go)
         if code == 202:
             out = {"continued": rp["id"], "deploy": ch["targets"], "out": ch["out"],
-                   "firstboot": ch["firstboot"]}
+                   "firstboot": ch["firstboot"], "requalify": ch["requalify"],
+                   "resume": rp["stage"] if resume else None}
         return code, out
 
     def start_done(self, r: Rack, body: dict):
@@ -950,13 +998,18 @@ class App:
 
     def sol_targets(self) -> dict:
         """Every open served rack's host BMCs for the flax-post-sol relay (its
-        POST_BLADES_URL shape; no secrets). A BMC Discover has not seen (no MAC) is left
-        out, as the relay would drop it; bmc_pinged is the BMC poller's last answer."""
-        slots = []
-        for prefix in sorted(self.rescan().racks):
-            r = self.rack(prefix)
-            if r is None or r.db.closed_at():
-                continue
+        POST_BLADES_URL shape; no secrets), plus `racks`: [{prefix, state}] with state
+        open | closed | disabled | unparsed. The relay ends a target's session ONLY for
+        a rack reported closed or disabled, so a rack this daemon served whose
+        geometry.json no longer parses (or now conflicts) keeps serving its last good
+        targets as `unparsed`, and a missing rack ends nothing. disabled = a dir with a
+        geometry.json that parses (or one this daemon served) whose .rackpost is gone or
+        that is no longer there. A BMC Discover has not seen (no MAC) is left out, as
+        the relay would drop it; bmc_pinged is the BMC poller's last answer."""
+        s = self.rescan()
+        slots, racks, seen = [], [], set()
+
+        def targets(prefix, r):
             dev = {x["pos"]: x for x in r.db.devices()}
             for a in plan_addresses(r.g):
                 x = dev.get(a.pos) or {}
@@ -965,7 +1018,47 @@ class App:
                 slots.append({"port": f"rackpost:{prefix}:{a.pos}", "bmc_mac": x["bmc_mac"],
                               "bmc_ip": a.ip,
                               "bmc_pinged": bool((x.get("bmc_live") or {}).get("reachable"))})
-        return {"slots": slots}
+
+        for prefix in sorted(s.racks):
+            r = self.rack(prefix)
+            if r is None:
+                continue
+            seen.add(prefix)
+            if r.db.closed_at():
+                racks.append({"prefix": prefix, "state": "closed"})
+                continue
+            racks.append({"prefix": prefix, "state": "open"})
+            targets(prefix, r)
+        served = set(s.racks.values())
+        with self._mu:
+            cached = [(d, r) for d, r in self._racks.items() if d not in served]
+        for d, r in sorted(cached, key=lambda x: str(x[0])):
+            prefix = r.g.url_prefix
+            if prefix in seen:
+                continue
+            seen.add(prefix)
+            if not ((d / ".rackpost").exists() and (d / "geometry.json").is_file()):
+                racks.append({"prefix": prefix, "state": "disabled"})
+            elif r.db.closed_at():
+                racks.append({"prefix": prefix, "state": "closed"})
+            else:                               # last good geometry: keep its targets
+                racks.append({"prefix": prefix, "state": "unparsed"})
+                targets(prefix, r)
+        try:
+            dirs = sorted(p for p in self.registry.root.iterdir() if p.is_dir())
+        except OSError:
+            dirs = []
+        for d in dirs:                          # disabled before this daemon served it
+            if d in served or (d / ".rackpost").exists() or not (d / "geometry.json").is_file():
+                continue
+            try:
+                prefix = load_geometry(d / "geometry.json").url_prefix
+            except Exception:                   # noqa: BLE001 -- unknown prefix: ends nothing
+                continue
+            if prefix not in seen:
+                seen.add(prefix)
+                racks.append({"prefix": prefix, "state": "disabled"})
+        return {"slots": slots, "racks": racks}
 
     def console_tail(self, r: Rack, pos: str, query: str):
         """The relay's capture of pos's host BMC from ?offset= (same ?ino=), else its tail."""

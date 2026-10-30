@@ -168,6 +168,19 @@ def _sh(run, host_ip, user, pw, arts, name, script, runner):
     return rc, out, err
 
 
+_SUDO_ERR = re.compile(r"^sudo: ", re.M)
+
+
+def _sudo_refused(user, err) -> dict:
+    """The slice fields of a read whose `sudo -n` was refused (ssh answered: the user has
+    no NOPASSWD), {} for any other failure. The phase stays unreachable (not measured);
+    the head says why instead of "unreachable"."""
+    if not _SUDO_ERR.search(err or ""):
+        return {}
+    return {"sudo_refused": True,
+            "fault_reason": f"sudo -n refused for {user} (no NOPASSWD): not read"}
+
+
 def bios(host_ip, user, pw, matcher, *, run=hostssh.run, runner=None):
     """biosd's probe for one live host (= biosd.service._probe_host). -> (slice, arts)."""
     arts: dict = {}
@@ -176,7 +189,8 @@ def bios(host_ip, user, pw, matcher, *, run=hostssh.run, runner=None):
     product = bios_manifest.dmi_product(dmi)
     if rc != 0:
         return {"phase": "unreachable", "current": None, "target": None,
-                "fault_reason": "", "error": hostssh.tail(dmi, err, 200)}, arts
+                "fault_reason": "", "error": hostssh.tail(dmi, err, 200),
+                **_sudo_refused(user, err)}, arts
     entry = matcher.match(dmi)
     if entry is None:
         # no expected string to compare against is a FAILED check (biosd ruling 2026-10-06)
@@ -256,7 +270,7 @@ def nic_installed(host_ip, user, pw, matcher, macs: dict, *, run=hostssh.run, ru
     if rc != 0:
         return {"phase": "unreachable", "devices": [], "fault_reason": "", "source": src,
                 "ssh_unreachable": remote.unreachable(rc),
-                "error": hostssh.tail(out, err, 200)}, arts
+                "error": hostssh.tail(out, err, 200), **_sudo_refused(user, err)}, arts
     ports = {p["mac"]: p for p in parse_ethtool(out) if p["mac"]}
     devs, missing = [], []
     for label, mac in macs.items():
@@ -366,6 +380,9 @@ _LABEL = {"bmc": "BMC", "bios": "BIOS", "nic": "Mellanox"}
 
 def _checked_head(key, sl):
     ph = sl.get("phase")
+    if sl.get("sudo_refused"):
+        return ("cards not queried: " if key == "nic" else f"{_LABEL[key]} ") \
+            + sl["fault_reason"]
     if key == "nic":
         devs = sl.get("devices") or []
         if ph == "unreachable":
@@ -475,7 +492,7 @@ def steps(key: str, sl: dict, arts: dict | None = None, sources=None,
         chk, upd = fwsteps.nic_steps({"fw_nic": sl})
     rows = _rows(key, sl, sources)
     nts = []
-    meaning = _PHASE_MEANING.get(sl.get("phase"))
+    meaning = None if sl.get("sudo_refused") else _PHASE_MEANING.get(sl.get("phase"))
     if meaning:
         nts.append(meaning)
     nts += list(notes)
