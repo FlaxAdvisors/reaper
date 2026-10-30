@@ -9,8 +9,8 @@ from .result import RungResult
 _TARGET = "/redfish/v1/Systems/system"
 
 
-def _body(enable: bool) -> str:
-    boot = ({"BootSourceOverrideEnabled": "Continuous", "BootSourceOverrideTarget": "Pxe",
+def _body(enable: bool, target: str = "Pxe") -> str:
+    boot = ({"BootSourceOverrideEnabled": "Continuous", "BootSourceOverrideTarget": target,
              "BootSourceOverrideMode": "UEFI"} if enable else
             {"BootSourceOverrideEnabled": "Disabled", "BootSourceOverrideTarget": "None",
              "BootSourceOverrideMode": "UEFI"})
@@ -53,3 +53,24 @@ def set_boot_pxe(bmc_ip: str, creds: list[tuple[str, str]], *, enable: bool = Tr
         return RungResult("pass", {"method": "ipmitool", "enable": True, "redfish": last,
                                    "cipher": info.get("cipher")})
     return RungResult("fail", {"error": last or "no Redfish credentials", "enable": enable})
+
+
+def set_boot_disk(bmc_ip: str, creds: list[tuple[str, str]], *,
+                  ipmi_creds: list[tuple[str, str]] | None = None,
+                  runner=subprocess.run) -> RungResult:
+    """Hdd/Continuous/UEFI (ghost setbootdisk's body): the node boots its installed OS
+    whatever the post-install UEFI order says. ipmitool `bootdev disk` is the fallback."""
+    body = _body(True, "Hdd")
+    last = ""
+    for user, pw in creds:
+        p = _patch(bmc_ip, user, pw, body, runner)
+        code = ((p.stdout or "").strip() if p is not None else "")
+        if code.startswith("2"):
+            return RungResult("pass", {"method": "redfish", "user": user, "target": "Hdd"})
+        last = f"http {code}" if code else "no reply"
+    info = {}
+    if bmc.bootdev_disk(bmc_ip, ipmi_creds if ipmi_creds is not None else creds,
+                        info=info, runner=runner):
+        return RungResult("pass", {"method": "ipmitool", "target": "Hdd", "redfish": last,
+                                   "cipher": info.get("cipher")})
+    return RungResult("fail", {"error": last or "no Redfish credentials", "target": "Hdd"})

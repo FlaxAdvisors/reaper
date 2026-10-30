@@ -109,6 +109,12 @@ def bootdev_pxe(ip: str, creds: list[tuple[str, str]], *, info: dict | None = No
                   info=info, runner=runner)
 
 
+def bootdev_disk(ip: str, creds: list[tuple[str, str]], *, info: dict | None = None,
+                 runner=subprocess.run) -> bool:
+    return _write(ip, creds, ["chassis", "bootdev", "disk", "options=efiboot,persistent"],
+                  info=info, runner=runner)
+
+
 def parse_mc_info(text: str) -> dict:
     """`ipmitool mc info` -> {"firmware": "Firmware Revision", "aux": "Aux Firmware Rev Info"
     (its indented continuation lines joined by spaces)}; None for what is absent."""
