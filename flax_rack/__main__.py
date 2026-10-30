@@ -51,6 +51,8 @@ def _serve(a) -> int:
     else:
         from .server import default_context_factory as factory
     srv = make_server(Path(a.root), port=a.port, bind=a.bind, context_factory=factory)
+    if a.link_interval:
+        srv.app.link_interval_s = a.link_interval
     srv.app.start_pollers()
     print(f"flax-rackpost: serving {a.root} on {a.bind}:{a.port}", flush=True)
     try:
@@ -290,6 +292,8 @@ def main(argv=None) -> int:
     p.add_argument("--root", default="/export/nodes")
     p.add_argument("--port", type=int, default=8452)
     p.add_argument("--bind", default="127.0.0.1")
+    p.add_argument("--link-interval", type=int, default=None, metavar="S",
+                   help="switch link poll period (default 30 s; shorter for a fake-mode check)")
     p.set_defaults(fn=_serve)
     p = sub.add_parser("discover", help="run Discover for this order dir (powers on / cycles "
                                          "nodes not in the live image)")

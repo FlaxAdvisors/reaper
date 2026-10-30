@@ -15,7 +15,11 @@ Artifacts saved by Qualify and Deploy are served read-only at
 /<prefix>/artifacts/<pos>/<run>/<stage>/<name>.txt, path-checked like static files.
 A BmcPoller thread per served rack (started by `serve`) keeps each tile's power chip,
 and a LinkPoller (flax_rack.linkmon) its live switch links: /api/state carries per
-device `live_links` + `presence`, per switch `live` {at, ok} + `live_links`.
+device `live_links` + `presence`, per switch `live` {at, ok} + `live_links`. Tiles take
+link state from those only. A `skip` run carries skip_reason: "n/a" (the rung does not
+apply to the endpoint's kind: drawn green) or "upstream" (cancelled / an earlier step
+failed: neutral). The HA mode is derived from the latest ha-test runs, and every row is
+served in today's HA wording (bond.clean_ha: no MLAG text from older rows).
 
 POST api/stage/deploy starts Deploy (flax_rack.deploy): rack-wide with the typed order
 id, a positions run with {"confirm": true}; {"from": "firstboot"} skips the install,
@@ -51,14 +55,15 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from flax_rungs.bond import clean_ha
 from flax_rungs.fwsteps import FW_STEPS
 from flax_rungs.pxeboot import PXE_DIR
 
 from . import devview, report
 from .addressing import plan_addresses
 from .deploy import (FROM_PHASES, PHASES as DEPLOY_PHASES, GateError, clean_who, deploy_rungs,
-                     deploy_why, gate_blockers, gate_why, plan as deploy_plan, run_deploy,
-                     sweep_interrupted_installs)
+                     deploy_why, gate_blockers, gate_why, ha_mode_of, plan as deploy_plan,
+                     run_deploy, sweep_interrupted_installs)
 from .done import DONE_RUNGS, done_rungs, run as run_done, targets as done_targets
 from .discover_ladder import DISCOVER_STEPS, OLD_DISCOVER_RUNGS, wanted as stage_positions
 from .firmware import run_firmware
@@ -234,52 +239,17 @@ class Rack:
         self.db.init(g)
 
 
-def _seen_ha(name, ha) -> dict:
-    """A pcieN link as Qualify's ha-path saw it on the wedges."""
-    if ha is None:
-        return {"state": "", "text": ""}
-    if ha["status"] != "done":
-        return {"state": "", "text": ha["status"]}
-    if ha["verdict"] == "skip":
-        return {"state": "", "text": "skipped"}
-    if ha["verdict"] == "unmeasured":
-        return {"state": "", "text": "not measured"}
-    row = next((x for x in (ha["detail"] or {}).get("links") or [] if x.get("link") == name), None)
-    if row is None:
-        return {"state": "bad", "text": (ha["detail"] or {}).get("error") or "not checked"}
-    if not row.get("seen"):
-        return {"state": "bad", "text": "not seen on any wedge"}
-    text = row["seen"] + (f" · {row['ifname']}" if row.get("ifname") else "")
-    ok = (row.get("expected") or "").startswith(row["seen"] + " ")
-    return {"state": "ok" if ok else "bad", "text": text}
+# a skip because the rung does not apply to this endpoint's kind (no host / BMC / boot /
+# reservation / reader, or the node was already up): "n/a", drawn green. Any other skip
+# (cancelled, an earlier step or phase failed or was not measured) is "upstream": neutral.
+_NA_SKIP = re.compile(r"(an IOM has no host|no BMC \(|no firmware reader for kind|"
+                      r"switch endpoints are discovered|a switch has no |"
+                      r"already in the live image)")
 
 
-def _seen(d, slot, mgmt_ids, ha=None) -> dict:
-    """Per link: what Discover saw on the mgmt switch (its bmc-mac-seen, or a pre-2b
-    slot-match row); pcieN links from Qualify's ha-path."""
-    out = {}
-    for name, l in d.links.items():
-        if l.switch not in mgmt_ids:
-            out[name] = _seen_ha(name, ha) if name.startswith("pcie") else {"state": "", "text": ""}
-        elif slot is None:
-            out[name] = {"state": "", "text": "not run"}
-        elif slot["status"] != "done":
-            out[name] = {"state": "", "text": slot["status"]}
-        elif slot["verdict"] == "pass":
-            det = slot["detail"] or {}
-            if name.startswith("iom"):
-                i = int(name[3:]) - 1
-                ioms = det.get("iom_macs") or []
-                text = _fmt_mac(ioms[i]) if i < len(ioms) else ""
-            else:
-                text = "host+bmc"
-            out[name] = {"state": "ok", "text": text}
-        else:
-            det = slot["detail"] or {}
-            out[name] = {"state": "bad",
-                         "text": " ".join(x for x in (det.get("status"), det.get("note")) if x)
-                         or det.get("reason") or det.get("error") or "fail"}
-    return out
+def _skip_reason(run: dict) -> str:
+    d = run.get("detail") or {}
+    return "n/a" if _NA_SKIP.match(d.get("reason") or d.get("headline") or "") else "upstream"
 
 
 def _waiver_view(w, lr, d) -> dict | None:
@@ -297,16 +267,21 @@ def _trim(run: dict) -> dict:
     # only saved-file paths are links; Discover's inline switch text is not sent
     r["artifacts"] = {k: v for k, v in (r.get("artifacts") or {}).items()
                       if isinstance(v, str) and v.startswith("artifacts/")}
+    if r.get("verdict") == "skip":
+        r["skip_reason"] = _skip_reason(r)
     return r
 
 
-def _ep_view(runs: dict, n: int, dbdev: dict) -> dict:
+def _ep_view(runs: dict, n: int, dbdev: dict, last: dict) -> dict:
+    """One IOM: its MAC and serial from this Discover, else from the last one it passed
+    (a silent IOM keeps what was seen; blank only if never seen)."""
     macs = dbdev.get("iom_macs") or []
-    seen = ((runs.get("bmc-mac-seen") or {}).get("detail") or {}).get("iom_mac")
+    seen = ((runs.get("bmc-mac-seen") or {}).get("detail") or {}).get("iom_mac") \
+        or (last.get("bmc-mac-seen") or {}).get("iom_mac")
     ident = devview.identity(runs)
     return {"mac": _fmt_mac(macs[n - 1] if n <= len(macs) else seen),
-            "serial": (ident or {}).get("serial"), "identity": ident,
-            "fw": devview.firmware(runs)}
+            "serial": (ident or {}).get("serial") or (last.get("serial") or {}).get("serial"),
+            "identity": ident, "fw": devview.firmware(runs)}
 
 
 def rack_state(r: Rack) -> dict:
@@ -326,11 +301,13 @@ def rack_state(r: Rack) -> dict:
     for a in plan_addresses(g):
         addrs.setdefault(a.pos, {})[a.role] = a.ip
         names.setdefault(a.pos, {})[a.role] = a.name
-    mgmt = {s.id for s in g.switches if s.role == "mgmt"}
     profiles = set(PROFILES)
     unexpected = ((by_pos.get("_rack", {}).get("slot-match") or {}).get("detail") or {}) \
         .get("unexpected") or []
     waivers = db.waivers()
+    last: dict[str, dict] = {}
+    for (k, rung), det in db.last_passed(("bmc-mac-seen", "serial")).items():
+        last.setdefault(k, {})[rung] = det
     lm = getattr(r, "linkmon", None)
     now = time.time()
     live = linkmon.evaluate(g, lm.snapshots() if lm else {}, linkmon.device_macs(db),
@@ -345,13 +322,12 @@ def rack_state(r: Rack) -> dict:
         devices.append({
             "pos": d.pos, "ou": d.ou, "h": d.h, "col": d.col, "kind": d.kind, "part": d.part,
             "links": {k: _link_str(l) for k, l in d.links.items()},
-            "link_seen": _seen(d, runs.get("bmc-mac-seen") or runs.get("slot-match"), mgmt,
-                               runs.get("ha-path")),
             # a JBOD's IOMs walk their own Discover ladders (key <pos>.iomN)
             "endpoint_runs": {f"iom{n}": by_pos.get(f"{d.pos}.iom{n}", {})
                               for n in range(1, d.endpoints.get("ioms", 0) + 1)},
             # each IOM is its own BMC endpoint: fruid-util identity + fw-util versions
-            "ioms": {f"iom{n}": _ep_view(by_pos.get(f"{d.pos}.iom{n}", {}), n, x)
+            "ioms": {f"iom{n}": _ep_view(by_pos.get(f"{d.pos}.iom{n}", {}), n, x,
+                                         last.get(f"{d.pos}.iom{n}", {}))
                      for n in range(1, d.endpoints.get("ioms", 0) + 1)},
             "serial": (devview.identity(runs) or {}).get("serial"),
             "identity": devview.identity(runs), "fw": devview.firmware(runs),
@@ -385,7 +361,11 @@ def rack_state(r: Rack) -> dict:
         sw["live"] = lm.switch_live(s.id, now) if lm else {"at": None, "ok": False, "error": None}
         sw["live_links"] = live.get(f"_sw-{s.id}", {})
         switches.append(sw)
-    return {
+    ha = ha_mode_of(raw, g)                 # from the latest runs, never a stale record
+    if ha:
+        ha["at"] = (db.ha_mode() or {}).get("at")
+    # rows written before 2026-10-30 carry the old HA wording: served in today's
+    return clean_ha({
         "order": g.order, "customer": g.customer, "vid": g.vid, "site": g.site, "rack": g.rack,
         "prefix": g.url_prefix, "version": __version__, "closed_at": db.closed_at(),
         "iperf_server": g.iperf_server,
@@ -401,13 +381,14 @@ def rack_state(r: Rack) -> dict:
         "deploy_phases": list(DEPLOY_PHASES), "deploy_from": list(FROM_PHASES),
         "deploy": {"passed": not dwhy,
                    "not_passed": [d.pos for d in g.devices if d.pos in dwhy],
-                   "why": dwhy, "progress": db.deploy_progress(), "ha_mode": db.ha_mode(),
+                   "why": dwhy, "progress": db.deploy_progress(), "ha_mode": ha,
                    "waivers": db.waivers(history=True)},
         "done_rungs": list(DONE_RUNGS), "done": {"csv_at": _csv_at(r.dir)},
-        "poll_interval_s": INTERVAL_S, "link_interval_s": linkmon.INTERVAL_S, "profiles": sorted(profiles),
+        "poll_interval_s": INTERVAL_S,
+        "link_interval_s": lm.interval_s if lm else linkmon.INTERVAL_S, "profiles": sorted(profiles),
         "switches": switches, "devices": devices, "rack_runs": rack_runs,
         "unexpected": [{"port": u["port"], "mac": _fmt_mac(u["mac"])} for u in unexpected],
-        "events": db.events(30)}
+        "events": db.events(30)})
 
 
 def _csv_at(rack_dir: Path) -> str | None:
@@ -433,6 +414,7 @@ class App:
         self._racks: dict[Path, Rack] = {}
         self._pollers: dict[Path, BmcPoller] = {}
         self._linkmons: dict[Path, LinkPoller] = {}
+        self.link_interval_s = linkmon.INTERVAL_S
 
     def rescan(self) -> Scan:
         s = self.registry.scan()
@@ -678,7 +660,7 @@ class App:
             if d not in self._linkmons:
                 # its own 30 s period (operator: links live within ~30 s)
                 lp = LinkPoller(lambda r=r: self.factory(r.dir, r.g, r.db),
-                                name=f"link-poller-{prefix}")
+                                self.link_interval_s, name=f"link-poller-{prefix}")
                 self._linkmons[d] = r.linkmon = lp
                 lp.start()
 

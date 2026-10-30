@@ -21,7 +21,7 @@
         <img class="flogo" src="static/flax-logo.svg" alt="flax" onerror="this.style.display='none'">
         <div class="metrics">
           <div v-for="m in metricList" class="metric" :class="[m.key, {on: filter===m.key}]" @click="toggle(m.key)"
-               :title="m.title"><b>{{counts[m.key]}}</b><span>{{m.label}}</span></div>
+               :title="metricTitle(m)"><b>{{counts[m.key]}}</b><span>{{m.label}}</span></div>
         </div>
       </div>
       <div class="tr">
@@ -48,7 +48,7 @@
           <b class="mono">{{dprog?.done}}/{{dprog?.devices}}</b>
           <span class="qwait" v-if="(dprog?.waiting_on || []).length">· {{(dprog?.waiting_on || []).slice(0, 3).join(' ')}}{{(dprog?.waiting_on || []).length > 3 ? ' …' : ''}}</span>
         </span>
-        <span class="lk hamode" v-if="haMode" :class="haMode?.missing?.length ? 'dev' : 'ok'" :title="haTitle()">HA {{haMode?.mode}}{{haMode?.missing?.length ? ' · ' + haMode?.missing?.length + ' not yet' : ''}}</span>
+        <span class="lk hamode" v-if="haMode" :class="haMode?.missing?.length ? 'dev' : 'ok'" :title="haTitle()">{{haText()}}</span>
       </div>
       <div class="tr"><div class="ctx">
         <label>Customer <span class="ro">{{s.customer || '—'}}</span></label>
@@ -112,9 +112,8 @@
                       title="open this wedge's BMC (weutil, /etc/issue, cpld_rev)">{{epText(row.sw.bmc)}} ›</span></div>
             </div>
             <div class="links">
-              <span class="lk" v-if="row.sw.mgmt_ip" :class="swDot(row.sw)==='done' ? 'ok' : swDot(row.sw)==='fault' ? 'bad' : ''"
-                    :title="swTitle(row.sw)">{{row.sw.mgmt_ip}}</span>
-              <span class="lk" v-if="row.sw.uplink_ports.length" title="uplink ports (not matched)">uplink {{row.sw.uplink_ports.join(',')}}</span>
+              <span class="lk live" v-if="row.sw.mgmt_ip" :class="swLive(row.sw).cls" :title="swLive(row.sw).title">{{row.sw.mgmt_ip}}</span>
+              <span class="lk" v-for="c in swPills(row.sw)" :class="c.state" :title="c.title">{{c.label}}</span>
             </div>
             <div class="bars">
               <div class="bar"><span class="seg" v-for="c in phaseSegs(swObj(row.sw))" :class="c"></span></div>
@@ -125,6 +124,7 @@
           <!-- devices / IOMs / empty cubbies -->
             <div class="tile" v-for="cell in (row.cells || [])" :class="wrapCls(cell)" :style="tileStyle(cell)" @click="open(cell)">
               <div class="t-head">
+                <span class="pres" v-if="!cell.empty" :class="presence(cell).cls" :title="presence(cell).title"></span>
                 <span class="t-port">{{cell.label}}</span>
                 <span class="kind" v-if="cell.kindLabel">{{cell.kindLabel}}</span>
                 <span class="watt" v-if="!cell.empty && power(cell)" :class="power(cell).cls" :title="power(cell).title">{{power(cell).t}}</span>
@@ -243,10 +243,10 @@
         <span class="mono" :title="(selObj?.dev?.names || {})[selObj?.ep]">{{selObj?.view?.mac || '⋯'}} · {{(selObj?.dev?.addrs || {})[selObj?.ep]}}</span>
         <span :class="(selObj?.runs || {})['bmc-reserved']?.verdict==='pass' ? 'ok' : 'no'">{{(selObj?.runs || {})['bmc-reserved']?.verdict==='pass' ? '✓ reserved' : '—'}}</span>
       </div>
-      <div class="section-l">link (BOM → seen)</div>
+      <div class="section-l">link (BOM → live)</div>
       <div class="ha" v-if="iomLink(selObj)">
-        <span class="h">port</span><span class="h">expected</span><span class="h">seen</span>
-        <span>{{iomLink(selObj)?.name}}</span><span>{{iomLink(selObj)?.expected}}</span><span :class="iomLink(selObj)?.state">{{iomLink(selObj)?.seen}}</span>
+        <span class="h">port</span><span class="h">expected</span><span class="h">live</span>
+        <span>{{iomLink(selObj)?.name}}</span><span>{{iomLink(selObj)?.expected}}</span><span :class="iomLink(selObj)?.state" :title="iomLink(selObj)?.title">{{iomLink(selObj)?.seen}}</span>
       </div>
     </div>
 
@@ -285,11 +285,22 @@
     </div>
 
     <div v-if="selKind==='dev'">
-      <div class="section-l">links (BOM → seen)</div>
+      <div class="section-l">links (BOM → live)</div>
       <div class="ha">
-        <span class="h">port</span><span class="h">expected</span><span class="h">seen</span>
+        <span class="h">port</span><span class="h">expected</span><span class="h">live</span>
         <template v-for="l in linkRows(selDev)">
-          <span>{{l.name}}</span><span>{{l.expected}}</span><span :class="l.state">{{l.seen}}</span>
+          <span>{{l.name}}</span><span>{{l.expected}}</span><span :class="l.state" :title="l.title">{{l.seen}}</span>
+        </template>
+      </div>
+    </div>
+
+    <!-- ---- switch: its own uplinks + site link, live ---- -->
+    <div v-if="selKind==='sw' && swLinkRows(selObj).length">
+      <div class="section-l">links (live)</div>
+      <div class="ha">
+        <span class="h">link</span><span class="h">expected</span><span class="h">live</span>
+        <template v-for="l in swLinkRows(selObj)">
+          <span>{{l.name}}</span><span>{{l.expected}}</span><span :class="l.state" :title="l.title">{{l.seen}}</span>
         </template>
       </div>
     </div>

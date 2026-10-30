@@ -9,7 +9,14 @@
 // (SDR/SEL + installed-OS captures), boot-reset, components) writes the customer CSVs,
 // linked from the header once written; it never power-controls a node.
 // Deploy's gate may be passed with a recorded waiver of named Qualify rungs: the tile
-// and drawer show it as a "waived" chip (amber while the rung still has not passed).
+// and drawer show a "waived" chip while it is active (a named rung still not passed).
+// A skip the server marks skip_reason "n/a" (the rung does not apply to the endpoint's
+// kind) counts as done; an "upstream" skip (cancelled, an earlier step/phase failed) is
+// `held`: neutral. A phase with no rungs at all for the endpoint (a switch's Qualify/
+// Deploy/Done, a JBOD's host rungs) is green once the phase before it is.
+// Link pills and the presence dot read ONLY the live link monitor (live_links /
+// presence, every ~30 s): ok = filled green, up = green outline, down/wrong = red,
+// unknown = grey; the tooltip says what was seen and how long ago.
 // Every switch and every BMC endpoint opens its own drawer (sel in the URL hash):
 // a device `R05`, one JBOD IOM `JBOD01.iom2`, a switch `_sw-A`, a wedge's BMC
 // `_sw-A.bmc`. Each is an object carrying pos (= the sel key), runs and
@@ -33,7 +40,9 @@ const SWKIND = { mgmt: 'mgmt 1G', tor: 'TOR' };
 const BMC_STEPS = ['switchportlink', 'bmc-mac-seen', 'bmc-reserved', 'bmc-leased', 'bmc-pinged', 'serial', 'bmc-ready'];
 // the viewer reads at most this much of an artifact (the rest: Download)
 const ART_MAX = 2 * 1024 * 1024;
-const STEP_WORD = { done: 'done', cur: 'in progress', fault: 'fault', pending: 'not run', skip: 'skipped', unknown: 'unknown', unmeasured: 'not measured' };
+const STEP_WORD = { done: 'done', cur: 'in progress', fault: 'fault', pending: 'not run', skip: 'skipped', held: 'skipped (upstream)', unknown: 'unknown', unmeasured: 'not measured' };
+// live link state -> pill class
+const LINK_CLS = { ok: 'ok', up: 'up', down: 'bad', wrong: 'bad', unknown: 'unk' };
 
 const iomObj = (d, ep) => ({ type: 'iom', pos: `${d.pos}.${ep}`, dev: d, ep, n: Number(ep.slice(3)),
   runs: (d.endpoint_runs || {})[ep] || {}, qualify_rungs: [], view: (d.ioms || {})[ep] || {} });
@@ -62,7 +71,8 @@ function stepState(run) {
   // Firmware rows carry Post's own step state (needs_update = cur, not a red fault)
   const st = (run.detail || {}).state;
   if (POST_STATES.includes(st)) return st;
-  return { pass: 'done', skip: 'skip', fail: 'fault' }[run.verdict] || 'unknown';
+  if (run.verdict === 'skip') return run.skip_reason === 'upstream' ? 'held' : 'skip';
+  return { pass: 'done', fail: 'fault' }[run.verdict] || 'unknown';
 }
 
 const gbit = (b) => (b == null ? '?' : (b / 1e9).toFixed(b < 1e10 ? 2 : 1));
@@ -153,6 +163,12 @@ function hashStr(t) {
   return (h >>> 0).toString(36);
 }
 
+// one link's presence: present when up/ok/wrong, absent when down, else unknown
+function linkPresence(l) {
+  const st = (l || {}).state;
+  return ['ok', 'up', 'wrong'].includes(st) ? 'present' : st === 'down' ? 'absent' : 'unknown';
+}
+
 function selFromHash() {
   const m = /(?:^#|&)sel=([A-Za-z0-9._-]+)/.exec(location.hash);
   return m ? m[1] : null;
@@ -170,13 +186,14 @@ function App() {
     // per-device Deploy modal: depM = {pos, msg} while open; its inputs are top-level so
     // v-model never reads through a null depM while the modal tears down
     depM: null, devFrom: 'install', devReinText: '', devWaive: {}, devReason: '',
+    // header counters: what each counts is counted() (its filter shows the same set)
     metricList: [
-      { key: 'discover', label: 'discover', title: 'devices in Discover' },
-      { key: 'firmware', label: 'firmware', title: 'devices with firmware versions read (report only)' },
-      { key: 'qualify', label: 'qualify', title: 'devices in Qualify' },
-      { key: 'deploy', label: 'deploy', title: 'devices in Deploy' },
-      { key: 'done', label: 'done', title: 'devices through Done (end summary, boot reset, components)' },
-      { key: 'alert', label: 'alerts', title: 'devices with a failed rung' },
+      { key: 'discover', label: 'discover', title: 'devices whose Discover passed: every step of their latest run done (or n/a for the kind)' },
+      { key: 'firmware', label: 'firmware', title: 'devices whose Firmware read passed: every version read and at target (detect only)' },
+      { key: 'qualify', label: 'qualify', title: 'devices whose Qualify passed: every rung done (a JBOD has none: counted once Firmware passed)' },
+      { key: 'deploy', label: 'deploy', title: 'devices whose Deploy passed: install → ha-test all done (a JBOD has none: counted once Qualify passed)' },
+      { key: 'done', label: 'done', title: 'devices whose Done passed: end summary, boot reset, components all done (a JBOD has none: counted once Deploy passed)' },
+      { key: 'alert', label: 'alerts', title: 'devices with a failed step in any phase that no active Deploy waiver covers (the red tiles)' },
     ],
 
     async mounted() {
@@ -339,10 +356,17 @@ function App() {
     curPhase(d) { return this.hasRuns(d, 'done') ? 'done' : this.hasRuns(d, 'deploy') ? 'deploy' : this.hasRuns(d, 'qualify') ? 'qualify' : 'discover'; },
     phaseState(d, p) {
       const v = this.stepEntries(d, p).map((x) => x.state);
+      if (!v.length) {
+        // nothing to do for this endpoint (n/a): green once the phase before it is
+        const i = this.s.phases.indexOf(p);
+        return i <= 0 || this.phaseState(d, this.s.phases[i - 1]) === 'done' ? 'done' : '';
+      }
       if (v.includes('fault')) return 'fault';
-      if (v.length && v.every((x) => x === 'done' || x === 'skip')) return 'done';
+      if (v.every((x) => x === 'done' || x === 'skip')) return 'done';
       // finished, but a step's target did not answer: grey (not measured), never done
-      if (v.includes('unmeasured') && v.every((x) => ['done', 'skip', 'unmeasured'].includes(x))) return 'unmeasured';
+      if (v.includes('unmeasured') && v.every((x) => ['done', 'skip', 'unmeasured', 'held'].includes(x))) return 'unmeasured';
+      if (v.includes('cur')) return 'cur';
+      if (v.includes('held')) return '';      // skipped because something upstream failed
       if (v.some((x) => x !== 'pending')) return 'cur';
       return '';
     },
@@ -362,6 +386,8 @@ function App() {
     phaseKey(d) {
       if (!d) return 'grey';
       if (this.faulted(d)) return 'fault';
+      // every phase passed or has nothing to do for it (a JBOD IOM, a switch)
+      if ((this.s.phases || []).every((p) => this.phaseState(d, p) === 'done')) return 'done';
       const cp = this.phaseState(d, this.curPhase(d));
       if (cp === 'unmeasured') return 'unmeasured';
       if (this.hasRuns(d, 'done')) {
@@ -381,7 +407,7 @@ function App() {
       const v = this.stepEntries(d, p); if (!v.length) return '';
       return `${v.filter((x) => x.state === 'done' || x.state === 'skip').length}/${v.length}`;
     },
-    stepIcon(st) { return { done: '✓', cur: '◉', fault: '✕', pending: '·', skip: '–', unknown: '?', unmeasured: '○' }[st] || '·'; },
+    stepIcon(st) { return { done: '✓', cur: '◉', fault: '✕', pending: '·', skip: '–', held: '–', unknown: '?', unmeasured: '○' }[st] || '·'; },
     statusText(d) {
       if (!d) return '';
       for (const p of ['discover', 'firmware', 'qualify', 'deploy', 'done']) {
@@ -390,7 +416,7 @@ function App() {
       }
       const p = this.curPhase(d);
       if (p === 'done' && !this.deployOk(d)) return 'done · not deployed';
-      const cur = this.stepEntries(d, p).find((x) => x.state !== 'done' && x.state !== 'skip');
+      const cur = this.stepEntries(d, p).find((x) => !['done', 'skip', 'held'].includes(x.state));
       return !cur ? `${p} ✓` : cur.state === 'unmeasured' ? `${p} · ${cur.name} not measured` : `${p} · ${cur.name}`;
     },
     statusStyle(d) { const c = RGB[this.phaseKey(d)] || RGB.discover; return `background:rgba(${c},.15);color:rgb(${c})`; },
@@ -445,20 +471,16 @@ function App() {
     },
 
     // ---- header ----
+    // the one place a header counter (and its filter) decides: alerts = an unwaived
+    // fault, a phase = that phase passed on the device's latest runs
+    counted(d, key) { return key === 'alert' ? this.faulted(d) : this.phaseState(d, key) === 'done'; },
     get counts() {
       const ds = this.s.devices || [];
-      return { discover: ds.length, firmware: ds.filter((d) => this.hasRuns(d, 'firmware')).length,
-               qualify: ds.filter((d) => this.hasRuns(d, 'qualify')).length,
-               deploy: ds.filter((d) => this.hasRuns(d, 'deploy')).length,
-               done: ds.filter((d) => this.hasRuns(d, 'done')).length,
-               alert: ds.filter((d) => this.faulted(d)).length };
+      return Object.fromEntries(this.metricList.map((m) => [m.key, ds.filter((d) => this.counted(d, m.key)).length]));
     },
+    metricTitle(m) { return `${m.title} · ${this.counts[m.key]} of ${(this.s.devices || []).length} devices · click to show only them`; },
     toggle(f) { this.filter = this.filter === f ? null : f; },
-    inFilter(d, f) {
-      if (f === 'alert') return this.faulted(d);
-      if (['firmware', 'qualify', 'deploy', 'done'].includes(f)) return this.hasRuns(d, f);
-      return f === 'discover';
-    },
+    inFilter(d, f) { return this.counted(d, f); },
     qualifyTitle() {
       const q = this.s.qualify || {}, why = q.why || {};
       const base = 'run Qualify: SOL capture + live boot → battery → population-check, smbios-serial, tpm-state per node, then wedge LLDP → HA path → fabric addresses → iperf mesh';
@@ -495,10 +517,16 @@ function App() {
     },
     // the order's delivered HA mode (from ha-test)
     get haMode() { return (this.s.deploy || {}).ha_mode || null; },
+    haText() {
+      const h = this.haMode; if (!h) return '';
+      const n = h.devices.length + h.missing.length;
+      return `HA ${h.mode}` + (h.missing.length ? ` ${h.devices.length}/${n}` : '');
+    },
     haTitle() {
       const h = this.haMode; if (!h) return '';
-      return `HA mode delivered: ${h.mode} · ha-test passed on ${h.devices.join(', ')}` +
-        (h.missing.length ? ` · not yet: ${h.missing.join(', ')}` : '') + ` · ${h.at}\n` + (h.notes || []).join('\n');
+      return `bond0 ${h.mode}: latest ha-test passed on ${h.devices.join(', ')}` +
+        (h.missing.length ? ` · not passed: ${h.missing.join(', ')}` : '') + (h.at ? ` · recorded ${h.at}` : '') +
+        ((h.notes || []).length ? '\n' + h.notes.join('\n') : '');
     },
     deployTitle() {
       const q = this.s.deploy || {}, why = q.why || {};
@@ -527,9 +555,17 @@ function App() {
     swBmcObj(sw) { return swBmcObj(sw); },
     swSel(sw) { return this.sel === '_sw-' + sw.id || this.sel === `_sw-${sw.id}.bmc`; },
     epText(e) { return !e ? '' : `${e.mac || '⋯'} · ${e.ip || '⋯'}`; },
-    swTitle(sw) {
-      const n = sw.role === 'tor' ? 'lldp-' + sw.id : 'switch-fdb', r = this.swRun(sw);
-      return r ? `${n} ${r.verdict || r.status} · ${stepNote(r, n)}` : `${n} not run`;
+    // the switch's own ssh answer to the link monitor (no answer = grey, never red)
+    swLive(sw) {
+      const l = sw.live || {};
+      if (l.ok) return { cls: 'ok', title: `answers ssh · links read ${this.ago(l.at)}` };
+      return { cls: 'unk', title: (l.error || (l.at ? `last read ${this.ago(l.at)}` : 'not read yet')) + ' · its links are unknown' };
+    },
+    // uplinkN / site pills of a switch tile
+    swPills(sw) {
+      return Object.entries(sw.live_links || {}).sort().map(([n, l]) =>
+        this.pill(n === 'site' ? 'site' : 'uplink ' + n.slice(6), l,
+                  n === 'site' ? `site ${(sw.site_port || {}).switch} ${(sw.site_port || {}).port}` : `uplink port ${n.slice(6)}`));
     },
     cellMac(c) { return c.iom ? (c.obj.view.mac || (c.dev.iom_macs || [])[c.idx]) : c.dev.bmc_mac; },
     // the object a tile stands for (an IOM tile is its own endpoint) and its serial
@@ -560,22 +596,39 @@ function App() {
       if (!d) return '';
       return d.pop_overridden ? `override: BOM part ${d.part} defaults to ${d.pop_default}` : `default from BOM part ${d.part}`;
     },
+    // "12 s ago" from an ISO time (the poll clock)
+    ago(at) {
+      if (!at) return 'never';
+      const s = Math.max(0, Math.round((this.now - Date.parse(at)) / 1000));
+      return s < 120 ? `${s} s ago` : `${Math.round(s / 60)} min ago`;
+    },
+    // one live link pill: label, class from its state, tooltip = what was seen + age
+    pill(label, l, bom) {
+      l = l || { state: 'unknown', text: 'not read yet' };
+      return { label, state: 'live ' + (LINK_CLS[l.state] || 'unk'),
+               title: `${label} · ${l.state}: ${l.text}` + (l.iface ? ` · ${l.switch} ${l.iface}` : '') +
+                      ` · BOM ${bom} · read ${this.ago(l.at)}` };
+    },
     chips(c) {
-      const d = c.dev, seen = d.link_seen || {};
+      const d = c.dev, live = d.live_links || {};
       const names = c.iom ? [c.iom] : Object.keys(d.links).sort();
-      const out = [];
-      for (const n of names) {
-        const st = (seen[n] || {}).state || '';
-        const title = `${n}: BOM ${d.links[n]} · seen ${(seen[n] || {}).text || 'not checked yet'}`;
+      return names.map((n) => {
         const m = /^pcie(\d+)$/.exec(n);
-        if (m) out.push({ label: `P${m[1]}→${d.links[n].split(':')[0]}`, state: st, title });
-        else if (st) out.push({ label: st === 'ok' ? 'mgmt ✓' : 'mgmt ✕', state: st, title });
-      }
-      return out;
+        return this.pill(m ? `P${m[1]}→${d.links[n].split(':')[0]}` : 'mgmt', live[n], d.links[n]);
+      });
+    },
+    // the presence dot: the device (or this IOM's own link) seen on any switch port now
+    presence(c) {
+      const d = c.dev;
+      const p = c.iom ? linkPresence((d.live_links || {})[c.iom]) : d.presence || 'unknown';
+      const word = { present: 'present: a link is up on its switch port', absent: 'absent: every link down',
+                     unknown: 'unknown: its switches have not been read' }[p];
+      return { cls: p, title: word };
     },
     matches(d) {
       const q = this.q.trim().toLowerCase(); if (!q) return false;
       return [d.pos, d.host_mac, d.bmc_mac, ...(d.iom_macs || []), ...Object.values(d.names || {}), ...Object.values(d.addrs || {})]
+        .concat(Object.values(d.ioms || {}).map((x) => x.mac))
         .some((v) => v && v.toLowerCase().includes(q));
     },
     get matchCount() { return (this.s.devices || []).filter((d) => this.matches(d)).length; },
@@ -619,8 +672,19 @@ function App() {
     // the IOM's own link row (switch:port, seen MAC, oper from its switchportlink)
     iomLink(o) {
       if (!o || o.type !== 'iom') return null;
-      const seen = (o.dev.link_seen || {})[o.ep] || {};
-      return { name: o.ep, expected: (o.dev.links || {})[o.ep], seen: seen.text || 'not run', state: seen.state || 'dimv' };
+      return this.liveRow(o.ep, (o.dev.links || {})[o.ep], (o.dev.live_links || {})[o.ep]);
+    },
+    // a drawer link row from the live monitor: name, BOM, what is seen now
+    liveRow(name, expected, l) {
+      l = l || { state: 'unknown', text: 'not read yet' };
+      return { name, expected, seen: `${l.state} · ${l.text}`, title: `read ${this.ago(l.at)}`,
+               state: { ok: 'ok', up: 'ok', down: 'bad', wrong: 'bad' }[l.state] || 'dimv' };
+    },
+    swLinkRows(o) {
+      if (!o || o.type !== 'sw') return [];
+      const sw = o.sw, sp = sw.site_port || {};
+      return Object.entries(sw.live_links || {}).sort().map(([n, l]) =>
+        this.liveRow(n, n === 'site' ? `${sp.switch} ${sp.port}` : `port ${n.slice(6)}`, l));
     },
     // a switch's address rows: SONiC mgmt, its BMC (wedges: opens the BMC drawer)
     swAddr(o) {
@@ -665,11 +729,7 @@ function App() {
     },
     linkRows(d) {
       if (!d) return [];
-      const seen = d.link_seen || {};
-      return Object.keys(d.links).sort().map((n) => ({
-        name: n, expected: d.links[n],
-        seen: (seen[n] || {}).text || 'not run',
-        state: (seen[n] || {}).state || 'dimv' }));
+      return Object.keys(d.links).sort().map((n) => this.liveRow(n, d.links[n], (d.live_links || {})[n]));
     },
     async setPop(d, value) {
       try { await api('api/pop', { pos: d.pos, profile: value === d.pop_default ? null : value }); }
@@ -769,10 +829,10 @@ function App() {
       catch (e) { this.depM = { ...m, msg: e.message }; }
       await this.refresh();
     },
+    // only while active: a waiver whose rungs have passed since is history (drawer only)
     waiverChip(d) {
-      const w = d && d.waiver; if (!w) return null;
-      return { t: w.active ? 'waived' : 'waived (now passed)', cls: w.active ? 'amb' : 'dimv',
-               title: `Deploy gate waiver: ${w.rungs.join(', ')} · ${w.reason} · by ${w.who} · ${w.at}` };
+      const w = d && d.waiver; if (!w || !w.active) return null;
+      return { t: 'waived', cls: 'amb', title: `Deploy gate waiver: ${w.rungs.join(', ')} · ${w.reason} · by ${w.who} · ${w.at}` };
     },
     // ---- Done: end summary (SDR/SEL, installed-OS captures), boot reset (hostname iPXE
     // file + Redfish override; never a power action), components, then the customer CSVs.

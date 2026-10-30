@@ -93,8 +93,9 @@ def wedge_iface(port: int, lane: int | None) -> str:
     return f"Ethernet{(port - 1) * 4 + (lane - 1 if lane else 0)}"
 
 
-def parse_show_lldp_table(text: str) -> list[LldpEntry]:
-    """Columns are cut at the dash ruler under the header (names may hold spaces)."""
+def parse_show_lldp_table(text: str, mgmt: bool = False) -> list[LldpEntry]:
+    """Columns are cut at the dash ruler under the header (names may hold spaces).
+    mgmt: keep the switch's own `eth0` row too (its site-switch neighbour)."""
     starts = None
     out = []
     for line in text.splitlines():
@@ -110,7 +111,7 @@ def parse_show_lldp_table(text: str) -> list[LldpEntry]:
                 or line.startswith("Total entries"):
             continue
         cells = [line[a:b].strip() for a, b in zip(starts, starts[1:] + [None])]
-        if len(cells) >= 5 and cells[0].startswith("Ethernet"):
+        if len(cells) >= 5 and (cells[0].startswith("Ethernet") or (mgmt and cells[0] == "eth0")):
             out.append(LldpEntry(cells[0], cells[1], cells[2], cells[4]))
     return out
 
@@ -225,5 +226,6 @@ def read_live(host, user, password, *, runner=subprocess.run, timeout=25) -> Run
         e = f"rc={rc} {(err or out).strip()[-300:]}"
         return RungResult("fail", {"error": e, "headline": f"no interface status from {host}"},
                           arts)
-    return RungResult("pass", {"ifaces": ifaces, "lldp": parse_show_lldp_table(sec["lldp"]),
+    return RungResult("pass", {"ifaces": ifaces,
+                               "lldp": parse_show_lldp_table(sec["lldp"], mgmt=True),
                                "fdb": parse_show_mac(sec["mac"])}, arts)

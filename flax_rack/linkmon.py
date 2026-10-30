@@ -19,8 +19,9 @@ Per link (evaluate):
            yet) or older than STALE_S -- never `down`: nothing was observed
 
 Switch links (key "_sw-<id>"): uplink<N> (up/down/unknown from the switch's own
-status) and `site` (ok while the switch answers ssh at its mgmt IP, which is reached
-through its site port; unknown otherwise -- the site turtle is not read here).
+status) and `site`, read from the switch's own mgmt `eth0` LLDP neighbour (site_link:
+ok = the geometry site_port's switch + port, wrong = another, up = answers ssh but no
+eth0 neighbour, unknown = no fresh snapshot; the site turtle itself is not read).
 
 LinkPoller: one thread per served rack. Each tick starts a read for every switch that
 has none in flight (a slow ssh never piles up; other switches still update), keeps
@@ -79,6 +80,11 @@ def device_macs(db) -> dict[str, set[str]]:
     for x in db.devices():
         out[x["pos"]] = {m for m in (x.get("host_mac"), x.get("bmc_mac"),
                                      *(x.get("iom_macs") or [])) if m}
+    # an IOM's last seen MAC (order.db iom_macs stays empty until both IOMs are found)
+    for (key, _), det in db.last_passed(("bmc-mac-seen",)).items():
+        pos = key.split(".")[0]
+        if pos in out and key != pos and det.get("iom_mac"):
+            out[pos].add(det["iom_mac"].replace(":", "").lower())
     return out
 
 
@@ -192,16 +198,48 @@ def evaluate(g, snapshots: dict, macs: dict, names: dict, now: float) -> dict:
     for s in g.switches:
         links = {f"uplink{p}": judge(s.id, link_iface(s, p, None)) for p in s.uplink_ports}
         if s.site_port:
-            sp = f"{s.site_port['switch']} {s.site_port['port']}"
-            if s.id in views and fresh[s.id]:
-                links["site"] = {"state": "ok", "text": f"answers ssh (via {sp})",
-                                 "seen": {"lldp": None, "macs": []},
-                                 "at": _iso(snapshots[s.id]["at"]), "switch": s.id,
-                                 "iface": sp}
+            if s.id in views:
+                links["site"] = site_link(s, snapshots[s.id], fresh[s.id], now)
             else:
-                links["site"] = unknown(s.id, sp, f"switch {s.id} not answering")
+                links["site"] = unknown(s.id, "eth0", f"switch {s.id} not answering"
+                                        if s.id in snapshots else f"switch {s.id} not read yet")
         out[f"_sw-{s.id}"] = links
     return out
+
+
+def _port_eq(a: str, b: str) -> bool:
+    """Gi1/0/19 == GigabitEthernet1/0/19 (one name abbreviates the other, same numbers)."""
+    ma, mb = (re.fullmatch(r"([a-z-]*)\s*(\S+)", (x or "").strip().lower()) for x in (a, b))
+    if not (ma and mb) or ma[2] != mb[2]:
+        return False
+    return ma[1].startswith(mb[1]) or mb[1].startswith(ma[1])
+
+
+def site_link(s, snap, fresh, now) -> dict:
+    """The switch's mgmt eth0 -> its geometry site_port, READ from the switch's own LLDP
+    (`eth0  turtle-gouda.ehv.lab  Gi1/0/19`): ok when the neighbour's host name (before
+    the first dot) and port match, wrong when another neighbour is there, up when the
+    switch answers but has no eth0 neighbour, unknown without a fresh snapshot."""
+    want_sw, want_port = s.site_port["switch"], s.site_port["port"]
+    at = (snap or {}).get("at")
+    base = {"at": _iso(at), "switch": s.id, "iface": "eth0"}
+    if not fresh:
+        return {**base, "state": "unknown", "seen": {"lldp": None, "macs": []},
+                "text": f"switch {s.id} last read {int(now - at)} s ago"}
+    nbs = [_d(e) for e in snap.get("lldp") or [] if _d(e).get("local_iface") == "eth0"]
+    seen = [(e.get("remote_device") or "", e.get("remote_port") or "", e.get("remote_descr") or "")
+            for e in nbs]
+    base["seen"] = {"lldp": seen[0][0] if seen else None, "macs": []}
+    for name, port, descr in seen:
+        if name.split(".")[0].lower() == want_sw.lower() and \
+                (_port_eq(port, want_port) or _port_eq(descr, want_port)):
+            return {**base, "state": "ok", "text": f"eth0 · {name.split('.')[0]} {port or descr}"}
+    if seen:
+        return {**base, "state": "wrong", "text": "sees " + ", ".join(
+            f"{n.split('.')[0] or '?'} {p or d or '?'}" for n, p, d in seen)
+            + f" (want {want_sw} {want_port})"}
+    return {**base, "state": "up",
+            "text": f"answers ssh · no eth0 LLDP (want {want_sw} {want_port})"}
 
 
 def presence(links: dict) -> str:

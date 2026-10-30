@@ -1,9 +1,8 @@
 """ha-test: whole-wedge failover of the rack's bond0s (operator-confirmed 2026-10-30).
 
-The wedges have no inter-switch link (no MLAG peer cable), so ONE node failing over
-to wedge B cannot reach the nodes still on A. The test therefore simulates the loss
-of a whole wedge: every participating node's wedge-A port goes down at once
-(`ip link set <port> down`, launched in parallel), every bond must fail over to its
+The wedges have no inter-switch link, so the test simulates the loss of a whole
+wedge: every participating node's wedge-A port goes down at once (`ip link set
+<port> down`, launched in parallel), every bond must fail over to its
 B port, and the iperf mesh over bond0 (server = geometry iperf_server) must pass.
 Each client pings the server's bond IP every 100 ms from before the cut until after
 it; the longest run of lost replies is that node's failover gap. Then A comes back
@@ -40,7 +39,6 @@ RESTORE_S = 30          # a re-enabled port (100G link training) must be back by
 DEADMAN_S = 600         # on-node self-restore of a cut port; well above a leg's cut window
 NOTES = ["whole-wedge failover: the wedge-A (then wedge-B) port of every node was cut "
          "at once; the wedges have no inter-switch link",
-         "single-node failover needs an A↔B interconnect (MLAG peer link)",
          f"HA mode delivered: {bond.HA_MODE}"]
 
 

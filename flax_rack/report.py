@@ -192,7 +192,7 @@ def device_rows(order_dir, g, db) -> list[dict]:
     the switches."""
     lr = db.latest_runs()
     rows_db = {x["pos"]: x for x in db.devices()}
-    ha = db.ha_mode() or {}
+    ha = bond.clean_ha(db.ha_mode() or {})
     names: dict[tuple, str] = {(a.pos, a.role): a.name for a in plan_addresses(g)}
     qwhy, dwhy = qualify_why(lr, g), deploy_why(lr, g)
     out = []

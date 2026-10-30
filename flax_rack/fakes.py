@@ -47,6 +47,7 @@ is red. Knobs: sel_nonbenign, sel_unread (SEL not read: unmeasured), override_fa
 pxe_first (the installed BootOrder starts with a PXE entry), pxe_dir.
 """
 import subprocess
+from pathlib import Path
 
 from .creds import Creds
 from .kea_client import KeaConflict
@@ -159,6 +160,7 @@ def fake_context_factory(rack_dir, g, db) -> OrderContext:
         rungs.fw_host_down = set(FW_HOST_DOWN)
         rungs.sol_findings = set(SOL_FINDINGS)
         rungs.sel_nonbenign = set(SEL_NONBENIGN)
+        rungs.pull_file = Path(rack_dir) / ".fake-pull"
     kea = _KEAS.setdefault(g.kea_source, FakeKea(refuse))
     kea.dyn.update(rungs.switch_leases())
     if _PROFILE_DIR is None:
@@ -641,8 +643,10 @@ class FakeRungs:
         """The live link monitor's one-session read. Mgmt switch: the canned FDB (a
         booted host shows its host MAC too), a port up when it carries a MAC or is an
         uplink. Wedge: a geometry pcieN lane is up (with an LLDP row naming the first
-        booted device cabled there) once that device has booted, else down. A switch
-        id in live_down does not answer (unmeasured)."""
+        booted device cabled there) once that device has booted, else down. Each switch's
+        eth0 sees its site_port turtle over LLDP. A switch id in live_down does not answer
+        (unmeasured); a "<switch id> <iface>" in `pulled` (or a line of pull_file: the
+        served fake's cable pull, <order dir>/.fake-pull) is down."""
         from flax_rungs.result import UNMEASURED, RungResult
         from flax_rungs.sonic import IfStatus, LldpEntry, parse_show_mac, wedge_iface
         s = next(s for s in self.g.switches if s.mgmt_ip == host)
@@ -668,6 +672,18 @@ class FakeRungs:
                     ifaces[ifn] = IfStatus("up", "up", "25G")
                     lldp.append(LldpEntry(ifn, f"{self.g.prefix}{d.pos.lower()}",
                                           self._macs(d.pos)[_IFN[name]], _IFN[name]))
+        if s.site_port:
+            lldp.append(LldpEntry("eth0", f"{s.site_port['switch']}.ehv.lab",
+                                  s.site_port["port"], s.site_port["port"]))
+        pulled = set(getattr(self, "pulled", ()))
+        pf = getattr(self, "pull_file", None)
+        if pf is not None and pf.exists():
+            pulled |= {tuple(x.split()[:2]) for x in pf.read_text().splitlines() if x.strip()}
+        for sid, ifn in pulled:
+            if sid == s.id and ifn in ifaces:
+                ifaces[ifn] = IfStatus("down", "up", ifaces[ifn].speed)
+                lldp = [e for e in lldp if e.local_iface != ifn]
+                fdb = [e for e in fdb if e.iface != ifn]
         return RungResult("pass", {"ifaces": ifaces, "lldp": lldp, "fdb": fdb})
 
     def apply_fabric(self, host_ip, user, pw, assigns, *, runner=None):

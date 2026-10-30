@@ -30,7 +30,22 @@ MIIMON = 100
 PING_MS = 100
 MGMT_GAP_MS = 10000       # ssh must survive; R37 stalls 4-8 s on any mgmt reconfigure (C37 ~0), recorded either way
 SETTLE_S = 30
-HA_MODE = "active-backup (no MLAG peer link)"
+HA_MODE = "active-backup"
+# order.db rows from before 2026-10-30 carry a longer mode text and an interconnect note
+_OLD_MODE = re.compile(r"\s*\(no MLAG[^)]*\)")
+_OLD_NOTE = re.compile(r"MLAG|single-node failover")
+
+
+def clean_ha(x):
+    """Stored detail/ha_mode in today's HA wording: the old mode suffix cut, the old
+    interconnect notes dropped (for serving rows written before the change)."""
+    if isinstance(x, str):
+        return _OLD_MODE.sub("", x)
+    if isinstance(x, list):
+        return [v for v in map(clean_ha, x) if not (isinstance(v, str) and _OLD_NOTE.search(v))]
+    if isinstance(x, dict):
+        return {k: clean_ha(v) for k, v in x.items()}
+    return x
 
 
 def _mac(s: str) -> str:

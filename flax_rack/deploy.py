@@ -10,8 +10,8 @@ barrier (wait for all) before the next:
   user       ansible.flax_user: flax_user.yml once over every node still in         1800 s
   ha-config  bond.configure: bond0 active-backup over the two PCIe ports (by MAC),    300 s
              primary = the wedge-A port Qualify's ha-path saw, A-side fabric address
-  ha-test    hatest.run once for the rack: whole-wedge cut A, then B (no MLAG peer   1200 s
-             link), iperf mesh over bond0 against geometry.iperf_server
+  ha-test    hatest.run once for the rack: whole-wedge cut A, then B, iperf mesh     1200 s
+             over bond0 against geometry.iperf_server
 
 The install/firstboot/user deadlines are the rungs' own (deadline_s / timeout);
 ha-config and ha-test are bounded by their rungs' ssh timeouts and settle windows.
@@ -570,19 +570,21 @@ def _ha_test(ctx, R, cr, prog, ips, xs, all_xs):
     _record_ha_mode(ctx)
 
 
-def _record_ha_mode(ctx):
-    """The order's delivered HA mode: the devices whose latest ha-test passed, and the
-    fabric-cabled hosts still missing one."""
-    lr = ctx.db.latest_runs()
-    ha_devs = [d.pos for d in ctx.g.devices if "ha-test" in deploy_rungs(d)]
+def ha_mode_of(lr, g) -> dict | None:
+    """The delivered HA mode from the latest runs: the devices whose latest ha-test
+    passed and the fabric-cabled hosts still missing one (None while none passed)."""
+    ha_devs = [d.pos for d in g.devices if "ha-test" in deploy_rungs(d)]
     ok = [p for p in ha_devs if (lr.get((p, "ha-test")) or {}).get("verdict") == "pass"]
     if not ok:
-        ctx.db.set_ha_mode(None)
-        return
-    ctx.db.set_ha_mode({"mode": bond.HA_MODE, "devices": ok,
-                        "missing": [p for p in ha_devs if p not in ok],
-                        "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                        "notes": hatest.NOTES[:2]})
+        return None
+    return {"mode": bond.HA_MODE, "devices": ok, "missing": [p for p in ha_devs if p not in ok],
+            "notes": hatest.NOTES[:1]}
+
+
+def _record_ha_mode(ctx):
+    ha = ha_mode_of(ctx.db.latest_runs(), ctx.g)
+    at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    ctx.db.set_ha_mode(ha and {**ha, "at": at})
 
 
 # ---------------------------------------------------------------- stage

@@ -125,6 +125,17 @@ class OrderDB:
             "artifacts": json.loads(r["artifacts"]) if r["artifacts"] else {},
             "started_at": r["started_at"], "finished_at": r["finished_at"]} for r in rows}
 
+    def last_passed(self, rungs) -> dict:
+        """{(pos, rung): detail} of the latest PASSING run of each of `rungs` (what was
+        last seen, e.g. an IOM's MAC/serial while it is silent now)."""
+        rungs = list(rungs)
+        rows = self._all(
+            "SELECT pos, rung, detail FROM run WHERE id IN (SELECT MAX(id) FROM run WHERE "
+            f"verdict='pass' AND rung IN ({','.join('?' * len(rungs))}) GROUP BY pos, rung)",
+            rungs)
+        return {(r["pos"], r["rung"]): json.loads(r["detail"]) if r["detail"] else {}
+                for r in rows}
+
     def latest_run_id(self, pos, rung) -> int | None:
         """The id of (pos, rung)'s latest run row (the one latest_runs() shows)."""
         r = self._all("SELECT MAX(id) id FROM run WHERE pos=? AND rung=?", (pos, rung))
