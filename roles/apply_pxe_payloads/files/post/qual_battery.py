@@ -202,7 +202,7 @@ def _smartctl_all(runner):
 # /opt/flax/bin, which the agent's systemd-run unit does NOT put on PATH (its PATH is
 # just /usr/{local/,}{s,}bin) -- so the script prepends it, else `macinv` is
 # command-not-found and the dump is silently garbage. hwinfo here is a fast subset
-# for the count form; the full hwinfo is a separate artifact.
+# (no --disk); the full hwinfo capture replaces it below when the caller hands it in.
 #
 # The agent's cwd (the extracted post.tgz, which bundles the bang's current macinv)
 # goes AHEAD of /opt/flax/bin: the live ISO bakes its own /opt/flax/bin/macinv
@@ -212,11 +212,13 @@ def _smartctl_all(runner):
 #
 # The same materialized dir then gives macinv's DETAIL form (`-v`, serials and
 # versions per part), uploaded as `macinv-v` for the flax_post INV modal, after a
-# marker line so one run of the script (one hardware collection) yields both. The
-# count form is emitted first and byte-for-byte as before. The detail form's
-# storage/GPU/controller tables read hwinfo Disk entries the subset lacks, so when
-# the caller hands in the full hwinfo capture ($1) it replaces the subset before
-# the -v call -- after the count form, which therefore never changes.
+# marker line so one run of the script (one hardware collection) yields both.
+# BOTH forms' block-device line reads hwinfo "Disk" entries, which the subset
+# lacks, so when the caller hands in the full hwinfo capture ($1) it replaces the
+# subset BEFORE the count form. Until 2026-10-30 the copy ran after the count form,
+# so the count form never listed a disk (a bare "1 " line) and every population
+# rule on disks failed (RRORD-101 R37/L05). Every other count-form line is
+# unchanged by the copy (macinv's other hwinfo readers are PCI sections).
 MACINV_V_MARKER = "===flax-macinv-v==="
 _MACINV_SH = r"""set -e
 export PATH="$PWD:/opt/flax/bin:$PATH"
@@ -233,8 +235,8 @@ ipmitool mc info                                         > "$d/inv/ipmitool_mc_i
 lldpcli show neigh                                       > "$d/inv/lldpcli-show-neigh.txt"   2>&1 || true
 for i in /sys/class/net/*; do n=${i##*/}; [ "$n" = lo ] && continue; ethtool -i "$n" > "$d/inv/ethtool-i_$n.txt" 2>&1 || true; done
 ln -sfn inv "$d/latest"
-macinv -p "$d"
 if [ -n "${1:-}" ] && [ -s "$1" ]; then cp "$1" "$d/inv/hwinfo.txt"; fi
+macinv -p "$d"
 echo "@MACINV_V_MARKER@"
 macinv -p "$d" -v
 """.replace("@MACINV_V_MARKER@", MACINV_V_MARKER)

@@ -82,3 +82,44 @@ a.tile{display:block;color:inherit;text-decoration:none}
 .qphase i.cur{color:var(--amber);border-color:var(--amber);font-weight:600}
 .qphase b{color:var(--text);margin-left:.35rem;font-weight:600}
 .qphase .qwait{color:var(--muted)}
+
+/* Firmware (detect only): header button, step evidence under a clicked step, IOM rows */
+.fwbtn{border-color:rgba(88,166,255,.55);color:var(--accent)}
+.step.evable{cursor:pointer}
+.ev{margin:.1rem 0 .35rem 1.2rem;padding:.3rem .5rem;border-left:2px solid var(--line);font-size:.68rem}
+.ev-row{display:grid;grid-template-columns:9rem 1fr;gap:.4rem}
+.ev-row .lbl{color:var(--dim)}
+.ev-row .mono{font-family:ui-monospace,monospace;word-break:break-all}
+.ev-note{color:var(--dim);margin-top:.15rem}
+.ep-fw{margin-top:.3rem}
+.ep-fw .ep-h{font-size:.66rem;color:var(--dim);letter-spacing:.04em;margin:.2rem 0 .1rem}
+.ev-h{font-weight:600;margin-bottom:.15rem}
+
+/* Task 6: clickable switches / BMC endpoints, per-port table, step evidence modal */
+.tile.sw{cursor:pointer}
+.tile.sw .sw-rows{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0 .8rem}
+.tile.sw .swbmc{cursor:pointer;color:var(--accent)}
+.tile.sw .swbmc:hover,.tile.sw .swbmc.on{text-decoration:underline}
+.clk{cursor:pointer} .lbl.clk,.ep-h.clk{color:var(--accent)}
+.lk.clk:hover{border-color:var(--accent);color:var(--text)}
+.d-sn.bad{color:var(--red)}
+.kv-grid .mono{font-family:ui-monospace,monospace;word-break:break-word}
+.kv-grid .dimv{color:var(--dim)}
+.arts-line{display:flex;flex-wrap:wrap;gap:.2rem .1rem;align-items:center;font-size:.7rem;margin:-.3rem 0 .6rem}
+.arts-line .lbl{color:var(--dim);margin-right:.2rem}
+.arts-line .art{margin-left:.35rem;font-family:ui-monospace,monospace;color:var(--accent);text-decoration:none}
+.arts-line .art:hover{text-decoration:underline}
+.port-tbl td{font-size:.72rem;vertical-align:top}
+.port-tbl td.ok{color:var(--green)} .port-tbl td.bad{color:var(--red)} .port-tbl td.dimv{color:var(--dim)}
+.port-tbl tr.unexp td{background:rgba(248,81,73,.07)}
+.port-tbl .lk{margin-right:3px;display:inline-block}
+.port-tbl .note{color:var(--amber);font-size:.66rem}
+.step-head{margin-left:.4rem;font-weight:600}
+/* a step row stays one line (Post's two columns): the full note is its tooltip + modal */
+.drawer .step{white-space:nowrap;min-width:0}
+.drawer .step .note{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--dim)}
+.drawer .step .art{flex-shrink:0}
+.drawer .step{overflow:hidden}
+.tile.sw .sw-rows{grid-template-columns:minmax(0,.8fr) minmax(0,1.2fr) minmax(0,1.2fr)}
+.tile.sw .t-row .k{width:auto;min-width:2.2rem;margin-right:.35rem}
+.kv-grid .amb{color:var(--amber)}

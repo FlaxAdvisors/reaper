@@ -22,8 +22,9 @@ class KeaClient:
         self.base = base_url.rstrip("/")
         self._open = opener
 
-    def _call(self, method: str, query: dict | None = None, body: dict | None = None) -> dict:
-        url = self.base + "/api/v1/order-reservations"
+    def _call(self, method: str, query=None, body: dict | None = None,
+              path: str = "/api/v1/order-reservations") -> dict:
+        url = self.base + path
         if query:
             url += "?" + urllib.parse.urlencode(query)
         data = json.dumps(body).encode() if body is not None else None
@@ -51,3 +52,12 @@ class KeaClient:
 
     def list(self, source) -> list[dict]:
         return self._call("GET", {"source": source}).get("rows", [])
+
+    def leases(self, macs) -> dict[str, dict]:
+        """Read-only: {mac12hex: {ip, expire, state, subnet_id, hostname}} for
+        the MACs holding a Kea lease (GET /api/v1/leases; <= 64 per call)."""
+        macs = list(macs)
+        if not macs:
+            return {}
+        return self._call("GET", [("mac", m) for m in macs],
+                          path="/api/v1/leases").get("leases", {})

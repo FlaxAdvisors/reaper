@@ -10,6 +10,9 @@ KIND_ENDPOINTS = {"compute-tp": {"bmc": 1, "hosts": 1},
                   "bc-head-tp": {"bmc": 1, "hosts": 1},
                   "bc-jbod": {"ioms": 2}}
 _EP_KEYS = ("hosts", "bmc", "ioms")
+# a switch's own endpoints on the site mgmt network (the turtle port in site_port):
+# discovered by MAC + current lease, never reserved (vid 26 is a dynamic pool)
+SWITCH_ENDPOINTS = {"wedge100s": {"sonic": 1, "bmc": 1}, "dell-n3248te": {"sonic": 1}}
 MAX_COL = 5
 COL_ALIAS = {"L": 1, "C": 2, "R": 3}
 
@@ -46,6 +49,13 @@ class Switch:
     nos: str
     mgmt_ip: str | None = None
     uplink_ports: list[int] = field(default_factory=list)
+    # where the switch's own mgmt port lands on the site: {"switch": "turtle-gouda",
+    # "port": "Gi1/0/18"} (switch = a name in /etc/flax/switches.json)
+    site_port: dict | None = None
+
+    @property
+    def endpoints(self) -> dict[str, int]:
+        return dict(SWITCH_ENDPOINTS.get(self.model, {}))
 
 
 @dataclass
@@ -120,6 +130,17 @@ def parse_endpoints(kind: str, ep, ctx: str) -> dict[str, int]:
     return out
 
 
+def parse_site_port(sp, ctx: str) -> dict | None:
+    if sp is None:
+        return None
+    if (not isinstance(sp, dict) or set(sp) != {"switch", "port"}
+            or not all(isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9/._-]{0,63}", v)
+                       for v in sp.values())):
+        raise GeometryError(f"{ctx}: bad site_port {sp!r} "
+                            "(want {\"switch\": \"turtle-gouda\", \"port\": \"Gi1/0/18\"})")
+    return dict(sp)
+
+
 def _req(d: dict, key: str, ctx: str):
     if key not in d:
         raise GeometryError(f"{ctx}: missing {key!r}")
@@ -144,7 +165,8 @@ def parse_geometry(data: dict) -> Geometry:
             id=_req(s, "id", "switch"), role=_req(s, "role", "switch"),
             ou=int(_req(s, "ou", "switch")), model=_req(s, "model", "switch"),
             nos=_req(s, "nos", "switch"), mgmt_ip=s.get("mgmt_ip"),
-            uplink_ports=[int(p) for p in s.get("uplink_ports", [])]))
+            uplink_ports=[int(p) for p in s.get("uplink_ports", [])],
+            site_port=parse_site_port(s.get("site_port"), f"switch {s.get('id')}")))
 
     devices = []
     seen = set()

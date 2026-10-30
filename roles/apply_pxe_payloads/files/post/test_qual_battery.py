@@ -42,10 +42,10 @@ def test_macinv_forms_builds_layout_and_runs_macinv_p():
     assert seen[0][3:] == []                                 # no full hwinfo handed in
 
 
-def test_macinv_forms_detail_form_gets_the_full_hwinfo_capture():
-    # the count form keeps the fast hwinfo subset (population-check unchanged);
-    # the detail form's storage/GPU/controller tables read hwinfo Disk entries
-    # the subset lacks, so the already-captured full hwinfo is copied in first
+def test_macinv_forms_both_forms_get_the_full_hwinfo_capture():
+    # both forms' block-device line reads hwinfo Disk entries the fast subset
+    # lacks, so the already-captured full hwinfo is copied in before the COUNT
+    # form (2026-10-30: copied after it, the count form never listed a disk)
     seen, handed = [], {}
 
     def runner(argv, timeout):
@@ -58,7 +58,7 @@ def test_macinv_forms_detail_form_gets_the_full_hwinfo_capture():
     assert not os.path.exists(seen[0][4])                    # temp file removed
     sh = seen[0][2]
     i_cp = sh.index('cp "$1" "$d/inv/hwinfo.txt"')
-    assert sh.index('macinv -p "$d"\n') < i_cp < sh.index('macinv -p "$d" -v')
+    assert i_cp < sh.index('macinv -p "$d"\n') < sh.index('macinv -p "$d" -v')
 
 
 def test_macinv_script_runs_the_bundled_macinv_before_the_isos(tmp_path):
@@ -78,6 +78,122 @@ def test_macinv_script_runs_the_bundled_macinv_before_the_isos(tmp_path):
                          capture_output=True, text=True, timeout=60).stdout
     assert out.splitlines()[0] == "BUNDLED", out
     assert "STALE" not in out, out
+
+
+_R37 = os.path.join(os.path.dirname(__file__), "testdata", "macinv-rr101-r37")
+# f4-compute-tp (bang-gouda /opt/flax/node_config, 2026-10-27), copied verbatim
+_F4_COMPUTE_TP = [
+    "BIOS Version: TPO_P26F",
+    r"Chassis Serial: C\.M\.B60\.00X1C",
+    "Board Mfg: Wistron, Product: Tioga ?Pass",
+    "^2 Processor.*Intel.*Gold 6138.*2.00GHz",
+    "^4 Memory Size: 32 GB",
+    "^1 Model:.*MCX4411A-ACQN",
+    "^2 Model:.*(ConnectX-4 Lx|ConnectX-5|25G|XXV710|E810|BCM5741[24])",
+    '^1 Model: "[^"]*", SubVendor: pci .*Capacity: 23[2-9] GB',
+]
+_R37_DISK = ('1 Model: "Sandisk WD Black SN850", SubVendor: pci 0x15b7 "Sandisk Corp", '
+             'SubDevice: pci 0x5011 , Capacity: 238 GB')
+
+
+def _r37_full_hwinfo():
+    import gzip
+    with gzip.open(os.path.join(_R37, "hwinfo.txt.gz"), "rt") as f:
+        return f.read()
+
+
+def _r37_agent(tmp_path, macinv_body=None):
+    """An agent cwd whose stub tools print R37's captures (RRORD-101, run
+    bf5e01a3, 2026-10-30) the way _MACINV_SH invokes them. The stub hwinfo is
+    the fast subset: the full capture minus its Disk entries (`hwinfo` without
+    --disk prints none). macinv is the real one copied in, or a stub."""
+    import gzip, re, shutil
+    agent, cap = tmp_path / "agent", tmp_path / "cap"
+    agent.mkdir(); cap.mkdir()
+    full = _r37_full_hwinfo()
+    (cap / "hwinfo-subset.txt").write_text(
+        "".join(b for b in re.split(r"(?<=\n\n)", full) if not re.match(r"\d+: .* Disk\n", b)))
+    with gzip.open(os.path.join(_R37, "dmidecode.txt.gz"), "rt") as f:
+        (cap / "dmidecode.txt").write_text(f.read())
+    for n in ("ipmitool_fru.txt", "ipmitool_lan_print_1.txt", "ipmitool_lan_print_8.txt",
+              "ipmitool_mc_info.txt", "lldpcli-show-neigh.txt"):
+        shutil.copy(os.path.join(_R37, n), str(cap / n))
+    stubs = {
+        "dmidecode": 'cat "%s/dmidecode.txt"',
+        "hwinfo": 'cat "%s/hwinfo-subset.txt"',
+        "lspci": "true",                                   # count form only checks the file exists
+        "ethtool": "true",
+        "lldpcli": 'cat "%s/lldpcli-show-neigh.txt"',
+        "ipmitool": 'case "$*" in fru) f=ipmitool_fru;; "lan print 1") f=ipmitool_lan_print_1;; '
+                    '"lan print 8") f=ipmitool_lan_print_8;; *) f=ipmitool_mc_info;; esac; cat "%s/$f.txt"',
+    }
+    for name, body in stubs.items():
+        (agent / name).write_text("#!/bin/bash\n" + (body % cap if "%s" in body else body) + "\n")
+        (agent / name).chmod(0o755)
+    if macinv_body is not None:
+        (agent / "macinv").write_text("#!/bin/bash\n" + macinv_body + "\n")
+        (agent / "macinv").chmod(0o755)
+    return agent, full
+
+
+def _run_in(agent):
+    import subprocess
+    def runner(argv, timeout):
+        p = subprocess.run(argv, cwd=str(agent), capture_output=True, text=True, timeout=timeout)
+        return p.returncode, p.stdout
+    return runner
+
+
+def _real_macinv():
+    for p in (os.environ.get("FLAX_MACINV"), "/opt/flax/bin/macinv"):
+        if p and os.path.isfile(p):
+            return p
+    return None
+
+
+def test_macinv_count_form_reads_the_full_hwinfo(tmp_path):
+    # Real bash over _MACINV_SH; the stub macinv reports how many hwinfo Disk
+    # entries its post-<mac>/latest dir holds. The count form must see the full
+    # capture's disk, not the subset's none.
+    agent, full = _r37_agent(tmp_path, 'echo "disks=$(grep -c " Disk$" "$2/latest/hwinfo.txt")"')
+    count, detail = qual_battery._macinv_forms(_run_in(agent), full)
+    assert count == "disks=1\n" and detail == "disks=1\n"
+    count, detail = qual_battery._macinv_forms(_run_in(agent))      # no full capture handed in
+    assert count == "disks=0\n"                                     # presence proof: subset has none
+
+
+def test_macinv_count_form_lists_the_r37_disk_with_the_real_macinv(tmp_path):
+    # End to end with ghost's macinv (bundled into post.tgz from the bang's
+    # /opt/flax/bin; not in this repo -- FLAX_MACINV points at a copy).
+    import shutil
+    import pytest
+    src = _real_macinv()
+    if not src:
+        pytest.skip("no macinv: set FLAX_MACINV to a copy of the bang's /opt/flax/bin/macinv")
+    agent, full = _r37_agent(tmp_path)
+    shutil.copy(src, str(agent / "macinv"))
+    count, detail = qual_battery._macinv_forms(_run_in(agent), full)
+    with open(os.path.join(_R37, "macinv-live.txt")) as f:
+        live = f.read()
+    # the live count form ended in a bare "1 " where the disk belongs; every
+    # other line (header timestamp aside) is unchanged
+    assert live.splitlines()[2:] == [ln if ln != _R37_DISK else "1 "
+                                     for ln in count.splitlines()[2:]]
+    assert _R37_DISK in count.splitlines()
+    assert ", Capacity: 238 GB" in detail
+
+
+def test_r37_fixed_count_form_passes_f4_compute_tp():
+    import sys
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), *[".."] * 4)))
+    from flax_post import population
+    with open(os.path.join(_R37, "macinv-live.txt")) as f:
+        live = f.read()
+    fixed = live.replace("\n1 \n", "\n" + _R37_DISK + "\n")
+    assert fixed != live
+    assert population.evaluate(_F4_COMPUTE_TP, fixed)["ok"]
+    r = population.evaluate(_F4_COMPUTE_TP, live)                   # what the agent shipped
+    assert [x["rule"] for x in r["results"] if not x["ok"]] == [_F4_COMPUTE_TP[-1]]
 
 
 def test_macinv_forms_without_the_marker_keeps_the_count_and_has_no_detail():

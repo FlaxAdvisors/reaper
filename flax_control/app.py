@@ -2,7 +2,7 @@
 import datetime
 from pathlib import Path
 
-from fastapi import Body, FastAPI, Form, Request
+from fastapi import Body, FastAPI, Form, Query, Request
 from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -777,6 +777,19 @@ def api_order_reservations_delete(source: str = ""):
     try:
         return JSONResponse({"deleted": order_reservations.delete_source(source)})
     except _ORDER_BAD as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+from . import order_leases  # noqa: E402
+
+
+@app.get("/api/v1/leases")
+def api_leases_by_mac(mac: list[str] = Query(default=[])):
+    """Read-only: the latest kea.lease4 row per MAC (rackpost Discover).
+    400 on a malformed MAC or more than 64 of them (no DB touched)."""
+    try:
+        return JSONResponse({"leases": order_leases.leases_by_mac(mac)})
+    except order_reservations.BadMac as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
 
 

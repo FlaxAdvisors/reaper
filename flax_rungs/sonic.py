@@ -1,9 +1,9 @@
-"""SONiC switch reads: FDB (show mac), interface status, LLDP table."""
+"""SONiC switch reads: FDB (show mac), interface status, LLDP table, syseeprom."""
 import re
 import subprocess
 from dataclasses import asdict, dataclass
 
-from .remote import RemoteError, ssh_run
+from .remote import RemoteError, ssh_cmd, ssh_run
 from .result import RungResult
 
 _MAC_ROW = re.compile(
@@ -69,6 +69,17 @@ def read_fdb(host, user, password, *, runner=subprocess.run) -> RungResult:
                       {"show-mac.txt": text})
 
 
+def read_interfaces_status(host, user, password, *, runner=subprocess.run) -> RungResult:
+    """`show interfaces status` -> detail {"status": {EthernetN: {oper, admin, speed}}}."""
+    try:
+        text = ssh_run(host, user, password, "show interfaces status", runner=runner)
+    except RemoteError as e:
+        return RungResult("fail", {"error": str(e)})
+    st = parse_interfaces_status(text)
+    return RungResult("pass", {"status": {k: asdict(v) for k, v in st.items()},
+                               "count": len(st)}, {"show-interfaces-status.txt": text})
+
+
 @dataclass
 class LldpEntry:
     local_iface: str
@@ -112,3 +123,57 @@ def read_lldp(host, user, password, *, runner=subprocess.run) -> RungResult:
     entries = parse_show_lldp_table(text)
     return RungResult("pass", {"lldp": [asdict(e) for e in entries]},
                       {"show-lldp-table.txt": text})
+
+
+# Root-only on community SONiC. sudo is passwordless on these builds: `sudo -n` never
+# prompts, and nothing is ever sent on stdin (a password line once ran as a command).
+SYSEEPROM = "sudo -n show platform syseeprom"
+
+
+def parse_syseeprom(text: str) -> dict[str, str]:
+    """`show platform syseeprom` TLV table -> {TLV Name: Value}. Columns are cut at the
+    dash ruler under the `TLV Name  Code  Len  Value` header; Value runs to line end."""
+    starts, out = None, {}
+    for line in text.splitlines():
+        if starts is None:
+            if line.startswith("TLV Name"):
+                starts = []
+            continue
+        if not starts:
+            starts = [m.start() for m in re.finditer(r"-+", line)]
+            continue
+        if not line.strip() or len(starts) < 4:
+            break
+        name, value = line[:starts[1]].strip(), line[starts[3]:].strip()
+        if name and name not in out:
+            out[name] = value
+    return out
+
+
+def read_syseeprom(host, user, password, *, runner=subprocess.run) -> RungResult:
+    """Identity of a SONiC switch: Serial Number (+ Service Tag, Base MAC). pass when
+    the EEPROM has a Serial Number."""
+    rc, out, err = ssh_cmd(host, user, password, SYSEEPROM, runner=runner)
+    arts = {"syseeprom.txt": out + err}
+    if rc != 0:
+        e = f"rc={rc} {(err or out).strip()[-300:]}"
+        return RungResult("fail", {"error": e, "headline": f"syseeprom not read from {host}",
+                                   "rows": [], "notes": [e]}, arts)
+    f = parse_syseeprom(out)
+    serial = f.get("Serial Number") or None
+    base = f.get("Base MAC Address") or None
+    detail = {"serial": serial, "service_tag": f.get("Service Tag"),
+              "base_mac": base.lower() if base else None,
+              "product_name": f.get("Product Name"), "part_number": f.get("Part Number"),
+              "platform": f.get("Platform Name"), "fields": f,
+              "rows": [["Serial Number", serial or "empty"],
+                       ["Service Tag", f.get("Service Tag") or "-"],
+                       ["Product Name", f.get("Product Name") or "-"],
+                       ["Base MAC Address", base or "-"]],
+              "notes": ["read with `show platform syseeprom` (TlvInfo EEPROM)"]}
+    if "checksum valid" not in out:
+        detail["notes"].append("the EEPROM checksum was not reported valid")
+    if not serial:
+        return RungResult("fail", {**detail, "error": "syseeprom has no Serial Number",
+                                   "headline": "switch EEPROM has no Serial Number"}, arts)
+    return RungResult("pass", {**detail, "headline": f"SN {serial}"}, arts)

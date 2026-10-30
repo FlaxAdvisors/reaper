@@ -35,19 +35,25 @@ from dataclasses import asdict, dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from flax_rungs.fwsteps import FW_STEPS
+
+from . import devview
 from .addressing import plan_addresses
+from .discover_ladder import DISCOVER_STEPS, OLD_DISCOVER_RUNGS, wanted as stage_positions
+from .firmware import run_firmware
 from .geometry import Geometry, load_geometry
 from .kea_client import KeaError
 from .orderdb import OrderDB
 from .poller import INTERVAL_S, BmcPoller
-from .qualify import (AGENT_STAGES, PHASES as QUALIFY_PHASES, device_rungs, pop_default,
-                      qualify_passed, run_qualify)
+from .qualify import (AGENT_STAGES, OLD_RUNG_NAMES, PHASES as QUALIFY_PHASES, device_rungs,
+                      pop_default, qualify_passed, run_qualify)
 from .stages import close_order, run_discover
 from .version import __version__
 
 PHASES = ("discover", "firmware", "qualify", "deploy", "done")
-DISCOVER_RUNGS = ("switch-fdb", "slot-match", "reserve", "bmc-reach")
-FIRMWARE_RUNGS = ("fw-versions",)
+DISCOVER_RUNGS = DISCOVER_STEPS            # Post's 16 steps; OLD_DISCOVER_RUNGS from history
+FIRMWARE_RUNGS = FW_STEPS                  # Post's 6 firmware steps (detect only)
+FIRMWARE_OLD_RUNGS = ("fw-versions",)      # Qualify's version read: shown when it ran
 # v1 hand-written profile names (spec 5.4); a geometry `pop` or an override may add others
 PROFILES = ("f4-compute-tp", "f4-bc-head-tp", "f4-bc-head-25g", "f4-bc-jbod", "ovh-bare-tp")
 _PROFILE_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
@@ -172,6 +178,7 @@ class Rack:
         self.db = OrderDB(rack_dir / "order.db")
         self.lock = RackLock(rack_dir)
         self.stage = None                        # name of the stage this daemon runs
+        self.cancel = threading.Event()          # Cancel pressed for that stage
         self.mtime = mtime
         self.db.init(g)
         # a 'running' row left by a previous daemon is interrupted -- unless another
@@ -211,7 +218,8 @@ def _seen_ha(name, ha) -> dict:
 
 
 def _seen(d, slot, mgmt_ids, ha=None) -> dict:
-    """Per link: what Discover saw on the mgmt switch; pcieN links from Qualify's ha-path."""
+    """Per link: what Discover saw on the mgmt switch (its bmc-mac-seen, or a pre-2b
+    slot-match row); pcieN links from Qualify's ha-path."""
     out = {}
     for name, l in d.links.items():
         if l.switch not in mgmt_ids:
@@ -233,7 +241,7 @@ def _seen(d, slot, mgmt_ids, ha=None) -> dict:
             det = slot["detail"] or {}
             out[name] = {"state": "bad",
                          "text": " ".join(x for x in (det.get("status"), det.get("note")) if x)
-                         or "fail"}
+                         or det.get("reason") or det.get("error") or "fail"}
     return out
 
 
@@ -247,11 +255,26 @@ def _trim(run: dict) -> dict:
     return r
 
 
+def _ep_view(runs: dict, n: int, dbdev: dict) -> dict:
+    macs = dbdev.get("iom_macs") or []
+    seen = ((runs.get("bmc-mac-seen") or {}).get("detail") or {}).get("iom_mac")
+    ident = devview.identity(runs)
+    return {"mac": _fmt_mac(macs[n - 1] if n <= len(macs) else seen),
+            "serial": (ident or {}).get("serial"), "identity": ident,
+            "fw": devview.firmware(runs)}
+
+
 def rack_state(r: Rack) -> dict:
     g, db = r.g, r.db
     by_pos: dict[str, dict] = {}
-    for (pos, rung), v in db.latest_runs().items():
+    raw = db.latest_runs()                  # untrimmed: the switch port tables read fdb/lldp
+    for (pos, rung), v in raw.items():
         by_pos.setdefault(pos, {})[rung] = _trim(v)
+    for runs in by_pos.values():            # rows from before Post's step names
+        for old, new in OLD_RUNG_NAMES.items():
+            if old in runs:
+                run = runs.pop(old)
+                runs.setdefault(new, run)
     dbdev = {x["pos"]: x for x in db.devices()}
     addrs: dict[str, dict] = {}
     names: dict[str, dict] = {}
@@ -272,7 +295,16 @@ def rack_state(r: Rack) -> dict:
         devices.append({
             "pos": d.pos, "ou": d.ou, "h": d.h, "col": d.col, "kind": d.kind, "part": d.part,
             "links": {k: _link_str(l) for k, l in d.links.items()},
-            "link_seen": _seen(d, runs.get("slot-match"), mgmt, runs.get("ha-path")),
+            "link_seen": _seen(d, runs.get("bmc-mac-seen") or runs.get("slot-match"), mgmt,
+                               runs.get("ha-path")),
+            # a JBOD's IOMs walk their own Discover ladders (key <pos>.iomN)
+            "endpoint_runs": {f"iom{n}": by_pos.get(f"{d.pos}.iom{n}", {})
+                              for n in range(1, d.endpoints.get("ioms", 0) + 1)},
+            # each IOM is its own BMC endpoint: fruid-util identity + fw-util versions
+            "ioms": {f"iom{n}": _ep_view(by_pos.get(f"{d.pos}.iom{n}", {}), n, x)
+                     for n in range(1, d.endpoints.get("ioms", 0) + 1)},
+            "serial": (devview.identity(runs) or {}).get("serial"),
+            "identity": devview.identity(runs), "fw": devview.firmware(runs),
             "pop": ovr or default, "pop_default": default, "pop_overridden": bool(ovr),
             "host_mac": _fmt_mac(x.get("host_mac")), "bmc_mac": _fmt_mac(x.get("bmc_mac")),
             "iom_macs": [_fmt_mac(m) for m in x.get("iom_macs") or []],
@@ -288,13 +320,19 @@ def rack_state(r: Rack) -> dict:
         sw = asdict(s)
         sw["fdb_count"] = ((fdb or {}).get("detail") or {}).get("count") \
             if s.role == "mgmt" and s.mgmt_ip else None
+        sw["endpoints"] = s.endpoints
+        sw["runs"] = by_pos.get(f"_sw-{s.id}", {})     # the switch's own Discover ladder
+        sw.update(devview.switch_view(g, s, sw["runs"], raw))
         switches.append(sw)
     return {
         "order": g.order, "customer": g.customer, "vid": g.vid, "site": g.site, "rack": g.rack,
         "prefix": g.url_prefix, "version": __version__, "closed_at": db.closed_at(),
         "stage_running": r.lock.locked(), "stage": r.stage if r.lock.locked() else None,
+        "cancelling": bool(r.stage and r.cancel.is_set()),
         "phases": list(PHASES), "discover_rungs": list(DISCOVER_RUNGS),
-        "firmware_rungs": list(FIRMWARE_RUNGS), "agent_stages": list(AGENT_STAGES),
+        "discover_old_rungs": list(OLD_DISCOVER_RUNGS),
+        "firmware_rungs": list(FIRMWARE_RUNGS), "firmware_old_rungs": list(FIRMWARE_OLD_RUNGS),
+        "agent_stages": list(AGENT_STAGES),
         "qualify_phases": list(QUALIFY_PHASES),
         "qualify": {"passed": passed, "not_passed": not_passed,
                     "progress": db.qualify_progress()},
@@ -345,12 +383,15 @@ class App:
             return 409, {"error": "order is closed"}
         if not r.lock.acquire():
             return 409, {"error": f"a stage ({r.stage or 'cli'}) is already running for this rack"}
+        r.cancel = cancel = threading.Event()    # a fresh flag: an old Cancel never carries
         r.stage = name
         g, db = r.g, r.db
 
         def work():
             try:
-                fn(self.factory(r.dir, g, db), **kw)
+                ctx = self.factory(r.dir, g, db)
+                ctx.cancel = cancel
+                fn(ctx, **kw)
             except Exception as e:           # noqa: BLE001 -- logged, never fatal
                 try:
                     db.add_event("error", f"{name}: {type(e).__name__}: {e}")
@@ -361,7 +402,7 @@ class App:
                 r.lock.release()
 
         try:
-            if name == "discover":
+            if name == "discover" and "positions" not in kw:
                 db.add_event("discover", "discover started")
             threading.Thread(target=work, name=f"{name}-{g.url_prefix}", daemon=True).start()
         except BaseException:
@@ -370,8 +411,51 @@ class App:
             raise
         return 202, {"started": name, **kw}
 
-    def start_discover(self, r: Rack):
-        return self._start_stage(r, "discover", run_discover)
+    def _positions(self, r: Rack, pos):
+        """(None, sorted positions) or (error response, None)."""
+        if not (isinstance(pos, list) and pos and all(isinstance(p, str) for p in pos)):
+            return (400, {"error": "positions must be a non-empty list of positions"}), None
+        try:
+            stage_positions(r.g, pos)
+        except ValueError as e:
+            return (400, {"error": str(e)}), None
+        return None, sorted(set(pos))
+
+    def start_discover(self, r: Rack, body: dict):
+        # Discover may power on / cycle nodes (power-on step): Qualify's confirm rules --
+        # rack-wide needs the typed order id, a positions run an explicit {"confirm": true}
+        pos = body.get("positions")
+        if pos is None:
+            if body.get("confirm") != r.g.order:
+                return 400, {"error": "type the order id to confirm a rack-wide Discover"}
+            return self._start_stage(r, "discover", run_discover)
+        if body.get("confirm") is not True:
+            return 400, {"error": "confirm the positions to re-discover"}
+        err, pos = self._positions(r, pos)
+        return err or self._start_stage(r, "discover", run_discover, positions=pos)
+
+    def start_firmware(self, r: Rack, body: dict):
+        # detect only (reads versions, never flashes or powers): no confirm needed
+        pos = body.get("positions")
+        if pos is None:
+            return self._start_stage(r, "firmware", run_firmware)
+        err, pos = self._positions(r, pos)
+        return err or self._start_stage(r, "firmware", run_firmware, positions=pos)
+
+    def cancel_stage(self, r: Rack, body: dict):
+        """Set this rack's cancel flag: the running stage stops between steps/phases."""
+        if body.get("confirm") is not True:
+            return 400, {"error": "confirm the cancel"}
+        stage = r.stage
+        if stage is None:
+            return 409, {"error": "a CLI run holds this rack: stop it there" if r.lock.locked()
+                         else "no stage is running"}
+        if body.get("stage") not in (None, stage):     # the operator confirmed another stage
+            return 409, {"error": f"the running stage is {stage}, not {body.get('stage')}"}
+        if not r.cancel.is_set():
+            r.cancel.set()
+            r.db.add_event(stage, f"{stage} cancel requested")
+        return 202, {"cancelling": stage}
 
     def start_qualify(self, r: Rack, body: dict):
         # Qualify power-cycles nodes, clears SELs and runs stress for hours: the
@@ -666,7 +750,11 @@ class _Handler(BaseHTTPRequestHandler):
         if rest == "api/pop":
             return self._json(*app.set_pop(r, body))
         if rest == "api/stage/discover":
-            return self._json(*app.start_discover(r))
+            return self._json(*app.start_discover(r, body))
+        if rest == "api/stage/cancel":
+            return self._json(*app.cancel_stage(r, body))
+        if rest == "api/stage/firmware":
+            return self._json(*app.start_firmware(r, body))
         if rest == "api/stage/qualify":
             return self._json(*app.start_qualify(r, body))
         if rest == "api/close":

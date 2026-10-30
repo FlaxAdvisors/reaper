@@ -4,7 +4,8 @@ The integrated rack is kept in step: five rack-wide phases, each started on ever
 still-eligible device at once, with a barrier (wait for all) before the next:
 
   boot       pxe-live (identity checked)                       BOOT_DEADLINE_S
-  inventory  agent: sdr-pre..inventory; then pop, fw-versions  INVENTORY_DEADLINE_S
+  inventory  agent: sdr-pre..inventory; then population-check,  INVENTORY_DEADLINE_S
+             smbios-serial, tpm-state, fw-versions
   storage    agent: fio                                        120 s + 120 s x disks
   burn       agent: mem-pre, cpu-mem-stress .. sel-post        FLAX_STRESS_SECONDS + 900 s
   network    rack: lldp-<wedge>; per device ha-path, fabric-addr, iperf-mesh
@@ -14,23 +15,45 @@ Each agent phase relaunches the post.tgz agent with that phase's FLAX_QUAL_STAGE
 devices in one launch wave, then polls them in parallel; each battery stage is
 recorded as its own rung as soon as its device finishes (artifacts under
 artifacts/<pos>/<agent run>/<stage>/), so a slow device delays only the barrier.
-agent-launch and agent-stages are recorded once per agent phase (detail.phase).
+agent-reachable (the launch) and agent-stages are recorded once per agent phase
+(detail.phase).
 The storage deadline counts the disks fio will read in the inventory's lsblk
 capture (fio_disks; 8 when there is none). On a deadline the agent is stopped, so
 nothing still runs when the next phase starts; a node whose stop failed is named.
 
-A device failing a phase (a `fail` on any of that phase's rungs; fw-versions and
-pop never gate -- a pop fail still fails the device in qualify_passed) gets `skip` ("failed in phase <p>") on every rung of
-the later phases; the rest of the rack carries on. Identity first: a device is
-only booted when its latest Discover `reserve` and `bmc-reach` passed and order.db
-holds its host MAC (else pxe-live fails "discover first"); pxe-live then requires
-the live image's BOOTIF MAC to be that host MAC.
+Step names are loose-node Post's (flax_post.blades PHASE_STEPS["Qualify"]) where the
+meaning is the same, and the judges are Post's own code: population-check is
+flax_post.qualify_rules.population_check (profile + DIMM blocklist + no blank FRU 0
+ship serial), smbios-serial / tpm-state are flax_post.shipchecks on the inventory's
+ipmitool-fru / dmidecode / tpmstate captures (evidence stored as their `check`
+artifact), and a device's verdict is qualify_rules.qualify_verdict fed the battery,
+the population and the ship checks. Post's iperf (to the bang) is this rack's
+ha-path, fabric-addr, iperf-mesh; pxe-live and fw-versions are rackpost's own.
+`console` is the node's SOL captured (flax_rungs.sol) from just before its live boot
+until it leaves Qualify, saved as artifacts/<pos>/q<run>/console/sol.txt.
+
+A device failing a phase (a `fail` on any of that phase's rungs; fw-versions,
+population-check and the ship checks never gate -- their fail still fails the device in
+qualify_passed) gets `skip` ("failed in phase <p>") on every rung of the later phases;
+the rest of the rack carries on. Identity first: a device is
+only booted when its latest Discover bmc-reserved, bmc-leased, bmc-pinged and
+host-reserved passed and order.db holds its host MAC (else pxe-live fails "discover
+first"); pxe-live then requires the live image's BOOTIF MAC to be that host MAC.
+No reboot when Discover's host-ssh proved this boot of the live image and a re-read
+shows the same boot_id and BOOTIF (pxe-live passes "reboot skipped"); else it boots.
+population-check's FRU 0 is the out-of-band `ipmitool fru print 0` (identity.tp_fru,
+Post's IPMI lane; family-aware via fru.read_baseboard), read at the inventory phase:
+a failed out-of-band read fails the check -- never backfilled from the in-band capture.
 
 `positions` re-runs every phase for those devices only; the network phase adds this
 rack's iperf server (geometry.iperf_server; its fabric addresses do not survive a
 reboot) when it passed every earlier phase. If the server is not ready every client
 fails "server <pos> not ready". The current phase and barrier count are kept in
 order.db (qualify_progress) for the UI and cleared when the stage ends.
+
+The rack's Cancel flag (stages.cancelled) is checked before each device's boot and at
+every phase barrier: the devices still in are out with `skip` "cancelled" (a boot or
+agent poll already running finishes; the network phase does not start).
 
 flax_rungs functions never touch order.db; this module records them. ctx.rungs
 (a namespace like real_rungs()) replaces them in tests and in RACKPOST_FAKE.
@@ -43,13 +66,16 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
-from flax_post import population
-from flax_rungs import agent, bmc, fabric, ha, hostssh, iperf, liveboot, sonic
+from flax_post import population, qualify_rules, shipchecks
+from flax_post.observe import family_map_live, fru
+from flax_rungs import agent, bmc, fabric, ha, hostssh, identity, iperf, liveboot, sol, sonic
 from flax_rungs.result import RungResult
 from flax_rungs.sonic import LldpEntry
 
 from .addressing import plan_addresses
-from .stages import _rung, creds
+from .discover_ladder import DISCOVER_STEPS
+from .stages import _rung, cancelled, creds
+from .version import __version__
 
 STAGE = "qualify"
 FW_STAGE = "firmware"
@@ -61,6 +87,11 @@ PHASE_STAGES = {    # the agent's FLAX_QUAL_STAGES per phase; together = ORDER_S
     "burn": ("mem-pre", "cpu-mem-stress", "mem-post", "sdr-post", "sel-post"),
 }
 NET_RUNGS = ("ha-path", "fabric-addr", "iperf-mesh")
+# judged by the engine from the inventory capture (Post's order: after fio); never gate
+ENGINE_CHECKS = ("population-check", *shipchecks.SHIP_CHECKS)
+NON_GATING = (*ENGINE_CHECKS, "console")
+# order.db rows written before Post's names were adopted: shown under the new name
+OLD_RUNG_NAMES = {"pop": "population-check", "agent-launch": "agent-reachable"}
 MAX_PARALLEL = 8            # concurrent live boots (BMC power actions) in the boot phase
 BOOT_DEADLINE_S = 900
 INVENTORY_DEADLINE_S = 1200
@@ -76,7 +107,8 @@ def real_rungs():
         boot_live=liveboot.boot_live, launch=agent.launch, poll=agent.poll,
         stop_agent=agent.stop,
         read_lldp=sonic.read_lldp, apply_fabric=fabric.apply, mesh=iperf.mesh,
-        mc_info=bmc.mc_info, host_run=hostssh.run)
+        mc_info=bmc.mc_info, host_run=hostssh.run, sol_start=sol.start, sol_stop=sol.stop,
+        tp_fru=identity.tp_fru)
 
 
 def pop_default(g, d) -> str:
@@ -85,23 +117,57 @@ def pop_default(g, d) -> str:
 
 
 def device_rungs(d) -> list[str]:
-    """The Qualify rungs a device must pass, in pipeline order ([] = no host)."""
+    """The Qualify rungs a device must pass, in Post's step order ([] = no host)."""
     if not d.endpoints.get("hosts"):
         return []
-    out = ["pxe-live", "agent-launch", "agent-stages", *AGENT_STAGES, "pop"]
+    out = ["pxe-live", "agent-reachable", "agent-stages",
+           *PHASE_STAGES["inventory"], *PHASE_STAGES["storage"], *ENGINE_CHECKS,
+           *PHASE_STAGES["burn"]]
     if any(n.startswith("pcie") for n in d.links):
         out += ["ha-path", "fabric-addr"]
-    return out + ["iperf-mesh"]
+    return out + ["iperf-mesh", "console"]
+
+
+def _stage_ok(run) -> bool:
+    """A battery stage counts as passed on `pass`, or on a skip the agent itself
+    reported (fio's "no physical storage media": its detail names the stage) -- never
+    on rackpost's own "failed in phase" skip."""
+    run = run or {}
+    return run.get("verdict") == "pass" or (
+        run.get("verdict") == "skip" and bool((run.get("detail") or {}).get("stage")))
+
+
+def device_verdict(lr, d) -> str | None:
+    """qualify_rules.qualify_verdict fed what Post feeds it: the battery's verdict, the
+    population-check result and the ship checks, from this device's latest runs."""
+    run = lambda r: lr.get((d.pos, r)) or {}
+    stages = [run(n) for n in AGENT_STAGES]
+    node = ("fail" if any(r.get("verdict") == "fail" for r in stages)
+            else "pass" if all(_stage_ok(r) for r in stages) else None)
+    pop = {"verdict": (run("population-check").get("detail") or {}).get("verdict")}
+    checks = {n: {"status": run(n).get("verdict") if run(n).get("status") == "done" else None}
+              for n in shipchecks.SHIP_CHECKS}
+    return qualify_rules.qualify_verdict({"verdict": node}, pop, checks)
 
 
 def qualify_passed(db, g) -> tuple[bool, list[str]]:
-    """(rack passed?, positions not passed). Every Qualify rung's latest run must be a
-    finished `pass`; an IOM-only device (no host) counts via its Discover bmc-reach."""
+    """(rack passed?, positions not passed). A host device passes when Post's verdict
+    (device_verdict) is pass and every rackpost rung (pxe-live, agent plumbing, the
+    network rungs, console) last finished `pass`; an IOM-only device (no host) counts
+    via its Discover ladder (bmc-pinged and serial passed, no step failed)."""
     lr = db.latest_runs()
     bad = []
     for d in g.devices:
-        need = device_rungs(d) or ["bmc-reach"]
-        if not all((lr.get((d.pos, r)) or {}).get("verdict") == "pass" for r in need):
+        need = device_rungs(d)
+        if not need:
+            vs = {s: (lr.get((d.pos, s)) or {}).get("verdict") for s in DISCOVER_STEPS}
+            ok = (vs["bmc-pinged"] == vs["serial"] == "pass"
+                  and all(x in ("pass", "skip") for x in vs.values()))
+        else:
+            rest = [r for r in need if r not in AGENT_STAGES and r not in ENGINE_CHECKS]
+            ok = device_verdict(lr, d) == "pass" and all(
+                (lr.get((d.pos, r)) or {}).get("verdict") == "pass" for r in rest)
+        if not ok:
             bad.append(d.pos)
     return not bad, bad
 
@@ -224,23 +290,107 @@ def parse_bios(dmidecode: str) -> dict:
 
 
 # ---------------------------------------------------------------- per-device rungs
-def pop_rung(ctx, d, macinv: str | None) -> RungResult:
+def _pop_label(rule: str) -> str:
+    """stepinfo's labels for a failed population rule."""
+    return ("BLOCKED" if rule.startswith("blocked DIMM")
+            else "NO SHIP" if rule.startswith("no ship serial") else "missing")
+
+
+def baseboard_of(fru_text: str | None) -> dict | None:
+    """Post's FRU 0 reading (fru.read_baseboard, deployed family map) of an
+    `ipmitool fru` text; None without one."""
+    if not fru_text or not fru_text.strip():
+        return None
+    return fru.read_baseboard(fru_text, family_map_live.current())
+
+
+def oob_fru0(R, cr, bmc_ip, *, runner=None) -> tuple[str | None, str | None]:
+    """(FRU 0 text, None) from the out-of-band read (identity.tp_fru: blank serial or
+    'not present' still return the text), or (None, why) when the BMC gave none."""
+    if not bmc_ip:
+        return None, "no BMC endpoint"
+    r = R.tp_fru(bmc_ip, cr.bmc, runner=runner)
+    text = (r.artifacts or {}).get("fru0.txt")
+    return (text, None) if text else (None, r.detail.get("error") or "FRU 0 not read")
+
+
+def population_rung(ctx, d, arts: dict, fru0=(None, "not read")) -> RungResult:
+    """population-check: Post's qualify_rules.population_check on the inventory's macinv
+    (count form), dimmsum and the out-of-band FRU 0 (`fru0` = oob_fru0()). Rackpost never
+    passes on nothing (spec A4.6): a missing or empty profile, no macinv, or no FRU 0 from
+    the BMC (Post's no-backfill rule: never the in-band capture) is a fail before the
+    judge runs. The FRU 0 text read is the check's `fru0` artifact."""
     ovr = next((x["pop_override"] for x in ctx.db.devices() if x["pos"] == d.pos), None)
     p = ovr or pop_default(ctx.g, d)
     path = os.path.join(population.PROFILE_DIR, p)
+    head = {"profile": p, "verdict": "grey"}
     if "/" in p or not os.path.isfile(path):
-        return RungResult("fail", {"profile": p, "error": f"no profile {p}"})
+        return RungResult("fail", {**head, "error": f"no profile {p}"})
     rules = population.load_profile(p)
-    if not rules:                           # never pass on nothing (spec A4.6)
-        return RungResult("fail", {"profile": p, "error": f"profile {p} has no rules"})
+    if not rules:
+        return RungResult("fail", {**head, "error": f"profile {p} has no rules"})
+    macinv = arts.get("macinv")
     if not macinv or not macinv.strip():
-        return RungResult("fail", {"profile": p, "error": "no macinv from the inventory stage"})
+        return RungResult("fail", {**head, "error": "no macinv from the inventory stage"})
+    fru_text, fru_err = fru0
+    fart = {"fru0": fru_text} if fru_text else {}
+    bb = baseboard_of(fru_text)
+    if bb is None or bb["state"] == "absent":
+        why = (f"FRU 0 not read out of band: {fru_err}" if bb is None
+               else f"FRU 0 not present: {bb.get('reason') or 'no FRU 0'}")
+        return RungResult("fail", {**head, "error": why, "headline": why,
+                                   "rows": [["profile", p], ["FRU 0", why]],
+                                   "notes": ["FRU 0 comes from the BMC (`ipmitool fru print 0`, "
+                                             "Post's IPMI lane); it is never taken from the "
+                                             "in-band capture"]}, fart)
+    pop = qualify_rules.population_check(macinv, p, arts.get("dimmsum"), bb)
     ev = population.evaluate(rules, macinv)
-    detail = {"profile": p, "results": ev["results"]}
-    if not ev["ok"]:
-        n = sum(1 for r in ev["results"] if not r["ok"])
-        detail["error"] = f"{n} of {len(ev['results'])} {p} rule(s) not found"
-    return RungResult("pass" if ev["ok"] else "fail", detail)
+    failed = pop.get("failed_rules") or []
+    profile_rules = {r["rule"] for r in ev["results"]}
+    detail = {**pop, "results": ev["results"],
+              "extra": [r for r in failed if r not in profile_rules],
+              "rows": [["profile", p], ["verdict", pop["verdict"]]]
+              + [[_pop_label(r), r] for r in failed]
+              + [[f"FRU 0 serial ({bb.get('serial_field')})", bb.get("serial") or "empty"]],
+              "notes": ["rules are matched against this run's inventory digest (macinv count "
+                        "form); the POP button shows the full rule list",
+                        "FRU 0 read out of band from the BMC (`ipmitool fru print 0`)"]}
+    if pop.get("blocked_dimms"):
+        detail["notes"].insert(0, f"a blocked part is installed: {len(pop['blocked_dimms'])} "
+                                  "DIMM(s) match a known-bad SPD identity; the node must not ship")
+    if pop.get("no_ship_serial"):
+        detail["notes"].insert(0, "no ship serial in FRU 0: the node must not ship")
+    if pop["verdict"] == "green":
+        detail["headline"] = f"population green: every {p} rule found"
+        return RungResult("pass", detail, fart)
+    miss = sum(1 for r in ev["results"] if not r["ok"])
+    why = ([f"{miss} of {len(ev['results'])} {p} rule(s) not found"] if miss else []) + \
+        ([f"{len(pop['blocked_dimms'])} blocked DIMM(s)"] if pop.get("blocked_dimms") else []) + \
+        (["no ship serial in FRU 0"] if pop.get("no_ship_serial") else [])
+    detail["error"] = detail["headline"] = "; ".join(why) or "population red"
+    return RungResult("fail", detail, fart)
+
+
+def ship_check_rung(name: str, arts: dict) -> RungResult:
+    """smbios-serial / tpm-state: flax_post.shipchecks on the inventory's captures, its
+    evidence_text stored as the rung's `check` artifact (Post's record of the state it
+    saw). A missing capture fails, never passes or skips."""
+    if name == "smbios-serial":
+        c = shipchecks.smbios_serial(arts.get("ipmitool-fru"), arts.get("dmidecode"))
+        rows = [["FRU 0 serial", ", ".join(c["fru0_serials"]) or "none"]] + \
+            [[f"SMBIOS {k}", v or "none"] for k, v in c["dmi_serials"].items()]
+    else:
+        c = shipchecks.tpm_state(arts.get("tpmstate"))
+        dev = c["device"]
+        rows = [["TPM device", "present" if dev else "absent" if dev is False else "unknown"],
+                ["version", c["version"] or "unknown"], ["state line", c["raw"] or "none"]]
+    c["checker"] = "rackpost " + __version__
+    detail = {**c, "headline": c["reason"] or f"{name} ok",
+              "rows": rows + ([["reason", c["reason"]]] if c["reason"] else [])
+              + [["checked by", c["checker"]]], "notes": []}
+    if c["status"] != "pass":
+        detail["error"] = c["reason"]
+    return RungResult(c["status"], detail, {"check": shipchecks.evidence_text(name, c)})
 
 
 def fw_versions(dmidecode: str | None, mc: dict | None) -> RungResult:
@@ -258,16 +408,52 @@ def fw_versions(dmidecode: str | None, mc: dict | None) -> RungResult:
     return RungResult("pass", detail)
 
 
+GATE_STEPS = ("bmc-reserved", "bmc-leased", "bmc-pinged", "host-reserved")
+
+
 def discover_gate(lr, dev_row) -> str | None:
     """Why this device may not be booted yet (None = Discover proved it): its latest
-    reserve and bmc-reach must be pass and order.db must hold its host MAC."""
-    v = {r: (lr.get((dev_row["pos"], r)) or {}).get("verdict") for r in ("reserve", "bmc-reach")}
+    GATE_STEPS (the planned BMC IP is reserved for AND leased by the discovered BMC MAC,
+    and answers; the host reservation exists) must be pass and order.db must hold its
+    host MAC. A row from before Plan 2b (reserve/bmc-reach) does not count."""
+    v = {r: (lr.get((dev_row["pos"], r)) or {}).get("verdict") for r in GATE_STEPS}
     bad = [f"{r} {v[r] or 'not run'}" for r in v if v[r] != "pass"]
     if not bad and not dev_row.get("host_mac"):
         bad.append("no host MAC matched")
     return ("discover first: " + ", ".join(bad)) if bad else None
 
 
+
+def reboot_skip(ctx, R, cr, lr, x) -> tuple[RungResult | None, str]:
+    """(pxe-live pass, why) when Discover's host-ssh proved this boot of the live image
+    and a re-read shows the same boot_id with BOOTIF = the discovered host MAC: no
+    reboot. Else (None, why it boots)."""
+    hs = lr.get((x.pos, "host-ssh")) or {}
+    bid = (hs.get("detail") or {}).get("boot_id")
+    if hs.get("verdict") != "pass" or not bid:
+        return None, "Discover's host-ssh did not prove a live boot"
+    if not cr.host:
+        return None, "no host credentials to re-read the boot"
+    host_ip = x.ips.get("host")
+    rc, out, _err = R.host_run(host_ip, *cr.host, liveboot._PROBE, timeout=20,
+                               runner=ctx.runner)
+    if rc != 0:
+        return None, f"live image not answering ssh (rc={rc})"
+    now_bid, up, cmdline = liveboot.parse_probe(out)
+    got, want = liveboot.bootif_mac(cmdline), liveboot._hex(x.row.get("host_mac"))
+    if now_bid != bid:
+        return None, f"boot_id changed since Discover ({bid} -> {now_bid or 'unreadable'})"
+    if "pxeaddr=" not in cmdline or not got or got != want:
+        return None, "not the discovered host's live image any more"
+    mac = liveboot._colon(got)
+    return RungResult("pass", {
+        "reboot": "skipped", "boot_id": bid, "uptime_s": int(up) if up is not None else None,
+        "bootif": mac, "cmdline_ok": True, "override": None, "power_action": None,
+        "headline": "reboot skipped: still the live boot Discover proved",
+        "rows": [["boot_id", bid], ["BOOTIF", mac], ["uptime", f"{int(up)} s" if up else "?"],
+                 ["Discover host-ssh", hs.get("finished_at")]],
+        "notes": ["Discover's host-ssh proved this boot of the live image and the boot_id "
+                  "read again now is unchanged: no power cycle"]}), ""
 
 
 # ---------------------------------------------------------------- phase plumbing
@@ -280,6 +466,9 @@ class _Dev:
     failed: str | None = None       # the phase it failed in (later phases skip it)
     busy: bool = False              # an agent stop failed: its battery may still run
     lsblk: str | None = None        # the inventory's lsblk capture (storage deadline)
+    sol: object = None              # the running SOL capture (console rung)
+    sol_rid: int | None = None      # its order.db run row, 'running' until stopped
+    sol_done: bool = False          # console recorded for this Qualify
 
     @property
     def pos(self) -> str:
@@ -319,13 +508,13 @@ class _Progress:
 
 def _phase_rungs(phase, d) -> list[tuple[str, str]]:
     """(rung, stage) pairs `phase` records for device d: what a device that failed an
-    earlier phase gets `skip` on. agent-launch/agent-stages belong to the first agent
+    earlier phase gets `skip` on. agent-reachable/agent-stages belong to the first agent
     phase; a later agent phase re-records them only for a device that runs it."""
     if phase == "boot":
         return [("pxe-live", STAGE)]
     if phase == "inventory":
-        return ([(r, STAGE) for r in ("agent-launch", "agent-stages",
-                                      *PHASE_STAGES["inventory"], "pop")]
+        return ([(r, STAGE) for r in ("agent-reachable", "agent-stages",
+                                      *PHASE_STAGES["inventory"], *ENGINE_CHECKS)]
                 + [("fw-versions", FW_STAGE)])
     if phase in PHASE_STAGES:
         return [(r, STAGE) for r in PHASE_STAGES[phase]]
@@ -333,8 +522,18 @@ def _phase_rungs(phase, d) -> list[tuple[str, str]]:
 
 
 def _why_out(x) -> str:
-    return ("qual agent still running (stop failed)" if x.busy
-            else f"failed in phase {x.failed}")
+    if x.busy:
+        return "qual agent still running (stop failed)"
+    return "cancelled" if x.failed == "cancelled" else f"failed in phase {x.failed}"
+
+
+def _cancel_out(ctx, xs) -> bool:
+    """Cancel pressed: every device still in is out ("cancelled")."""
+    if not cancelled(ctx):
+        return False
+    for x in xs:
+        x.failed = x.failed or "cancelled"
+    return True
 
 
 def _skip_phase(ctx, x, phase):
@@ -378,6 +577,9 @@ def _with(r: RungResult, **extra) -> RungResult:
 # ---------------------------------------------------------------- boot phase
 def _boot(ctx, R, cr, lr, x):
     pos, d = x.pos, x.d
+    if _cancel_out(ctx, [x]):               # not booted yet: never start a power action
+        _record(ctx, pos, "pxe-live", RungResult("skip", {"reason": "cancelled"}))
+        return
     why = discover_gate(lr, x.row)
     host_ip, bmc_ip = x.ips.get("host"), x.ips.get("bmc")
     if why:                                 # never power-cycle an unproven BMC IP
@@ -389,11 +591,81 @@ def _boot(ctx, R, cr, lr, x):
     elif not bmc_ip:
         r = _record(ctx, pos, "pxe-live", RungResult("fail", {"error": "no BMC to boot it with"}))
     else:
-        r = _rung(ctx, pos, "pxe-live",
-                  lambda: R.boot_live(bmc_ip, host_ip, cr, expect_mac=x.row["host_mac"],
-                                      deadline_s=BOOT_DEADLINE_S, runner=ctx.runner), STAGE)
+        _console_start(ctx, R, cr, x)       # capture the boot itself
+        try:
+            skip, why = reboot_skip(ctx, R, cr, lr, x)
+        except Exception as e:              # noqa: BLE001 -- unproven: boot as before
+            skip, why = None, f"re-read failed: {type(e).__name__}: {e}"
+        if skip is not None:
+            r = _record(ctx, pos, "pxe-live", skip)
+        else:
+            r = _rung(ctx, pos, "pxe-live", lambda: _with(
+                R.boot_live(bmc_ip, host_ip, cr, expect_mac=x.row["host_mac"],
+                            deadline_s=BOOT_DEADLINE_S, runner=ctx.runner), rebooted_because=why),
+                STAGE)
     if r.verdict != "pass":
         x.failed = "boot"
+
+
+# ---------------------------------------------------------------- console (SOL)
+def _sol_rel(pos, rid) -> str:
+    return f"artifacts/{pos}/q{rid}/console/sol.txt"
+
+
+def _console_start(ctx, R, cr, x):
+    """Open the console row ('running' for the UI) and start the SOL capture into the
+    order dir. A capture that cannot start is recorded failed at once; it never stops
+    the boot (console does not gate, as in Post)."""
+    if not _safe(x.pos):
+        return
+    x.sol_rid = ctx.db.start_run(x.pos, STAGE, "console")
+    try:
+        x.sol = R.sol_start(x.ips["bmc"], cr.bmc, ctx.dir / _sol_rel(x.pos, x.sol_rid),
+                            runner=ctx.runner)
+    except Exception as e:                  # noqa: BLE001
+        x.sol = RungResult("fail", {"error": f"sol start: {type(e).__name__}: {e}"})
+
+
+def _console_stop(ctx, R, x):
+    """Stop the capture (sol deactivate, always) and finish the console row: pass when
+    the stored capture holds bytes."""
+    if x.sol_rid is None:
+        return
+    rid, cap = x.sol_rid, x.sol
+    x.sol_rid, x.sol, x.sol_done = None, None, True
+    try:
+        res = cap if isinstance(cap, RungResult) else R.sol_stop(cap)
+    except Exception as e:                  # noqa: BLE001 -- the row never stays running
+        res = RungResult("fail", {"error": f"sol stop: {type(e).__name__}: {e}"})
+    rel = _sol_rel(x.pos, rid)
+    try:
+        n = (ctx.dir / rel).stat().st_size
+    except OSError:
+        n = 0
+    det = dict(res.detail)
+    det.update(headline=(f"SOL captured: {n} bytes" if res.verdict == "pass"
+                         else det.get("error") or "no sol capture"),
+               rows=[["capture", "sol.txt" if n else "none"], ["bytes", str(n)],
+                     ["cipher", str(det.get("cipher") or "")],
+                     ["session drops", str(det.get("drops") or 0)]],
+               notes=["SOL from just before the live boot until the node leaves Qualify; "
+                      "the session is deactivated at the end"])
+    ctx.db.finish_run(rid, RungResult(res.verdict, det, {"sol": rel} if n else {}))
+
+
+def _console_end(ctx, R, xs):
+    """Every device's console is recorded once: stopped if running, else skipped (it
+    never booted) with the reason it is out."""
+    for x in xs:
+        try:
+            if x.sol_rid is not None:
+                _console_stop(ctx, R, x)
+            elif not x.sol_done:
+                x.sol_done = True
+                _record(ctx, x.pos, "console", RungResult("skip", {
+                    "reason": _why_out(x) if x.failed else "no sol capture started"}))
+        except Exception as e:              # noqa: BLE001
+            ctx.db.add_event("error", f"qualify {x.pos} console: {type(e).__name__}: {e}")
 
 
 # ---------------------------------------------------------------- agent phases
@@ -420,7 +692,7 @@ def _agent_phase(ctx, R, cr, prog, phase, xs):
     mu = threading.Lock()
 
     def launch(x):
-        r = _rung(ctx, x.pos, "agent-launch", lambda: _with(
+        r = _rung(ctx, x.pos, "agent-reachable", lambda: _with(
             R.launch(x.ips["host"], user, pw, stages=stages, runner=ctx.runner), phase=phase),
             STAGE)
         if r.verdict == "pass":
@@ -428,10 +700,10 @@ def _agent_phase(ctx, R, cr, prog, phase, xs):
                 started[x.pos] = time.monotonic()
             return
         x.failed = phase
-        _skip(ctx, x.pos, ["agent-stages", *want] + (["pop"] if phase == "inventory" else []),
-              "agent-launch failed")
+        _skip(ctx, x.pos, ["agent-stages", *want]
+              + (list(ENGINE_CHECKS) if phase == "inventory" else []), "agent-reachable failed")
         if phase == "inventory":
-            _skip(ctx, x.pos, ["fw-versions"], "agent-launch failed", FW_STAGE)
+            _skip(ctx, x.pos, ["fw-versions"], "agent-reachable failed", FW_STAGE)
         prog.done(x.pos)
 
     _wave(ctx, phase, xs, launch, len(xs))
@@ -503,9 +775,21 @@ def _poll(ctx, R, cr, phase, x):
               lambda: fw_versions(arts.get("dmidecode"),
                                   R.mc_info(x.ips.get("bmc"), cr.bmc, runner=ctx.runner)),
               FW_STAGE)
-        # POP never gates either (a missing profile must not keep the iperf server out
-        # of burn/network); its fail still fails the device in qualify_passed
-        _rung(ctx, pos, "pop", lambda: pop_rung(ctx, x.d, arts.get("macinv")), STAGE)
+        # POP and the ship checks never gate either (a missing profile must not keep the
+        # iperf server out of burn/network); their fail still fails the device in
+        # qualify_passed. The check evidence goes beside the battery's artifacts.
+        try:
+            res = population_rung(ctx, x.d, arts,
+                                  oob_fru0(R, cr, x.ips.get("bmc"), runner=ctx.runner))
+        except Exception as e:              # noqa: BLE001 -- a judge never sinks the phase
+            res = RungResult("fail", {"error": f"{type(e).__name__}: {e}"})
+        _record(ctx, pos, "population-check", res, STAGE, run_seg)
+        for name in shipchecks.SHIP_CHECKS:
+            try:
+                res = ship_check_rung(name, arts)
+            except Exception as e:          # noqa: BLE001 -- a judge never sinks the phase
+                res = RungResult("fail", {"error": f"{type(e).__name__}: {e}"})
+            _record(ctx, pos, name, res, STAGE, run_seg)
     if failed:
         x.failed = phase
 
@@ -523,13 +807,16 @@ def _host_lookup(ctx, R, lr, pos, host_ip, user, pw, art, cmd, parse):
 
 def server_not_ready(lr, d) -> str | None:
     """Why an iperf server outside this run's positions may not serve (None = it may):
-    every earlier-phase rung but pop (which never gates) must have passed last time,
-    and its agent must not have been left running."""
+    every earlier-phase rung but the non-gating ones (population-check, the ship checks,
+    console) must have passed last time, and its agent must not have been left running."""
     stop = ((lr.get((d.pos, "agent-stages")) or {}).get("detail") or {}).get("agent_stop")
     if stop not in (None, "stopped"):
         return "its qual agent is still running (stop failed)"
     for r in device_rungs(d):
-        if r not in (*NET_RUNGS, "pop") and (lr.get((d.pos, r)) or {}).get("verdict") != "pass":
+        if r in (*NET_RUNGS, *NON_GATING):
+            continue
+        run = lr.get((d.pos, r))
+        if not (_stage_ok(run) if r in AGENT_STAGES else (run or {}).get("verdict") == "pass"):
             return f"its {r} did not pass"
     return None
 
@@ -659,26 +946,36 @@ def run_qualify(ctx, *, positions: list[str] | None = None) -> None:
         prog.start("boot", [x.pos for x in xs])
         _wave(ctx, "boot", xs, lambda x: _boot(ctx, R, cr, lr, x), MAX_PARALLEL, prog)
         _phase_end(ctx, "boot", xs)
+        _console_end(ctx, R, [x for x in xs if x.failed])   # out of Qualify: stop its SOL
         for phase in PHASE_STAGES:          # inventory, storage, burn: barrier between each
+            _cancel_out(ctx, xs)
             for x in xs:
                 if x.failed:
                     _skip_phase(ctx, x, phase)
             _agent_phase(ctx, R, cr, prog, phase, [x for x in xs if not x.failed])
             _phase_end(ctx, phase, xs)
+            _console_end(ctx, R, [x for x in xs if x.failed])
+        stop = _cancel_out(ctx, xs)
         not_ready = {x.pos: (_why_out(x), "its qual agent is still running (stop failed)"
                              if x.busy else f"failed in phase {x.failed}")
                      for x in xs if x.failed}
         scope = [x.d for x in xs]
         srv = next((d for d in g.devices if d.pos == g.iperf_server), None)
-        if srv is not None and srv.endpoints.get("hosts") and srv not in scope:
+        if not stop and srv is not None and srv.endpoints.get("hosts") and srv not in scope:
             why = server_not_ready(ctx.db.latest_runs(), srv)
             if why is None:
                 scope.append(srv)           # its fabric addresses are not persistent
             else:
                 not_ready[srv.pos] = (why, why)
-        _network(ctx, R, prog, scope, ips, cr, not_ready)
+        if stop:
+            for d in scope:
+                _skip(ctx, d.pos, [r for r in NET_RUNGS if r in device_rungs(d)], "cancelled")
+        else:
+            _network(ctx, R, prog, scope, ips, cr, not_ready)
     finally:
+        _console_end(ctx, R, xs)            # always: no SOL session outlives the stage
         prog.clear()
     ok, bad = qualify_passed(ctx.db, g)
-    ctx.db.add_event("qualify", "qualify done; rack passed" if ok
-                     else f"qualify done; not passed: {', '.join(bad)}")
+    done = "qualify cancelled" if cancelled(ctx) else "qualify done"
+    ctx.db.add_event("qualify", f"{done}; rack passed" if ok
+                     else f"{done}; not passed: {', '.join(bad)}")

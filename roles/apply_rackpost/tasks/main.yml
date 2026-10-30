@@ -15,6 +15,10 @@
     - /opt/flax/bin
     - "{{ apply_rackpost_dest_dir }}"
     - "{{ apply_rackpost_dest_dir }}/flax_post"
+    - "{{ apply_rackpost_dest_dir }}/flax_post/observe"
+    - "{{ apply_rackpost_dest_dir }}/flax_post/fwd"
+    - "{{ apply_rackpost_dest_dir }}/flax_post/biosd"
+    - "{{ apply_rackpost_dest_dir }}/flax_post/nicd"
     - "{{ apply_rackpost_dest_dir }}/flax_post/web"
     - "{{ apply_rackpost_dest_dir }}/flax_post/web/static"
 

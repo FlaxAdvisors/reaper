@@ -13,9 +13,41 @@ apply_rackpost_post_static:
   - rack.css
   - petite-vue.iife.js
   - flax-logo.svg
-# flax_post modules the Qualify rungs import (population judge + qual client).
+# flax_post modules the Qualify rungs import: the population judge, the qual
+# client, and Post's own Qualify judges (qualify_rules -> blocklist, shipchecks;
+# FRU 0 via observe/fru + the family map); the loose-node firmware detectors'
+# manifest/classify/driver modules (fwd, biosd, nicd, plus what they import) and
+# the IP-keyed boot evidence (observe/bootlog). All stdlib: never a module that
+# pulls psycopg (blades, observe/host_qual, observe/ladder, stepinfo, db, state)
+# or a daemon entry (service, bridge, store, __main__).
 apply_rackpost_post_modules:
   - __init__.py
   - version.py
   - population.py
   - qualclient.py
+  - qualify_rules.py
+  - shipchecks.py
+  - blocklist.py
+  - observe/__init__.py
+  - observe/fru.py
+  - observe/family_map.py
+  - observe/family_map_live.py
+  - observe/bootlog.py
+  - fwd/__init__.py
+  - fwd/version.py
+  - fwd/manifest.py
+  - fwd/redfish.py
+  - fwd/entity_cache.py
+  - fwd/flasher.py
+  - fwd/enforce.py
+  - fwd/creds.py
+  - biosd/__init__.py
+  - biosd/version.py
+  - biosd/classify.py
+  - biosd/manifest.py
+  - biosd/driver.py
+  - biosd/creds.py
+  - nicd/__init__.py
+  - nicd/classify.py
+  - nicd/manifest.py
+  - nicd/driver.py

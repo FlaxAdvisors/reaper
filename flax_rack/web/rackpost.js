@@ -1,8 +1,14 @@
 // flax_rack/web/rackpost.js: petite-vue app for one rack order (layout = mockup rack-v3).
 // Polls api/state (relative: the page lives at /<prefix>/) every 5 s. Only the
 // populated OUs are drawn; a dashed marker stands for each run of skipped OUs.
-// Phases with rungs: discover, firmware (fw-versions, report only), qualify (the
-// device's qualify_rungs from the server). deploy/done render empty/grey (Plan 3/4).
+// Phases with rungs: discover, firmware (Post's 6 steps, detect only; Qualify's old
+// fw-versions read when it ran), qualify (the device's qualify_rungs from the server).
+// deploy/done render empty/grey (Plan 3/4).
+// Every switch and every BMC endpoint opens its own drawer (sel in the URL hash):
+// a device `R05`, one JBOD IOM `JBOD01.iom2`, a switch `_sw-A`, a wedge's BMC
+// `_sw-A.bmc`. Each is an object carrying pos (= the sel key), runs and
+// qualify_rungs, so one set of pipeline functions serves them all. A step row
+// opens the evidence modal (Post's stepinfo: headline, rows, notes, artifacts).
 
 const POLL_MS = 5000;
 // geometry cols are ints 1..5 (L/C/R = 1/2/3); a group of rows is drawn with
@@ -15,6 +21,14 @@ const RGB = { discover: '163,113,247', firmware: '88,166,255', qualify: '210,153
               deploy: '57,197,207', done: '63,185,80', fault: '248,81,73', grey: '110,118,129' };
 const KIND = { 'bc-head-tp': 'BC head' };
 const SWKIND = { mgmt: 'mgmt 1G', tor: 'TOR' };
+// a wedge BMC's own Discover rows (the rest of the switch ladder is the SONiC half)
+const BMC_STEPS = ['switchportlink', 'bmc-mac-seen', 'bmc-reserved', 'bmc-leased', 'bmc-pinged', 'serial', 'bmc-ready'];
+const STEP_WORD = { done: 'done', cur: 'in progress', fault: 'fault', pending: 'not run', skip: 'skipped', unknown: 'unknown' };
+
+const iomObj = (d, ep) => ({ type: 'iom', pos: `${d.pos}.${ep}`, dev: d, ep, n: Number(ep.slice(3)),
+  runs: (d.endpoint_runs || {})[ep] || {}, qualify_rungs: [], view: (d.ioms || {})[ep] || {} });
+const swObj = (sw) => ({ type: 'sw', pos: '_sw-' + sw.id, sw, runs: sw.runs || {}, qualify_rungs: [] });
+const swBmcObj = (sw) => ({ type: 'swbmc', pos: `_sw-${sw.id}.bmc`, sw, runs: sw.runs || {}, qualify_rungs: [], only: BMC_STEPS });
 
 const pad = (n) => String(n).padStart(2, '0');
 const span = (top, bot) => (top === bot ? pad(top) : `${pad(top)}–${pad(bot)}`);
@@ -27,10 +41,15 @@ async function api(path, body) {
   return j;
 }
 
+const POST_STATES = ['done', 'cur', 'pending', 'fault'];
+
 function stepState(run) {
   if (!run) return 'pending';
   if (run.status === 'running') return 'cur';
   if (run.status === 'interrupted') return 'unknown';
+  // Firmware rows carry Post's own step state (needs_update = cur, not a red fault)
+  const st = (run.detail || {}).state;
+  if (POST_STATES.includes(st)) return st;
   return { pass: 'done', skip: 'skip', fail: 'fault' }[run.verdict] || 'unknown';
 }
 
@@ -40,16 +59,21 @@ function stepNote(run, name) {
   if (!run) return '';
   if (run.status === 'interrupted') return 'interrupted';
   const d = run.detail || {};
+  if (d.state && d.headline) return d.headline;
   if (run.verdict === 'fail') return d.error || [d.status, d.note].filter(Boolean).join(' ') || 'fail';
   if (run.verdict === 'skip') return d.reason || 'skipped';
   if (name === 'fw-versions') return `BIOS ${d.bios_version} · BMC ${d.bmc_firmware}`;
-  if (name === 'pop') return d.profile || '';
+  if (name === 'population-check') return d.profile || '';
+  if (name === 'smbios-serial') return `SN ${(d.fru0_serials || [])[0] || '?'}`;
+  if (name === 'tpm-state') return `TPM ${d.version || '?'} cleared`;
+  if (name === 'console') return d.bytes != null ? `${d.bytes} B` : '';
   if (name === 'iperf-mesh') {
     if (d.served) return `served ${d.served.length}`;
     return ['mgmt', 'A', 'B'].filter((n) => d[n]).map((n) => `${n} ${gbit(d[n].tx_bps)}/${gbit(d[n].rx_bps)}G`).join(' · ');
   }
   if (name === 'fabric-addr') return Object.values(d).filter((x) => typeof x === 'string').join(' ');
   if (name === 'pxe-live' && d.ssh_after_s != null) return `ssh after ${d.ssh_after_s}s`;
+  if (d.headline) return d.headline;
   if (d.power) return 'power ' + d.power;
   if (d.count != null) return d.count + (name && name.startsWith('lldp') ? ' neighbours' : ' MACs');
   return '';
@@ -68,7 +92,7 @@ function buildLayout(s) {
     } else {
       const ioms = Object.keys(d.links).filter((k) => /^iom\d+$/.test(k)).sort();
       const cells = ioms.length
-        ? ioms.map((k, i) => ({ key: d.pos + '-' + k, dev: d, iom: k, idx: i, label: `${d.pos} ${k.toUpperCase()} · ${d.links[k]}` }))
+        ? ioms.map((k, i) => ({ key: d.pos + '-' + k, dev: d, iom: k, idx: i, obj: iomObj(d, k), label: `${d.pos} ${k.toUpperCase()} · ${d.links[k]}` }))
         : [{ key: d.pos, dev: d, label: `${d.pos}${d.links.mezz0 ? ' · ' + d.links.mezz0 : ''}` }];
       rows.push({ key: 'dev-' + d.pos, family: 'dev', layout: ioms.length > 1 ? 'two' : 'full', ou: d.ou, top, cells });
     }
@@ -107,7 +131,7 @@ function buildLayout(s) {
 }
 
 function selFromHash() {
-  const m = /(?:^#|&)sel=([A-Za-z0-9-]+)/.exec(location.hash);
+  const m = /(?:^#|&)sel=([A-Za-z0-9._-]+)/.exec(location.hash);
   return m ? m[1] : null;
 }
 
@@ -115,8 +139,8 @@ function App() {
   return {
     s: { switches: [], devices: [], phases: ['discover', 'firmware', 'qualify', 'deploy', 'done'], profiles: [], rack_runs: {}, events: [] },
     live: null, sel: selFromHash(), filter: null, q: '', popOpen: null, now: Date.now(),
-    actionMsg: null, hdrMsg: null, closing: false, confirmText: '', closeMsg: null, busy: false,
-    qualifying: false, qualText: '',
+    actionMsg: null, hdrMsg: null, stepM: null, closing: false, confirmText: '', closeMsg: null, busy: false,
+    qualifying: false, qualText: '', discovering: false, discText: '',
     metricList: [
       { key: 'discover', label: 'discover', title: 'devices in Discover' },
       { key: 'firmware', label: 'firmware', title: 'devices with firmware versions read (report only)' },
@@ -129,7 +153,7 @@ function App() {
     async mounted() {
       document.addEventListener('keydown', (e) => {
         if (e.key !== 'Escape') return;
-        if (this.qualifying) this.qualifying = false; else if (this.closing) this.closing = false; else if (this.popOpen) this.popOpen = null; else this.close();
+        if (this.stepM) this.stepM = null; else if (this.qualifying) this.qualifying = false; else if (this.discovering) this.discovering = false; else if (this.closing) this.closing = false; else if (this.popOpen) this.popOpen = null; else this.close();
       });
       await this.refresh(); setInterval(() => this.refresh(), POLL_MS);
     },
@@ -139,7 +163,23 @@ function App() {
     },
 
     get layout() { return buildLayout(this.s); },
-    get selDev() { return this.sel ? (this.s.devices.find((d) => d.pos === this.sel) || null) : null; },
+    // the selected object: a device (itself), an IOM, a switch or a wedge's BMC
+    get selObj() {
+      const k = this.sel; if (!k) return null;
+      let m = /^_sw-([^.]+)(\.bmc)?$/.exec(k);
+      if (m) {
+        const sw = (this.s.switches || []).find((x) => x.id === m[1]);
+        return !sw ? null : m[2] ? (sw.bmc ? swBmcObj(sw) : null) : swObj(sw);
+      }
+      m = /^(.+)\.(iom\d+)$/.exec(k);
+      if (m) {
+        const d = (this.s.devices || []).find((x) => x.pos === m[1]);
+        return d && (d.links || {})[m[2]] ? iomObj(d, m[2]) : null;
+      }
+      return (this.s.devices || []).find((d) => d.pos === k) || null;
+    },
+    get selKind() { const o = this.selObj; return !o ? null : o.type || 'dev'; },
+    get selDev() { return this.selKind === 'dev' ? this.selObj : null; },
 
     // ---- per-device pipeline (null-safe: petite-vue may evaluate during teardown) ----
     steps(d, phase) {
@@ -147,20 +187,53 @@ function App() {
       const runs = d.runs || {}, rr = this.s.rack_runs || {};
       const out = {};
       if (phase === 'discover') {
-        for (const rung of this.s.discover_rungs || []) out[rung] = rung === 'switch-fdb' ? rr[rung] : runs[rung];
+        const steps = (this.s.discover_rungs || []).filter((r) => !d.only || d.only.includes(r));
+        for (const rung of steps) out[rung] = runs[rung];
+        // a device with only pre-2b Discover rows shows those (order.db history)
+        if (!steps.some((r) => runs[r])) {
+          for (const rung of this.s.discover_old_rungs || []) if (runs[rung]) out[rung] = runs[rung];
+        }
       } else if (phase === 'firmware') {
-        if (!(d.qualify_rungs || []).length) return {};
         for (const rung of this.s.firmware_rungs || []) out[rung] = runs[rung];
+        for (const rung of this.s.firmware_old_rungs || []) if (runs[rung]) out[rung] = runs[rung];
       } else if (phase === 'qualify') {
         for (const rung of d.qualify_rungs || []) out[rung] = runs[rung];
       }
       return out;
     },
-    stepEntries(d, phase) {
-      return Object.entries(this.steps(d, phase)).map(([name, run]) => ({
-        name, run, state: stepState(run), note: stepNote(run, name),
+    stepEntries(d, phase) { return this.entriesOf(this.steps(d, phase), d && d.pos); },
+    entriesOf(steps, key) {
+      return Object.entries(steps).map(([name, run]) => ({
+        name, run, key: `${key}/${name}`, state: stepState(run), note: stepNote(run, name),
         arts: Object.entries((run && run.artifacts) || {}).map(([n, url]) => ({ name: n, url })),
-        title: run ? `${run.status}${run.verdict ? ' · ' + run.verdict : ''} · ${run.finished_at || run.started_at}` : 'not run' }));
+        ev: run && run.detail && (run.detail.rows || run.detail.notes) ? run.detail : null,
+        title: (run ? `${run.status}${run.verdict ? ' · ' + run.verdict : ''} · ${run.finished_at || run.started_at}` : 'not run')
+          + (run ? ' — ' + stepNote(run, name) : '') + ' (click for the evidence)' }));
+    },
+    // a JBOD's IOMs: each endpoint's own Firmware rows (key <pos>.iomN)
+    endpointFw(d) {
+      if (!d) return [];
+      return Object.entries(d.endpoint_runs || {}).map(([ep, runs]) => {
+        const steps = {};
+        for (const rung of this.s.firmware_rungs || []) steps[rung] = runs[rung];
+        return { ep, entries: this.entriesOf(steps, `${d.pos}.${ep}`) };
+      }).filter((x) => x.entries.some((e) => e.run));
+    },
+    // the step evidence modal (Post's stepinfo): a snapshot of the step at the click
+    openStep(o, phase, st) {
+      if (!st) return;
+      const run = st.run, d = (run && run.detail) || {};
+      this.stepM = {
+        who: this.whoName(o), phase, name: st.name, state: st.state,
+        word: run && run.verdict ? `${STEP_WORD[st.state] || st.state} · ${run.verdict}` : (STEP_WORD[st.state] || st.state),
+        headline: run ? (d.headline || st.note || '') : '', rows: d.rows || [], notes: d.notes || [],
+        arts: st.arts || [], ran: !!run,
+        when: run ? [run.started_at && `started ${run.started_at}`, run.finished_at && `finished ${run.finished_at}`].filter(Boolean).join(' · ') : '' };
+    },
+    whoName(o) {
+      if (!o) return '';
+      return o.type === 'iom' ? `${o.dev.pos} ${o.ep.toUpperCase()}` : o.type === 'sw' ? `SW ${o.sw.id}`
+        : o.type === 'swbmc' ? `SW ${o.sw.id} BMC` : o.pos;
     },
     hasRuns(d, phase) { return this.stepEntries(d, phase).some((x) => x.run); },
     // the phase whose steps the tile's second bar shows: the latest one with a run
@@ -209,7 +282,7 @@ function App() {
         .filter((x) => x.state === 'fault' || x.state === 'unknown')
         .map((x) => ({ rung: x.name, text: x.note, bad: x.state === 'fault' }));
     },
-    popRun(d) { return d && (d.runs || {}).pop; },
+    popRun(d) { return d && (d.runs || {})['population-check']; },
     popMark(d) {
       const r = this.popRun(d);
       if (!r || r.status !== 'done') return { t: '·', cls: '', title: 'POP not run yet (Qualify)' };
@@ -266,23 +339,23 @@ function App() {
     },
     qualifyTitle() {
       const q = this.s.qualify || {};
-      const base = 'run Qualify: live boot → battery → POP per node, then wedge LLDP → HA path → fabric addresses → iperf mesh';
+      const base = 'run Qualify: SOL capture + live boot → battery → population-check, smbios-serial, tpm-state per node, then wedge LLDP → HA path → fabric addresses → iperf mesh';
       return q.passed ? base + ' · rack passed' : (q.not_passed || []).length ? `${base} · not passed: ${q.not_passed.join(', ')}` : base;
     },
     stageText() {
       if (this.s.closed_at) return 'closed ' + new Date(this.s.closed_at).toLocaleString();
-      if (this.s.stage_running) return `${this.s.stage || 'stage'} running…`;
+      if (this.s.stage_running) return `${this.s.stage || 'stage'} ${this.s.cancelling ? 'cancelling' : 'running'}…`;
       const e = (this.s.events || [])[0];
       return e ? `${e.text} · ${new Date(e.ts).toLocaleTimeString()}` : 'no stage run yet';
     },
     // Qualify's lockstep phase: which one, and how many devices wait at its barrier
     get qprog() { return (this.s.qualify || {}).progress || null; },
     qphaseCls(p) {
-      const i = (this.s.qualify_phases || []).indexOf(p), n = this.qprog.n - 1;
+      const i = (this.s.qualify_phases || []).indexOf(p), n = (this.qprog?.n || 0) - 1;
       return i < n ? 'past' : i === n ? 'cur' : '';
     },
     qphaseTitle() {
-      const g = this.qprog, w = g.waiting_on || [];
+      const g = this.qprog || {}, w = g.waiting_on || [];
       return `Qualify phase ${g.n} of ${g.of} (${g.phase}): ${g.done} of ${g.devices} device(s) done, ` +
         `waiting at the barrier` + (w.length ? ` for ${w.join(', ')}` : '');
     },
@@ -291,16 +364,50 @@ function App() {
     // ---- tiles ----
     swKind(sw) { return `${SWKIND[sw.role] || sw.role} · ${sw.model} · ${sw.nos}`; },
     swRun(sw) { return (this.s.rack_runs || {})[sw.role === 'tor' ? 'lldp-' + sw.id : 'switch-fdb']; },
+    // the switch's own Discover/Firmware ladder when it ran, else its FDB/LLDP read
     swDot(sw) {
+      const o = swObj(sw);
+      if (Object.keys(o.runs).length) {
+        const k = this.phaseKey(o);
+        return k === 'discover' && this.phaseState(o, 'discover') === 'done' ? 'done' : k;
+      }
       const r = this.swRun(sw);
       if (!sw.mgmt_ip && !r) return 'grey';
       return !r ? 'grey' : r.status === 'running' ? (sw.role === 'tor' ? 'qualify' : 'discover') : r.verdict === 'pass' ? 'done' : 'fault';
     },
+    swObj(sw) { return swObj(sw); },
+    swBmcObj(sw) { return swBmcObj(sw); },
+    swSel(sw) { return this.sel === '_sw-' + sw.id || this.sel === `_sw-${sw.id}.bmc`; },
+    epText(e) { return !e ? '' : `${e.mac || '⋯'} · ${e.ip || '⋯'}`; },
     swTitle(sw) {
       const n = sw.role === 'tor' ? 'lldp-' + sw.id : 'switch-fdb', r = this.swRun(sw);
       return r ? `${n} ${r.verdict || r.status} · ${stepNote(r, n)}` : `${n} not run`;
     },
-    cellMac(c) { return c.iom ? (c.dev.iom_macs || [])[c.idx] : c.dev.bmc_mac; },
+    cellMac(c) { return c.iom ? (c.obj.view.mac || (c.dev.iom_macs || [])[c.idx]) : c.dev.bmc_mac; },
+    // the object a tile stands for (an IOM tile is its own endpoint) and its serial
+    cellObj(c) { return c.obj || c.dev; },
+    cellSerial(c) { return c.iom ? c.obj.view.serial : c.dev.serial; },
+    serialOf(o) {
+      if (!o) return null;
+      return o.type === 'iom' ? (o.view || {}).serial : o.type === 'sw' || o.type === 'swbmc' ? o.sw.serial : o.serial;
+    },
+    identOf(o) {
+      if (!o) return null;
+      return o.type === 'iom' ? (o.view || {}).identity : o.type === 'sw' || o.type === 'swbmc' ? o.sw.identity : o.identity;
+    },
+    fwViewOf(o) {
+      if (!o) return null;
+      return o.type === 'iom' ? (o.view || {}).fw : o.type === 'sw' || o.type === 'swbmc' ? o.sw.fw : o.fw;
+    },
+    // version rows of a bmc-checked read: present parts, then the not-present ones
+    verRows(o) {
+      const f = this.fwViewOf(o); if (!f) return [];
+      return [...(f.parts || []).map((x) => ({ k: x.part, cls: x.phase === 'needs_update' ? 'amb' : '',
+                 v: `${x.current}${x.target && x.target !== x.current ? ' → target ' + x.target : ''} · ${x.phase}` })),
+              ...Object.entries(f.versions || {}).map(([k, v]) => ({ k, v, cls: '' })),
+              ...Object.entries(f.not_present || {}).map(([k, v]) => ({ k, v: `not present (${v})`, cls: 'dimv' }))];
+    },
+    artList(x) { return Object.entries((x && x.artifacts) || {}).map(([name, url]) => ({ name, url })); },
     popTitle(d) {
       if (!d) return '';
       return d.pop_overridden ? `override: BOM part ${d.part} defaults to ${d.pop_default}` : `default from BOM part ${d.part}`;
@@ -327,26 +434,78 @@ function App() {
     wrapCls(c) {
       if (c.empty) return 'empty';
       const cl = [];
-      if (this.sel === c.dev.pos) cl.push('active');
+      if (this.sel === this.cellObj(c).pos) cl.push('active');
       if (this.q) cl.push(this.matches(c.dev) ? 'match' : 'faded');
       else if (this.filter && !this.inFilter(c.dev, this.filter)) cl.push('faded');
       return cl.join(' ');
     },
-    tileStyle(c) { return (!c.empty && this.sel === c.dev.pos) ? `background:rgba(${RGB[this.phaseKey(c.dev)] || RGB.discover},.12)` : ''; },
+    tileStyle(c) {
+      if (c.empty || this.sel !== this.cellObj(c).pos) return '';
+      return `background:rgba(${RGB[this.phaseKey(this.cellObj(c))] || RGB.discover},.12)`;
+    },
     colName(d) { return !d ? '' : d.col ? (COLNAME[d.col] || `col ${d.col}`) : 'full'; },
 
     // ---- drawer ----
-    open(c) {
-      if (!c || c.empty) return;
-      this.actionMsg = null;
-      this.sel = this.sel === c.dev.pos ? null : c.dev.pos;
+    open(c) { if (c && !c.empty) this.select(this.cellObj(c).pos); },
+    // toggle a drawer by its key (device pos, <pos>.iomN, _sw-<id>, _sw-<id>.bmc)
+    select(key) {
+      this.actionMsg = null; this.stepM = null;
+      this.sel = this.sel === key ? null : key;
       history.replaceState(null, '', this.sel ? '#sel=' + this.sel : location.pathname);
     },
-    close() { this.sel = null; history.replaceState(null, '', location.pathname); },
+    close() { this.sel = null; this.stepM = null; history.replaceState(null, '', location.pathname); },
+    // drawer header sub-line per kind
+    subLine(o) {
+      if (!o) return '';
+      if (o.type === 'iom') {
+        const d = o.dev;
+        return `OU ${d.ou} · ${d.pos} ${o.ep.toUpperCase()} · ${(d.names || {})[o.ep] || ''} · ${d.kind} ${d.part} · link ${(d.links || {})[o.ep] || '—'}`;
+      }
+      if (o.type === 'sw' || o.type === 'swbmc') {
+        const sw = o.sw, sp = sw.site_port || {};
+        return `OU ${sw.ou} · SW ${sw.id}${o.type === 'swbmc' ? ' BMC' : ''} · ${this.swKind(sw)}` +
+          (sp.switch ? ` · site ${sp.switch} ${sp.port}` : '');
+      }
+      return `OU ${o.ou} ${this.colName(o)} · ${o.pos} · ${(o.names || {}).host || (o.names || {}).host1 || (o.names || {}).iom1 || ''} · ${o.kind} ${o.part}`;
+    },
+    // the IOM's own link row (switch:port, seen MAC, oper from its switchportlink)
+    iomLink(o) {
+      if (!o || o.type !== 'iom') return null;
+      const seen = (o.dev.link_seen || {})[o.ep] || {};
+      return { name: o.ep, expected: (o.dev.links || {})[o.ep], seen: seen.text || 'not run', state: seen.state || 'dimv' };
+    },
+    // a switch's address rows: SONiC mgmt, its BMC (wedges: opens the BMC drawer)
+    swAddr(o) {
+      if (!o || !o.sw) return [];
+      const sw = o.sw, out = [];
+      if (sw.sonic && o.type === 'sw') out.push({ role: 'SONIC', ...sw.sonic, key: null, note: sw.mgmt_ip && !String(sw.mgmt_ip).startsWith('fake-') ? `geometry mgmt_ip ${sw.mgmt_ip}` : 'dynamic lease (vid 26 pool)' });
+      if (sw.bmc) out.push({ role: 'BMC', ...sw.bmc, key: o.type === 'sw' ? `_sw-${sw.id}.bmc` : null, note: 'dynamic lease (vid 26 pool)' });
+      return out;
+    },
+    // identity facts beside the serial (whatever the kind's read carried)
+    // (facts the read's own rows already show are not repeated)
+    identRows(o) {
+      const i = this.identOf(o); if (!i) return [];
+      const shown = new Set((i.rows || []).map((r) => String(r[1]).split(' (')[0].toLowerCase()));
+      const L = { product_name: 'product', board_product: 'board product',
+                  board_serial: 'board serial', part_number: 'part number', service_tag: 'service tag',
+                  asset_tag: 'asset tag', local_mac: 'local MAC (BMC)', ext_mac_base: 'ext MAC base',
+                  base_mac: 'base MAC', syseeprom_serial: 'SONiC syseeprom serial', platform: 'platform' };
+      return Object.keys(L).filter((k) => i[k] && !shown.has(String(i[k]).toLowerCase()))
+        .map((k) => ({ k: L[k], v: i[k] }));
+    },
+    fwTarget(o) { return !o ? null : o.type === 'iom' ? o.dev.pos : o.sw ? '_sw-' + o.sw.id : o.pos; },
+    // the identity read's own rows, minus the versions the versions section shows
+    identReadRows(o) {
+      const i = this.identOf(o); if (!i) return [];
+      const v = new Set(this.verRows(o).map((r) => r.k));
+      return (i.rows || []).filter((r) => !v.has(r[0]));
+    },
+    portRows(o) { return (o && o.sw && o.type === 'sw' && o.sw.ports) || []; },
     addrRows(d) {
       if (!d) return [];
-      const reserved = new Set((((d.runs || {}).reserve || {}).detail?.reserved || []).map((x) => x.role));
-      const rr = (d.runs || {}).reserve;
+      const rr = (d.runs || {})['bmc-reserved'] || (d.runs || {}).reserve;
+      const reserved = new Set(((rr || {}).detail?.reserved || []).map((x) => x.role));
       const mac = { host: d.host_mac, bmc: d.bmc_mac };
       const order = Object.keys(d.addrs).sort((a, b) => (a === 'bmc' ? -1 : b === 'bmc' ? 1 : a.localeCompare(b)));
       return order.map((role) => {
@@ -369,14 +528,38 @@ function App() {
       catch (e) { this.actionMsg = 'POP: ' + e.message; }
       await this.refresh();
     },
-    async discover() {
-      try { await api('api/stage/discover', {}); this.hdrMsg = 'discover started'; }
+    // Discover may power on / cycle nodes not in the live image: the rack-wide run
+    // takes the typed order id (like Qualify); a drawer RETRY a plain confirm naming it.
+    discHosts() { return (this.s.devices || []).filter((d) => (d.qualify_rungs || []).length); },
+    openDiscover() { this.discovering = true; this.discText = ''; },
+    async doDiscover() {
+      this.discovering = false;
+      try { await api('api/stage/discover', { confirm: this.discText }); this.hdrMsg = 'discover started'; }
       catch (e) { this.hdrMsg = 'discover: ' + e.message; }
       await this.refresh();
     },
-    async retry() {
-      try { await api('api/stage/discover', {}); this.actionMsg = 'discover started'; }
+    async firmware(pos) {
+      try {
+        await api('api/stage/firmware', pos ? { positions: [pos] } : {});
+        const m = `firmware started${pos ? ' for ' + pos : ''} (detect only)`;
+        if (pos) this.actionMsg = m; else this.hdrMsg = m;
+      } catch (e) { const m = 'firmware: ' + e.message; if (pos) this.actionMsg = m; else this.hdrMsg = m; }
+      await this.refresh();
+    },
+    async retry(pos) {
+      if (!pos) return;
+      if (!window.confirm(`Re-run Discover for ${pos} only? A node that is on but not in the live ` +
+                          'image is power-cycled into it.')) return;
+      try { await api('api/stage/discover', { positions: [pos], confirm: true }); this.actionMsg = `discover started for ${pos}`; }
       catch (e) { this.actionMsg = 'discover: ' + e.message; }
+      await this.refresh();
+    },
+    // Cancel: the running stage stops between steps/phases (a power action already
+    // sent finishes); later steps are recorded skip "cancelled".
+    async cancelStage() {
+      if (!window.confirm(`Cancel the running ${this.s.stage}? It stops after the steps now running.`)) return;
+      try { await api('api/stage/cancel', { confirm: true, stage: this.s.stage }); this.hdrMsg = `${this.s.stage} cancelling…`; }
+      catch (e) { this.hdrMsg = 'cancel: ' + e.message; }
       await this.refresh();
     },
     // Qualify power-cycles nodes, clears SELs and runs stress: the rack-wide run takes

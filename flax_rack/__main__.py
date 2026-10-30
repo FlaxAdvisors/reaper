@@ -1,5 +1,5 @@
-"""python -m flax_rack: rack-order CLI (import-bom, enable/disable, serve, discover, qualify,
-close).
+"""python -m flax_rack: rack-order CLI (import-bom, enable/disable, serve, discover, firmware,
+qualify, close).
 
 Order-dir commands act on the current directory (one dir per rack).
 """
@@ -87,10 +87,13 @@ def _order_ctx(confirm=None):
 def _discover(a) -> int:
     from .creds import CredsError
     from .stages import run_discover
-    ctx, lock = _order_ctx()
+    if not a.pos and a.confirm is None:
+        sys.exit("a rack-wide discover may power-cycle nodes: --confirm <order id> "
+                 "(or --pos for some positions)")
+    ctx, lock = _order_ctx(None if a.pos else a.confirm)
     try:
-        run_discover(ctx)
-    except CredsError as e:
+        run_discover(ctx, positions=a.pos or None)
+    except (CredsError, ValueError) as e:
         sys.exit(str(e))
     finally:
         lock.release()
@@ -99,10 +102,36 @@ def _discover(a) -> int:
     return 0
 
 
+def _firmware(a) -> int:
+    from flax_rungs.fwsteps import FW_STEPS
+    from .creds import CredsError
+    from .firmware import run_firmware
+    ctx, lock = _order_ctx()
+    try:
+        run_firmware(ctx, positions=a.pos or None)
+    except (CredsError, ValueError) as e:
+        sys.exit(str(e))
+    finally:
+        lock.release()
+    lr = ctx.db.latest_runs()
+    keys = sorted({k for k, rung in lr if rung in FW_STEPS})
+    for key in keys:
+        for rung in FW_STEPS:
+            r = lr.get((key, rung))
+            if r:
+                det = r["detail"] or {}
+                print(f"{key:12s} {rung:13s} {r['verdict'] or r['status']:5s} "
+                      f"{det.get('state') or '':8s} {det.get('headline') or ''}")
+    return 0
+
+
 def _qualify(a) -> int:
     from .creds import CredsError
     from .qualify import device_rungs, qualify_passed, run_qualify
-    ctx, lock = _order_ctx()
+    if not a.pos and a.confirm is None:
+        sys.exit("a rack-wide qualify power-cycles every host: --confirm <order id> "
+                 "(or --pos for some positions)")
+    ctx, lock = _order_ctx(None if a.pos else a.confirm)
     try:
         run_qualify(ctx, positions=a.pos or None)
     except (CredsError, ValueError) as e:
@@ -159,10 +188,20 @@ def main(argv=None) -> int:
     p.add_argument("--port", type=int, default=8452)
     p.add_argument("--bind", default="127.0.0.1")
     p.set_defaults(fn=_serve)
-    sub.add_parser("discover", help="run Discover for this order dir").set_defaults(fn=_discover)
+    p = sub.add_parser("discover", help="run Discover for this order dir (powers on / cycles "
+                                         "nodes not in the live image)")
+    p.add_argument("--pos", action="extend", nargs="+", metavar="P",
+                   help="only these positions / switch ids (--pos L37 A)")
+    p.add_argument("--confirm", metavar="ORDER", help="the order id (required without --pos)")
+    p.set_defaults(fn=_discover)
+    p = sub.add_parser("firmware", help="read firmware versions (detect only; never flashes)")
+    p.add_argument("--pos", action="extend", nargs="+", metavar="P",
+                   help="only these positions / switch ids (--pos L37 A)")
+    p.set_defaults(fn=_firmware)
     p = sub.add_parser("qualify", help="run Qualify for this order dir (or some positions)")
     p.add_argument("--pos", action="extend", nargs="+", metavar="P",
                    help="only these positions (--pos L37 C37 or repeated)")
+    p.add_argument("--confirm", metavar="ORDER", help="the order id (required without --pos)")
     p.set_defaults(fn=_qualify)
     p = sub.add_parser("close", help="release this rack's reservations and close it")
     p.add_argument("--confirm", required=True, metavar="ORDER")

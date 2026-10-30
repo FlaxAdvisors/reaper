@@ -40,19 +40,23 @@
         <span class="ctx-at" :class="{run: s.stage_running}" :title="eventsTitle()">{{stageText()}}</span>
         <span class="qphase" v-if="qprog" :title="qphaseTitle()">
           <i v-for="p in (s.qualify_phases || [])" :class="qphaseCls(p)">{{p}}</i>
-          <b class="mono">{{qprog.done}}/{{qprog.devices}}</b>
-          <span class="qwait" v-if="(qprog.waiting_on || []).length">· {{qprog.waiting_on.slice(0, 3).join(' ')}}{{qprog.waiting_on.length > 3 ? ' …' : ''}}</span>
+          <b class="mono">{{qprog?.done}}/{{qprog?.devices}}</b>
+          <span class="qwait" v-if="(qprog?.waiting_on || []).length">· {{(qprog?.waiting_on || []).slice(0, 3).join(' ')}}{{(qprog?.waiting_on || []).length > 3 ? ' …' : ''}}</span>
         </span>
       </div>
       <div class="tr"><div class="ctx">
         <label>Customer <span class="ro">{{s.customer || '—'}}</span></label>
         <label>Order <span class="ro">{{s.order || '—'}}</span></label>
         <label>vid <span class="ro">{{s.vid || '—'}}</span></label>
-        <button class="discbtn" v-if="s.order" :disabled="s.stage_running || !!s.closed_at" @click="discover()"
-                :title="s.closed_at ? 'order is closed' : s.stage_running ? 'a stage is running' : 'run Discover for this rack: switch FDB → slot match → Kea reserve → BMC reach'">Discover</button>
+        <button class="discbtn" v-if="s.order" :disabled="s.stage_running || !!s.closed_at" @click="openDiscover()"
+                :title="s.closed_at ? 'order is closed' : s.stage_running ? 'a stage is running' : 'run Discover for this rack: Post\'s 16-step ladder per device (switch port → MACs → Kea reserve/lease → power-on → live boot → BMC ready); powers on / cycles nodes not in the live image'">Discover</button>
+        <button class="discbtn fwbtn" v-if="s.order" :disabled="s.stage_running || !!s.closed_at" @click="firmware()"
+                :title="s.closed_at ? 'order is closed' : s.stage_running ? 'a stage is running' : 'run Firmware for this rack: Post\'s 6 steps per device (BMC Redfish, BIOS dmidecode, Mellanox mstflint query vs the loose-node manifests) -- detect only, never flashes'">Firmware</button>
         <button class="discbtn qualbtn" v-if="s.order" :disabled="s.stage_running || !!s.closed_at" @click="openQualify()"
                 :class="{passed: s.qualify?.passed}"
                 :title="s.closed_at ? 'order is closed' : s.stage_running ? 'a stage is running' : qualifyTitle()">Qualify{{s.qualify?.passed ? ' ✓' : ''}}</button>
+        <button class="closebtn cancelbtn" v-if="s.stage_running && s.stage" :disabled="s.cancelling" @click="cancelStage()"
+                :title="s.cancelling ? 'cancel requested: stopping after the steps now running' : 'stop the running ' + s.stage + ' between steps (a power action already sent finishes)'">{{s.cancelling ? 'Cancelling…' : 'Cancel ' + s.stage}}</button>
         <span class="hdr-msg" v-if="hdrMsg">{{hdrMsg}}</span>
         <span class="closed-chip" v-if="s.closed_at" :title="'closed ' + s.closed_at">closed</span>
         <button class="closebtn" v-else-if="s.order" @click="openClose()"
@@ -62,7 +66,7 @@
   </div>
 
   <!-- ================= rack (populated OUs only) ================= -->
-  <div class="rack" :class="{withdrawer: !!selDev}">
+  <div class="rack" :class="{withdrawer: !!selObj}">
     <!-- MACs on mgmt ports no slot claims: the other half of a mis-cabled device's 'missing' -->
     <div class="alert-box bad unexp" v-if="(s.unexpected || []).length">
       <div class="ab-h">{{s.unexpected.length}} unexpected MAC{{s.unexpected.length===1?'':'s'}}<span class="ab-tag"> · !</span></div>
@@ -77,17 +81,29 @@
         <div class="row" v-for="row in g.rows" :class="row.layout" :style="row.style || ''">
           <span class="ou-label">{{row.label}}</span>
 
-          <!-- switch -->
-          <div class="tile sw" v-if="row.sw">
+          <!-- switch: the tile opens its drawer; a wedge's BMC chip opens the BMC's own -->
+          <div class="tile sw" v-if="row.sw" :class="{active: swSel(row.sw)}" @click="select('_sw-' + row.sw.id)">
             <div class="t-head"><span class="t-port">SW {{row.sw.id}}</span>
               <span class="kind">{{swKind(row.sw)}}</span>
-              <span class="watt" :class="row.sw.fdb_count!=null ? 'on' : 'unk'" v-if="row.sw.mgmt_ip"
+              <span class="watt" :class="row.sw.fdb_count!=null ? 'on' : 'unk'" v-if="row.sw.role==='mgmt' && row.sw.mgmt_ip"
                     :title="'FDB entries seen by the last switch-fdb read'">fdb {{row.sw.fdb_count ?? '—'}}</span>
-              <span class="dot" :class="swDot(row.sw)" :style="row.sw.mgmt_ip ? '' : 'margin-left:auto'"></span></div>
+              <span class="dot" :class="swDot(row.sw)" :style="row.sw.role==='mgmt' && row.sw.mgmt_ip ? '' : 'margin-left:auto'"></span></div>
+            <div class="sw-rows">
+              <div class="t-row"><span class="k">SN</span>
+                <span v-if="row.sw.serial" class="v">{{row.sw.serial}}</span><span v-else class="skel" style="width:40%"></span></div>
+              <div class="t-row" v-if="row.sw.sonic"><span class="k">MGMT</span><span class="v">{{epText(row.sw.sonic)}}</span></div>
+              <div class="t-row" v-if="row.sw.bmc"><span class="k">BMC</span>
+                <span class="v swbmc" :class="{on: sel==='_sw-' + row.sw.id + '.bmc'}" @click.stop="select('_sw-' + row.sw.id + '.bmc')"
+                      title="open this wedge's BMC (weutil, /etc/issue, cpld_rev)">{{epText(row.sw.bmc)}} ›</span></div>
+            </div>
             <div class="links">
               <span class="lk" v-if="row.sw.mgmt_ip" :class="swDot(row.sw)==='done' ? 'ok' : swDot(row.sw)==='fault' ? 'bad' : ''"
                     :title="swTitle(row.sw)">{{row.sw.mgmt_ip}}</span>
               <span class="lk" v-if="row.sw.uplink_ports.length" title="uplink ports (not matched)">uplink {{row.sw.uplink_ports.join(',')}}</span>
+            </div>
+            <div class="bars">
+              <div class="bar"><span class="seg" v-for="c in phaseSegs(swObj(row.sw))" :class="c"></span></div>
+              <div class="bar steps"><span class="seg" v-for="c in stepSegs(swObj(row.sw))" :class="c"></span></div>
             </div>
           </div>
 
@@ -97,12 +113,13 @@
                 <span class="t-port">{{cell.label}}</span>
                 <span class="kind" v-if="cell.kindLabel">{{cell.kindLabel}}</span>
                 <span class="watt" v-if="!cell.empty && power(cell)" :class="power(cell).cls" :title="power(cell).title">{{power(cell).t}}</span>
-                <span class="dot" :class="cell.empty ? 'grey' : dotCls(cell.dev)"></span>
+                <span class="dot" :class="cell.empty ? 'grey' : dotCls(cellObj(cell))"></span>
               </div>
               <div v-if="!cell.empty">
                 <div class="t-row"><span class="k">MAC</span>
                   <span v-if="cellMac(cell)" class="v">{{cellMac(cell)}}</span><span v-else class="skel"></span></div>
-                <div class="t-row"><span class="k">SN</span><span class="skel" style="width:60%"></span></div>
+                <div class="t-row"><span class="k">SN</span>
+                  <span v-if="cellSerial(cell)" class="v">{{cellSerial(cell)}}</span><span v-else class="skel" style="width:60%"></span></div>
                 <div class="t-row"><span class="k">POP</span>
                   <select class="popsel" :class="{ovr: cell.dev.pop_overridden}" :title="popTitle(cell.dev)"
                           :disabled="!!s.closed_at" @click.stop @change="setPop(cell.dev, $event.target.value)">
@@ -115,8 +132,8 @@
                   <span class="lk" v-for="c in chips(cell)" :class="c.state" :title="c.title">{{c.label}}</span>
                 </div>
                 <div class="bars">
-                  <div class="bar"><span class="seg" v-for="c in phaseSegs(cell.dev)" :class="c"></span></div>
-                  <div class="bar steps"><span class="seg" v-for="c in stepSegs(cell.dev)" :class="c"></span></div>
+                  <div class="bar"><span class="seg" v-for="c in phaseSegs(cellObj(cell))" :class="c"></span></div>
+                  <div class="bar steps"><span class="seg" v-for="c in stepSegs(cellObj(cell))" :class="c"></span></div>
                 </div>
               </div>
             </div>
@@ -125,16 +142,19 @@
     </div>
   </div>
 
-  <!-- ================= detail drawer (docked, non-modal) ================= -->
-  <div class="drawer" v-if="selDev">
+  <!-- ================= detail drawer (docked, non-modal) =================
+       one drawer for a device, a JBOD IOM, a switch or a wedge's BMC (selKind);
+       every binding is null-safe: petite-vue evaluates them while v-if tears down -->
+  <div class="drawer" v-if="selObj">
     <div class="d-head">
-      <span class="d-sn">— no serial yet —</span>
-      <span class="d-status" :style="statusStyle(selDev)">{{statusText(selDev)}}</span>
+      <span class="d-sn" :class="{bad: identOf(selObj) && !identOf(selObj)?.ok}"
+            :title="identOf(selObj)?.headline || 'Discover\'s serial step has not read one yet'">{{serialOf(selObj) || '— no serial yet —'}}</span>
+      <span class="d-status" :style="statusStyle(selObj)">{{statusText(selObj)}}</span>
       <span class="x" @click="close()">✕</span>
     </div>
-    <div class="d-sub">OU {{selDev?.ou}} {{colName(selDev)}} · {{selDev?.pos}} · {{selDev?.names?.host || selDev?.names?.host1 || selDev?.names?.iom1 || ''}} · {{selDev?.kind}} {{selDev?.part}}</div>
+    <div class="d-sub">{{subLine(selObj)}}</div>
 
-    <div class="actions">
+    <div class="actions" v-if="selKind==='dev'">
       <button disabled title="later plan">PWR</button><button disabled title="later plan">SOL</button>
       <button :disabled="!invUrl(selDev)" @click="openInv(selDev)"
               title="the inventory stage's macinv (detail form when present)">INV</button>
@@ -142,63 +162,161 @@
       <button disabled title="later plan">IDNT</button>
       <button :disabled="s.stage_running || !!s.closed_at || !(selDev?.qualify_rungs || []).length" @click="qualify(selDev?.pos)"
               title="re-run Qualify for this node only (then the rack-level rungs)">QUAL</button>
-      <button :disabled="s.stage_running || !!s.closed_at" @click="retry()"
-              title="re-run Discover for this rack order">RETRY</button>
+      <button :disabled="s.stage_running || !!s.closed_at" @click="firmware(selDev?.pos)"
+              title="read this device's firmware versions (detect only: never flashes)">FW</button>
+      <button :disabled="s.stage_running || !!s.closed_at" @click="retry(selDev?.pos)"
+              title="re-run Discover for this device only (asks first: it may power-cycle the node)">RETRY</button>
+    </div>
+    <div class="actions" v-else>
+      <button v-if="selKind==='swbmc'" @click="select('_sw-' + selObj?.sw?.id)" title="back to the switch">‹ SW {{selObj?.sw?.id}}</button>
+      <button v-if="selKind==='iom' && (selObj?.dev?.links || {})['iom' + (3 - selObj?.n)]" @click="select(selObj?.dev?.pos + '.iom' + (3 - selObj?.n))"
+              :title="'the other IOM of ' + selObj?.dev?.pos">IOM{{3 - selObj?.n}} ›</button>
+      <button :disabled="s.stage_running || !!s.closed_at" @click="firmware(fwTarget(selObj))"
+              :title="'read ' + fwTarget(selObj) + '\'s firmware versions (detect only: never flashes)'">FW</button>
+      <button :disabled="s.stage_running || !!s.closed_at" @click="retry(fwTarget(selObj))"
+              :title="'re-run Discover for ' + fwTarget(selObj) + ' only'">RETRY</button>
     </div>
     <p class="action-msg" v-if="actionMsg">{{actionMsg}}</p>
 
-    <div class="section-l">addresses</div>
-    <div class="facets">
-      <template v-for="a in addrRows(selDev)">
-        <span class="lbl">{{a.role}}</span><span class="mono" :title="a.name">{{a.mac || '⋯'}} · {{a.ip}}</span>
-        <span :class="a.cls">{{a.mark}}</span>
+    <!-- ---- device (TiogaPass host+BMC, JBOD roll-up) ---- -->
+    <div v-if="selKind==='dev'">
+      <div class="section-l">addresses</div>
+      <div class="facets">
+        <template v-for="a in addrRows(selDev)">
+          <span class="lbl">{{a.role}}</span><span class="mono" :title="a.name">{{a.mac || '⋯'}} · {{a.ip}}</span>
+          <span :class="a.cls">{{a.mark}}</span>
+        </template>
+        <span class="lbl">POP</span>
+        <span><select class="popsel" :class="{ovr: selDev?.pop_overridden}" :disabled="!!s.closed_at"
+                      @change="setPop(selDev, $event.target.value)">
+            <option v-for="p in s.profiles" :value="p" :selected="p===selDev?.pop">{{p}}</option></select>
+          <span class="note">default from BOM {{selDev?.part}}{{selDev?.pop_overridden ? ' = ' + selDev?.pop_default : ''}}</span></span>
+        <span class="no">{{selDev?.pop_overridden ? 'override' : ''}}</span>
+      </div>
+      <template v-if="Object.keys(selDev?.ioms || {}).length">
+        <div class="section-l">IOMs (each its own BMC)</div>
+        <div class="facets">
+          <template v-for="e in Object.entries(selDev?.ioms || {})">
+            <span class="lbl clk" @click="select(selDev?.pos + '.' + e[0])">{{e[0].toUpperCase()}} ›</span>
+            <span class="mono">{{e[1].mac || '⋯'}} · {{(selDev?.addrs || {})[e[0]]}}</span><span class="mono">{{e[1].serial || '—'}}</span>
+          </template>
+        </div>
       </template>
-      <span class="lbl">POP</span>
-      <span><select class="popsel" :class="{ovr: selDev?.pop_overridden}" :disabled="!!s.closed_at"
-                    @change="setPop(selDev, $event.target.value)">
-          <option v-for="p in s.profiles" :value="p" :selected="p===selDev?.pop">{{p}}</option></select>
-        <span class="note">default from BOM {{selDev?.part}}{{selDev?.pop_overridden ? ' = ' + selDev?.pop_default : ''}}</span></span>
-      <span class="no">{{selDev?.pop_overridden ? 'override' : ''}}</span>
     </div>
 
-    <template v-if="fwOf(selDev)">
-      <div class="section-l">firmware (report only)</div>
+    <!-- ---- one JBOD IOM ---- -->
+    <div v-if="selKind==='iom'">
+      <div class="section-l">address</div>
+      <div class="facets">
+        <span class="lbl">{{selObj?.ep?.toUpperCase()}}</span>
+        <span class="mono" :title="(selObj?.dev?.names || {})[selObj?.ep]">{{selObj?.view?.mac || '⋯'}} · {{(selObj?.dev?.addrs || {})[selObj?.ep]}}</span>
+        <span :class="(selObj?.runs || {})['bmc-reserved']?.verdict==='pass' ? 'ok' : 'no'">{{(selObj?.runs || {})['bmc-reserved']?.verdict==='pass' ? '✓ reserved' : '—'}}</span>
+      </div>
+      <div class="section-l">link (BOM → seen)</div>
+      <div class="ha" v-if="iomLink(selObj)">
+        <span class="h">port</span><span class="h">expected</span><span class="h">seen</span>
+        <span>{{iomLink(selObj)?.name}}</span><span>{{iomLink(selObj)?.expected}}</span><span :class="iomLink(selObj)?.state">{{iomLink(selObj)?.seen}}</span>
+      </div>
+    </div>
+
+    <!-- ---- switch / wedge BMC ---- -->
+    <div v-if="selKind==='sw' || selKind==='swbmc'">
+      <div class="section-l">addresses (discovered on the site turtle port)</div>
+      <div class="facets">
+        <template v-for="a in swAddr(selObj)">
+          <span class="lbl" :class="{clk: a.key}" @click="a.key && select(a.key)">{{a.role}}{{a.key ? ' ›' : ''}}</span>
+          <span class="mono">{{a.mac || '⋯'}} · {{a.ip || '⋯'}}</span><span class="note">{{a.note}}</span>
+        </template>
+        <template v-if="!swAddr(selObj).length"><span class="lbl">—</span><span class="note">no endpoint found yet (Discover)</span><span></span></template>
+      </div>
+    </div>
+
+    <!-- ---- identity: every kind's own read (FRU 0 / fruid-util / weutil / syseeprom) ---- -->
+    <div v-if="identOf(selObj)">
+      <div class="section-l">identity · {{identOf(selObj)?.serial_field || 'serial'}}</div>
+      <div class="kv-grid">
+        <template v-for="r in identRows(selObj)"><span class="lbl">{{r.k}}</span><span class="mono">{{r.v}}</span></template>
+        <template v-for="r in identReadRows(selObj)"><span class="lbl">{{r[0]}}</span><span class="mono">{{r[1]}}</span></template>
+      </div>
+      <div class="arts-line" v-if="artList(identOf(selObj)).length"><span class="lbl">raw</span>
+        <a class="art" v-for="a in artList(identOf(selObj))" :href="a.url" target="_blank" rel="noopener" :title="a.url">{{a.name}}</a></div>
+    </div>
+
+    <!-- ---- versions (Firmware's bmc-checked; report only for Facebook OpenBMC) ---- -->
+    <div v-if="verRows(selObj).length">
+      <div class="section-l">versions (Firmware, detect only) · {{fwViewOf(selObj)?.phase || '?'}}</div>
+      <div class="kv-grid">
+        <template v-for="r in verRows(selObj)"><span class="lbl">{{r.k}}</span><span class="mono" :class="r.cls">{{r.v}}</span></template>
+        <template v-if="selKind==='sw'"><span class="lbl">NOS</span><span class="mono">{{selObj?.sw?.nos}} ({{selObj?.sw?.model}})</span></template>
+      </div>
+      <div class="arts-line" v-if="artList(fwViewOf(selObj)).length"><span class="lbl">raw</span>
+        <a class="art" v-for="a in artList(fwViewOf(selObj))" :href="a.url" target="_blank" rel="noopener" :title="a.url">{{a.name}}</a></div>
+    </div>
+
+    <div v-if="selKind==='dev' && fwOf(selDev)">
+      <div class="section-l">firmware (Qualify's read, report only)</div>
       <div class="facets">
         <span class="lbl">BIOS</span><span class="mono fwv" :class="fwCls(selDev)">{{fwOf(selDev)?.bios_version}}</span>
         <span class="no">{{fwOf(selDev)?.bios_date}}</span>
         <span class="lbl">BMC</span><span class="mono fwv" :class="fwCls(selDev)">{{fwOf(selDev)?.bmc_firmware}}</span>
         <span class="no">{{fwOf(selDev)?.bmc_aux || ''}}</span>
       </div>
-    </template>
-
-    <div class="section-l">links (BOM → seen)</div>
-    <div class="ha">
-      <span class="h">port</span><span class="h">expected</span><span class="h">seen</span>
-      <template v-for="l in linkRows(selDev)">
-        <span>{{l.name}}</span><span>{{l.expected}}</span><span :class="l.state">{{l.seen}}</span>
-      </template>
     </div>
 
+    <div v-if="selKind==='dev'">
+      <div class="section-l">links (BOM → seen)</div>
+      <div class="ha">
+        <span class="h">port</span><span class="h">expected</span><span class="h">seen</span>
+        <template v-for="l in linkRows(selDev)">
+          <span>{{l.name}}</span><span>{{l.expected}}</span><span :class="l.state">{{l.seen}}</span>
+        </template>
+      </div>
+    </div>
+
+    <!-- ---- switch ports: port -> seen (FDB MACs / LLDP) -> geometry device, link ---- -->
+    <div v-if="selKind==='sw'">
+      <div class="section-l">ports · {{selObj?.sw?.ports_from}}</div>
+      <table class="inv-tbl port-tbl" v-if="portRows(selObj).length">
+        <thead><tr><th>port</th><th>link</th><th>{{selObj?.sw?.role==='mgmt' ? 'MACs (FDB)' : 'LLDP neighbour'}}</th><th>device</th></tr></thead>
+        <tbody><tr v-for="p in portRows(selObj)" :class="{unexp: p.note==='unexpected MAC' || p.note.startsWith('neighbour')}">
+          <td class="mono" :title="p.iface">{{p.port || p.iface}}</td>
+          <td :class="p.oper==='up' ? 'ok' : p.oper ? 'bad' : 'dimv'">{{p.oper || '—'}}</td>
+          <td class="mono">{{(p.seen || []).join(' ') || '—'}}</td>
+          <td><span v-for="x in (p.devices || [])" class="lk clk" @click="select(x.sel)">{{x.pos}} {{x.link}}</span>
+            <span class="note" v-if="p.note">{{p.note}}</span></td></tr></tbody>
+      </table>
+      <p class="pending-note" v-else>no port read yet</p>
+    </div>
+
+    <!-- ---- pipeline: Post's step names per phase; a step opens its evidence ---- -->
     <div class="section-l">pipeline</div>
     <div class="checklist">
-      <div class="phase" v-for="p in s.phases" :class="{bad: phaseState(selDev,p)==='fault'}">
-        <div class="phase-h"><span class="dot" :class="phaseDot(selDev,p)"></span>{{p}}
-          <span class="pct">{{phasePct(selDev,p)}}</span></div>
-        <div class="steps" v-if="stepEntries(selDev,p).length">
-          <div class="step" v-for="st in stepEntries(selDev,p)" :class="st.state" :title="st.title">
+      <div class="phase" v-for="p in s.phases" :class="{bad: phaseState(selObj,p)==='fault'}">
+        <div class="phase-h"><span class="dot" :class="phaseDot(selObj,p)"></span>{{p}}
+          <span class="pct">{{phasePct(selObj,p)}}</span></div>
+        <div class="steps" v-if="stepEntries(selObj,p).length">
+          <div class="step evable" v-for="st in stepEntries(selObj,p)" :class="st.state" :title="st.title" @click="openStep(selObj, p, st)">
             <span class="si">{{stepIcon(st.state)}}</span>{{st.name}}<span class="note" v-if="st.note"> · {{st.note}}</span>
-            <a class="art" v-for="a in st.arts" :href="a.url" target="_blank" rel="noopener" :title="a.url">{{a.name}}</a></div>
+            <a class="art" v-for="a in st.arts" :href="a.url" target="_blank" rel="noopener" :title="a.url" @click.stop>{{a.name}}</a></div>
         </div>
-        <div class="steps" v-else><div class="step pending"><span class="si">·</span>later plan</div></div>
+        <div class="steps" v-else><div class="step pending"><span class="si">·</span>{{selKind==='dev' ? 'later plan' : 'none for this endpoint'}}</div></div>
+        <div v-if="p==='firmware' && selKind==='dev'"><div class="ep-fw" v-for="x in endpointFw(selDev)">
+          <div class="ep-h clk" @click="select(selDev?.pos + '.' + x.ep)">{{x.ep.toUpperCase()}} ›</div>
+          <div class="steps">
+            <div class="step evable" v-for="st in x.entries" :class="st.state" :title="st.title" @click="openStep(selDev, 'firmware ' + x.ep.toUpperCase(), st)">
+              <span class="si">{{stepIcon(st.state)}}</span>{{st.name}}<span class="note" v-if="st.note"> · {{st.note}}</span>
+              <a class="art" v-for="a in st.arts" :href="a.url" target="_blank" rel="noopener" :title="a.url" @click.stop>{{a.name}}</a></div>
+          </div>
+        </div></div>
       </div>
     </div>
 
     <div class="section-l">alerts</div>
     <div class="alert-grid">
-      <div class="alert-box" v-for="f in faults(selDev)" :class="{bad: f.bad}">
+      <div class="alert-box" v-for="f in faults(selObj)" :class="{bad: f.bad}">
         <div class="ab-h">{{f.rung}}<span class="ab-tag" v-if="f.bad"> · !</span></div>
         <div class="ab-b">{{f.text}}</div></div>
-      <div class="alert-box" v-if="!faults(selDev).length"><div class="ab-h">rungs</div>
+      <div class="alert-box" v-if="!faults(selObj).length"><div class="ab-h">rungs</div>
         <div class="ab-b pending-note">no faults</div></div>
     </div>
   </div>
@@ -210,11 +328,28 @@
         <span class="x" @click="popOpen=null">✕</span></div>
       <div class="m-b">
         <p class="m-sub" v-if="popRun(popDev)?.detail?.error">{{popRun(popDev)?.detail?.error}}</p>
+        <p class="m-sub bad" v-for="x in (popRun(popDev)?.detail?.extra || [])">{{x}}</p>
         <table class="inv-tbl pop-tbl" v-if="(popRun(popDev)?.detail?.results || []).length">
           <tr v-for="r in (popRun(popDev)?.detail?.results || [])" :class="{blocked: !r.ok}">
             <td class="mono">{{r.rule}}</td><td>{{r.ok ? '✓' : '✕'}}</td><td>{{r.found}}</td></tr>
         </table>
         <p class="m-sub" v-else>no rules evaluated</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= rack-wide Discover modal (typed confirm) ================= -->
+  <div class="m-scrim" v-if="discovering" @click="discovering=false">
+    <div class="m-box" @click.stop>
+      <div class="m-h"><span class="m-title">Discover order {{s.order}}{{s.rack ? ' rack ' + s.rack : ''}}</span>
+        <span class="x" @click="discovering=false">✕</span></div>
+      <div class="m-b">
+        <p class="m-sub">Walks every device and switch: turtle/mgmt ports, Kea reservations and leases,
+          then powers on every node that is off and power-cycles every node that is on but not in
+          this device's live image ({{discHosts().map((d) => d.pos).join(', ')}}) -- an OS someone is
+          using included. To re-run one device, use RETRY in its drawer. Type the order id to confirm.</p>
+        <input class="confirm-in" name="rp-dconfirm" autocomplete="off" v-model="discText" :placeholder="s.order">
+        <button class="press danger" :disabled="discText!==s.order" @click="doDiscover()">Discover rack</button>
       </div>
     </div>
   </div>
@@ -227,10 +362,30 @@
       <div class="m-b">
         <p class="m-sub">Power-cycles all {{qualHosts().length}} host-bearing nodes into the live image
           ({{qualHosts().map((d) => d.pos).join(', ')}}), clears their SELs and runs the stress battery,
-          then the iperf mesh. It holds this rack for hours and cannot be cancelled.
+          then the iperf mesh. It holds this rack for hours; Cancel stops it at the next phase.
           Only devices whose Discover passed are booted. Type the order id to confirm.</p>
         <input class="confirm-in" name="rp-qconfirm" autocomplete="off" v-model="qualText" :placeholder="s.order">
         <button class="press danger" :disabled="qualText!==s.order" @click="doQualify()">Qualify rack</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= step evidence modal (Post's stepinfo; stepM?. — petite-vue evaluates during teardown) ================= -->
+  <div class="m-scrim" v-if="stepM" @click="stepM=null">
+    <div class="m-box" @click.stop>
+      <div class="m-h"><span class="m-title">{{stepM?.who}} · {{stepM?.phase}} · {{stepM?.name}}</span>
+        <span class="x" @click="stepM=null">✕</span></div>
+      <div class="m-b">
+        <p class="m-sub"><span class="pop-badge" :class="'st-' + (stepM?.state || 'pending')">{{stepM?.word}}</span>
+          <b class="step-head" v-if="stepM?.headline">{{stepM?.headline}}</b></p>
+        <p class="m-sub dim" v-if="stepM?.when">{{stepM?.when}}</p>
+        <p class="pending-note" v-if="!stepM?.ran">this step has not run yet</p>
+        <div class="kv-grid step-kv" v-if="(stepM?.rows || []).length">
+          <template v-for="r in (stepM?.rows || [])"><span class="lbl">{{r[0]}}</span><span class="mono">{{r[1]}}</span></template>
+        </div>
+        <p class="pending-note" v-for="n in (stepM?.notes || [])">{{n}}</p>
+        <div class="arts-line" v-if="(stepM?.arts || []).length"><span class="lbl">artifacts</span>
+          <a class="art" v-for="a in (stepM?.arts || [])" :href="a.url" target="_blank" rel="noopener" :title="a.url">{{a.name}}</a></div>
       </div>
     </div>
   </div>
