@@ -156,7 +156,7 @@ function App() {
     async mounted() {
       document.addEventListener('keydown', (e) => {
         if (e.key !== 'Escape') return;
-        if (this.artM) this.closeArt(); else if (this.stepM) this.stepM = null; else if (this.qualifying) this.qualifying = false; else if (this.discovering) this.discovering = false; else if (this.closing) this.closing = false; else if (this.popOpen) this.popOpen = null; else this.close();
+        if (this.artM) this.backArt(); else if (this.stepM) this.stepM = null; else if (this.qualifying) this.qualifying = false; else if (this.discovering) this.discovering = false; else if (this.closing) this.closing = false; else if (this.popOpen) this.popOpen = null; else this.close();
       });
       await this.refresh(); setInterval(() => this.refresh(), POLL_MS);
     },
@@ -234,7 +234,7 @@ function App() {
         when: run ? [run.started_at && `started ${run.started_at}`, run.finished_at && `finished ${run.finished_at}`].filter(Boolean).join(' · ') : '' };
     },
     // ---- artifact viewer: the text in-page (first ART_MAX bytes), Copy / Download / Back ----
-    // fromStep: Back returns to the evidence modal under it; Esc / ✕ / the scrim close both.
+    // fromStep: Back / Esc return to the evidence modal under it; ✕ / the scrim close both.
     async openArt(a, fromStep) {
       if (!a || !a.url) return;
       const seq = ++this.artSeq;
@@ -267,7 +267,7 @@ function App() {
         if (seq === this.artSeq && this.artM) this.artM = { ...this.artM, loading: false, error: e.message };
       }
     },
-    // Back: to the evidence modal it was opened from; close: the viewer and that modal
+    // Back (and Esc): to the evidence modal it was opened from; close: the viewer and that modal
     backArt() { this.artSeq++; this.artM = null; },
     closeArt() { const f = this.artM && this.artM.fromStep; this.artSeq++; this.artM = null; if (f) this.stepM = null; },
     // a step row's artifact chip: the step's evidence modal with the viewer over it
