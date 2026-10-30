@@ -126,6 +126,18 @@ class OrderDB:
         r = self._all("SELECT MAX(id) id FROM run WHERE pos=? AND rung=?", (pos, rung))
         return r[0]["id"]
 
+    def latest_stage_runs(self) -> list[dict]:
+        """The latest run per (pos, stage, rung): [{pos, stage, rung, status, verdict,
+        finished_at, artifacts {name: order-dir-relative path}}], by pos, stage, rung."""
+        rows = self._all(
+            "SELECT * FROM run WHERE id IN (SELECT MAX(id) FROM run GROUP BY pos, stage, rung)"
+            " ORDER BY pos, stage, rung")
+        return [{"pos": r["pos"], "stage": r["stage"], "rung": r["rung"],
+                 "status": r["status"], "verdict": r["verdict"],
+                 "finished_at": r["finished_at"],
+                 "artifacts": json.loads(r["artifacts"]) if r["artifacts"] else {}}
+                for r in rows]
+
     def run_count(self, pos, rung) -> int:
         return self._all("SELECT COUNT(*) n FROM run WHERE pos=? AND rung=?", (pos, rung))[0]["n"]
 
@@ -199,8 +211,9 @@ class OrderDB:
                 for r in self._all("SELECT * FROM waiver ORDER BY id")]
         return rows if history else {r["pos"]: r for r in rows}
 
-    def set_closed(self) -> None:
-        self._exec("INSERT OR IGNORE INTO meta(k,v) VALUES('closed_at',?)", (_now(),))
+    def set_closed(self, at: str | None = None) -> None:
+        """Mark the order closed at `at` (UTC iso; now when None). A first close wins."""
+        self._exec("INSERT OR IGNORE INTO meta(k,v) VALUES('closed_at',?)", (at or _now(),))
 
     def closed_at(self) -> str | None:
         r = self._all("SELECT v FROM meta WHERE k='closed_at'")

@@ -1,8 +1,10 @@
 """Stage orchestration for a rack order: the shared context and rung recorder; Discover
 itself is discover_ladder (Post's 16-step ladder per device).
 
-Close deletes the order's Kea rows through flax-control FIRST; the order is marked
-closed only after that succeeds, so a failure leaves it open and Close re-runnable.
+Close archives the rack (flax-control's rackpost.* tables) and then deletes the order's
+Kea rows, both through flax-control; the order is marked closed only after both
+succeed, so a failure leaves it open, reservations kept, and Close re-runnable. Then
+the Deploy stage's per-run ansible inventory (the live hosts' IPs) leaves the order dir.
 Close needs Kea only: `creds` may be a zero-arg loader, called the first time a
 Discover rung needs the switch or BMC login, so missing creds never block Close.
 """
@@ -12,6 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from flax_rungs.ansible import INVENTORY
 from flax_rungs.result import RungResult
 
 from .creds import Creds
@@ -69,7 +72,13 @@ def run_discover(ctx, *, positions: list[str] | None = None) -> None:
 
 
 def close_order(ctx) -> int:
+    from . import archive                       # archive -> report -> deploy -> stages
+    at = ctx.db.closed_at() or archive.now()    # a re-close keeps the first close time
+    p = archive.payload(ctx.g, ctx.db, ctx.dir, closed_at=at)
+    ctx.kea.archive(p)                          # raises KeaError -> order stays open
     n = ctx.kea.delete_source(source(ctx))      # raises KeaError -> order stays open
-    ctx.db.set_closed()
-    ctx.db.add_event("close", f"closed; {n} reservation(s) released")
+    ctx.db.set_closed(at)
+    (Path(ctx.dir) / INVENTORY).unlink(missing_ok=True)
+    ctx.db.add_event("close", f"closed; archived {len(p['devices'])} device(s); "
+                              f"{n} reservation(s) released")
     return n

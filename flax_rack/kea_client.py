@@ -1,6 +1,8 @@
-"""Client for the flax-control order-reservation endpoints (Task 6).
+"""Client for the flax-control order endpoints: reservations (Task 6) and Close's
+archive (Plan 4).
 
-Kea is written ONLY through these endpoints; never raw SQL from flax_rack.
+Kea and the rackpost archive are written ONLY through these endpoints; never raw SQL
+from flax_rack.
 """
 import json
 import urllib.error
@@ -52,6 +54,11 @@ class KeaClient:
 
     def list(self, source) -> list[dict]:
         return self._call("GET", {"source": source}).get("rows", [])
+
+    def archive(self, payload: dict) -> dict:
+        """Close's archive write: flax-control replaces this (order, rack)'s rackpost.*
+        rows (POST /api/v1/order-archive) -> {devices, components, macs, rungs}."""
+        return self._call("POST", body=payload, path="/api/v1/order-archive")
 
     def leases(self, macs) -> dict[str, dict]:
         """Read-only: {mac12hex: {ip, expire, state, subnet_id, hostname}} for

@@ -103,6 +103,11 @@ class FakeKea:
         self.rows: dict[str, dict] = {}
         self.refuse = set(refuse)
         self.dyn = dict(dyn or {})
+        self.archives: dict[tuple, dict] = {}      # (order_id, rack) -> the last payload
+
+    def archive(self, payload):
+        self.archives[(payload["order_id"], payload["rack"])] = payload
+        return {k: len(payload[k]) for k in ("devices", "components", "macs", "rungs")}
 
     def leases(self, macs):
         out = {}

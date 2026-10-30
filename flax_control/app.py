@@ -780,6 +780,19 @@ def api_order_reservations_delete(source: str = ""):
         return JSONResponse({"error": str(exc)}, status_code=400)
 
 
+from . import order_archive  # noqa: E402
+
+
+@app.post("/api/v1/order-archive")
+def api_order_archive(body=Body(...)):
+    """rackpost Close: replace one (order_id, rack)'s rackpost.* archive rows in one
+    transaction. 400 = malformed payload (no DB touched); 200 = the row counts."""
+    try:
+        return JSONResponse(order_archive.replace(body))
+    except order_archive.BadValue as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+
 from . import order_leases  # noqa: E402
 
 
