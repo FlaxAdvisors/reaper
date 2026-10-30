@@ -49,13 +49,13 @@ def reach(ip: str, creds: list[tuple[str, str]], *, ciphers=CIPHERS,
 
 
 def _ipmi(ip: str, user: str, pw: str, args: list[str], *, cipher: int = 17,
-          runner=subprocess.run):
+          timeout: int = 30, runner=subprocess.run):
     env = dict(os.environ)
     env["IPMI_PASSWORD"] = pw              # -E reads it; never -P (argv)
     argv = ["ipmitool", "-I", "lanplus", "-C", str(cipher), "-H", ip,
             "-U", user, "-E"] + args
     try:
-        return runner(argv, capture_output=True, text=True, timeout=30, env=env)
+        return runner(argv, capture_output=True, text=True, timeout=timeout, env=env)
     except (subprocess.TimeoutExpired, OSError):
         return None
 

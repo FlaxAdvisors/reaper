@@ -74,3 +74,18 @@ def set_boot_disk(bmc_ip: str, creds: list[tuple[str, str]], *,
         return RungResult("pass", {"method": "ipmitool", "target": "Hdd", "redfish": last,
                                    "cipher": info.get("cipher")})
     return RungResult("fail", {"error": last or "no Redfish credentials", "target": "Hdd"})
+
+
+def clear_boot_override(bmc_ip: str, creds: list[tuple[str, str]], *,
+                        runner=subprocess.run) -> RungResult:
+    """Done's boot reset: BootSourceOverrideEnabled Disabled (target None), so the
+    node boots its own UEFI order. Redfish only; nothing is power-controlled."""
+    body = _body(False)
+    last = ""
+    for user, pw in creds:
+        p = _patch(bmc_ip, user, pw, body, runner)
+        code = ((p.stdout or "").strip() if p is not None else "")
+        if code.startswith("2"):
+            return RungResult("pass", {"method": "redfish", "user": user, "target": "None"})
+        last = f"http {code}" if code else "no reply"
+    return RungResult("fail", {"error": last or "no Redfish credentials", "target": "None"})
