@@ -39,6 +39,15 @@
 // tooltip) and on the running step; a finished phase folds to its summary line (click to
 // unfold), one with a failure stays open. A stage re-run for a device shows only its new
 // attempt's rows (the server's latest_runs(attempt=True)): unreached steps read not run.
+// Header: the count tiles, then the stage launch buttons (Run, Discover, Firmware, Qualify,
+// Deploy, Done) in the same shape. One rule for every stage button (stagePass): green ✓
+// when that stage passed in this pass for every device it applies to (Firmware: read to
+// the end for every device, report only), lit while it runs, neutral otherwise; its sub
+// line is passed/of. Run ✓ = the current Run done with every stage ✓.
+// Drawer PWR / IDNT (a host's BMC, api/power + api/identify): PWR shows the poller's
+// power, on / off / cycle / reset (off, cycle and reset confirm naming the node; refused
+// while a stage runs for it: stage_positions, null = the rack); IDNT on 240 s / force /
+// off, lit while on, and the tile carries a blinking ID marker.
 // Serial console: the shared flax-post-sol relay holds the BMC's one SOL session.
 // While a device's console / install-console rung runs, the drawer tails the relay's
 // capture file (api/console/<pos>, every CON_MS); the SOL button opens the Post UI's
@@ -66,6 +75,11 @@ const CON_KEEP = 256 * 1024;          // the live viewer keeps this much of the 
 const CON_RUNGS = ['console', 'install-console'];
 // the phases whose failure holds a device (alerts): Firmware is report only
 const ALERT_PHASES = ['discover', 'qualify', 'deploy', 'done'];
+// the header's stage buttons, in order (each a stage key and its label)
+const STAGE_BTNS = [['run', 'Run'], ['discover', 'Discover'], ['firmware', 'Firmware'],
+                    ['qualify', 'Qualify'], ['deploy', 'Deploy'], ['done', 'Done']];
+// Deploy start-at phases that re-run just themselves on deployed nodes (no install, no gate)
+const LATE_FROM = ['iperf', 'stress'];
 // terminal escapes (colour, cursor moves, charset picks) and bare CRs out of the
 // relay's raw capture: the viewer is a <pre>, not a terminal
 const stripAnsi = (t) => t.replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]|\x1b[()][0-9A-Za-z]|\x1b[=>78DEHMc]|\r/g, '');
@@ -235,6 +249,8 @@ function App() {
     // per-device Deploy modal: depM = {pos, msg} while open; its inputs are top-level so
     // v-model never reads through a null depM while the modal tears down
     depM: null, devFrom: 'install', devReinText: '', devWaive: {}, devReason: '',
+    // drawer PWR / IDNT modals: pwrM / idntM = {pos, ip, msg} while open
+    pwrM: null, pwrChoice: null, pwrConfirm: false, idntM: null, idntMode: 'on',
     // live console tail (con) of the selected device while its console rung runs; the
     // SOL terminal modal (solM = {pos, ip}) and its lock/log state (as the Post UI's)
     phOpen: {},                // drawer phases the operator unfolded / folded: {"<pos>/<phase>": open}
@@ -252,9 +268,12 @@ function App() {
     async mounted() {
       document.addEventListener('keydown', (e) => {
         if (e.key !== 'Escape') return;
-        if (this.solM) this.closeSol(); else if (this.artM) this.backArt(); else if (this.stepM) this.stepM = null; else if (this.depM) this.depM = null; else if (this.contM) this.contM = null; else if (this.running) this.running = false; else if (this.finishing) this.finishing = false; else if (this.freshing) this.freshing = false; else if (this.deploying) this.deploying = false; else if (this.qualifying) this.qualifying = false; else if (this.discovering) this.discovering = false; else if (this.closing) this.closing = false; else if (this.popOpen) this.popOpen = null; else this.close();
+        if (this.solM) this.closeSol(); else if (this.artM) this.backArt(); else if (this.stepM) this.stepM = null; else if (this.pwrM) this.pwrM = null; else if (this.idntM) this.idntM = null; else if (this.depM) this.depM = null; else if (this.contM) this.contM = null; else if (this.running) this.running = false; else if (this.finishing) this.finishing = false; else if (this.freshing) this.freshing = false; else if (this.deploying) this.deploying = false; else if (this.qualifying) this.qualifying = false; else if (this.discovering) this.discovering = false; else if (this.closing) this.closing = false; else if (this.popOpen) this.popOpen = null; else this.close();
       });
       await this.refresh(); setInterval(() => this.refresh(), POLL_MS);
+      // the drawer docks under the header, whose height follows the width (rows wrap)
+      const top = document.querySelector('.top');
+      if (top && window.ResizeObserver) new ResizeObserver(() => document.documentElement.style.setProperty('--top-h', top.offsetHeight + 'px')).observe(top);
       if (this.sel) this.scrollToRun();
       setInterval(() => this.tickConsole(), CON_MS);
     },
@@ -294,7 +313,7 @@ function App() {
     },
     // every modal / popover Esc closes (the keydown chain in mounted)
     modalOpen() {
-      return !!(this.solM || this.artM || this.stepM || this.depM || this.contM || this.running || this.finishing
+      return !!(this.solM || this.artM || this.stepM || this.pwrM || this.idntM || this.depM || this.contM || this.running || this.finishing
         || this.freshing || this.deploying || this.qualifying || this.discovering || this.closing || this.popOpen);
     },
     // a header message about a stage just started (cleared once that stage is not running)
@@ -1091,7 +1110,16 @@ function App() {
     get depDev() { return this.depM ? (this.s.devices || []).find((d) => d.pos === this.depM.pos) || null : null; },
     depWaived() { return Object.keys(this.devWaive || {}).filter((r) => this.devWaive[r]); },
     // what still blocks the device with the ticked waivers (empty = it may enter Deploy)
-    depLeft() { const d = this.depDev; return !d ? [] : (d.gate_blockers || []).filter((r) => !this.depWaived().includes(r)); },
+    depLeft() {
+      const d = this.depDev;
+      return !d || this.lateFrom(this.devFrom) ? [] : (d.gate_blockers || []).filter((r) => !this.depWaived().includes(r));
+    },
+    lateFrom(f) { return LATE_FROM.includes(f); },
+    fromNote(f) {
+      return f === 'firstboot' ? 'skip the install: boot the installed OS, then the rest'
+        : f === 'iperf' ? 'deployed nodes: iperf, then stress (no power action)'
+        : f === 'stress' ? 'deployed nodes: stress only (no power action)' : '';
+    },
     depReady() {
       if (!this.depM || this.depLeft().length) return false;
       if (this.depWaived().length && !this.devReason.trim()) return false;
@@ -1102,7 +1130,7 @@ function App() {
       const m = this.depM; if (!m) return;
       const body = { positions: [m.pos], confirm: true, from: this.devFrom };
       if (this.devFrom === 'install' && this.installed(this.depDev)) body.reinstall = this.devReinText;
-      const w = this.depWaived();
+      const w = this.lateFrom(this.devFrom) ? [] : this.depWaived();
       if (w.length) body.waive = { [m.pos]: { rungs: w, reason: this.devReason.trim() } };
       try { await api('api/stage/deploy', body); this.depM = null; this.actionMsg = `deploy started for ${m.pos}`; }
       catch (e) { this.depM = { ...m, msg: e.message }; }
@@ -1219,6 +1247,103 @@ function App() {
     invUrl(d) {
       const a = ((d && (d.runs || {}).inventory) || {}).artifacts || {};
       return a['macinv-v'] || a.macinv || null;
+    },
+
+    // ---- header stage buttons: one ✓ rule for all (stagePass) ----
+    // what a tile stands for: a device, a JBOD's IOMs (each its own endpoint), a switch
+    tileObjs() {
+      const out = [];
+      for (const d of this.s.devices || []) {
+        const ioms = Object.keys(d.links || {}).filter((k) => /^iom\d+$/.test(k));
+        if (ioms.length) out.push(...ioms.map((k) => iomObj(d, k))); else out.push(d);
+      }
+      return out.concat((this.s.switches || []).map(swObj));
+    },
+    // {n, of}: the endpoints the stage applies to (it has steps for them) and how many
+    // passed it this pass (Firmware: read to the end, whatever it found)
+    stagePass(p) {
+      const os = this.tileObjs().filter((o) => this.stepEntries(o, p).length);
+      return { n: os.filter((o) => this.chipState(o, p) === 'done').length, of: os.length };
+    },
+    stageOk(p) {
+      if (p === 'run') {
+        const r = this.s.run;
+        return !!r && r.state === 'done' && STAGE_BTNS.slice(1).every(([k]) => this.stageOk(k));
+      }
+      const x = this.stagePass(p);
+      return x.of > 0 && x.n === x.of;
+    },
+    stageLit(p) { return p === 'run' ? this.runRunning : !!this.s.stage_running && this.s.stage === p; },
+    stageBtns() {
+      const tip = { run: this.runTip(), discover: 'run Discover for this rack: Post\'s 16-step ladder per device (switch port → MACs → Kea reserve/lease → power-on → live boot → BMC ready); powers on / cycles nodes not in the live image',
+                    firmware: 'run Firmware for this rack: Post\'s 6 steps per device (BMC Redfish, BIOS dmidecode, Mellanox mstflint query vs the loose-node manifests) -- detect only, never flashes',
+                    qualify: this.qualifyTitle(), deploy: this.deployTitle(), done: this.doneTitle() };
+      return STAGE_BTNS.map(([key, label]) => {
+        const lit = this.stageLit(key), ok = !lit && this.stageOk(key);
+        const x = key === 'run' ? null : this.stagePass(key);
+        const sub = lit ? 'running' : key === 'run' ? ((this.s.run || {}).state || '—') : `${x.n}/${x.of}`;
+        const rule = key === 'run' ? '✓ = this Run done and every stage ✓'
+          : key === 'firmware' ? `✓ = read for every device (report only) · ${x.n}/${x.of} read`
+          : `✓ = passed this pass for every device it applies to · ${x.n}/${x.of} passed`;
+        const why = this.s.closed_at ? 'order is closed · ' : this.s.stage_running && !lit ? 'a stage is running · ' : '';
+        return { key, label, cls: lit ? 'lit' : ok ? 'ok' : '', sub, title: `${why}${tip[key]} · ${rule}${lit ? ' · running now' : ''}` };
+      });
+    },
+    runTip() { return 'Run: Discover → Firmware → Qualify → Deploy → Done, driven by the server; all pass = straight through, any failure = held before Deploy with the blockers listed (then Continue to Deploy)'; },
+    stageGo(k) {
+      ({ run: () => this.openRun(), discover: () => this.openDiscover(), firmware: () => this.firmware(),
+         qualify: () => this.openQualify(), deploy: () => this.openDeploy(), done: () => this.openDone() })[k]();
+    },
+    csvLinks() {
+      const n = (this.s.done || {}).csv_names || {};
+      const what = { devices: 'physical: serials, MACs, front-panel ports', firmware: 'firmware versions + Qualify / Deploy / Done verdicts',
+                     inventory: 'the parts of each node\'s latest Qualify inventory' };
+      return ['devices', 'firmware', 'inventory'].map((k) => ({ k, name: n[k] || `${k}.csv`, what: what[k] }));
+    },
+
+    // ---- drawer PWR / IDNT (a host's BMC) ----
+    hostBmc(d) { return !!d && !!(d.addrs || {}).bmc && (d.qualify_rungs || []).length > 0; },
+    pwrTitle(d) { return (d && (this.power({ dev: d }) || {}).title) || ''; },
+    pwrCls(d) { const p = d && (d.bmc_live || {}).power; return p === 'on' ? 'on' : p === 'off' ? 'off' : 'unk'; },
+    // why the server refuses a power action for d now ('' = it may): a stage runs for it
+    pwrHeld(d) {
+      if (!d || !this.s.stage_running) return '';
+      const sp = this.s.stage_positions;
+      if (sp && !sp.includes(d.pos)) return '';
+      return `${this.s.stage || 'a stage'} runs for ${sp ? d.pos : 'the rack'}`;
+    },
+    get pwrDev() { return this.pwrM ? (this.s.devices || []).find((d) => d.pos === this.pwrM.pos) || null : null; },
+    get idntDev() { return this.idntM ? (this.s.devices || []).find((d) => d.pos === this.idntM.pos) || null : null; },
+    openPwr(d) { if (this.hostBmc(d)) { this.pwrChoice = null; this.pwrConfirm = false; this.pwrM = { pos: d.pos, ip: d.addrs.bmc, msg: null }; } },
+    async doPower() {
+      const m = this.pwrM, a = this.pwrChoice; if (!m || !a) return;
+      this.busy = true; this.pwrConfirm = false; this.pwrM = { ...m, msg: `power ${a}…` };
+      try {
+        const r = await api('api/power', a === 'on' ? { pos: m.pos, action: a } : { pos: m.pos, action: a, confirm: m.pos });
+        if (this.pwrM) this.pwrM = { ...m, msg: `power ${a} ok · now ${r.power || '?'}` };
+      } catch (e) { if (this.pwrM) this.pwrM = { ...m, msg: e.message }; }
+      this.busy = false;
+      await this.refresh();
+    },
+    identOn(d) {
+      const x = d && d.ident; if (!x || !x.on) return false;
+      return x.mode === 'force' || !x.until || Date.parse(x.until) > this.now;
+    },
+    identTitle(d) {
+      const x = d && d.ident; if (!x) return 'identify: not set from here';
+      const st = this.identOn(d) ? (x.mode === 'force' ? 'on (force, until off)' : `on until ${new Date(x.until).toLocaleTimeString()}`) : 'off';
+      return `identify ${st}` + (x.reported ? ` · BMC reports ${x.reported}` : ' · BMC does not report it: last command') + ` · ${x.mode} by ${x.who} ${x.at}`;
+    },
+    openIdnt(d) { if (this.hostBmc(d)) { this.idntMode = this.identOn(d) ? 'off' : 'on'; this.idntM = { pos: d.pos, ip: d.addrs.bmc, msg: null }; } },
+    async doIdent() {
+      const m = this.idntM; if (!m) return;
+      this.busy = true;
+      try {
+        const r = await api('api/identify', { pos: m.pos, mode: this.idntMode });
+        if (this.idntM) this.idntM = { ...m, msg: `identify ${this.idntMode} ok` + (r.ident && r.ident.reported ? ` · ${r.ident.reported}` : '') };
+      } catch (e) { if (this.idntM) this.idntM = { ...m, msg: e.message }; }
+      this.busy = false;
+      await this.refresh();
     },
 
     // ---- start fresh (a new pass) ----

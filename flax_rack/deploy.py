@@ -46,6 +46,13 @@ else the run is refused and `from_phase="firstboot"` (skip install: SOL, Hdd boo
 installed-OS proof, then the rest) is the way on. A firstboot run needs that same
 installed-OS evidence for each target.
 
+From iperf / stress (LATE_FROM) re-runs just those phases on deployed nodes: no power
+action, no install, no Qualify gate (the node already went through it). Each target
+needs its earlier Deploy phases passed in this pass (deploy_why before deploy-iperf:
+install-or-kept / firstboot / flax-user / ha-config / ha-test), or an installed OS (any
+pass) with bond0 up (this pass's ha-config passed; a node without fabric links: the
+installed OS alone); anything else is refused naming what is missing.
+
 A device failing a phase (fail or unmeasured on its rung) gets `skip` ("failed in phase
 <p>" / "not measured in phase <p>" / "cancelled") on the later phases' rungs; the rest
 carry on. install-console never gates the later phases (Qualify's console rule) but a
@@ -94,7 +101,9 @@ from .stages import cancelled, creds
 
 STAGE = "deploy"
 PHASES = ("install", "firstboot", "user", "ha-config", "ha-test", "iperf", "stress")
-FROM_PHASES = ("install", "firstboot")
+FROM_PHASES = ("install", "firstboot", "iperf", "stress")
+# a re-run of just these on deployed nodes (no power action, no install or gate)
+LATE_FROM = ("iperf", "stress")
 DEADLINES = {"install": 3600, "firstboot": 1200, "user": 1800, "ha-config": 300,
              "ha-test": 1200, "iperf": 900, "stress": 1200}
 PHASE_RUNG = {"install": "install", "firstboot": "firstboot", "user": "flax-user",
@@ -295,6 +304,19 @@ def plan(lr, g, *, positions=None, from_phase="install", reinstall=None, waive=N
     if not targets:
         raise GateError("no host-bearing device to deploy")
     w = check_waivers(g, waive, [d.pos for d in targets])
+    if from_phase in LATE_FROM:
+        pre = deploy_why(lr, g, before="deploy-iperf")
+
+        def bond_up(d):
+            return "ha-config" not in deploy_rungs(d) \
+                or (lr.get((d.pos, "ha-config")) or {}).get("verdict") == "pass"
+        bad = {d.pos: pre[d.pos] for d in targets
+               if d.pos in pre and not (d.pos in installed and bond_up(d))}
+        if bad:
+            raise GateError(f"deploy from {from_phase} needs the earlier Deploy phases passed "
+                            "(or an installed OS with bond0 up): "
+                            + "; ".join(f"{p} {y}" for p, y in bad.items()))
+        return targets, {}, {}          # a waiver is for the gate, which this never passes
     blocked = {d.pos: why for d in targets
                if (why := gate_why(lr, d, w.get(d.pos, {}).get("rungs", ())))}
     if blocked:
@@ -1047,6 +1069,8 @@ def run_deploy(ctx, *, positions: list[str] | None = None, from_phase: str = "in
     prog = _Progress(ctx, PHASES, ctx.db.set_deploy_progress)
     if from_phase in ("install", "firstboot"):  # from a later phase: the earlier ones' rows stand
         ctx.db.mark_stage_start(STAGE, [x.pos for x in xs])
+    for x in xs:        # a late re-run captures no console: the install-console row stands
+        x.sol_done = from_phase in LATE_FROM
     for x in xs:        # an installed disk kept: its install row says so (deploy_why)
         if from_phase == "firstboot" or x.pos in fb:
             # na: nothing to do by design (the disk is kept), so the phase reads complete

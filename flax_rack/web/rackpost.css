@@ -46,7 +46,7 @@ textarea.confirm-in{font:inherit;font-size:.8rem;resize:vertical}
 .ctx-at.run{color:var(--violet)}
 
 /* drawer */
-.drawer{top:88px;height:calc(100% - 88px)}
+.drawer{top:var(--top-h,88px);height:calc(100% - var(--top-h,88px))}
 .actions button:disabled{opacity:.35;cursor:default}
 .actions button:disabled:hover{background:var(--panel2)}
 .facets .bad{color:var(--red)}
@@ -211,3 +211,26 @@ textarea.confirm-in{font:inherit;font-size:.8rem;resize:vertical}
 .phase-h.clk{cursor:pointer} .phase-h .caret{margin-left:.35rem;color:var(--dim);font-size:.7rem}
 .phase-h .ph-ok{margin-left:.35rem;color:var(--green)}
 .phase.folded .steps:empty{display:none}
+/* header: the stage launch buttons on the count-tile row, in the tiles' shape. One rule
+   for all: ok = passed this pass for every device it applies to (green ✓), lit = it runs
+   now (amber), neutral otherwise; the sub line is passed/of */
+.toprow .tl{flex-wrap:wrap;row-gap:6px}
+.stagebtns{padding-left:.6rem;border-left:1px solid var(--border)}
+.stagebtns{gap:.3rem}
+.stagebtn{font:inherit;color:var(--text);min-width:52px;padding:.2rem .45rem}
+.stagebtn b{font-size:.8rem;line-height:1.3;font-weight:700;white-space:nowrap}
+.stagebtn.run b,.stagebtn.done b{color:var(--green)} .stagebtn.discover b{color:var(--violet)}
+.stagebtn.firmware b{color:var(--accent)} .stagebtn.qualify b{color:var(--amber)} .stagebtn.deploy b{color:var(--cyan)}
+.stagebtn.ok{border-color:rgba(63,185,80,.65);background:rgba(63,185,80,.1)}
+.stagebtn.ok b,.stagebtn.ok span{color:var(--green)} .stagebtn.ok span{font-weight:700}
+.stagebtn.lit{border-color:var(--amber);box-shadow:inset 0 -2px 0 var(--amber)}
+.stagebtn.lit span{color:var(--amber);animation:rp-pulse 1.4s ease-in-out infinite}
+.stagebtn:disabled{cursor:default}
+.stagebtn:disabled:not(.lit):not(.ok){opacity:.45}
+.stagebtn:disabled.ok{opacity:.75}
+/* drawer PWR / IDNT; the tile's identify marker blinks while the LED is on */
+.actions button.lit{color:var(--amber);border-color:var(--amber);background:rgba(210,153,34,.12)}
+.idm{font-family:ui-monospace,monospace;font-size:.6rem;font-weight:700;color:#1b1300;background:var(--amber);
+  border-radius:3px;padding:0 .25rem;margin-left:.35rem;animation:rp-blink 1s steps(2,start) infinite}
+@keyframes rp-blink{to{visibility:hidden}}
+.m-sub b.on{color:var(--green)} .m-sub b.off{color:var(--accent)} .m-sub b.unk{color:var(--muted)}

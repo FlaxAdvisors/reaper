@@ -24,8 +24,8 @@ A device with no Firmware result in the current pass is flagged: the event `done
 Firmware result this pass: <pos ...>` and a `firmware` row + note on its components
 rung (the CSV's version cells for it are blank: versions are this pass's reads).
 
-Then report.write rewrites customer-devices.csv / customer-firmware.csv /
-customer-components.csv in the order dir (every device, IOM and switch row; from each
+Then report.write rewrites <customer>-<order>-devices.csv / -firmware.csv /
+-inventory.csv in the order dir (every device, IOM and switch row; from each
 row's own latest runs; as-built ports from the rack's live link monitor when it runs) and
 the event `done: csv written (<n> devices)` is logged. A positions run re-reads those
 devices only and rewrites all three files.
@@ -40,6 +40,7 @@ namespace like real_rungs()) replaces them in tests and in RACKPOST_FAKE.
 """
 import csv
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from types import SimpleNamespace
 
 from flax_rungs import endsummary, pxeboot, redfish
@@ -206,7 +207,7 @@ def targets(g, positions=None) -> list:
 
 def run(ctx, positions: list[str] | None = None) -> dict:
     """Done for the rack (or `positions`). -> {"devices": {pos: {rung: verdict}},
-    "csv": {"devices": path, "components": path} | None (cancelled)}."""
+    "csv": {"devices": path, "firmware": path, "inventory": path} | None (cancelled)}."""
     if ctx.db.closed_at():
         raise RuntimeError("order is closed")
     g = ctx.g
@@ -255,5 +256,6 @@ def run(ctx, positions: list[str] | None = None) -> dict:
     paths = report.write(ctx.dir, g, ctx.db, *((lm.snapshots(), lm.clock()) if lm else ()))
     with open(paths["devices"], newline="") as f:
         n = sum(1 for _ in csv.reader(f)) - 1
-    ctx.db.add_event("done", f"csv written ({n} devices)")
+    ctx.db.add_event("done", f"csv written ({n} devices): "
+                             + ", ".join(Path(p).name for p in paths.values()))
     return {"devices": verdicts, "csv": {k: str(p) for k, p in paths.items()}}

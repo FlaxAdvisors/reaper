@@ -14,7 +14,8 @@ plus the artifact paths the runs recorded (linked relative to the order dir, nev
 inlined). Per pass: the attempts per device (stage, rung, verdict, duration, headline),
 failure categories with counts, waivers (who / why), interruptions (rungs a daemon
 restart cut short, and the restart events), link events (cable pulls = a link that
-was up going down, re-plugs = back up after a pull) and SOL scan findings (install-console)."""
+was up going down, re-plugs = back up after a pull), SOL scan findings (install-console)
+and the operator's drawer PWR / IDNT actions (their events: who, what, the outcome)."""
 import html
 import json
 import os
@@ -106,7 +107,8 @@ def build(order_dir, g, db) -> dict:
         out.append({"id": p["id"], "started_at": p["started_at"], "ended_at": nxt,
                     "who": p["who"], "reason": p["reason"], "devices": {}, "failures": {},
                     "verdicts": {}, "waivers": [], "interruptions": [], "restarts": [],
-                    "links": [], "sol": [], "errors": [], "first": None, "last": None})
+                    "links": [], "sol": [], "errors": [], "actions": [], "first": None,
+                    "last": None})
     by = {p["id"]: p for p in out}
     for r in runs:
         p = by[_pass_of(passes, "run_after", r["id"])]
@@ -142,6 +144,8 @@ def build(order_dir, g, db) -> dict:
             p["restarts"].append(e)
         elif e["kind"] == "error":
             p["errors"].append(e)
+        elif e["kind"] in ("power", "identify"):
+            p["actions"].append(e)
     prev: dict[tuple, tuple] = {}
     for e in links:
         k = (e["pos"], e["link"])
@@ -337,6 +341,11 @@ def render(data: dict) -> str:
                           _e(", ".join(f"{k} ×{n}" for k, n in s["counts"].items())),
                           f'<a href="{_e(s["artifact"])}">sol</a>' if s["artifact"] else ""]
                          for s in p["sol"]], {1: "n", 3: "n"}))
+        if p["actions"]:
+            t.append("<h3>operator actions (PWR / IDNT)</h3>")
+            t.append(_table(("at", "action", "what"),
+                            [[_t(e["ts"]), _e(e["kind"]), _e(e["text"])] for e in p["actions"]],
+                            {0: "t", 2: "hl"}))
         if p["errors"]:
             t.append("<h3>errors</h3>")
             t.append(_table(("at", "what"), [[_t(e["ts"]), _e(e["text"])] for e in p["errors"]],

@@ -23,6 +23,7 @@ served in today's HA wording (bond.clean_ha: no MLAG text from older rows).
 
 POST api/stage/deploy starts Deploy (flax_rack.deploy): rack-wide with the typed order
 id, a positions run with {"confirm": true}; {"from": "firstboot"} skips the install,
+{"from": "iperf" | "stress"} re-runs just those phases on deployed nodes,
 {"reinstall": "<order id>"} reinstalls nodes whose install passed, {"waive": {pos:
 {"rungs": [...], "reason": "..."}}} lets a device through the Qualify gate on those
 rungs (recorded in order.db; who = {"by": ...} or the client address). The gate is
@@ -31,8 +32,14 @@ checked before the stage starts: a refusal is a 409 naming what blocks.
 POST api/stage/done starts Done (flax_rack.done: end summary, boot reset, components,
 then the customer CSVs): rack-wide with the typed order id, a positions run with
 {"confirm": true}. GET api/report/devices.csv, api/report/firmware.csv and
-api/report/components.csv download those CSVs (attachment; 404 until Done has written
-them).
+api/report/inventory.csv download those CSVs as <customer>-<order>-<kind>.csv
+(attachment; 404 until Done has written them).
+
+POST api/power {"pos", "action": on|off|cycle|reset, "confirm": <pos> (not for on)} and
+POST api/identify {"pos", "mode": on|force|off} are the drawer's PWR and IDNT
+(flax_rack.nodeact): a host's BMC, an event each; power is refused (409) while a stage
+or Run holds the rack lock with the node in its scope (`stage_positions`: None =
+rack-wide). /api/state carries per device `ident` (nodeact.ident_view).
 
 POST api/run {"confirm": <order id>, "reinstall": <order id> | false} starts a Run
 (flax_rack.run: Discover -> Firmware -> Qualify -> Deploy -> Done, held before Deploy
@@ -85,7 +92,7 @@ from flax_rungs import sol
 from flax_rungs.bond import clean_ha
 from flax_rungs.pxeboot import PXE_DIR
 
-from . import devview, process_report, report
+from . import devview, nodeact, process_report, report
 from .addressing import plan_addresses
 from .deploy import (_REASON_MAX, CONSOLE as INSTALL_CONSOLE, FROM_PHASES, PHASES as DEPLOY_PHASES,
                      GateError, blank_positions, clean_who, deploy_rungs,
@@ -265,6 +272,7 @@ class Rack:
         self.db = OrderDB(rack_dir / "order.db")
         self.lock = RackLock(rack_dir)
         self.stage = None                        # name of the stage this daemon runs
+        self.stage_positions = None              # ... its scope (None = rack-wide)
         self.cancel = threading.Event()          # Cancel pressed for that stage
         self.mtime = mtime
         self.linkmon = None                      # the rack's LinkPoller (set by the App)
@@ -445,6 +453,7 @@ def rack_state(r: Rack) -> dict:
                                           "host-leased", "bmc-leased"), all_passes=True).items():
         last.setdefault(k, {})[rung] = det
     inst = installed_positions(db, raw)
+    idents = db.idents()
     lm = getattr(r, "linkmon", None)
     now = time.time()
     live = linkmon.evaluate(g, lm.snapshots() if lm else {}, linkmon.device_macs(db),
@@ -487,6 +496,7 @@ def rack_state(r: Rack) -> dict:
             "gate_blockers": gate_blockers(raw, d) if deploy_rungs(d) else [],
             "waiver": _waiver_view(waivers.get(d.pos), raw, d),
             "done_rungs": done_rungs(d),
+            "ident": nodeact.ident_view(idents.get(d.pos)),
             "runs": runs})
     rack_runs = by_pos.get("_rack", {})
     passed, not_passed = qualify_passed(db, g)
@@ -513,6 +523,7 @@ def rack_state(r: Rack) -> dict:
         "prefix": g.url_prefix, "version": __version__, "build": BUILD, "closed_at": db.closed_at(),
         "iperf_server": g.iperf_server, "pass": _pass_view(db), "run": _run_view(r, raw),
         "stage_running": r.lock.busy(), "stage": r.stage if r.lock.locked() else None,
+        "stage_positions": r.stage_positions if r.lock.locked() and r.stage else None,
         "cancelling": bool(r.stage and r.cancel.is_set()),
         "phases": list(PHASES), "discover_rungs": list(DISCOVER_RUNGS),
         "discover_old_rungs": list(OLD_DISCOVER_RUNGS),
@@ -528,7 +539,8 @@ def rack_state(r: Rack) -> dict:
                    "not_passed": [d.pos for d in g.devices if d.pos in dwhy],
                    "why": dwhy, "progress": db.deploy_progress(), "ha_mode": ha,
                    "waivers": db.waivers(history=True)},
-        "done_rungs": list(DONE_RUNGS), "done": {"csv_at": _csv_at(r.dir)},
+        "done_rungs": list(DONE_RUNGS),
+        "done": {"csv_at": _csv_at(r.dir, g), "csv_names": report.csv_names(g)},
         "poll_interval_s": INTERVAL_S,
         "link_interval_s": lm.interval_s if lm else linkmon.INTERVAL_S, "profiles": sorted(profiles),
         "switches": switches, "devices": devices, "rack_runs": rack_runs,
@@ -589,17 +601,17 @@ def _pass_view(db) -> dict:
     return {k: p[k] for k in ("id", "started_at", "who", "reason")}
 
 
-def _csv_at(rack_dir: Path) -> str | None:
+def _csv_at(rack_dir: Path, g) -> str | None:
     """When Done last wrote the customer CSVs (UTC, seconds), None before."""
+    p = report.csv_path(rack_dir, g, "devices")
     try:
-        t = (Path(rack_dir) / report.DEVICES_CSV).stat().st_mtime
+        t = p.stat().st_mtime if p else None
     except OSError:
         return None
-    return datetime.fromtimestamp(t, timezone.utc).isoformat(timespec="seconds")
+    return datetime.fromtimestamp(t, timezone.utc).isoformat(timespec="seconds") if t else None
 
 
-REPORTS = {"devices.csv": report.DEVICES_CSV, "firmware.csv": report.FIRMWARE_CSV,
-           "components.csv": report.COMPONENTS_CSV}
+REPORTS = {f"{k}.csv": k for k in report.CSV_KINDS}     # the URL name -> the CSV kind
 
 
 # ---------------------------------------------------------------- app
@@ -641,6 +653,11 @@ class App:
 
     # -- actions --
     def _start_stage(self, r: Rack, name: str, fn, **kw):
+        # what the stage may power: its positions (+ the iperf server Qualify / Deploy pull
+        # in), None = the rack (PWR is refused for a node in it)
+        scope = kw.get("positions")
+        if scope is not None and name in ("qualify", "deploy") and r.g.iperf_server:
+            scope = sorted({*scope, r.g.iperf_server})
         if r.db.closed_at():
             return 409, {"error": "order is closed"}
         if DRAIN_FILE.exists():
@@ -649,6 +666,7 @@ class App:
             return 409, {"error": f"a stage ({r.stage or 'cli'}) is already running for this rack"}
         r.cancel = cancel = threading.Event()    # a fresh flag: an old Cancel never carries
         r.stage = name
+        r.stage_positions = scope
         g, db = r.g, r.db
 
         def work():
@@ -663,7 +681,7 @@ class App:
                 except Exception:            # noqa: BLE001
                     pass
             finally:
-                r.stage = None
+                r.stage = r.stage_positions = None
                 r.lock.release()
 
         try:
@@ -671,7 +689,7 @@ class App:
                 db.add_event("discover", "discover started")
             threading.Thread(target=work, name=f"{name}-{g.url_prefix}", daemon=True).start()
         except BaseException:
-            r.stage = None
+            r.stage = r.stage_positions = None
             r.lock.release()
             raise
         return 202, {"started": name, **kw}
@@ -921,12 +939,65 @@ class App:
         return text.replace("<head>", '<head><base href="../../">', 1).encode()
 
     def report_file(self, r: Rack, name: str) -> tuple[Path, str] | None:
-        """(the CSV Done wrote, its download name) or None (unknown, not written yet)."""
-        fn = REPORTS.get(name)
-        if fn is None or not (r.dir / fn).is_file():
+        """(the CSV Done wrote, its download name <customer>-<order>-<kind>.csv) or None
+        (unknown, not written yet)."""
+        kind = REPORTS.get(name)
+        p = report.csv_path(r.dir, r.g, kind) if kind else None
+        return (p, report.csv_names(r.g)[kind]) if p else None
+
+    # -- the drawer's PWR / IDNT (flax_rack.nodeact) --
+    def _node(self, r: Rack, body: dict):
+        """(error response, None) or (None, (pos, host BMC ip))."""
+        pos = body.get("pos")
+        if not isinstance(pos, str):
+            return (400, {"error": "pos must be a position"}), None
+        ip = nodeact.host_bmc(r.g, pos)
+        if ip is None:
+            return (404, {"error": f"{pos}: no host BMC"}), None
+        by = body.get("by")
+        if by is not None and not isinstance(by, str):
+            return (400, {"error": "by must be a name"}), None
+        if r.db.closed_at():
+            return (409, {"error": "order is closed"}), None
+        return None, (pos, ip)
+
+    def holds(self, r: Rack, pos: str) -> str | None:
+        """Why a stage forbids powering pos now (None = it may): the lock is held and pos
+        is in the running stage's scope (a CLI stage: the rack)."""
+        if r.lock.held_elsewhere():
+            return "a CLI stage holds this rack"
+        if not r.lock.locked():
             return None
-        tag = re.sub(r"[^A-Za-z0-9._-]", "_", r.g.order + (f"-{r.g.rack}" if r.g.rack else ""))
-        return r.dir / fn, f"{tag}-{fn}"
+        sp = r.stage_positions
+        if sp is None or pos in sp:
+            return f"{r.stage or 'a stage'} is running for " + ("the rack" if sp is None else pos)
+        return None
+
+    def node_power(self, r: Rack, body: dict, who: str = "?"):
+        err, node = self._node(r, body)
+        if err:
+            return err
+        pos, ip = node
+        action = body.get("action")
+        if action not in nodeact.POWER_ACTIONS:
+            return 400, {"error": f"action must be one of {', '.join(nodeact.POWER_ACTIONS)}"}
+        if action != "on" and body.get("confirm") != pos:
+            return 400, {"error": f"confirm the power {action} with the position ({pos})"}
+        why = self.holds(r, pos)
+        if why:
+            return 409, {"error": f"power {action} refused: {why}"}
+        return nodeact.power(self.factory(r.dir, r.g, r.db), pos, ip, action,
+                             clean_who(body.get("by") or who))
+
+    def node_identify(self, r: Rack, body: dict, who: str = "?"):
+        err, node = self._node(r, body)
+        if err:
+            return err
+        mode = body.get("mode")
+        if mode not in nodeact.IDENT_MODES:
+            return 400, {"error": f"mode must be one of {', '.join(nodeact.IDENT_MODES)}"}
+        return nodeact.identify(self.factory(r.dir, r.g, r.db), *node, mode,
+                                clean_who(body.get("by") or who))
 
     # -- BMC pollers: one per served rack; a disabled/vanished rack's poller stops --
     def start_pollers(self, interval_s=INTERVAL_S) -> threading.Thread:
@@ -1326,6 +1397,10 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(*app.fresh(r, body, who=f"ui {ip}"))
         if rest == "api/close":
             return self._json(*app.close(r, body))
+        if rest in ("api/power", "api/identify"):
+            ip = self.headers.get("X-Real-IP") or self.client_address[0]
+            fn = app.node_power if rest == "api/power" else app.node_identify
+            return self._json(*fn(r, body, who=f"ui {ip}"))
         return self._json(404, {"error": "not found"})
 
 

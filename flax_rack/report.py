@@ -3,10 +3,14 @@ Every one lists the rack top down: highest OU first, then column L, C, R; a JBOD
 after it by side (A, B); no order column (it is in the file name), a `rack` column only
 when the order has a rack tag (multi-rack), no hostnames.
 
-customer-devices.csv     PHYSICAL: one row per geometry device (pos), per JBOD IOM
+Named <customer>-<order>-<kind>.csv (geometry customer + order, filename-safe:
+csv_names); before 2026-10-31 they were customer-{devices,firmware,components}.csv, which
+csv_path still reads (and Start fresh still renames).
+
+<c>-<o>-devices.csv      PHYSICAL: one row per geometry device (pos), per JBOD IOM
                          (<pos>.iom<n>) and per switch (_sw-<id>), DEVICE_COLUMNS.
-customer-firmware.csv    FW + QUAL: the same rows, FIRMWARE_COLUMNS.
-customer-components.csv  the parts of each device's LATEST Qualify inventory (macinv -v;
+<c>-<o>-firmware.csv     FW + QUAL: the same rows, FIRMWARE_COLUMNS.
+<c>-<o>-inventory.csv    the parts of each device's LATEST Qualify inventory (macinv -v;
                          order.db's rows when Done's `components` rung read that same
                          run), COMPONENT_COLUMNS. No BMC images (they are firmware).
 
@@ -73,10 +77,13 @@ ROW_KEYS = ("order", "rack", "pos", "ou", "kind", "part", "hostname",
             "chassis_serial", "bmc_mac", "host_mac", "fabric_a_mac", "fabric_b_mac",
             "bmc_version", "bios_version", "nic_firmware",
             "qualify", "deploy", "ha_mode", "done")
-DEVICES_CSV = "customer-devices.csv"
-FIRMWARE_CSV = "customer-firmware.csv"
-COMPONENTS_CSV = "customer-components.csv"
-CSVS = (DEVICES_CSV, FIRMWARE_CSV, COMPONENTS_CSV)
+CSV_KINDS = ("devices", "firmware", "inventory")
+# the names before 2026-10-31 (read, never written)
+LEGACY_CSV = {"devices": "customer-devices.csv", "firmware": "customer-firmware.csv",
+              "inventory": "customer-components.csv"}
+# an order dir's current CSVs (not a pass's *.pass<N>.csv): Start fresh renames these
+CSV_RE = re.compile(r"(?:.+-(?:devices|firmware|inventory)"
+                    r"|customer-(?:devices|firmware|components))\.csv")
 IOM_KIND = {"A": "iom A (left/front)", "B": "iom B (right/back)"}
 INVENTORY_RUNG, INVENTORY_ART = "inventory", "macinv-v"
 DONE_STAGE = "done"
@@ -84,6 +91,21 @@ _DONE_RANK = ("fail", "unmeasured", "pass", "skip")
 
 _BUS_RE = re.compile(r"^(?:Handler:\s*\d+,\s*)?BusID:\s*(?P<bus>[^,\s]+)")
 _NIC_SN_RE = re.compile(r"^BusID:\s*(?P<bus>[^,\s]+),\s*\[SN\] Serial number:\s*(?P<sn>.*)$")
+
+
+def csv_names(g) -> dict[str, str]:
+    """{kind: "<customer>-<order>-<kind>.csv"}, filename-safe."""
+    tag = re.sub(r"[^A-Za-z0-9._-]+", "_", f"{g.customer or 'customer'}-{g.order}").strip("_")
+    return {k: f"{tag}-{k}.csv" for k in CSV_KINDS}
+
+
+def csv_path(order_dir, g, kind) -> Path | None:
+    """The CSV of `kind` Done last wrote in order_dir (the old name as a fallback), or None."""
+    for name in (csv_names(g)[kind], LEGACY_CSV[kind]):
+        p = Path(order_dir) / name
+        if p.is_file():
+            return p
+    return None
 
 
 # ---------------------------------------------------------------- components
@@ -430,17 +452,17 @@ def write(order_dir: Path, g, db, snaps: dict | None = None,
           now: float | None = None) -> dict[str, Path]:
     """The three CSVs into order_dir (atomic replace). snaps / now: the rack's live link
     monitor (LinkPoller.snapshots(), its clock; None = geometry ports only).
-    -> {"devices": path, "firmware": path, "components": path}."""
+    -> {"devices": path, "firmware": path, "inventory": path} (csv_names)."""
     order_dir = Path(order_dir)
+    names = csv_names(g)
     rows = customer_rows(order_dir, g, db, snaps, now)
     out = {}
-    for key, name, cols in (("devices", DEVICES_CSV, DEVICE_COLUMNS),
-                            ("firmware", FIRMWARE_CSV, FIRMWARE_COLUMNS)):
-        out[key] = order_dir / name
+    for key, cols in (("devices", DEVICE_COLUMNS), ("firmware", FIRMWARE_COLUMNS)):
+        out[key] = order_dir / names[key]
         _write_csv(out[key], columns(g, cols), rows)
     rank = {r["pos"]: i for i, r in enumerate(rows)}
     parts = sorted(latest_components(order_dir, db), key=lambda c: rank.get(c["pos"], len(rank)))
-    out["components"] = order_dir / COMPONENTS_CSV
-    _write_csv(out["components"], columns(g, COMPONENT_COLUMNS),
+    out["inventory"] = order_dir / names["inventory"]
+    _write_csv(out["inventory"], columns(g, COMPONENT_COLUMNS),
                [{"rack": g.rack, **c} for c in parts])
     return out

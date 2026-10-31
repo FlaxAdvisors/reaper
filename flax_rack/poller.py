@@ -22,13 +22,15 @@ def poll_once(ctx) -> int:
         bmc_creds = creds(ctx).bmc
     except CredsError:
         bmc_creds = []                       # ping only; power unknown
+    R = getattr(ctx, "rungs", None)          # the served fake's stand-ins, else the real
+    pg, ps = getattr(R, "ping", None) or ping, getattr(R, "power_status", None) or power_status
     n = 0
     for a in plan_addresses(ctx.g):
         if a.role != "bmc":
             continue
         try:
-            up = ping(a.ip, runner=ctx.runner)
-            power = power_status(a.ip, bmc_creds, runner=ctx.runner) if up and bmc_creds else None
+            up = pg(a.ip, runner=ctx.runner)
+            power = ps(a.ip, bmc_creds, runner=ctx.runner) if up and bmc_creds else None
             ctx.db.set_bmc_live(a.pos, up, power, _now())
             n += 1
         except Exception:                    # noqa: BLE001 -- the next tick tries again

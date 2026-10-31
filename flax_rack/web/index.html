@@ -23,6 +23,13 @@
           <div v-for="m in metricList" class="metric" :class="[m.key, {on: filter===m.key, lit: metricLit(m)}]" @click="toggle(m.key)"
                :title="metricTitle(m)"><b>{{counts[m.key]}}</b><span>{{m.label}}</span></div>
         </div>
+        <!-- stage launch buttons, in the count tiles' shape: ✓ = passed (this pass) for
+             every device the stage applies to, lit while it runs -->
+        <div class="metrics stagebtns" v-if="s.order">
+          <button v-for="b in stageBtns()" class="metric stagebtn" :class="[b.key, b.cls]"
+                  :disabled="s.stage_running || !!s.closed_at" @click="stageGo(b.key)" :title="b.title">
+            <b>{{b.label}}</b><span>{{b.cls==='ok' ? '✓ ' : ''}}{{b.sub}}</span></button>
+        </div>
       </div>
       <div class="tr">
         <span class="live" :class="{off:live===false, wait:live===null}">
@@ -54,25 +61,8 @@
         <label>Customer <span class="ro">{{s.customer || '—'}}</span></label>
         <label>Order <span class="ro">{{s.order || '—'}}</span></label>
         <label>vid <span class="ro">{{s.vid || '—'}}</span></label>
-        <button class="discbtn runbtn" v-if="s.order" :disabled="s.stage_running || !!s.closed_at" @click="openRun()"
-                :title="s.closed_at ? 'order is closed' : s.stage_running ? 'a stage is running' : 'Run: Discover → Firmware → Qualify → Deploy → Done, driven by the server; all pass = straight through, any failure = held before Deploy with the blockers listed (then Continue to Deploy)'">Run</button>
-        <button class="discbtn" v-if="s.order" :disabled="s.stage_running || !!s.closed_at" @click="openDiscover()"
-                :title="s.closed_at ? 'order is closed' : s.stage_running ? 'a stage is running' : 'run Discover for this rack: Post\'s 16-step ladder per device (switch port → MACs → Kea reserve/lease → power-on → live boot → BMC ready); powers on / cycles nodes not in the live image'">Discover</button>
-        <button class="discbtn fwbtn" v-if="s.order" :disabled="s.stage_running || !!s.closed_at" @click="firmware()"
-                :title="s.closed_at ? 'order is closed' : s.stage_running ? 'a stage is running' : 'run Firmware for this rack: Post\'s 6 steps per device (BMC Redfish, BIOS dmidecode, Mellanox mstflint query vs the loose-node manifests) -- detect only, never flashes'">Firmware</button>
-        <button class="discbtn qualbtn" v-if="s.order" :disabled="s.stage_running || !!s.closed_at" @click="openQualify()"
-                :class="{passed: s.qualify?.passed}"
-                :title="s.closed_at ? 'order is closed' : s.stage_running ? 'a stage is running' : qualifyTitle()">Qualify{{s.qualify?.passed ? ' ✓' : ''}}</button>
-        <button class="discbtn depbtn" v-if="s.order" :disabled="s.stage_running || !!s.closed_at" @click="openDeploy()"
-                :class="{passed: s.deploy?.passed}"
-                :title="s.closed_at ? 'order is closed' : s.stage_running ? 'a stage is running' : deployTitle()">Deploy{{s.deploy?.passed ? ' ✓' : ''}}</button>
-        <button class="discbtn donebtn" v-if="s.order" :disabled="s.stage_running || !!s.closed_at" @click="openDone()"
-                :class="{passed: !!csvAt}"
-                :title="s.closed_at ? 'order is closed' : s.stage_running ? 'a stage is running' : doneTitle()">Done{{csvAt ? ' ✓' : ''}}</button>
         <span class="csv-links" v-if="csvAt" :title="'customer CSVs written by Done ' + csvAt">CSV
-          <a href="api/report/devices.csv" download title="physical: serials, MACs, front-panel ports">devices</a>
-          <a href="api/report/firmware.csv" download title="firmware versions + Qualify / Deploy / Done verdicts">firmware</a>
-          <a href="api/report/components.csv" download>components</a></span>
+          <a v-for="c in csvLinks()" :href="'api/report/' + c.k + '.csv'" :download="c.name" :title="c.name + ' · ' + c.what">{{c.k}}</a></span>
         <button class="closebtn cancelbtn" v-if="s.stage_running && s.stage" :disabled="s.cancelling" @click="cancelStage()"
                 :title="s.cancelling ? 'cancel requested: stopping after the steps now running' : 'stop the running ' + s.stage + ' between steps (a power action already sent finishes)'">{{s.cancelling ? 'Cancelling…' : 'Cancel ' + (runRunning ? 'run' : s.stage)}}</button>
         <span class="hdr-msg" v-if="hdrMsg">{{hdrMsg}}</span>
@@ -146,6 +136,7 @@
                 <span class="pres" v-if="!cell.empty" :class="presence(cell).cls" :title="presence(cell).title"></span>
                 <span class="t-port">{{cell.label}}</span>
                 <span class="kind" v-if="cell.kindLabel">{{cell.kindLabel}}</span>
+                <span class="idm" v-if="!cell.empty && !cell.iom && identOn(cell.dev)" :title="identTitle(cell.dev)">ID</span>
                 <span class="watt" v-if="!cell.empty && power(cell)" :class="power(cell).cls" :title="power(cell).title">{{power(cell).t}}</span>
                 <span class="dot" :class="cell.empty ? 'grey' : dotCls(cellObj(cell))"></span>
               </div>
@@ -192,19 +183,21 @@
     <div class="d-sub">{{subLine(selObj)}}</div>
 
     <div class="actions" v-if="selKind==='dev'">
-      <button disabled title="later plan">PWR</button>
+      <button :class="pwrCls(selDev)" :disabled="!hostBmc(selDev)" @click="openPwr(selDev)"
+              :title="hostBmc(selDev) ? 'power: ' + pwrTitle(selDev) + ' · on / off / cycle / reset' : 'no host BMC'">PWR</button>
+      <button :class="{lit: identOn(selDev)}" :disabled="!hostBmc(selDev)" @click="openIdnt(selDev)"
+              :title="hostBmc(selDev) ? identTitle(selDev) : 'no host BMC'">IDNT</button>
       <button :disabled="!(selDev?.addrs || {}).bmc" @click="openSol(selDev)"
               title="the live serial console: the flax-post-sol relay's session to this BMC (watching never opens a second SOL)">SOL</button>
       <button :disabled="!invUrl(selDev)" @click="openInv(selDev)"
               title="the inventory stage's macinv (detail form when present)">INV</button>
       <button :disabled="!popRun(selDev)" @click="openPop(selDev)" title="POP rules of the last Qualify">POP</button>
-      <button disabled title="later plan">IDNT</button>
       <button :disabled="s.stage_running || !!s.closed_at || !(selDev?.qualify_rungs || []).length" @click="qualify(selDev?.pos)"
               title="re-run Qualify for this node only (then the rack-level rungs)">QUAL</button>
       <button :disabled="s.stage_running || !!s.closed_at || !(selDev?.deploy_rungs || []).length" @click="openDeployDev(selDev)"
               :title="selDev?.deploy_gate ? 'Deploy gate: ' + selDev?.deploy_gate + ' (a waiver can be recorded)' : 'deploy this node: install Ubuntu 24.04 (wipes its disks), flax_user, bond0, HA test'">DEPLOY</button>
       <button :disabled="s.stage_running || !!s.closed_at || !(selDev?.done_rungs || []).length" @click="doneDev(selDev?.pos)"
-              title="Done for this node: SDR/SEL + installed-OS summary, clear its boot override and hostname iPXE file (no power action), components; rewrites the customer CSVs">DONE</button>
+              title="Done for this node: SDR/SEL + installed-OS summary, clear its boot override and hostname iPXE file (no power action), inventory; rewrites the customer CSVs">DONE</button>
       <button :disabled="s.stage_running || !!s.closed_at" @click="firmware(selDev?.pos)"
               title="read this device's firmware versions (detect only: never flashes)">FW</button>
       <button :disabled="s.stage_running || !!s.closed_at" @click="retry(selDev?.pos)"
@@ -390,6 +383,45 @@
     </div>
   </div>
 
+  <!-- ================= PWR modal (on: no confirm; off / cycle / reset: confirm naming the node) ================= -->
+  <div class="m-scrim" v-if="pwrM" @click="pwrM=null">
+    <div class="m-box" @click.stop>
+      <div class="m-h"><span class="m-title">Power {{pwrM?.pos}} · <span class="mono">{{pwrM?.ip}}</span></span>
+        <span class="x" @click="pwrM=null">✕</span></div>
+      <div class="m-b">
+        <p class="m-sub">power is <b :class="pwrCls(pwrDev)">{{pwrDev?.bmc_live?.power || 'unknown'}}</b>
+          <span class="dim">· {{pwrTitle(pwrDev)}}</span></p>
+        <p class="m-sub bad" v-if="pwrHeld(pwrDev)">refused while {{pwrHeld(pwrDev)}}</p>
+        <div class="radios">
+          <label v-for="a in ['on', 'off', 'cycle', 'reset']" :class="{on: pwrChoice===a}">
+            <input type="radio" name="rp-pwr" :value="a" v-model="pwrChoice"> {{a}}</label>
+        </div>
+        <button class="press" :disabled="!pwrChoice || !!pwrHeld(pwrDev) || busy" @click="pwrChoice==='on' ? doPower() : (pwrConfirm=true)">Activate</button>
+        <div class="confirm" v-if="pwrConfirm">Power <b>{{pwrChoice}}</b> {{pwrM?.pos}}?
+          <button class="yes" :disabled="busy" @click="doPower()">Yes</button><button class="no" @click="pwrConfirm=false">No</button></div>
+        <p class="action-msg" v-if="pwrM?.msg">{{pwrM?.msg}}</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= IDNT modal (chassis-identify LED) ================= -->
+  <div class="m-scrim" v-if="idntM" @click="idntM=null">
+    <div class="m-box" @click.stop>
+      <div class="m-h"><span class="m-title">Identify {{idntM?.pos}} · <span class="mono">{{idntM?.ip}}</span></span>
+        <span class="x" @click="idntM=null">✕</span></div>
+      <div class="m-b">
+        <p class="m-sub">{{identTitle(idntDev)}}</p>
+        <div class="radios">
+          <label :class="{on: idntMode==='on'}"><input type="radio" name="rp-idnt" value="on" v-model="idntMode"> on 240 s</label>
+          <label :class="{on: idntMode==='force'}"><input type="radio" name="rp-idnt" value="force" v-model="idntMode"> force</label>
+          <label :class="{on: idntMode==='off'}"><input type="radio" name="rp-idnt" value="off" v-model="idntMode"> off</label>
+        </div>
+        <button class="press" :disabled="busy" @click="doIdent()">Activate</button>
+        <p class="action-msg" v-if="idntM?.msg">{{idntM?.msg}}</p>
+      </div>
+    </div>
+  </div>
+
   <!-- ================= POP rules modal ================= -->
   <div class="m-scrim" v-if="popDev" @click="popOpen=null">
     <div class="m-box" @click.stop>
@@ -498,10 +530,10 @@
           boots the installed OS, runs flax_user, configures bond0 (active-backup) and runs the
           whole-wedge HA test. Every node must have passed Qualify (a waiver is recorded per node
           from its drawer's DEPLOY). Cancel stops it at the next phase.</p>
-        <p class="m-sub bad" v-for="d in depHosts().filter((x) => x.deploy_gate)">{{d.pos}}: {{d.deploy_gate}}</p>
+        <p class="m-sub bad" v-for="d in (lateFrom(depFrom) ? [] : depHosts().filter((x) => x.deploy_gate))">{{d.pos}}: {{d.deploy_gate}}</p>
         <label class="m-sub">start at
           <select v-model="depFrom"><option v-for="f in (s.deploy_from || ['install'])" :value="f">{{f}}</option></select>
-          <span class="dim">{{depFrom==='firstboot' ? 'skip the install: boot the installed OS, then the rest' : ''}}</span></label>
+          <span class="dim">{{fromNote(depFrom)}}</span></label>
         <label class="m-sub" v-if="depFrom==='install' && depInstalled().length">
           <input type="checkbox" v-model="depReinstall"> reinstall {{depInstalled().join(', ')}} (already installed: wipes their disks again)</label>
         <input class="confirm-in" name="rp-depconfirm" autocomplete="off" v-model="depText" :placeholder="s.order">
@@ -533,10 +565,10 @@
       <div class="m-h"><span class="m-title">Deploy {{depM?.pos}}</span>
         <span class="x" @click="depM=null">✕</span></div>
       <div class="m-b">
-        <p class="m-sub">Installs Ubuntu 24.04 on {{depM?.pos}} (its disks are wiped), then flax_user,
+        <p class="m-sub" v-if="!lateFrom(devFrom)">Installs Ubuntu 24.04 on {{depM?.pos}} (its disks are wiped), then flax_user,
           bond0 and the HA test (with the iperf server {{s.iperf_server || ''}} when it is deployed).</p>
-        <p class="m-sub ok" v-if="!(depDev?.gate_blockers || []).length">Qualify passed: the gate is open.</p>
-        <div v-if="(depDev?.gate_blockers || []).length">
+        <p class="m-sub ok" v-if="!lateFrom(devFrom) && !(depDev?.gate_blockers || []).length">Qualify passed: the gate is open.</p>
+        <div v-if="!lateFrom(devFrom) && (depDev?.gate_blockers || []).length">
           <p class="m-sub bad">Deploy gate: {{depDev?.deploy_gate}}</p>
           <p class="m-sub">Waive (recorded in order.db with the reason, who and when; any rung not ticked still blocks):</p>
           <label class="m-sub mono" v-for="r in Object.keys(devWaive)"><input type="checkbox" v-model="devWaive[r]"> {{r}}
@@ -546,7 +578,8 @@
           <p class="m-sub bad" v-if="depLeft().length">still blocked by: {{depLeft().join(', ')}}</p>
         </div>
         <label class="m-sub">start at
-          <select v-model="devFrom"><option v-for="f in (s.deploy_from || ['install'])" :value="f">{{f}}</option></select></label>
+          <select v-model="devFrom"><option v-for="f in (s.deploy_from || ['install'])" :value="f">{{f}}</option></select>
+          <span class="dim">{{fromNote(devFrom)}}</span></label>
         <div v-if="devFrom==='install' && installed(depDev)">
           <p class="m-sub bad">{{depM?.pos}} is already installed: a reinstall wipes its disks again.
             Type the order id to confirm.</p>

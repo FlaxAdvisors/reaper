@@ -391,8 +391,9 @@ def main(argv=None) -> int:
     p.add_argument("--pos", action="extend", nargs="+", metavar="P",
                    help="only these positions (--pos C37 R37 or repeated)")
     p.add_argument("--confirm", metavar="ORDER", help="the order id (required without --pos)")
-    p.add_argument("--from", dest="from_phase", default="install", choices=("install", "firstboot"),
-                   help="firstboot: skip the install (boot the installed OS, then the rest)")
+    p.add_argument("--from", dest="from_phase", default="install", choices=("install", "firstboot", "iperf", "stress"),
+                   help="firstboot: skip the install (boot the installed OS, then the rest); "
+                        "iperf / stress: re-run just those phases on deployed nodes")
     p.add_argument("--reinstall", metavar="ORDER",
                    help="the order id: reinstall nodes whose install already passed")
     p.add_argument("--waive", action="append", metavar="POS:RUNG[,RUNG]",

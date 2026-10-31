@@ -11,7 +11,7 @@ stage's per-run ansible inventory (the live hosts' IPs) leaves the order dir (be
 effort: an `error` event if it cannot).
 Start fresh (start_fresh) opens a new pass: earlier runs and waivers leave the tiles,
 gates and CSVs (order.db scopes every latest read to the pass); nothing is deleted, the
-customer CSVs of the ended pass are kept as *.pass<N>.csv.
+customer CSVs of the ended pass are kept as <customer>-<order>-<kind>.pass<N>.csv.
 Close needs Kea only: `creds` may be a zero-arg loader, called the first time a
 Discover rung needs the switch or BMC login, so missing creds never block Close.
 """
@@ -86,9 +86,8 @@ def start_fresh(order_dir, db, who: str, reason: str) -> dict:
     from . import report
     p = db.start_pass(who, reason)
     renamed = []
-    for name in report.CSVS:
-        src = Path(order_dir) / name
-        if src.is_file():
+    for src in sorted(Path(order_dir).iterdir()):
+        if src.is_file() and report.CSV_RE.fullmatch(src.name):
             dst = src.with_name(f"{src.stem}.pass{p['id'] - 1}{src.suffix}")
             src.replace(dst)
             renamed.append(dst.name)

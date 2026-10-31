@@ -55,6 +55,11 @@ real pxeboot.remove under pxe_dir when set, else recorded only) and clear_overri
 the served fake R37's SEL holds a correctable-ECC entry (SEL_NONBENIGN): its end-summary
 is red. Knobs: sel_nonbenign, sel_unread (SEL not read: unmeasured), override_fail,
 pxe_first (the installed BootOrder starts with a PXE entry), pxe_dir.
+
+The drawer's PWR / IDNT run against FakeRungs' node_power (on / cycle / reset boot the
+node, off drops it) and identify (answers the identify state a real BMC would report);
+in the served fake the BMC poller reads FakeRungs' ping + power_status too, so the
+tiles' power chips follow them.
 """
 import subprocess
 from pathlib import Path
@@ -498,6 +503,29 @@ class FakeRungs:
         self._new_boot(pos, self.t)
         self.sleep(240)                        # the boot happens
         return True
+
+    # the drawer's PWR / IDNT (flax_rack.nodeact): off drops the boot, on / cycle / reset
+    # start a fresh one; identify answers like a BMC that reports its identify state
+    def node_power(self, ip, creds, action, *, info=None, runner=None):
+        pos, _ = self.ip_role.get(ip, (None, None))
+        self.calls.append(("node_power", pos, action))
+        if info is not None:
+            info.update(user="u", cipher=17)
+        if action == "off":
+            self.power[pos] = "off"
+            self.boots.pop(pos, None)
+        else:
+            self.power[pos] = "on"
+            self._new_boot(pos, self.t)
+        return True
+
+    def identify(self, ip, creds, arg, *, info=None, runner=None):
+        pos, _ = self.ip_role.get(ip, (None, None))
+        self.calls.append(("identify", pos, arg))
+        if info is not None:
+            info.update(user="u", cipher=17)
+        state = {"0": "Off", "force": "Indefinite(On)"}.get(arg, "Temporary(On)")
+        return {"ok": True, "ident": state, "error": None}
 
     def set_boot_pxe(self, ip, creds, *, enable=True, ipmi_creds=None, runner=None):
         from flax_rungs.result import RungResult

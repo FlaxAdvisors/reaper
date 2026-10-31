@@ -1,4 +1,5 @@
-"""BMC reachability: ping, then an authenticated IPMI chassis power status."""
+"""BMC reachability: ping, then an authenticated IPMI chassis power status; power and
+chassis-identify writes (the password rides IPMI_PASSWORD + -E, never argv)."""
 import os
 import subprocess
 
@@ -98,9 +99,44 @@ def _write(ip, creds, args, *, info, runner) -> bool:
 
 def power_action(ip: str, creds: list[tuple[str, str]], action: str, *,
                  info: dict | None = None, runner=subprocess.run) -> bool:
-    """action: 'on' | 'cycle' | 'off'; True when ipmitool exited 0 on the pair that
-    answered a status read (never sent on a second pair)."""
+    """action: 'on' | 'cycle' | 'off' | 'reset'; True when ipmitool exited 0 on the pair
+    that answered a status read (never sent on a second pair)."""
     return _write(ip, creds, ["chassis", "power", action], info=info, runner=runner)
+
+
+def parse_chassis_status(text: str) -> dict:
+    """`ipmitool chassis status` -> {"power": on/off/None, "ident": the "Chassis Identify
+    State" value ("Off", "Temporary(On)", "Indefinite(On)") or None when the BMC does not
+    report it}."""
+    out = {"power": None, "ident": None}
+    for line in (text or "").splitlines():
+        k, _, v = line.partition(":")
+        k, v = k.strip(), v.strip()
+        if k == "System Power" and v in ("on", "off"):
+            out["power"] = v
+        elif k == "Chassis Identify State" and v:
+            out["ident"] = v
+    return out
+
+
+def identify(ip: str, creds: list[tuple[str, str]], arg: str, *, info: dict | None = None,
+             runner=subprocess.run) -> dict:
+    """`chassis identify <arg>` (seconds | 'force' | '0' = off) on the pair that answers a
+    status read, then `chassis status` on that pair. -> {"ok", "ident" (the reported
+    state or None), "error"}."""
+    s = _session(ip, creds, runner=runner)
+    if s is None:
+        return {"ok": False, "ident": None, "error": "no BMC answer (credentials x ciphers)"}
+    user, pw, cipher, _ = s
+    if info is not None:
+        info.update(user=user, cipher=cipher)
+    p = _ipmi(ip, user, pw, ["chassis", "identify", str(arg)], cipher=cipher, runner=runner)
+    if p is None or p.returncode != 0:
+        why = "timeout" if p is None else (p.stderr or p.stdout or f"rc={p.returncode}").strip()
+        return {"ok": False, "ident": None, "error": why}
+    st = _ipmi(ip, user, pw, ["chassis", "status"], cipher=cipher, runner=runner)
+    return {"ok": True, "ident": parse_chassis_status(st.stdout if st else "")["ident"],
+            "error": None}
 
 
 def bootdev_pxe(ip: str, creds: list[tuple[str, str]], *, info: dict | None = None,

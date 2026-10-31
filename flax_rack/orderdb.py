@@ -11,6 +11,7 @@ import dataclasses
 import json
 import re
 import sqlite3
+import threading
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -75,6 +76,7 @@ def norm_mac(m: str | None) -> str | None:
 class OrderDB:
     def __init__(self, path):
         self.path = Path(path)
+        self._mu = threading.Lock()
 
     def _conn(self) -> sqlite3.Connection:
         c = sqlite3.connect(self.path, timeout=10)
@@ -364,6 +366,19 @@ class OrderDB:
         if not ha or ha.pop("pass", 1) != self.current_pass()["id"]:
             return None
         return ha
+
+    def set_ident(self, pos, state: dict | None) -> None:
+        """The drawer IDNT's last command for pos (nodeact; None clears it)."""
+        with self._mu:
+            cur = self._meta_json("ident") or {}
+            if state is None:
+                cur.pop(pos, None)
+            else:
+                cur[pos] = state
+            self._set_meta_json("ident", cur)
+
+    def idents(self) -> dict:
+        return self._meta_json("ident") or {}
 
     def _set_meta_json(self, k, v) -> None:
         if v is None:
