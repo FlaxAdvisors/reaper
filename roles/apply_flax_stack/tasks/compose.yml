@@ -1,4 +1,36 @@
 ---
+# The console bind-mounts these single files (files/docker-compose.yml). Several are
+# written by roles that run AFTER this one (flax_post, reconcile, bmc manifests, the
+# triage fw agents), so on a fresh bang docker created each missing source as an EMPTY
+# DIRECTORY, and the later role then failed ("can not use content with a dir as dest";
+# bang-blues 2026-10-31). Placeholders first; never overwrite a real file.
+- name: Find bind-mount sources that docker turned into empty directories
+  become: true
+  ansible.builtin.find:
+    paths: /etc/flax
+    patterns: "{{ apply_flax_stack_bind_files }}"
+    file_type: directory
+  register: _bind_dirs
+
+- name: Remove those empty directories (only when empty)
+  become: true
+  ansible.builtin.command: rmdir {{ item.path }}
+  loop: "{{ _bind_dirs.files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  changed_when: true
+
+- name: Create a placeholder for each bind-mounted file that does not exist yet
+  become: true
+  ansible.builtin.copy:
+    content: "{}\n"
+    dest: "/etc/flax/{{ item }}"
+    force: false
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ apply_flax_stack_bind_files }}"
+
 - name: Deploy postgresql.conf
   become: true
   ansible.builtin.template:

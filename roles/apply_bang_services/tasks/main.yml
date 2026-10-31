@@ -297,6 +297,16 @@
 # TFTP fetch has someone to answer it. Both bangs, active-active, like dnsmasq
 # TFTP. dnsmasq is bind-dynamic, so no restart. Was a hand-copied braintree
 # script on bang-gouda only; see the template header.
+- name: Ensure /opt/flax/sbin exists (a fresh bang has none; bang-blues 2026-10-31)
+  become: true
+  ansible.builtin.file:
+    path: /opt/flax/sbin
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [v6_addrs]
+
 - name: Deploy bang-v6-addrs.sh
   become: true
   ansible.builtin.template:
