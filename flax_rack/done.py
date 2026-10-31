@@ -24,10 +24,11 @@ A device with no Firmware result in the current pass is flagged: the event `done
 Firmware result this pass: <pos ...>` and a `firmware` row + note on its components
 rung (the CSV's version cells for it are blank: versions are this pass's reads).
 
-Then report.write rewrites customer-devices.csv / customer-components.csv in the order
-dir (every device, IOM and switch row; from each row's own latest runs) and the event
-`done: csv written (<n> devices)` is logged. A positions run re-reads those devices only
-and rewrites both files.
+Then report.write rewrites customer-devices.csv / customer-firmware.csv /
+customer-components.csv in the order dir (every device, IOM and switch row; from each
+row's own latest runs; as-built ports from the rack's live link monitor when it runs) and
+the event `done: csv written (<n> devices)` is logged. A positions run re-reads those
+devices only and rewrites all three files.
 
 Done never power-controls a node: a customer rack ships powered as the operator leaves
 it (donum 84's `nodepower off` is not carried over). The rack's Cancel is checked before
@@ -250,7 +251,8 @@ def run(ctx, positions: list[str] | None = None) -> dict:
     if cancelled(ctx):
         ctx.db.add_event("done", "csv not written (cancelled)")
         return {"devices": verdicts, "csv": None}
-    paths = report.write(ctx.dir, g, ctx.db)
+    lm = getattr(ctx, "links", None)        # the rack's LinkPoller: as-built ports
+    paths = report.write(ctx.dir, g, ctx.db, *((lm.snapshots(), lm.clock()) if lm else ()))
     with open(paths["devices"], newline="") as f:
         n = sum(1 for _ in csv.reader(f)) - 1
     ctx.db.add_event("done", f"csv written ({n} devices)")

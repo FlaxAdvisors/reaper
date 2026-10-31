@@ -30,8 +30,9 @@ checked before the stage starts: a refusal is a 409 naming what blocks.
 
 POST api/stage/done starts Done (flax_rack.done: end summary, boot reset, components,
 then the customer CSVs): rack-wide with the typed order id, a positions run with
-{"confirm": true}. GET api/report/devices.csv and api/report/components.csv download
-those CSVs (attachment; 404 until Done has written them).
+{"confirm": true}. GET api/report/devices.csv, api/report/firmware.csv and
+api/report/components.csv download those CSVs (attachment; 404 until Done has written
+them).
 
 POST api/run {"confirm": <order id>, "reinstall": <order id> | false} starts a Run
 (flax_rack.run: Discover -> Firmware -> Qualify -> Deploy -> Done, held before Deploy
@@ -571,7 +572,8 @@ def _csv_at(rack_dir: Path) -> str | None:
     return datetime.fromtimestamp(t, timezone.utc).isoformat(timespec="seconds")
 
 
-REPORTS = {"devices.csv": report.DEVICES_CSV, "components.csv": report.COMPONENTS_CSV}
+REPORTS = {"devices.csv": report.DEVICES_CSV, "firmware.csv": report.FIRMWARE_CSV,
+           "components.csv": report.COMPONENTS_CSV}
 
 
 # ---------------------------------------------------------------- app

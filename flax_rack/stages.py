@@ -86,7 +86,7 @@ def start_fresh(order_dir, db, who: str, reason: str) -> dict:
     from . import report
     p = db.start_pass(who, reason)
     renamed = []
-    for name in (report.DEVICES_CSV, report.COMPONENTS_CSV):
+    for name in report.CSVS:
         src = Path(order_dir) / name
         if src.is_file():
             dst = src.with_name(f"{src.stem}.pass{p['id'] - 1}{src.suffix}")

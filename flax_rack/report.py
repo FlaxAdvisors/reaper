@@ -1,30 +1,47 @@
-"""Done's customer report: two CSVs in the order dir, machine-readable, stable columns.
+"""Done's customer report: three CSVs in the order dir, machine-readable, stable columns.
+Every one lists the rack top down: highest OU first, then column L, C, R; a JBOD's IOMs
+after it by side (A, B); no order column (it is in the file name), a `rack` column only
+when the order has a rack tag (multi-rack), no hostnames.
 
-customer-devices.csv     one row per geometry device (pos), per JBOD IOM (<pos>.iom<n>)
-                         and per switch (_sw-<id>), DEVICE_COLUMNS.
-customer-components.csv  latest_components: the parts of each device's LATEST Qualify
-                         inventory (macinv -v; order.db's rows when Done's `components`
-                         rung read that same run), COMPONENT_COLUMNS; then
-                         firmware_components: the BMC images (model = the version,
-                         serial blank) -- a node's `bmc` (active, slot bmc0) and
-                         `bmc-backup` (slot backup), each JBOD IOM's `bmc` and `rom`
-                         (slot iom<n>). A backup / ROM the latest Firmware read did not
-                         pass has its model "" -- never the active version in its place.
+customer-devices.csv     PHYSICAL: one row per geometry device (pos), per JBOD IOM
+                         (<pos>.iom<n>) and per switch (_sw-<id>), DEVICE_COLUMNS.
+customer-firmware.csv    FW + QUAL: the same rows, FIRMWARE_COLUMNS.
+customer-components.csv  the parts of each device's LATEST Qualify inventory (macinv -v;
+                         order.db's rows when Done's `components` rung read that same
+                         run), COMPONENT_COLUMNS. No BMC images (they are firmware).
 
 Every cell comes from that row's own device and its LATEST run of the rung named
 (order.db latest_runs; never an older run, never another device): a device that never
 ran a rung has "" there, not a neighbour's value. Sources:
-  chassis_serial      Post's FRU ID 0 ship serial in the latest inventory's macinv-v
-  bmc_mac / host_mac  Discover's MACs (order.db device; IOM n = iom_macs[n-1]; a
-                      switch's from its latest passed bmc-leased)
+  serial              a node: Post's FRU ID 0 ship serial in the latest inventory's
+                      macinv-v; an IOM (board serial) / switch (syseeprom / weutil): its
+                      latest Discover `serial` read
+  kind                geometry's; an IOM `iom A (left/front)` / `iom B (right/back)` by
+                      the side its latest `serial` read reported (check_pal_sku.sh)
+  bmc_mac / host_mac  Discover's MACs (order.db device; IOM n = iom_macs[n-1]; a switch:
+                      bmc = its latest passed bmc-leased, host = the mgmt MAC its latest
+                      passed host-mac-seen saw: what DHCP sees)
   fabric_*_mac        the latest passed Deploy ha-config (bond0 MACs per wedge side); a
                       device without one: the MAC of the port Qualify's latest ha-path
                       saw on each wedge (inventory ip-d-link)
-  *_version           the latest Firmware <x>-checked slice's current version
+  *_port              FRONT-PANEL `<switch id>:<port>[/<lane>]` as geometry writes links
+                      (never SONiC EthernetN): mgmt = the link to the mgmt switch,
+                      fabric_a/b = the link to wedge A/B. AS-BUILT: when the live link
+                      monitor's fresh snapshot sees the device (its LLDP name, its MACs;
+                      an IOM link its own MAC) on exactly one other port of that switch
+                      and not on the geometry port, that port. A switch: mgmt = its site
+                      port (`turtle-gouda:Gi1/0/19`, as-built from its eth0 LLDP),
+                      fabric_a = its uplink ports.
+  *_version           the latest Firmware <x>-checked slice's current version;
+                      bmc_rom_version a node's backup BMC chip / an IOM's ROM Version (the
+                      backup step's read, "" unless it passed)
   qualify / deploy    qualify.qualify_why / deploy.deploy_why: pass, fail, or
                       unmeasured ("not measured: ..."); "" before the stage ran
   ha_mode             order.db ha_mode's mode for a device whose ha-test passed
   done                the worst latest Done-stage rung: fail > unmeasured > pass > skip
+
+device_rows is the archive's row set (archive.py: hostname, chassis_serial, kind `iom`;
+geometry order) -- the customer files are built from it, never the other way round.
 Written with the csv module (quotes/commas in model strings round-trip), each file
 atomically replaced.
 """
@@ -36,19 +53,31 @@ from pathlib import Path
 from flax_post import inventory
 from flax_rungs import bond
 
+from . import linkmon
 from .addressing import plan_addresses
 from .deploy import deploy_rungs, deploy_why
 from .discover_ladder import DISCOVER_STEPS
 from .firmware import BACKUP_STEP
+from .geometry import IOM_SIDES, Link
 from .qualify import device_rungs, parse_ip_link, qualify_why
 
-DEVICE_COLUMNS = ("order", "rack", "pos", "ou", "kind", "part", "hostname",
-                  "chassis_serial", "bmc_mac", "host_mac", "fabric_a_mac", "fabric_b_mac",
-                  "bmc_version", "bios_version", "nic_firmware",
-                  "qualify", "deploy", "ha_mode", "done")
-COMPONENT_COLUMNS = ("order", "rack", "pos", "kind", "model", "serial", "slot")
+# the customer files ("rack" is dropped when the order has no rack tag)
+DEVICE_COLUMNS = ("rack", "pos", "ou", "kind", "part", "serial", "bmc_mac", "host_mac",
+                  "fabric_a_mac", "fabric_b_mac", "mgmt_port", "fabric_a_port",
+                  "fabric_b_port")
+FIRMWARE_COLUMNS = ("rack", "pos", "ou", "kind", "serial", "bios_version", "bmc_version",
+                    "bmc_rom_version", "nic_firmware", "qualify", "deploy", "ha_mode", "done")
+COMPONENT_COLUMNS = ("rack", "pos", "kind", "model", "serial", "slot")
+# device_rows' keys (the archive's rows: archive.py)
+ROW_KEYS = ("order", "rack", "pos", "ou", "kind", "part", "hostname",
+            "chassis_serial", "bmc_mac", "host_mac", "fabric_a_mac", "fabric_b_mac",
+            "bmc_version", "bios_version", "nic_firmware",
+            "qualify", "deploy", "ha_mode", "done")
 DEVICES_CSV = "customer-devices.csv"
+FIRMWARE_CSV = "customer-firmware.csv"
 COMPONENTS_CSV = "customer-components.csv"
+CSVS = (DEVICES_CSV, FIRMWARE_CSV, COMPONENTS_CSV)
+IOM_KIND = {"A": "iom A (left/front)", "B": "iom B (right/back)"}
 INVENTORY_RUNG, INVENTORY_ART = "inventory", "macinv-v"
 DONE_STAGE = "done"
 _DONE_RANK = ("fail", "unmeasured", "pass", "skip")
@@ -174,30 +203,6 @@ def _fw(lr, key, prefix) -> str:
     return str(sl.get("current") or sl.get("current_version") or "")
 
 
-def firmware_components(g, lr) -> list[dict]:
-    """[{pos, kind, model (= version), serial "", slot}]: each device's BMC images from
-    the latest Firmware reads (a device whose bmc-checked never ran has none)."""
-    out = []
-
-    def add(pos, kind, model, slot):
-        out.append({"pos": pos, "kind": kind, "model": model, "serial": "", "slot": slot})
-    for d in g.devices:
-        if d.endpoints.get("hosts") and _done(lr, d.pos, "bmc-checked"):
-            add(d.pos, "bmc", _fw(lr, d.pos, "bmc"), "bmc0")
-            if _done(lr, d.pos, BACKUP_STEP):
-                add(d.pos, "bmc-backup", _backup(lr, d.pos), "backup")
-        for n in range(1, d.endpoints.get("ioms", 0) + 1):
-            key = f"{d.pos}.iom{n}"
-            r = _done(lr, key, "bmc-checked")
-            if not r:
-                continue
-            vers = ((r.get("detail") or {}).get("slice") or {}).get("versions") or {}
-            add(d.pos, "bmc", _fw(lr, key, "bmc") or str(vers.get("BMC Version") or ""),
-                f"iom{n}")
-            add(d.pos, "rom", _backup(lr, key), f"iom{n}")
-    return out
-
-
 def _backup(lr, key) -> str:
     """The backup BMC version this pass's Firmware read ("" unless it passed)."""
     r = _done(lr, key, BACKUP_STEP)
@@ -220,12 +225,12 @@ def _done_verdict(lr, key) -> str:
 
 
 def _blank(**kw) -> dict:
-    return {c: kw.get(c, "") for c in DEVICE_COLUMNS}
+    return {c: kw.get(c, "") for c in ROW_KEYS}
 
 
 def device_rows(order_dir, g, db) -> list[dict]:
-    """DEVICE_COLUMNS dicts: devices in geometry order, each JBOD's IOMs after it, then
-    the switches."""
+    """ROW_KEYS dicts (the archive's rows): devices in geometry order, each JBOD's IOMs
+    after it, then the switches."""
     lr = db.latest_runs()
     rows_db = {x["pos"]: x for x in db.devices()}
     ha = bond.clean_ha(db.ha_mode() or {})
@@ -262,7 +267,9 @@ def device_rows(order_dir, g, db) -> list[dict]:
                 order=g.order, rack=g.rack, pos=key, ou=d.ou, kind="iom", part=d.part,
                 hostname=names.get((d.pos, f"iom{n}"), ""),
                 bmc_mac=_mac(ioms[n - 1] if n <= len(ioms) else None),
-                bmc_version=_fw(lr, key, "bmc"),
+                bmc_version=_fw(lr, key, "bmc") or str(
+                    ((_done(lr, key, "bmc-checked").get("detail") or {}).get("slice") or {})
+                    .get("versions", {}).get("BMC Version") or ""),
                 done=_done_verdict(lr, key)))
     for s in g.switches:
         key = f"_sw-{s.id}"
@@ -276,6 +283,138 @@ def device_rows(order_dir, g, db) -> list[dict]:
     return out
 
 
+# ---------------------------------------------------------------- customer rows
+def columns(g, cols) -> tuple:
+    """A customer file's header: no `rack` column for an order without a rack tag."""
+    return cols if g.rack else tuple(c for c in cols if c != "rack")
+
+
+def _port(l: Link | None) -> str:
+    return f"{l.switch}:{l.port}" + (f"/{l.lane}" if l.lane else "") if l else ""
+
+
+def _front(sw, iface: str, lane_hint) -> Link | None:
+    """SONiC EthernetN on switch sw -> its front-panel Link (a wedge: 4 lanes a port; the
+    lane is written when the geometry link had one or it is not lane 1)."""
+    m = re.fullmatch(r"Ethernet(\d+)", iface or "")
+    if not m:
+        return None
+    n = int(m[1])
+    if sw.model == "wedge100s":
+        port, lane = divmod(n, 4)
+        return Link(sw.id, port + 1, lane + 1 if lane_hint is not None or lane else None)
+    return Link(sw.id, n + 1, None)
+
+
+def _fresh(snaps, sid, now) -> dict | None:
+    snap = (snaps or {}).get(sid)
+    if not snap or snap.get("at") is None or \
+            (now is not None and now - snap["at"] > linkmon.STALE_S):
+        return None
+    return snap
+
+
+def _as_built(d, name, l, sws, snaps, now, macs, base) -> Link:
+    """The geometry link, or the one other port of that switch the fresh live snapshot
+    sees this device on (and not on the geometry port): wrong cabling, as built."""
+    sw, snap = sws.get(l.switch), _fresh(snaps, l.switch, now)
+    if sw is None or snap is None:
+        return l
+    if not name.startswith("iom") and \
+            sum(x.switch == l.switch for x in d.links.values()) > 1:
+        return l                            # two links on one switch: not told apart
+    up = {linkmon.link_iface(sw, p, None) for p in sw.uplink_ports}
+    seen = set()
+    for e in snap.get("fdb") or []:
+        e = linkmon._d(e)
+        if (e.get("mac") or "").replace(":", "").lower() in macs:
+            seen.add(e.get("iface"))
+    if not name.startswith("iom"):          # an IOM link: its own MAC only
+        for e in snap.get("lldp") or []:
+            e = linkmon._d(e)
+            n = (e.get("remote_device") or "").strip().lower()
+            if n == base or n.startswith(base + "-"):
+                seen.add(e.get("local_iface"))
+    seen -= up | {"eth0", None}
+    if linkmon.link_iface(sw, l.port, l.lane) in seen or len(seen) != 1:
+        return l
+    return _front(sw, seen.pop(), l.lane) or l
+
+
+def _site_port(s, snaps, now) -> str:
+    """A switch's mgmt port on the site: geometry site_port, else (as built) the one
+    other eth0 LLDP neighbour its fresh snapshot sees."""
+    if not s.site_port:
+        return ""
+    want = f"{s.site_port['switch']}:{s.site_port['port']}"
+    snap = _fresh(snaps, s.id, now)
+    if snap is None or linkmon.site_link(s, snap, True, now)["state"] != "wrong":
+        return want
+    nbs = [linkmon._d(e) for e in snap.get("lldp") or []
+           if linkmon._d(e).get("local_iface") == "eth0"]
+    if len(nbs) != 1 or not nbs[0].get("remote_device") or not nbs[0].get("remote_port"):
+        return want
+    return f"{nbs[0]['remote_device'].split('.')[0]}:{nbs[0]['remote_port']}"
+
+
+def customer_rows(order_dir, g, db, snaps=None, now=None) -> list[dict]:
+    """device_rows + the customer cells (serial, kind, bmc_rom_version, *_port), top
+    down: highest OU first, then column (L, C, R), a JBOD's IOMs after it by side."""
+    lr = db.latest_runs()
+    sws = {s.id: s for s in g.switches}
+    mgmt = {s.id for s in g.switches if s.role == "mgmt"}
+    geo = {d.pos: d for d in g.devices}
+    dbdev = {x["pos"]: x for x in db.devices()}
+    names = linkmon.device_names(g)
+    out = []
+    for row in device_rows(order_dir, g, db):
+        key = row["pos"]
+        r = dict(row, serial=row["chassis_serial"], bmc_rom_version="",
+                 mgmt_port="", fabric_a_port="", fabric_b_port="")
+        ident = (_done(lr, key, "serial").get("detail") or {})
+        if key.startswith("_sw-"):
+            s = sws[key[4:]]
+            seen = _done(lr, key, "host-mac-seen")
+            r.update(serial=str(ident.get("serial") or ""),
+                     host_mac=_mac((seen.get("detail") or {}).get("mac"))
+                     if seen.get("verdict") == "pass" else "",
+                     mgmt_port=_site_port(s, snaps, now),
+                     fabric_a_port=" ".join(_port(Link(s.id, p, None)) for p in s.uplink_ports))
+            sort = (-s.ou, 0, 0, 0)
+        elif ".iom" in key:
+            pos, n = key.rsplit(".iom", 1)
+            d, side = geo[pos], ident.get("side")
+            ioms = (dbdev.get(pos) or {}).get("iom_macs") or []
+            l = d.links.get(f"iom{n}")
+            mac = (ioms[int(n) - 1] if int(n) <= len(ioms) else "") or ""
+            r.update(serial=str(ident.get("serial") or ""), kind=IOM_KIND.get(side, "iom"),
+                     bmc_rom_version=_backup(lr, key),
+                     mgmt_port=_port(l and _as_built(d, f"iom{n}", l, sws, snaps, now,
+                                                    {mac.replace(":", "").lower()} - {""},
+                                                    names[pos])))
+            sort = (-d.ou, d.col or 0, 1,
+                    IOM_SIDES.index(side) if side in IOM_SIDES else len(IOM_SIDES), int(n))
+        else:
+            d = geo[key]
+            x = dbdev.get(key) or {}
+            macs = {m for m in (x.get("host_mac"), x.get("bmc_mac")) if m}
+            port = {}
+            for name, l in d.links.items():
+                if name.startswith("iom"):
+                    continue
+                col = ("mgmt_port" if l.switch in mgmt else
+                       "fabric_a_port" if l.switch == "A" else
+                       "fabric_b_port" if l.switch == "B" else None)
+                if col and col not in port:
+                    port[col] = _port(_as_built(d, name, l, sws, snaps, now, macs,
+                                                 names[key]))
+            r.update(port, bmc_rom_version=_backup(lr, key) if d.endpoints.get("hosts") else "")
+            sort = (-d.ou, d.col or 0, 0, 0, 0)
+        out.append((sort, r))
+    out.sort(key=lambda x: x[0])            # stable: geometry order within a tie
+    return [r for _s, r in out]
+
+
 # ---------------------------------------------------------------- write
 def _write_csv(path: Path, columns, rows) -> None:
     tmp = path.with_name(f".{path.name}.tmp")
@@ -287,15 +426,21 @@ def _write_csv(path: Path, columns, rows) -> None:
     os.replace(tmp, path)
 
 
-def write(order_dir: Path, g, db) -> dict[str, Path]:
-    """Both CSVs into order_dir (atomic replace). -> {"devices": path, "components": path}."""
+def write(order_dir: Path, g, db, snaps: dict | None = None,
+          now: float | None = None) -> dict[str, Path]:
+    """The three CSVs into order_dir (atomic replace). snaps / now: the rack's live link
+    monitor (LinkPoller.snapshots(), its clock; None = geometry ports only).
+    -> {"devices": path, "firmware": path, "components": path}."""
     order_dir = Path(order_dir)
-    devs = order_dir / DEVICES_CSV
-    comps = order_dir / COMPONENTS_CSV
-    _write_csv(devs, DEVICE_COLUMNS, device_rows(order_dir, g, db))
-    lr = db.latest_runs()
-    parts = latest_components(order_dir, db, lr) + firmware_components(g, lr)
-    parts.sort(key=lambda c: c["pos"])     # stable: a device's parts, then its BMC images
-    _write_csv(comps, COMPONENT_COLUMNS,
-               [{"order": g.order, "rack": g.rack, **c} for c in parts])
-    return {"devices": devs, "components": comps}
+    rows = customer_rows(order_dir, g, db, snaps, now)
+    out = {}
+    for key, name, cols in (("devices", DEVICES_CSV, DEVICE_COLUMNS),
+                            ("firmware", FIRMWARE_CSV, FIRMWARE_COLUMNS)):
+        out[key] = order_dir / name
+        _write_csv(out[key], columns(g, cols), rows)
+    rank = {r["pos"]: i for i, r in enumerate(rows)}
+    parts = sorted(latest_components(order_dir, db), key=lambda c: rank.get(c["pos"], len(rank)))
+    out["components"] = order_dir / COMPONENTS_CSV
+    _write_csv(out["components"], columns(g, COMPONENT_COLUMNS),
+               [{"rack": g.rack, **c} for c in parts])
+    return out

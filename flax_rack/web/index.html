@@ -70,7 +70,8 @@
                 :class="{passed: !!csvAt}"
                 :title="s.closed_at ? 'order is closed' : s.stage_running ? 'a stage is running' : doneTitle()">Done{{csvAt ? ' ✓' : ''}}</button>
         <span class="csv-links" v-if="csvAt" :title="'customer CSVs written by Done ' + csvAt">CSV
-          <a href="api/report/devices.csv" download>devices</a>
+          <a href="api/report/devices.csv" download title="physical: serials, MACs, front-panel ports">devices</a>
+          <a href="api/report/firmware.csv" download title="firmware versions + Qualify / Deploy / Done verdicts">firmware</a>
           <a href="api/report/components.csv" download>components</a></span>
         <button class="closebtn cancelbtn" v-if="s.stage_running && s.stage" :disabled="s.cancelling" @click="cancelStage()"
                 :title="s.cancelling ? 'cancel requested: stopping after the steps now running' : 'stop the running ' + s.stage + ' between steps (a power action already sent finishes)'">{{s.cancelling ? 'Cancelling…' : 'Cancel ' + (runRunning ? 'run' : s.stage)}}</button>
