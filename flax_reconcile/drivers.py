@@ -32,6 +32,8 @@ import ssl
 import subprocess
 import time
 
+from flax_switch_sense.driver_sonic import parse_vlan_brief
+
 log = logging.getLogger("flax-reconcile.drivers")
 
 FLAP_HOLD_SECONDS = 2  # mirrors reaper_leased AristaEAPI/CiscoIOSSSH default
@@ -214,6 +216,69 @@ class Cumulus:
         self.runner("sudo ip link set " + str(port) + " up")
 
 
+class Sonic:
+    """SSH-driven community SONiC driver. runner(shell_str) runs over ssh.
+
+    Mirrors Cumulus: the same three write methods, ports named EthernetN.
+    SONiC CLI rules (as flax_switch_sense.driver_sonic): every command is
+    `sudo -n ... </dev/null` -- sudo is passwordless (never prompts) and stdin
+    stays empty, because a stray stdin line once ran as a shell command and
+    redis-cli (behind `config`/`show`) eats stdin.
+
+    Persistence mirrors the others: set_access_vlan persists (`config save -y`,
+    like EOS/IOS `write memory` and Cumulus `net commit`); flap/set_admin_up do
+    not (EOS/IOS shutdown/no shutdown and Cumulus ip link are not saved either).
+
+    Capability only: no SONiC switch is in reconcile's switches.json -- customer
+    rack switches are never a managed set (operator ruling 2026-10-31).
+    """
+
+    def __init__(self, name, runner):
+        self.name = name
+        self.runner = runner          # runner(shell_str) runs over ssh
+
+    def set_access_vlan(self, port, vid):
+        """Make `port` an untagged member of `vid` only, then `config save -y`.
+
+        Reads `show vlan brief` first: drops every other membership (and a
+        tagged membership of `vid`), adds `vid` untagged unless it already is.
+        No-op when the port is already access on `vid`. One chained command so
+        a failed step stops the rest (and the save).
+        """
+        port = _sonic_port(port)
+        vid = int(vid)
+        members = parse_vlan_brief(
+            self.runner("show vlan brief </dev/null")).get(port, [])
+        if members == [(vid, False)]:
+            return
+        cmds = []
+        for v, tagged in members:
+            if v != vid or tagged:
+                cmds.append("sudo -n config vlan member del " + str(v) + " "
+                            + port + " </dev/null")
+        if (vid, False) not in members:
+            cmds.append("sudo -n config vlan member add -u " + str(vid) + " "
+                        + port + " </dev/null")
+        cmds.append("sudo -n config save -y </dev/null")
+        self.runner(" && ".join(cmds))
+
+    def flap(self, port, hold_seconds=1):
+        """shutdown -> sleep -> startup in a single shell invocation (the sleep
+        runs switch-side, as Cumulus.flap)."""
+        port = _sonic_port(port)
+        self.runner(
+            "sudo -n config interface shutdown " + port + " </dev/null && "
+            "sleep " + str(int(hold_seconds)) + " && "
+            "sudo -n config interface startup " + port + " </dev/null"
+        )
+
+    def set_admin_up(self, port):
+        """Bring a port admin-up (the startup half of a flap) -- the self-heal
+        un-strand path."""
+        self.runner("sudo -n config interface startup " + _sonic_port(port)
+                    + " </dev/null")
+
+
 # === Task B5b: real transport wiring + load_switches factory ================
 #
 # The eAPI POST transport, the IOS ssh runner, and the Cumulus ssh runner below
@@ -384,6 +449,42 @@ def _make_cumulus_runner(host, user, password, timeout=15):
 
     return runner
 
+def _make_sonic_runner(host, user, password, timeout=60):
+    """Build a runner(cmd) -> str that runs one shell command on a SONiC switch.
+
+    Same ssh as flax_switch_sense.driver_sonic.SonicDriver._default_runner: the
+    password travels in the SSHPASS env var (`sshpass -e`), never argv; ssh gets
+    an EMPTY stdin. 60s timeout covers `config save -y`. Errors name the host,
+    remote command and exit code only.
+    """
+    def runner(cmd):
+        full = ["sshpass", "-e", "ssh",
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "UserKnownHostsFile=/dev/null",
+                "-o", "LogLevel=ERROR",
+                "-o", "ConnectTimeout=" + str(max(1, min(10, int(timeout)))),
+                (user or "admin") + "@" + host, cmd]
+        env = dict(os.environ, SSHPASS=password or "")
+        try:
+            return subprocess.check_output(full, input="", env=env,
+                                           timeout=timeout, text=True)
+        except subprocess.CalledProcessError as e:
+            raise SwitchUnreachable(host + ": " + repr(cmd) + " exited " + str(e.returncode))
+        except subprocess.TimeoutExpired:
+            raise SwitchUnreachable(host + ": " + repr(cmd) + " timed out")
+        except OSError as e:
+            raise SwitchUnreachable(host + ": ssh exec failed: " + str(e))
+
+    return runner
+
+
+def _sonic_port(port):
+    """Accept only EthernetN (the command is a shell string). Raises ValueError
+    on anything else so a malformed desired_port row faults loudly."""
+    if not re.match(r"Ethernet\d+$", str(port)):
+        raise ValueError("unexpected SONiC port form: " + repr(port))
+    return str(port)
+
 
 def _ios_to_iface(port):
     """swp<N> -> GigabitEthernet1/0/<N>. Lifted from reaper CiscoIOSSSH._to_iface
@@ -440,14 +541,16 @@ def load_switches(switches_path, switch_creds_path, host_creds_path):
         host_creds_path:  path to credentials-host.json
 
     Returns:
-        switches:   dict[name -> driver]   (AristaEAPI / IOS / Cumulus instances)
+        switches:   dict[name -> driver]   (AristaEAPI / IOS / Cumulus / Sonic)
         obmc_user:  str                    (BMC-LL ssh user, '' if absent)
         obmc_pass:  str
         host_creds: list[{user, pass}]     (host-ssh kick rung)
 
     Supported drivers: 'eos' (Arista eAPI write), 'ios' (Cisco IOS ssh write),
     'cumulus' (Cumulus Linux NCLU ssh write via plain sshpass+ssh — no -tt,
-    no ControlMaster, password never logged). Unknown driver types are skipped
+    no ControlMaster, password never logged), 'sonic' (community SONiC `config`
+    over sshpass -e + ssh, sonicuser/sonicpass; no SONiC switch is listed in any
+    site's switches.json -- capability only). Unknown driver types are skipped
     with a warning so reconcile degrades gracefully when a new type appears in
     switches.json before its write transport is implemented.
     """
@@ -487,6 +590,12 @@ def load_switches(switches_path, switch_creds_path, host_creds_path):
                 switch_creds.get("cumuser", ""),
                 switch_creds.get("cumpass", ""))
             switches[name] = Cumulus(name, runner=runner)
+        elif kind == "sonic":
+            runner = _make_sonic_runner(
+                host,
+                switch_creds.get("sonicuser", ""),
+                switch_creds.get("sonicpass", ""))
+            switches[name] = Sonic(name, runner=runner)
         else:
             # Skip any genuinely unknown driver type gracefully so reconcile
             # does not crash when a new switch type is added to switches.json

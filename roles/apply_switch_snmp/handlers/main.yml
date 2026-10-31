@@ -3,3 +3,7 @@
   ansible.builtin.raw: systemctl restart snmpd
   become: true
   changed_when: true
+
+- name: Save SONiC config
+  ansible.builtin.raw: sudo -n config save -y </dev/null
+  changed_when: true

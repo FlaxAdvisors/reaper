@@ -6,5 +6,5 @@
 - name: apply_switch_snmp requires tasks_from to select a vendor
   ansible.builtin.fail:
     msg: >-
-      Use this role with tasks_from=arista|cisco|cumulus,
+      Use this role with tasks_from=arista|cisco|cumulus|sonic,
       driven from playbooks/apply_switch_snmp.yml.
