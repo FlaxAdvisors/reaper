@@ -5,6 +5,8 @@ apply_rackpost_bind: 127.0.0.1
 apply_rackpost_port: 8452
 apply_rackpost_root: /export/nodes
 apply_rackpost_dest_dir: /opt/flax/rackpost
+# the checkout being deployed (the controller's): the build id is computed from it
+apply_rackpost_repo: "{{ playbook_dir }}/.."
 apply_rackpost_wrapper: /opt/flax/bin/rackpost
 # flax_rack needs python >= 3.7; bang-gouda's system python3 is 3.6.
 apply_rackpost_python: python3.11

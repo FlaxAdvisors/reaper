@@ -26,7 +26,7 @@
       </div>
       <div class="tr">
         <span class="live" :class="{off:live===false, wait:live===null}">
-          <i class="live-dot"></i><span>{{live ? 'live' : live===false ? 'offline' : 'connecting'}}</span><span class="live-ver mono">rackpost {{s.version || '?'}}</span>
+          <i class="live-dot"></i><span>{{live ? 'live' : live===false ? 'offline' : 'connecting'}}</span><span class="live-ver mono" :title="buildTitle()">rackpost {{bootBuild || s.version || '?'}}{{buildPending() ? ' ↻' : ''}}</span>
         </span>
         <span class="title">{{s.prefix || '…'}} · {{s.customer || '?'}} rack{{s.rack ? ' ' + s.rack : ''}}</span>
       </div>

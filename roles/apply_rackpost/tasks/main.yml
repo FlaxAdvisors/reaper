@@ -82,6 +82,26 @@
     - flax_rungs
   notify: Restart flax-rackpost
 
+# The build id the header shows and every open page reloads on (rackpost.js
+# checkBuild): computed here on the controller from the checkout being deployed,
+# `<flax_post version>·<short sha>[-dirty]` (dirty = uncommitted changes to tracked
+# files). The daemon reads BUILD at start, so a new id restarts it.
+- name: Write the rackpost build id
+  become: true
+  vars:
+    _ver: >-
+      {{ lookup('file', apply_rackpost_repo ~ '/flax_post/version.py')
+         | regex_findall('__version__ = "([^"]+)"') | first }}
+    _sha: "{{ lookup('pipe', 'git -C ' ~ (apply_rackpost_repo | quote) ~ ' rev-parse --short HEAD') }}"
+    _dirty: "{{ lookup('pipe', 'git -C ' ~ (apply_rackpost_repo | quote) ~ ' status --porcelain --untracked-files=no') }}"
+  ansible.builtin.copy:
+    content: "{{ _ver }}·{{ _sha }}{{ '-dirty' if _dirty else '' }}\n"
+    dest: "{{ apply_rackpost_dest_dir }}/BUILD"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-rackpost
+
 - name: Deploy shared flax_post static files
   become: true
   ansible.builtin.copy:

@@ -84,7 +84,7 @@ from flax_rungs.sonic import LldpEntry
 from .addressing import plan_addresses
 from .discover_ladder import DISCOVER_STEPS
 from .stages import _rung, cancelled, creds
-from .version import __version__
+from .version import BUILD
 
 STAGE = "qualify"
 AGENT_STAGES = tuple(agent.ORDER_STAGES.split(","))
@@ -403,7 +403,7 @@ def ship_check_rung(name: str, arts: dict) -> RungResult:
         dev = c["device"]
         rows = [["TPM device", "present" if dev else "absent" if dev is False else "unknown"],
                 ["version", c["version"] or "unknown"], ["state line", c["raw"] or "none"]]
-    c["checker"] = "rackpost " + __version__
+    c["checker"] = "rackpost " + BUILD
     detail = {**c, "headline": c["reason"] or f"{name} ok",
               "rows": rows + ([["reason", c["reason"]]] if c["reason"] else [])
               + [["checked by", c["checker"]]], "notes": []}

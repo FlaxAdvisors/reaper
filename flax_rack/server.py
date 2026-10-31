@@ -104,7 +104,7 @@ from .poller import INTERVAL_S, BmcPoller
 from .qualify import (AGENT_STAGES, OLD_RUNG_NAMES, PHASE_STAGES, PHASES as QUALIFY_PHASES,
                       device_rungs, pop_default, qualify_passed, qualify_why, run_qualify)
 from .stages import close_order, run_discover, start_fresh
-from .version import __version__
+from .version import BUILD, __version__
 
 # The apply_rackpost role creates this before it copies code and restarts the daemon,
 # so no stage (or Close) starts in the window between its idle check and the restart;
@@ -484,7 +484,7 @@ def rack_state(r: Rack) -> dict:
     # rows written before 2026-10-30 carry the old HA wording: served in today's
     return clean_ha({
         "order": g.order, "customer": g.customer, "vid": g.vid, "site": g.site, "rack": g.rack,
-        "prefix": g.url_prefix, "version": __version__, "closed_at": db.closed_at(),
+        "prefix": g.url_prefix, "version": __version__, "build": BUILD, "closed_at": db.closed_at(),
         "iperf_server": g.iperf_server, "pass": _pass_view(db), "run": _run_view(r, raw),
         "stage_running": r.lock.busy(), "stage": r.stage if r.lock.locked() else None,
         "cancelling": bool(r.stage and r.cancel.is_set()),
@@ -1000,7 +1000,7 @@ class App:
             o["racks"].append({"rack": g.rack, "prefix": prefix, "url": f"/{prefix}/",
                                "vid": g.vid, "site": g.site, "dir": str(d),
                                "closed_at": _closed_at(d)})
-        return {"version": __version__, "orders": [orders[k] for k in sorted(orders)],
+        return {"version": __version__, "build": BUILD, "orders": [orders[k] for k in sorted(orders)],
                 "conflicts": s.conflicts}
 
     def sol_targets(self) -> dict:
@@ -1147,7 +1147,7 @@ def index_html(ix: dict) -> str:
             "<link rel=\"stylesheet\" href=\"/rackpost/static/rackpost.css\"></head><body>"
             "<div class=\"top\"><div class=\"toprow\"><div class=\"tl\">"
             "<img class=\"flogo\" src=\"/rackpost/static/flax-logo.svg\" alt=\"flax\"></div>"
-            f"<div class=\"tr\"><span class=\"live-ver mono\">rackpost {e(ix['version'])}</span>"
+            f"<div class=\"tr\"><span class=\"live-ver mono\">rackpost {e(ix['build'])}</span>"
             "<span class=\"title\">rack orders</span></div></div></div>"
             "<div class=\"rack index\">" + "".join(rows) + "</div></body></html>")
 

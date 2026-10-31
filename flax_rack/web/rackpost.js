@@ -222,7 +222,7 @@ function App() {
   return {
     s: { switches: [], devices: [], phases: ['discover', 'firmware', 'qualify', 'deploy', 'done'], profiles: [], rack_runs: {}, events: [] },
     layout: [],                // buildLayout(s), rebuilt on every poll (refresh)
-    live: null, sel: selFromHash(), filter: null, q: '', popOpen: null, now: Date.now(),
+    live: null, bootBuild: null, sel: selFromHash(), filter: null, q: '', popOpen: null, now: Date.now(),
     actionMsg: null, hdrMsg: null, stepM: null, artM: null, artSeq: 0, closing: false, confirmText: '', closeMsg: null, busy: false,
     qualifying: false, qualText: '', discovering: false, discText: '', finishing: false, doneText: '',
     freshing: false, freshText: '', freshReason: '', freshMsg: null,
@@ -260,11 +260,41 @@ function App() {
     async refresh() {
       try {
         this.s = await api('api/state'); this.layout = buildLayout(this.s); this.live = true; this.now = Date.now(); document.title = `${this.s.prefix} rackpost`;
+        this.checkBuild(this.s.build);
         // "<stage> started" outlives its stage otherwise (finished, or died on a restart)
         const on = this.hdrStage === 'run' ? this.runRunning : this.s.stage === this.hdrStage;
         if (this.hdrStage && !(this.s.stage_running && on)) { this.hdrMsg = null; this.hdrStage = null; }
       }
       catch (e) { this.live = false; console.error(e); }
+    },
+    // A deploy must reach every open browser (the Post UI's checkVersion): the page keeps
+    // the build its first poll saw; a poll carrying another one reloads the page, the
+    // #sel= hash kept so the drawer reopens. Held while any modal or popover is open
+    // (a SOL console, a typed confirm or waiver must not be dropped) or a field has
+    // focus; the next poll retries. One reload per build per tab: a page that still
+    // disagrees cannot loop.
+    checkBuild(b) {
+      if (!b) return;
+      if (!this.bootBuild) { this.bootBuild = b; return; }
+      if (b === this.bootBuild || this.modalOpen()) return;
+      const a = document.activeElement;
+      if (a && ['INPUT', 'TEXTAREA', 'SELECT'].includes(a.tagName)) return;
+      try {
+        if (sessionStorage.getItem('rackpost-reloaded-for') === b) return;
+        sessionStorage.setItem('rackpost-reloaded-for', b);
+      } catch (e) { /* no storage: reload anyway */ }
+      location.reload();
+    },
+    // the header chip names this page's build; ↻ = a newer one is served, the reload waits
+    buildPending() { return !!(this.bootBuild && this.s.build && this.s.build !== this.bootBuild); },
+    buildTitle() {
+      return this.buildPending() ? `server is on ${this.s.build}: this page reloads once the open dialog or field is closed`
+        : 'this page\'s build (it reloads itself when a new one is deployed)';
+    },
+    // every modal / popover Esc closes (the keydown chain in mounted)
+    modalOpen() {
+      return !!(this.solM || this.artM || this.stepM || this.depM || this.contM || this.running || this.finishing
+        || this.freshing || this.deploying || this.qualifying || this.discovering || this.closing || this.popOpen);
     },
     // a header message about a stage just started (cleared once that stage is not running)
     started(stage, msg) { this.hdrMsg = msg; this.hdrStage = stage; },
