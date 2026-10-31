@@ -3,7 +3,7 @@
 // populated OUs are drawn; a dashed marker stands for each run of skipped OUs.
 // Phases with rungs: discover, firmware (Post's steps, detect + report only), qualify (the
 // device's qualify_rungs from the server), deploy (its deploy_rungs: install, firstboot,
-// flax-user, ha-config, ha-test). The server leaves out hidden_rungs (Qualify's
+// flax-user, ha-config, ha-test, deploy-iperf, deploy-stress). The server leaves out hidden_rungs (Qualify's
 // agent-stages watchdog and console, Deploy's install-console): the drawer's console
 // panel shows the SOL, and a hidden row that failed still fails its phase and the device
 // (counted here, listed under alerts). A running step reads "running…" (state `run`),
@@ -24,7 +24,8 @@
 // a device `R05`, one JBOD IOM `JBOD01.iom2`, a switch `_sw-A`, a wedge's BMC
 // `_sw-A.bmc`. Each is an object carrying pos (= the sel key), runs and
 // qualify_rungs, so one set of pipeline functions serves them all. A step row
-// opens the evidence modal (Post's stepinfo: headline, rows, notes, artifacts);
+// opens the evidence modal (Post's stepinfo: headline, rows, a table when the step has
+// one -- fio's per device x job --, notes, artifacts);
 // an artifact opens the in-page viewer (artM) over it, never a raw tab.
 // Header counters: each device counted ONCE, in the phase it has reached (chipPhase, as
 // Post's chip_phase): its earliest failed phase, else the phase in progress, else the
@@ -134,9 +135,9 @@ function stepNote(run, name) {
   if (name === 'tpm-state') return `TPM ${d.version || '?'} cleared`;
   if (name === 'console') return d.bytes != null ? `${d.bytes} B` : '';
   if (name === 'install-console') return d.findings ? `${d.findings} finding(s)` : d.findings === 0 ? 'clean' : '';
-  if (name === 'iperf-mesh') {
+  if (name === 'iperf-mesh' || name === 'deploy-iperf') {
     if (d.served) return `served ${d.served.length}`;
-    return ['mgmt', 'A', 'B'].filter((n) => d[n]).map((n) => `${n} ${gbit(d[n].tx_bps)}/${gbit(d[n].rx_bps)}G`).join(' · ');
+    return ['mgmt', 'A', 'B', 'bond'].filter((n) => d[n]).map((n) => `${n} ${gbit(d[n].tx_bps)}/${gbit(d[n].rx_bps)}G`).join(' · ');
   }
   if (name === 'fabric-addr') return Object.values(d).filter((x) => typeof x === 'string').join(' ');
   if (name === 'pxe-live' && d.ssh_after_s != null) return `ssh after ${d.ssh_after_s}s`;
@@ -366,7 +367,7 @@ function App() {
       return Object.entries(steps).map(([name, run]) => ({
         name, run, key: `${key}/${name}`, state: state(run), note: stepNote(run, name),
         arts: Object.entries((run && run.artifacts) || {}).map(([n, url]) => ({ name: n, url })),
-        ev: run && run.detail && (run.detail.rows || run.detail.notes) ? run.detail : null,
+        ev: run && run.detail && (run.detail.rows || run.detail.notes || run.detail.table) ? run.detail : null,
         title: (run ? `${run.status}${run.verdict ? ' · ' + run.verdict : ''} · ${run.finished_at || run.started_at}` : 'not run')
           + (run ? ' — ' + stepNote(run, name) : '') + ' (click for the evidence)' }));
     },
@@ -387,6 +388,7 @@ function App() {
         who: this.whoName(o), phase, name: st.name, state: st.state,
         word: run && run.verdict && st.state !== 'unmeasured' ? `${STEP_WORD[st.state] || st.state} · ${run.verdict}` : (STEP_WORD[st.state] || st.state),
         headline: run ? (d.headline || st.note || '') : '', rows: d.rows || [], notes: d.notes || [],
+        table: d.table && Array.isArray(d.table.rows) ? d.table : null,
         arts: st.arts || [], ran: !!run,
         when: run ? [run.started_at && `started ${run.started_at}`, run.finished_at && `finished ${run.finished_at}`].filter(Boolean).join(' · ') : '' };
     },
@@ -755,7 +757,7 @@ function App() {
       return `Qualify phase ${g.n} of ${g.of} (${g.phase}): ${g.done} of ${g.devices} device(s) done, ` +
         `waiting at the barrier` + (w.length ? ` for ${w.join(', ')}` : '');
     },
-    // Deploy's lockstep phase (install → firstboot → user → ha-config → ha-test)
+    // Deploy's lockstep phase (install → firstboot → user → ha-config → ha-test → iperf → stress)
     get dprog() { return (this.s.deploy || {}).progress || null; },
     dphaseCls(p) {
       const i = (this.s.deploy_phases || []).indexOf(p), n = (this.dprog?.n || 0) - 1;

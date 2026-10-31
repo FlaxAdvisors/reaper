@@ -160,38 +160,47 @@ def _inband(host_ip, user, pw, runner, arts, rows, errors) -> bool:
     return True
 
 
+def read_oob(bmc_ip: str, bmc_creds, *, runner=subprocess.run) -> tuple[dict, list, dict, str | None]:
+    """Out of band: `sdr elist` + `sel elist` on the pair that answers. (texts
+    {"sdr-elist.txt", "sel-elist.txt"} as read, rows, {"user", "cipher"} or {}, why the
+    last read failed or None). Read-only; also Deploy's stress before/after."""
+    arts, rows, who, why = {}, [], {}, None
+    s = bmc._session(bmc_ip, bmc_creds, runner=runner)
+    if s is None:
+        why = f"no BMC session at {bmc_ip} (every credential x cipher refused)"
+        rows.append(["BMC", why])
+        return arts, rows, who, why
+    user, pw, cipher, _power = s
+    who = {"user": user, "cipher": cipher}
+    rows.append(["BMC", f"{bmc_ip} as {user}, cipher {cipher}"])
+    for args, name in ((["sdr", "elist"], "sdr-elist.txt"),
+                       (["sel", "elist"], "sel-elist.txt")):
+        p = bmc._ipmi(bmc_ip, user, pw, args, cipher=cipher, timeout=SEL_TIMEOUT_S,
+                      runner=runner)
+        if p is not None and p.returncode == 0:
+            arts[name] = p.stdout or ""
+            rows.append([" ".join(args), "read"])
+        else:
+            got = ("timeout" if p is None
+                   else (p.stderr or p.stdout or f"rc={p.returncode}").strip()[-160:])
+            rows.append([" ".join(args), f"not read: {got}"])
+            why = f"{' '.join(args)} failed: {got}"
+    return arts, rows, who, why
+
+
 def collect(host_ip: str | None, bmc_ip: str, *, host_user: str, host_pw: str,
             bmc_creds: list[tuple[str, str]], runner=subprocess.run) -> RungResult:
     arts: dict[str, str] = {}
-    oob_rows: list[list[str]] = []
     host_rows: list[list[str]] = []
     detail = {"inband": False, "oob": False, "sel_nonbenign": [], "sel_transients": [],
               "user": None,
               "cipher": None, "inband_errors": {}}
     detail["inband"] = _inband(host_ip, host_user, host_pw, runner, arts, host_rows,
                                detail["inband_errors"])
-
-    why = None
-    s = bmc._session(bmc_ip, bmc_creds, runner=runner)
-    if s is None:
-        why = f"no BMC session at {bmc_ip} (every credential x cipher refused)"
-        oob_rows.append(["BMC", why])
-    else:
-        user, pw, cipher, _power = s
-        detail.update(oob=True, user=user, cipher=cipher)
-        oob_rows.append(["BMC", f"{bmc_ip} as {user}, cipher {cipher}"])
-        for args, name in ((["sdr", "elist"], "sdr-elist.txt"),
-                           (["sel", "elist"], "sel-elist.txt")):
-            p = bmc._ipmi(bmc_ip, user, pw, args, cipher=cipher, timeout=SEL_TIMEOUT_S,
-                          runner=runner)
-            if p is not None and p.returncode == 0:
-                arts[name] = p.stdout or ""
-                oob_rows.append([" ".join(args), "read"])
-            else:
-                got = ("timeout" if p is None
-                       else (p.stderr or p.stdout or f"rc={p.returncode}").strip()[-160:])
-                oob_rows.append([" ".join(args), f"not read: {got}"])
-                why = f"{' '.join(args)} failed: {got}"
+    oob, oob_rows, who, why = read_oob(bmc_ip, bmc_creds, runner=runner)
+    arts.update(oob)
+    if who:
+        detail.update(oob=True, **who)
     sel = arts.get("sel-elist.txt")
     detail["rows"] = rows = oob_rows + host_rows
     if sel is None:

@@ -13,9 +13,23 @@ barrier (wait for all) before the next:
              A-side fabric address
   ha-test    hatest.run once for the rack: whole-wedge cut A, then B, iperf mesh     1200 s
              over bond0 against geometry.iperf_server
+  iperf      deploy-iperf: iperf.mesh once for the rack against geometry.iperf_server  900 s
+             over mgmt (the installed OS's interface holding the host IP) and bond0
+             (ha-config's address), both directions, 0.8 x the client's link speed
+             (ethtool; bond0's is its active slave's); iperf3 apt-installed where missing
+  stress     deploy-stress: stress.run on every node at once (stress-ng --cpu 0 --vm,    1200 s
+             600 s), SEL/SDR before + after, the kernel log's delta scanned for
+             MCE/EDAC/thermal; fail on a new non-benign SEL entry (transients benign),
+             a dmesg hit, no ssh after, or stress-ng rc != 0
 
-The install/firstboot/user deadlines are the rungs' own (deadline_s / timeout);
-ha-config and ha-test are bounded by their rungs' ssh timeouts and settle windows.
+The install/firstboot/user/stress deadlines are the rungs' own (deadline_s / timeout);
+ha-config, ha-test and iperf are bounded by their rungs' ssh timeouts and settle windows
+(iperf: one client at a time, both directions per network).
+
+deploy-iperf's server is geometry.iperf_server: one of this run's devices (it serves only
+if still in Deploy), else one whose latest Deploy rungs up to ha-test passed (it joins to
+serve; its deploy-iperf row is written only when a client measured against it, so a
+scoped Deploy never overwrites its own result).
 
 Gate: a device enters Deploy only when its latest Qualify passed (qualify.device_rungs
 all passed and Post's verdict pass). Rack-wide, every host-bearing device must pass; a
@@ -67,23 +81,25 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from flax_rungs import (agent, ansible, bond, fabric, hatest, install, pxeboot, sol, solscan,
-                        sonic)
+from flax_rungs import (agent, ansible, bond, fabric, hatest, hostssh, install, iperf, pxeboot,
+                        sol, solscan, sonic, stress)
+from flax_rungs.remote import unreachable
 from flax_rungs.result import UNMEASURED, RungResult, not_passed
 
 from . import linkmon
 from .addressing import plan_addresses
-from .qualify import (AGENT_STAGES, _Progress, _artifact, _safe, _stage_ok, device_rungs,
-                      device_verdict, parse_ip_link)
+from .qualify import (AGENT_STAGES, _Progress, _artifact, _measured, _safe, _stage_ok,
+                      device_rungs, device_verdict, iface_of, parse_ip_link)
 from .stages import cancelled, creds
 
 STAGE = "deploy"
-PHASES = ("install", "firstboot", "user", "ha-config", "ha-test")
+PHASES = ("install", "firstboot", "user", "ha-config", "ha-test", "iperf", "stress")
 FROM_PHASES = ("install", "firstboot")
 DEADLINES = {"install": 3600, "firstboot": 1200, "user": 1800, "ha-config": 300,
-             "ha-test": 1200}
+             "ha-test": 1200, "iperf": 900, "stress": 1200}
 PHASE_RUNG = {"install": "install", "firstboot": "firstboot", "user": "flax-user",
-              "ha-config": "ha-config", "ha-test": "ha-test"}
+              "ha-config": "ha-config", "ha-test": "ha-test", "iperf": "deploy-iperf",
+              "stress": "deploy-stress"}
 CONSOLE = "install-console"
 NON_GATING = (CONSOLE,)
 MAX_PARALLEL = 8            # concurrent installs / first boots (BMC power actions)
@@ -100,7 +116,8 @@ def real_rungs():
         install=install.install, firstboot=install.firstboot, sol_start=sol.start,
         sol_stop=sol.stop, sol_scan=solscan.scan_file, flax_user=ansible.flax_user,
         bond_config=bond.configure, fabric_up=bond.bring_up, ha_test=hatest.run,
-        read_live=sonic.read_live, clock=time.monotonic, sleep=time.sleep)
+        read_live=sonic.read_live, mesh=iperf.mesh, host_run=hostssh.run, stress=stress.run,
+        clock=time.monotonic, sleep=time.sleep)
 
 
 def deploy_rungs(d) -> list[str]:
@@ -110,17 +127,19 @@ def deploy_rungs(d) -> list[str]:
     out = ["install", "firstboot", CONSOLE, "flax-user"]
     if any(n.startswith("pcie") for n in d.links):
         out += ["ha-config", "ha-test"]
-    return out
+    return out + ["deploy-iperf", "deploy-stress"]
 
 
-def deploy_why(lr, g) -> dict[str, str]:
+def deploy_why(lr, g, before: str | None = None) -> dict[str, str]:
     """pos -> why it is not deployed (absent = deployed): its first Deploy rung (step
     order) whose latest run is not pass. An install not run in this pass, or skipped (a
     Deploy from firstboot kept the installed disk), is no blocker when this pass's
-    firstboot passed (the first boot proved the installed OS)."""
+    firstboot passed (the first boot proved the installed OS). before: only the rungs
+    ahead of that one count."""
     out = {}
     for d in g.devices:
-        for r in deploy_rungs(d):
+        rungs = deploy_rungs(d)
+        for r in (rungs[:rungs.index(before)] if before in rungs else rungs):
             v = (lr.get((d.pos, r)) or {}).get("verdict")
             if r == "install" and v in (None, "skip") \
                     and (lr.get((d.pos, "firstboot")) or {}).get("verdict") == "pass":
@@ -846,6 +865,143 @@ def _record_ha_mode(ctx):
     ctx.db.set_ha_mode(ha and {**ha, "at": at})
 
 
+# ---------------------------------------------------------------- iperf
+# the installed OS has no iperf3 unless ha-test put it there: apt it in where missing
+IPERF_PREP = ("command -v iperf3 >/dev/null || DEBIAN_FRONTEND=noninteractive "
+              "apt-get -o DPkg::Lock::Timeout=120 install -y -q iperf3 >/dev/null 2>&1\n"
+              "command -v iperf3 >/dev/null || echo NOIPERF\nip -o -4 addr show\n")
+
+
+def _iperf_node(ctx, R, cr, lr, d, host_ip) -> tuple[dict | None, RungResult | None]:
+    """(the mesh's node {"pos", "host_ip", "ifaces"}, None) or (None, why not as a row):
+    mgmt = the installed OS's interface holding the host IP, bond = ha-config's bond0."""
+    user, pw = cr.host
+    rc, out, err = R.host_run(host_ip, user, pw, IPERF_PREP, timeout=300, runner=ctx.runner)
+    if unreachable(rc):
+        why = f"{host_ip} did not answer ssh (rc={rc})"
+        return None, RungResult(UNMEASURED, {"error": why, "headline": why, "reason": why})
+    why = None
+    if "NOIPERF" in out:
+        why = "iperf3 not installed (apt-get install iperf3 failed)"
+    mif = iface_of(out, host_ip)
+    if why is None and not mif:
+        why = f"no interface holds {host_ip} (rc={rc}) {hostssh.tail(out, err, 120)}".rstrip()
+    ifaces = {"mgmt": (mif, host_ip)} if mif else {}
+    if why is None and "ha-config" in deploy_rungs(d):
+        n, err = ha_node(lr, d.pos, host_ip)
+        if err:
+            why = f"bond0: {err}"
+        else:
+            ifaces["bond"] = ("bond0", n["bond_ip"])
+    if why:
+        return None, RungResult("fail", {"error": why, "headline": why})
+    return {"pos": d.pos, "host_ip": host_ip, "ifaces": ifaces}, None
+
+
+def _iperf_rows(res: RungResult, node: dict | None) -> RungResult:
+    """res with a row per network (the client's interface, tx / rx against 0.8 x link)."""
+    det = dict(res.detail)
+    rows = list(det.get("rows") or [])
+    for net, v in det.items():
+        if net in iperf.NETS and isinstance(v, dict):
+            ifn = ((node or {}).get("ifaces") or {}).get(net, ("?",))[0]
+            sp = v.get("speed_bps")
+            rows.append([f"{net} ({ifn})", f"tx {hatest._gbit(v.get('tx_bps'))} / rx "
+                                           f"{hatest._gbit(v.get('rx_bps'))} Gbit/s, need ≥ "
+                         + (f"{iperf.THRESHOLD * sp / 1e9:.1f} (0.8 x {sp / 1e9:g})"
+                            if sp else "? (no link speed)")])
+    if det.get("served") is not None:
+        rows.append(["served", ", ".join(det["served"]) or "none"])
+    det["rows"] = rows
+    return RungResult(res.verdict, det, res.artifacts)
+
+
+def _iperf(ctx, R, cr, prog, ips, xs, all_xs):
+    """One mesh for the rack: xs against geometry.iperf_server (+ the server, when it is
+    outside this run, to serve only)."""
+    g = ctx.g
+    srv = g.iperf_server
+    lr = ctx.db.latest_runs()
+    srv_dev = next((d for d in g.devices if d.pos == srv), None)
+    sx = next((x for x in all_xs if x.pos == srv), None)
+    why, config, guest = None, False, None
+    if not srv:
+        why, config = "no iperf_server in geometry.json", True
+    elif srv_dev is None or not srv_dev.endpoints.get("hosts"):
+        why, config = f"server {srv} not ready: not a host-bearing device of this rack", True
+    elif sx is not None:
+        if sx not in xs:
+            why = f"server {srv} not ready: {_why_out(sx)}"
+    elif not ips.get(srv, {}).get("host"):
+        why, config = f"server {srv} not ready: no host IP", True
+    elif srv in (pre := deploy_why(lr, g, before="deploy-iperf")):
+        why = f"server {srv} not ready: not deployed ({pre[srv]})"
+    else:
+        guest = srv
+    clients = [x for x in xs if x.pos != srv]
+    if guest is not None and not clients:
+        return
+    parts = [x.pos for x in xs if x.pos != guest]
+    rids = {p: ctx.db.start_run(p, STAGE, "deploy-iperf") for p in parts}
+    nodes, out = {}, {}
+    try:
+        if why is not None:
+            out = {p: RungResult("fail" if config else UNMEASURED,
+                                 {"error": why, "headline": why, "reason": why}) for p in parts}
+        else:
+            for d in [x.d for x in clients] + [srv_dev]:
+                n, bad = _iperf_node(ctx, R, cr, lr, d, ips[d.pos]["host"])
+                if n:
+                    nodes[d.pos] = n
+                else:
+                    out[d.pos] = bad
+            if srv not in nodes:
+                head = (out[srv].detail.get("error") or "not ready")
+                why = f"server {srv} not ready: {head}"
+                out.update({x.pos: RungResult(UNMEASURED, {"error": why, "headline": why,
+                                                           "reason": why})
+                            for x in clients if x.pos in nodes})
+            else:
+                user, pw = cr.host
+                out.update(R.mesh(nodes[srv], [nodes[x.pos] for x in clients if x.pos in nodes],
+                                  user=user, pw=pw, runner=ctx.runner))
+    except Exception as e:                  # noqa: BLE001
+        out = {p: RungResult("fail", {"error": f"{type(e).__name__}: {e}"}) for p in parts}
+    res = {}
+    for p, rid in rids.items():
+        r = out.get(p) or RungResult("fail", {"error": "no iperf result"})
+        res[p] = _finish(ctx, rid, p, "deploy-iperf", _iperf_rows(r, nodes.get(p)))
+        prog.done(p)
+    if guest is not None and guest in out and any(_measured(out.get(x.pos)) for x in clients):
+        _record(ctx, guest, "deploy-iperf", _iperf_rows(out[guest], nodes.get(guest)))
+    for x in xs:
+        _out(x, "iperf", res[x.pos])
+
+
+# ---------------------------------------------------------------- stress
+def _stress(ctx, R, cr, prog, xs):
+    if not xs:
+        return
+    rids = {x.pos: ctx.db.start_run(x.pos, STAGE, "deploy-stress") for x in xs}
+    try:
+        user, pw = cr.host
+        out = R.stress([{"pos": x.pos, "host_ip": x.ips["host"], "bmc_ip": x.ips["bmc"]}
+                        for x in xs], user=user, pw=pw, bmc_creds=cr.bmc,
+                       deadline_s=DEADLINES["stress"], runner=ctx.runner)
+    except Exception as e:                  # noqa: BLE001
+        out = {p: RungResult("fail", {"error": f"{type(e).__name__}: {e}"}) for p in rids}
+    spread = next((r.detail.get("launch_spread_s") for r in out.values()
+                   if r.detail.get("launch_spread_s") is not None), None)
+    if spread is not None:
+        ctx.db.add_event("deploy", f"stress: stress-ng launched on the nodes within "
+                                   f"{spread:.1f} s")
+    for x in xs:
+        r = _finish(ctx, rids[x.pos], x.pos, "deploy-stress",
+                    out.get(x.pos) or RungResult("fail", {"error": "no stress result"}))
+        _out(x, "stress", r)
+        prog.done(x.pos)
+
+
 # ---------------------------------------------------------------- stage
 def run_deploy(ctx, *, positions: list[str] | None = None, from_phase: str = "install",
                reinstall: str | None = None, waive: dict | None = None,
@@ -916,8 +1072,14 @@ def run_deploy(ctx, *, positions: list[str] | None = None, from_phase: str = "in
             elif phase == "ha-config":
                 lr = ctx.db.latest_runs()
                 _wave(ctx, phase, run, lambda x: _ha_config(ctx, R, cr, lr, x), len(run), prog)
-            elif run:
-                _ha_test(ctx, R, cr, prog, ips, run, xs)
+            elif phase == "ha-test":
+                if run:
+                    _ha_test(ctx, R, cr, prog, ips, run, xs)
+            elif phase == "iperf":
+                if run:
+                    _iperf(ctx, R, cr, prog, ips, run, xs)
+            else:
+                _stress(ctx, R, cr, prog, run)
             _phase_end(ctx, phase, xs)
             # out of Deploy or past the first boot: its console is complete
             _sol_end(ctx, R, [x for x in xs if x.failed or phase == "firstboot"])

@@ -42,6 +42,12 @@ served fake R05's inventory lacks the Mellanox line (POP_FAIL), so its populatio
 is red and Deploy needs a recorded waiver for it; R37's install console carries a
 "Buffer I/O error" line (SOL_FINDINGS), so its install-console fails (it never gates).
 Knobs for tests: install_fail, firstboot_fail, sol_findings, bond_fail, hatest_fail.
+Deploy's iperf runs FakeRungs' mesh (bond0 at 25G) after a host_run that answers the
+installed OS's `ip -o -4 addr`; its stress runs the REAL flax_rungs.stress.run against
+StressHosts (a fake ssh + ipmitool runner: stress-ng's output, its exit code, the kernel
+log, SEL/SDR before and after). Knobs on stress_hosts: sel_bad (a correctable-ECC SEL
+entry during the run), transient (a fan Asserted/Deasserted pair 6 s apart), mce (a
+`mce:` dmesg line), lost (no ssh after the launch), rc ({pos: rc}).
 
 Done runs against FakeRungs' end_summary (canned SDR + SEL judged by the real
 BENIGN_SEL rule; the in-band captures only when Done passes a host IP), pxe_remove (a
@@ -181,6 +187,7 @@ def fake_context_factory(rack_dir, g, db) -> OrderContext:
         from flax_rungs import sol
         rungs.sol_dir = sol.CAPTURE_DIR = _SOL_DIR or _fake_sol_dir()
         rungs.sol_drip_s = 1.0
+        rungs.stress_pause_s = 4.0
     kea = _KEAS.setdefault(g.kea_source, FakeKea(refuse))
     kea.dyn.update(rungs.switch_leases())
     if _PROFILE_DIR is None:
@@ -240,6 +247,37 @@ _LSBLK_USED = _LSBLK.replace("nvme0n1     259:0    0   1.7T  0 disk \n",
                              "nvme0n1     259:0    0   1.7T  0 disk \n"
                              "└─nvme0n1p1 259:3    0   1.7T  0 part \n")
 _BLKID_USED = _BLKID + '/dev/nvme0n1p1: UUID="4e5f" TYPE="ntfs" PARTUUID="d00d-01"\n'
+# `alldisks` (the inventory's collect script) and the agent's fio artifact in its real
+# format (qual_battery._fio: fio's default output per device + job); values made up
+_ALLDISKS = ("/dev/nvme0n1      [nvme0] 8224       nvme         non-rotational   1920.4    none "
+             "GDC5602Q  SAMSUNG_MZQL21T9HCJR-00A07 S64GNE0R700123\n"
+             "/dev/nvme1n1      [nvme1] 8224       nvme         non-rotational   1920.4    none "
+             "GDC5602Q  SAMSUNG_MZQL21T9HCJR-00A07 S64GNE0R700124\n")
+
+
+def _fio_job(dev, job, rw, bs, qd, iops, bw_mib, bw_mb, lat, lat_unit, p99, p_unit):
+    name = {"bw": "raw-read", "lat": "readlatency", "iops": "iops"}[job]
+    return (f"== {dev} {job} ==\n{name}: (g=0): rw={rw}, bs=(R) {bs}-{bs}, (W) {bs}-{bs}, "
+            f"(T) {bs}-{bs}, ioengine=libaio, iodepth={qd}\n...\nfio-3.37\nStarting 4 processes\n\n"
+            f"{name}: (groupid=0, jobs=4): err= 0: pid=4612: Sat Oct 31 00:01:34 2026\n"
+            f"  read: IOPS={iops}, BW={bw_mib}MiB/s ({bw_mb}MB/s)(73.4GiB/30007msec)\n"
+            f"    slat (usec): min=6, max=588, avg=11.93, stdev= 5.60\n"
+            f"    clat ({lat_unit}): min=165, max=14331, avg={lat}, stdev=238.66\n"
+            f"     lat ({lat_unit}): min=173, max=14339, avg={lat}, stdev=238.45\n"
+            f"    clat percentiles ({p_unit}):\n"
+            f"     |  1.00th=[ 5735],  5.00th=[ 6325], 10.00th=[ 6325], 20.00th=[ 6390],\n"
+            f"     | 99.00th=[{p99:5d}], 99.50th=[ 7308], 99.90th=[ 8848], 99.95th=[10159],\n"
+            f"     | 99.99th=[10552]\n"
+            f"   bw (  MiB/s): min= 2429, max= 2649, per=100.00%, avg={bw_mib}, stdev= 5.74, samples=240\n"
+            f"  lat (msec)   : 2=0.01%, 4=0.13%, 10=99.79%, 20=0.06%\n\n"
+            f"Run status group 0 (all jobs):\n   READ: bw={bw_mib}MiB/s ({bw_mb}MB/s), io=73.4GiB (78.9GB)\n\n"
+            f"Disk stats (read/write):\n  {dev}: ios=1198723/0, util=99.72%\n")
+
+
+_FIO = "\n".join(_fio_job(dev, *j) for dev in ("nvme0n1", "nvme1n1") for j in (
+    ("bw", "read", "64.0KiB", 64, "50.1k", 3131, 3283, "5100.20", "usec", 5145, "usec"),
+    ("lat", "randread", "4096B", 1, "131k", 512, 537, "29.84", "usec", 46400, "nsec"),
+    ("iops", "read", "4096B", 256, "812k", 3172, 3326, "1258.31", "usec", 1450, "usec")))
 _DIMMSUM = "  32 GB  DIMM A0  _Node0_Channel0_Dimm0  2666   Samsung  0000F00D  M393A4K40CB2-CTD\n"
 _TPMSTATE = "device=present\nowned=0 phEnable=1 shEnable=1 ehEnable=1 phEnableNV=1 disableClear=0\n"
 FAKE_PROFILE_RULES = ("2 Processor Version: .*Gold 6138", "12 Memory Size: 32 GB",
@@ -321,6 +359,8 @@ class FakeRungs:
         self.override_fail: set[str] = set()
         self.pxe_first: set[str] = set()        # efibootmgr BootOrder starts with PXE
         self.pxe_dir = None
+        self.stress_hosts = StressHosts(self.pos_of)   # Deploy stress: its knobs
+        self.stress_pause_s = 0.0              # real pause per stress wait + Deploy mesh (served fake)
         self.sol_dir = None                    # the fake relay's capture dir (relay_dir())
         self.sol_live: set[str] = set()        # BMC ips whose capture is running
         self.sol_drip_s = 0.0                  # pause after each relay console line
@@ -671,10 +711,12 @@ class FakeRungs:
                     "dmidecode": dmi, "ip-d-link": link, "lsblk": _LSBLK_USED if pos in self.disk_used else _LSBLK,
                     "blkid": _BLKID_USED if pos in self.disk_used else _BLKID,
                     "ip-d-address": addr, "ipmitool-fru": fru, "dimmsum": _DIMMSUM,
-                    "tpmstate": _TPMSTATE} if n == "inventory" else {f"{n}": f"{n}: ok\n"}
+                    "tpmstate": _TPMSTATE, "alldisks": _ALLDISKS} if n == "inventory" \
+                else {"fio": _FIO} if n == "fio" else {f"{n}": f"{n}: ok\n"}
             if n == "inventory" and pos in self.disk_unread:
                 del arts["blkid"]
-            out[n] = RungResult("pass", {"stage": n, "run_id": run_id, "summary": {}}, arts)
+            out[n] = RungResult("pass", {"stage": n, "run_id": run_id, "summary": {
+                "devices": ["nvme0n1", "nvme1n1"]} if n == "fio" else {}}, arts)
         return out
 
     def read_lldp(self, ip, user, pw, *, runner=None):
@@ -754,6 +796,9 @@ class FakeRungs:
         from flax_rungs.result import RungResult
         self.calls.append(("mesh", server["pos"], server["host_ip"], [c["pos"] for c in clients]))
         self._pause()
+        if self.stress_pause_s and any("bond" in c["ifaces"] for c in clients):
+            import time
+            time.sleep(self.stress_pause_s)     # Deploy's iperf: the served fake's phase shows
         out = {}
         for c in clients:
             nets, errs = {}, []
@@ -778,6 +823,10 @@ class FakeRungs:
         pos = self.pos_of.get(host_ip)
         if sudo and pos in self.sudo_prompt:
             return 1, "", "sudo: a password is required"
+        from .deploy import IPERF_PREP
+        if script == IPERF_PREP:
+            return 0, (f"1: lo    inet 127.0.0.1/8 scope host lo\n"
+                       f"2: eno1    inet {host_ip}/16 brd 172.{self.g.vid}.255.255 scope global eno1\n"), ""
         if script == _PROBE:
             out = self._probe_out(pos, host_ip)
             return (0, out, "") if out else (255, "", "ssh: connect to host: No route to host")
@@ -1084,6 +1133,21 @@ class FakeRungs:
                     {"ping-cut-A.txt": "120 packets transmitted, 118 received\n"} if not srv else {})
         return out
 
+    def stress(self, nodes, *, user, pw, bmc_creds, deadline_s=None, runner=None):
+        """The real stress.run over StressHosts, on the virtual clock (stress_pause_s of
+        real time per wait so the served fake's phase can be watched)."""
+        import time
+        from flax_rungs import stress
+
+        def sleep(s):
+            self.sleep(s)
+            if self.stress_pause_s:
+                time.sleep(self.stress_pause_s)
+        self.calls.append(("stress", sorted(n["pos"] for n in nodes)))
+        return stress.run(nodes, user=user, pw=pw, bmc_creds=bmc_creds,
+                          deadline_s=deadline_s or stress.DEADLINE_S,
+                          runner=self.stress_hosts, sleep=sleep, clock=self.wall)
+
     # ------------------------------------------------------------ Done stand-ins
     def end_summary(self, host_ip, bmc_ip, *, host_user, host_pw, bmc_creds, runner=None):
         """endsummary.collect's shape: canned SDR/SEL judged by the real BENIGN_SEL rule,
@@ -1155,6 +1219,78 @@ class FakeRungs:
         if pos in self.override_fail:
             return RungResult("fail", {"error": "http 400", "target": "None"})
         return RungResult("pass", {"method": "redfish", "user": "u", "target": "None"})
+
+
+class StressHosts:
+    """A subprocess runner for flax_rungs.stress: the nodes' ssh (sshpass ... bash -s, the
+    script on stdin) and their BMCs' ipmitool, keyed by IP (pos_of: ip -> pos). Knobs
+    (sets / dict of pos): sel_bad, transient, mce, lost, rc."""
+    SDR = "Inlet Temp       | 01h | ok  |  7.1 | 24 degrees C\nP0 Temp          | 02h | ok  |  3.0 | 41 degrees C\n"
+    SEL0 = ("   1 | 10/30/2026 | 02:01:12 | Temperature Inlet Temp | Upper Critical going high | Asserted\n"
+            "   2 | 10/30/2026 | 02:14:40 | Power Unit #0x3b | Unknown Chassis Pwr Sts | Asserted\n"
+            "   3 | 10/30/2026 | 03:02:51 | Memory #0x02 | Correctable ECC | Asserted | DIMM_A3\n")
+    DMESG0 = "[    0.000000] Linux version 6.8.0-45-generic\n[  900.100000] EDAC skx: ECC is enabled\n"
+
+    def __init__(self, pos_of):
+        self.pos_of = pos_of
+        self.sel_bad, self.transient, self.mce, self.lost = set(), set(), set(), set()
+        self.rc: dict[str, int] = {}
+        self.launched: set[str] = set()
+        self.scripts: list[tuple[str, str]] = []
+
+    def _sel(self, pos):
+        sel = self.SEL0
+        if pos in self.launched:
+            if pos in self.transient:
+                sel += ("   4 | 10/31/2026 | 01:10:02 | Fan MB FAN1 TACH | Lower Critical going low"
+                        " | Asserted | Reading 0 < Threshold 500 RPM\n"
+                        "   5 | 10/31/2026 | 01:10:08 | Fan MB FAN1 TACH | Lower Critical going low"
+                        " | Deasserted | Reading 4800 > Threshold 500 RPM\n")
+            if pos in self.sel_bad:
+                sel += "   6 | 10/31/2026 | 01:12:40 | Memory #0x02 | Correctable ECC | Asserted | DIMM_B1\n"
+        return sel
+
+    def _ssh(self, pos, script):
+        from flax_rungs import stress
+        if "/proc/uptime" in script:
+            return 0, "HAVE\nT0 1000.00\n"
+        if "setsid sh -c" in script:
+            self.launched.add(pos)
+            return 0, "STARTED\n"
+        if pos in self.lost and pos in self.launched:
+            return 255, ""
+        if script == stress._DONE:
+            return 0, "DONE\n"
+        if script == stress._KILL:
+            return 0, "KILLED\n"
+        if script == stress._COLLECT:
+            out = ("stress-ng: info:  [4242] setting to a 600 secs run per stressor\n"
+                   "stress-ng: info:  [4242] dispatching hogs: 64 cpu, 4 vm\n"
+                   "stress-ng: metrc: [4242] stressor       bogo ops real time  usr time  sys time   bogo ops/s\n"
+                   "stress-ng: metrc: [4242] cpu            9461234    600.02  38211.20     12.40     15768.20\n"
+                   "stress-ng: metrc: [4242] vm             1520933    600.05   2390.11    10.50      2534.67\n"
+                   "stress-ng: info:  [4242] successful run completed in 600.07 secs\n")
+            dm = self.DMESG0 + "[ 1210.500000] perf: interrupt took too long (2510 > 2500)\n"
+            if pos in self.mce:
+                dm += ("[ 1402.881233] mce: [Hardware Error]: Machine check events logged\n"
+                       "[ 1402.881240] EDAC skx MC1: HANDLING MCE MEMORY ERROR\n")
+            return 0, (f"{stress._MARK}out===\n{out}{stress._MARK}rc===\n{self.rc.get(pos, 0)}\n"
+                       f"{stress._MARK}dmesg===\n{dm}")
+        return 0, ""
+
+    def __call__(self, argv, **kw):
+        if argv[0] == "ipmitool":
+            pos = self.pos_of.get(argv[argv.index("-H") + 1])
+            args = argv[argv.index("-E") + 1:]
+            out = {"chassis": "Chassis Power is on\n", "sdr": self.SDR}.get(args[0]) \
+                or (self._sel(pos) if args[:2] == ["sel", "elist"] else "")
+            return subprocess.CompletedProcess(argv, 0, stdout=out, stderr="")
+        host = next(a for a in argv if "@" in a).split("@", 1)[1]
+        pos = self.pos_of.get(host)
+        self.scripts.append((pos, kw.get("input") or ""))
+        rc, out = self._ssh(pos, kw.get("input") or "")
+        return subprocess.CompletedProcess(argv, rc, stdout=out, stderr="" if rc != 255 else
+                                           "ssh: connect to host: No route to host")
 
 
 class _FakeRedfish:

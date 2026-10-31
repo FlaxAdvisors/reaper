@@ -74,6 +74,10 @@ textarea.confirm-in{font:inherit;font-size:.8rem;resize:vertical}
 .step .art{margin-left:.35rem;font-family:ui-monospace,monospace;font-size:.66rem;color:var(--accent);text-decoration:none}
 .step .art:hover{text-decoration:underline}
 .pop-tbl td:nth-child(2),.pop-tbl td:nth-child(3){width:2.5rem;text-align:center}
+/* the evidence modal's table (fio per device x job); numbers right-aligned */
+.ev-tbl{display:block;overflow-x:auto}
+.ev-tbl th{text-transform:none}
+.ev-tbl td:nth-child(n+4),.ev-tbl th:nth-child(n+4){text-align:right;white-space:nowrap}
 
 /* header: Qualify lockstep phase strip (past / current) + devices done at the barrier */
 .qphase{display:inline-flex;gap:3px;align-items:center;font-size:.66rem;margin-left:.6rem;white-space:nowrap}

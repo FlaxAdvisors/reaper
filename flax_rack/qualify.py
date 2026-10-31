@@ -19,6 +19,9 @@ agent-reachable (the launch) and agent-stages are recorded once per agent phase
 (detail.phase). agent-stages is the watchdog (the agent answered with this phase's
 list in time): the UI draws no row for it, so its failure is also put on the stage the
 agent was in (watchdog_on: its error + the `agent-watchdog` log artifact).
+The fio row carries its per-device summary (flax_rungs.fio: IOPS, MB/s, latency avg + p99
+per job, model / size from the inventory's alldisks) as a table for the evidence modal;
+it never changes the agent's verdict.
 The storage deadline counts the disks fio will read in the inventory's lsblk
 capture (fio_disks; 8 when there is none). On a deadline the agent is stopped, so
 nothing still runs when the next phase starts; a node whose stop failed is named.
@@ -77,7 +80,7 @@ from types import SimpleNamespace
 
 from flax_post import population, qualify_rules, shipchecks
 from flax_post.observe import family_map_live, fru
-from flax_rungs import agent, fabric, ha, hostssh, identity, iperf, liveboot, sol, sonic
+from flax_rungs import agent, fabric, fio, ha, hostssh, identity, iperf, liveboot, sol, sonic
 from flax_rungs.result import UNMEASURED, RungResult, not_passed
 from flax_rungs.sonic import LldpEntry
 
@@ -472,6 +475,7 @@ class _Dev:
     hard: bool = False              # a rung of that phase failed outright
     busy: bool = False              # an agent stop failed: its battery may still run
     lsblk: str | None = None        # the inventory's lsblk capture (storage deadline)
+    alldisks: str | None = None     # ... and its alldisks (the fio summary's model / size)
     sol: object = None              # the running SOL capture (console rung)
     sol_rid: int | None = None      # its order.db run row, 'running' until stopped
     sol_done: bool = False          # console recorded for this Qualify
@@ -803,13 +807,15 @@ def _poll(ctx, R, cr, phase, x):
             res = RungResult("skip", {"reason": f"agent-stages {word}"})
         if name == cur:
             res = watchdog_on(res, ar)
+        if name == "fio" and name in got:
+            res = fio_rung(res, x.alldisks, x.lsblk)
         r = _record(ctx, pos, name, res, STAGE, run_seg if name in got else None)
         if r.verdict in ("fail", UNMEASURED):
             _out(x, phase, r)
     if phase == "inventory":
         inv = got.get("inventory")
         arts = inv.artifacts if inv else {}
-        x.lsblk = arts.get("lsblk")
+        x.lsblk, x.alldisks = arts.get("lsblk"), arts.get("alldisks")
         # POP and the ship checks never gate either (a missing profile must not keep the
         # iperf server out of burn/network); their fail still fails the device in
         # qualify_passed. The check evidence goes beside the battery's artifacts.
@@ -825,6 +831,29 @@ def _poll(ctx, R, cr, phase, x):
             except Exception as e:          # noqa: BLE001 -- a judge never sinks the phase
                 res = RungResult("fail", {"error": f"{type(e).__name__}: {e}"})
             _record(ctx, pos, name, res, STAGE, run_seg)
+
+
+def fio_detail(detail: dict, verdict, fio_text, alldisks, lsblk) -> dict:
+    """The fio stage's detail with its per-device summary (flax_rungs.fio): the table,
+    rows, notes; the headline (IOPS · MB/s · µs of the lead device) only on a pass, so a
+    failure's error stays the headline. Never changes the verdict."""
+    det = dict(detail or {})
+    if not fio_text:
+        return det
+    sm = fio.summarize(fio_text, (det.get("summary") or {}).get("devices"), alldisks, lsblk)
+    head = sm.pop("fio_headline")
+    det.update(table=sm["table"], fio=sm["fio"],
+               rows=[*sm["rows"], *(det.get("rows") or [])],
+               notes=[*(det.get("notes") or []), *sm["notes"]])
+    if head and verdict == "pass" and not det.get("headline"):
+        det["headline"] = head
+    return det
+
+
+def fio_rung(res: RungResult, alldisks, lsblk) -> RungResult:
+    return RungResult(res.verdict, fio_detail(res.detail, res.verdict,
+                                              (res.artifacts or {}).get("fio"), alldisks,
+                                              lsblk), res.artifacts)
 
 
 def watchdog_on(res: RungResult, ar: RungResult) -> RungResult:

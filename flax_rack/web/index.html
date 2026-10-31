@@ -571,6 +571,10 @@
         <div class="kv-grid step-kv" v-if="(stepM?.rows || []).length">
           <template v-for="r in (stepM?.rows || [])"><span class="lbl">{{r[0]}}</span><span class="mono">{{r[1]}}</span></template>
         </div>
+        <table class="inv-tbl ev-tbl" v-if="(stepM?.table?.rows || []).length">
+          <tr><th v-for="c in (stepM?.table?.cols || [])">{{c}}</th></tr>
+          <tr v-for="r in (stepM?.table?.rows || [])"><td v-for="c in r" class="mono">{{c}}</td></tr>
+        </table>
         <p class="pending-note" v-for="n in (stepM?.notes || [])">{{n}}</p>
         <div class="arts-line" v-if="(stepM?.arts || []).length"><span class="lbl">artifacts</span>
           <span class="art" v-for="a in (stepM?.arts || [])" :title="a.url" @click="openArt(a, true)">{{a.name}}</span></div>

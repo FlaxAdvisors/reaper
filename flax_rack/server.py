@@ -102,7 +102,8 @@ from .orderdb import OrderDB
 from . import run as runmod
 from .poller import INTERVAL_S, BmcPoller
 from .qualify import (AGENT_STAGES, OLD_RUNG_NAMES, PHASE_STAGES, PHASES as QUALIFY_PHASES,
-                      device_rungs, pop_default, qualify_passed, qualify_why, run_qualify)
+                      device_rungs, fio_detail, pop_default, qualify_passed, qualify_why,
+                      run_qualify)
 from .stages import close_order, run_discover, start_fresh
 from .version import BUILD, __version__
 
@@ -340,6 +341,30 @@ def _trim(run: dict) -> dict:
 HIDDEN_RUNGS = {"qualify": ("agent-stages", "console"), "deploy": (INSTALL_CONSOLE,)}
 
 
+_FIO_SEEN: dict = {}
+
+
+def _fio_view(rack_dir: Path, runs: dict) -> None:
+    """A fio row written before its summary existed (2026-10-31) gets it here from its
+    saved artifact + the inventory's alldisks/lsblk (once per row, then cached)."""
+    run = runs.get("fio")
+    det = (run or {}).get("detail")
+    if not isinstance(det, dict) or "table" in det or not (run.get("artifacts") or {}).get("fio"):
+        return
+    inv = runs.get("inventory") or {}
+    key = (str(rack_dir), run.get("id"), inv.get("id"))
+    if key not in _FIO_SEEN:
+        def text(rel):
+            try:
+                return (Path(rack_dir) / rel).read_text() if rel else None
+            except OSError:
+                return None
+        ia = inv.get("artifacts") or {}
+        _FIO_SEEN[key] = fio_detail(det, run.get("verdict"), text(run["artifacts"]["fio"]),
+                                    text(ia.get("alldisks")), text(ia.get("lsblk")))
+    run["detail"] = _FIO_SEEN[key]
+
+
 def _shown(rungs, phase) -> list[str]:
     return [r for r in rungs if r not in HIDDEN_RUNGS[phase]]
 
@@ -431,6 +456,7 @@ def rack_state(r: Rack) -> dict:
         ovr = x.get("pop_override")
         profiles.update(p for p in (default, ovr) if p)
         runs = by_pos.get(d.pos, {})
+        _fio_view(r.dir, runs)
         devices.append({
             "pos": d.pos, "ou": d.ou, "h": d.h, "col": d.col, "kind": d.kind, "part": d.part,
             "links": {k: _link_str(l) for k, l in d.links.items()},
