@@ -223,6 +223,7 @@ def run(ctx, positions: list[str] | None = None) -> dict:
         elif a.role == "host":              # = the Kea reservation's (and iPXE file's) name
             x["host_ip"], x["hostname"] = a.ip, a.name
     ctx.db.add_event("done", "done started: " + ", ".join(xs))
+    ctx.db.mark_stage_start("done", list(xs))
     lr = ctx.db.latest_runs()
     nofw = [p for p in xs if not has_firmware(lr, p)]
     if nofw:

@@ -1246,6 +1246,8 @@ def run_discover(ctx, *, positions: list[str] | None = None) -> None:
         raise RuntimeError("order is closed")
     g = ctx.g
     devs, sws = wanted(g, positions)
+    ctx.db.mark_stage_start("discover", [d.pos for d in devs] + [f"_sw-{s.id}" for s in sws]
+                            + (["_rack"] if positions is None else []))
     env = Env(ctx.rungs or real_rungs(), creds(ctx))
     for a in plan_addresses(g):
         env.ips.setdefault(a.pos, {})[a.role] = a.ip

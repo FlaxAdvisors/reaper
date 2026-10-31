@@ -343,6 +343,7 @@ def run_firmware(ctx, *, positions: list[str] | None = None) -> None:
         raise RuntimeError("order is closed")
     g = ctx.g
     devs, sws = wanted(g, positions)
+    ctx.db.mark_stage_start("firmware", [d.pos for d in devs] + [f"_sw-{s.id}" for s in sws])
     R = ctx.rungs or real_rungs()
     cr = creds(ctx)
     M = R.fw_manifests()

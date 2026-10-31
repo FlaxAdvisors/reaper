@@ -237,11 +237,11 @@ def _safe(name) -> bool:
 
 
 def _record(ctx, pos, rung, res: RungResult, stage=STAGE, run_seg=None,
-            seg_prefix="q") -> RungResult:
-    """One finished run row for a result obtained elsewhere; its artifacts (text) are
-    written under artifacts/<pos>/<run_seg or seg_prefix+row id>/<rung>/ and the row
-    keeps their paths."""
-    rid = ctx.db.start_run(pos, stage, rung)
+            seg_prefix="q", rid=None) -> RungResult:
+    """One finished run row for a result obtained elsewhere (or row `rid`, started
+    before the result); its artifacts (text) are written under
+    artifacts/<pos>/<run_seg or seg_prefix+row id>/<rung>/ and the row keeps their paths."""
+    rid = rid or ctx.db.start_run(pos, stage, rung)
     try:
         arts = res.artifacts or {}
         detail = dict(res.detail)
@@ -490,10 +490,12 @@ class _Progress:
         self.phases = phases
         self.save = save or ctx.db.set_qualify_progress
 
-    def start(self, phase, poss):
+    def start(self, phase, poss, limit_s=None):
+        """limit_s: the phase's deadline per device ({pos: s}), when it has one."""
         with self.mu:
             self.cur = {"phase": phase, "n": self.phases.index(phase) + 1, "of": len(self.phases),
-                        "devices": len(poss), "done": 0, "waiting_on": sorted(poss)}
+                        "devices": len(poss), "done": 0, "waiting_on": sorted(poss),
+                        "limit_s": dict(limit_s or {})}
             self._save()
 
     def done(self, pos):
@@ -703,7 +705,7 @@ def _deadline(phase, x) -> tuple[int, dict]:
 def _agent_phase(ctx, R, cr, prog, phase, xs):
     """Launch the agent with this phase's stages on every device in one wave, then poll
     them all; each device's results are recorded the moment it finishes."""
-    prog.start(phase, [x.pos for x in xs])
+    prog.start(phase, [x.pos for x in xs], {x.pos: _deadline(phase, x)[0] for x in xs})
     if not xs:
         return
     want = PHASE_STAGES[phase]
@@ -713,9 +715,13 @@ def _agent_phase(ctx, R, cr, prog, phase, xs):
     mu = threading.Lock()
 
     def launch(x):
-        r = _rung(ctx, x.pos, "agent-reachable", lambda: _with(
-            R.launch(x.ips["host"], user, pw, stages=stages, runner=ctx.runner), phase=phase),
-            STAGE)
+        rid = ctx.db.start_run(x.pos, STAGE, "agent-reachable")   # running while it launches
+        try:
+            res = _with(R.launch(x.ips["host"], user, pw, stages=stages, runner=ctx.runner),
+                        phase=phase)
+        except Exception as e:              # noqa: BLE001 -- the row never stays running
+            res = RungResult("fail", {"error": f"{type(e).__name__}: {e}"})
+        r = _record(ctx, x.pos, "agent-reachable", res, rid=rid)    # saves the `net` capture
         if r.verdict == "pass":
             with mu:
                 started[x.pos] = time.monotonic()
@@ -867,8 +873,11 @@ def server_not_ready(lr, d) -> str | None:
     return None
 
 
-def _network(ctx, R, prog, scope, ips, cr, not_ready):
-    """not_ready: pos -> (skip reason, server reason) for devices out of this phase."""
+def _network(ctx, R, prog, scope, ips, cr, not_ready, guest=None):
+    """not_ready: pos -> (skip reason, server reason) for devices out of this phase.
+    guest: the iperf server when it is in scope only to serve (not a target): its
+    iperf-mesh row is written only when a client measured against it in this run, so a
+    scoped Qualify never overwrites its own result with a skip."""
     g = ctx.g
     lr = ctx.db.latest_runs()
     srv = g.iperf_server
@@ -958,7 +967,9 @@ def _network(ctx, R, prog, scope, ips, cr, not_ready):
         server = node(srv_dev)
         if "mgmt" not in server["ifaces"]:
             why = f"server {srv} not ready: no interface holds {server['host_ip']}"
-    rids = {d.pos: ctx.db.start_run(d.pos, STAGE, "iperf-mesh") for d in meshed}
+    if guest is not None and not any(d.pos != srv for d in meshed):
+        return              # no client to serve: the guest server's row stands
+    rids = {d.pos: ctx.db.start_run(d.pos, STAGE, "iperf-mesh") for d in meshed if d.pos != guest}
     if why is not None and config:
         out = {p: RungResult("fail", {"error": why}) for p in rids}
     elif why is not None:   # the server is not ready: nothing judged for any client
@@ -973,6 +984,18 @@ def _network(ctx, R, prog, scope, ips, cr, not_ready):
     for p, rid in rids.items():
         ctx.db.finish_run(rid, out.get(p) or RungResult("fail", {"error": "no iperf result"}))
         prog.done(p)
+    if guest is not None and guest in out and any(
+            _measured(out.get(d.pos)) for d in meshed if d.pos != guest):
+        _record(ctx, guest, "iperf-mesh", out[guest])
+    if guest is not None:
+        prog.done(guest)
+
+
+def _measured(r: RungResult | None) -> bool:
+    """A client's iperf result carries a number: something ran against the server."""
+    return r is not None and any(isinstance(v, dict) and (v.get("tx_bps") is not None
+                                                          or v.get("rx_bps") is not None)
+                                 for v in r.detail.values())
 
 
 # ---------------------------------------------------------------- stage
@@ -994,12 +1017,13 @@ def run_qualify(ctx, *, positions: list[str] | None = None) -> None:
     for a in plan_addresses(g):               # the one address formula (host octet included)
         ips.setdefault(a.pos, {})[a.role] = a.ip
     ctx.db.add_event("qualify", f"qualify started: {', '.join(d.pos for d in targets) or 'none'}")
+    ctx.db.mark_stage_start(STAGE, [d.pos for d in targets])
     lr = ctx.db.latest_runs()               # Discover's verdicts, read before anything runs
     rows = {x["pos"]: x for x in ctx.db.devices()}
     xs = [_Dev(d, ips.get(d.pos, {}), rows.get(d.pos) or {"pos": d.pos}) for d in targets]
     prog = _Progress(ctx)
     try:
-        prog.start("boot", [x.pos for x in xs])
+        prog.start("boot", [x.pos for x in xs], {x.pos: BOOT_DEADLINE_S for x in xs})
         _wave(ctx, "boot", xs, lambda x: _boot(ctx, R, cr, lr, x), MAX_PARALLEL, prog)
         _phase_end(ctx, "boot", xs)
         _console_end(ctx, R, [x for x in xs if x.failed])   # out of Qualify: stop its SOL
@@ -1017,18 +1041,23 @@ def run_qualify(ctx, *, positions: list[str] | None = None) -> None:
                              + f" in phase {x.failed}")
                      for x in xs if x.failed}
         scope = [x.d for x in xs]
+        guest = None
         srv = next((d for d in g.devices if d.pos == g.iperf_server), None)
-        if not stop and srv is not None and srv.endpoints.get("hosts") and srv not in scope:
+        # the server outside the targets serves only a client that reached the network
+        # phase: with none, nothing of it is touched (its own results stand)
+        if not stop and srv is not None and srv.endpoints.get("hosts") and srv not in scope \
+                and any(not x.failed for x in xs):
             why = server_not_ready(ctx.db.latest_runs(), srv)
             if why is None:
                 scope.append(srv)           # its fabric addresses are not persistent
+                guest = srv.pos
             else:
                 not_ready[srv.pos] = (why, why)
         if stop:
             for d in scope:
                 _skip(ctx, d.pos, [r for r in NET_RUNGS if r in device_rungs(d)], "cancelled")
         else:
-            _network(ctx, R, prog, scope, ips, cr, not_ready)
+            _network(ctx, R, prog, scope, ips, cr, not_ready, guest)
     finally:
         _console_end(ctx, R, xs)            # always: no SOL session outlives the stage
         prog.clear()

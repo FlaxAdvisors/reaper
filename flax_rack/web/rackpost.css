@@ -200,3 +200,10 @@ textarea.confirm-in{font:inherit;font-size:.8rem;resize:vertical}
 .dot.fwnote{background:var(--amber)}
 .step.fwnote .si{color:var(--amber)} .step.fwnote .note{color:var(--amber)}
 .pop-badge.st-fwnote{color:var(--amber);background:rgba(210,153,34,.15)}
+/* drawer: where the device is now, finished phases folded to their summary line */
+.now-line{display:flex;flex-wrap:wrap;gap:.2rem .6rem;align-items:baseline;margin:.1rem 0 .45rem;padding:.3rem .5rem;border:1px solid var(--border);border-radius:6px;font-size:.74rem;color:var(--dim)}
+.now-line.on{border-color:rgba(88,166,255,.55);color:var(--accent)}
+.now-line .now-next{color:var(--dim);font-size:.7rem}
+.phase-h.clk{cursor:pointer} .phase-h .caret{margin-left:.35rem;color:var(--dim);font-size:.7rem}
+.phase-h .ph-ok{margin-left:.35rem;color:var(--green)}
+.phase.folded .steps:empty{display:none}

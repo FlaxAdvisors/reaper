@@ -314,6 +314,9 @@ def _deploy_done(x: _Run, waive, who):
                             + "; ".join(f"{p} ({y})" for p, y in ch["out"].items()))
         return
     x.stage("deploy")
+    # past the hold: its blockers are resolved or left out (named in `out`); the hold's
+    # list stays in the Run's event, the strip no longer shows it
+    db.set_run_plan(x.rid, held={})
     if ch["out"]:
         db.add_event(STAGE, f"run {x.rid}: left out of Deploy: "
                             + "; ".join(f"{p} ({y})" for p, y in ch["out"].items()))

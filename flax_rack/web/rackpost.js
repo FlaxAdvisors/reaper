@@ -33,6 +33,11 @@
 // version not read) is an amber note on its bar, never a red dot, never in ALERTS.
 // Tiles carry no firmware; the drawer's firmware block does (BIOS, BMC active/backup or
 // an IOM's BMC + ROM, NIC per port with PSID).
+// The drawer's pipeline opens on a now-line (nowInfo: stage · its phase · the step
+// running · mm:ss[/the phase's deadline] · what is next; also the tile step bar's
+// tooltip) and on the running step; a finished phase folds to its summary line (click to
+// unfold), one with a failure stays open. A stage re-run for a device shows only its new
+// attempt's rows (the server's latest_runs(attempt=True)): unreached steps read not run.
 // Serial console: the shared flax-post-sol relay holds the BMC's one SOL session.
 // While a device's console / install-console rung runs, the drawer tails the relay's
 // capture file (api/console/<pos>, every CON_MS); the SOL button opens the Post UI's
@@ -87,6 +92,7 @@ const swObj = (sw) => ({ type: 'sw', pos: '_sw-' + sw.id, sw, runs: sw.runs || {
 const swBmcObj = (sw) => ({ type: 'swbmc', pos: `_sw-${sw.id}.bmc`, sw, runs: sw.runs || {}, qualify_rungs: [], only: BMC_STEPS });
 
 const pad = (n) => String(n).padStart(2, '0');
+const mmss = (s) => `${pad(Math.floor(s / 60))}:${pad(Math.floor(s % 60))}`;
 const span = (top, bot) => (top === bot ? pad(top) : `${pad(top)}–${pad(bot)}`);
 
 async function api(path, body) {
@@ -230,6 +236,7 @@ function App() {
     depM: null, devFrom: 'install', devReinText: '', devWaive: {}, devReason: '',
     // live console tail (con) of the selected device while its console rung runs; the
     // SOL terminal modal (solM = {pos, ip}) and its lock/log state (as the Post UI's)
+    phOpen: {},                // drawer phases the operator unfolded / folded: {"<pos>/<phase>": open}
     con: null, solM: null, solHeld: false, solHolder: null, solClientId: null, solLog: [], solIdle: null, solErr: null,
     // header counters: what each counts is counted() (its filter shows the same set)
     metricList: [
@@ -247,6 +254,7 @@ function App() {
         if (this.solM) this.closeSol(); else if (this.artM) this.backArt(); else if (this.stepM) this.stepM = null; else if (this.depM) this.depM = null; else if (this.contM) this.contM = null; else if (this.running) this.running = false; else if (this.finishing) this.finishing = false; else if (this.freshing) this.freshing = false; else if (this.deploying) this.deploying = false; else if (this.qualifying) this.qualifying = false; else if (this.discovering) this.discovering = false; else if (this.closing) this.closing = false; else if (this.popOpen) this.popOpen = null; else this.close();
       });
       await this.refresh(); setInterval(() => this.refresh(), POLL_MS);
+      if (this.sel) this.scrollToRun();
       setInterval(() => this.tickConsole(), CON_MS);
     },
     async refresh() {
@@ -302,7 +310,9 @@ function App() {
         // (agent-stages, not drawn) runs, the first stage not yet recorded since is running
         const w = runs['agent-stages'];
         if (w && w.status === 'running') {
-          const r = (this.s.agent_stages || []).find((x) => x in out && (!out[x] || (out[x].started_at || '') < (w.started_at || '')));
+          // (of the phase Qualify is in: an earlier phase's stages were recorded before it)
+          const cur = (this.s.qualify_phase_stages || {})[(this.qprog || {}).phase] || this.s.agent_stages || [];
+          const r = cur.find((x) => x in out && (!out[x] || (out[x].started_at || '') < (w.started_at || '')));
           if (r) out[r] = { status: 'running', started_at: w.started_at, detail: { headline: 'the qual agent is running this phase' }, artifacts: {} };
         }
       } else if (phase === 'deploy') {
@@ -492,7 +502,10 @@ function App() {
     },
     hasRuns(d, phase) { return this.stepEntries(d, phase).some((x) => x.run); },
     // the phase whose steps the tile's second bar shows: the latest one with a run
-    curPhase(d) { return this.hasRuns(d, 'done') ? 'done' : this.hasRuns(d, 'deploy') ? 'deploy' : this.hasRuns(d, 'qualify') ? 'qualify' : 'discover'; },
+    curPhase(d) {
+      const r = (this.s.phases || []).find((p) => this.stepEntries(d, p).some((x) => x.state === 'run'));
+      if (r) return r;                    // a stage re-run now: its steps, not the last phase's
+      return this.hasRuns(d, 'done') ? 'done' : this.hasRuns(d, 'deploy') ? 'deploy' : this.hasRuns(d, 'qualify') ? 'qualify' : 'discover'; },
     phaseState(d, p) {
       const v = this.stepEntries(d, p).map((x) => x.state);
       // nothing to do for this endpoint (a BC IOM's Qualify/Deploy/Done, a switch's): complete,
@@ -554,6 +567,47 @@ function App() {
       const v = this.stepEntries(d, p); if (!v.length) return '';
       return `${v.filter((x) => ['done', 'skip', 'fwnote'].includes(x.state)).length}/${v.length}`;
     },
+    // ---- where a device is now: `now: <stage> · <phase> · <step> · mm:ss[/limit]` and
+    // what comes next (the drawer's top line, the tile's step-bar tooltip) ----
+    nowInfo(o) {
+      if (!o) return { text: '', next: '' };
+      const ps = this.s.phases || [];
+      const prog = (p) => (this.s.stage_running && this.s.stage === p
+        ? (p === 'qualify' ? this.qprog : p === 'deploy' ? this.dprog : null) : null);
+      const after = (p, es, i) => {
+        const n = es.slice(i + 1).find((x) => !['done', 'skip'].includes(x.state));
+        if (n) return `next: ${n.name}`;
+        const q = ps.slice(ps.indexOf(p) + 1).find((x) => this.stepEntries(o, x).length);
+        return q ? `next: ${q}` : 'next: finished';
+      };
+      for (const p of ps) {
+        const es = this.stepEntries(o, p), g = prog(p);
+        let i = es.findIndex((x) => x.state === 'run');
+        if (i >= 0) {
+          const st = es[i], lim = g && (g.limit_s || {})[o.pos];
+          const el = st.run.started_at ? Math.max(0, (this.now - Date.parse(st.run.started_at)) / 1000) : null;
+          return { text: 'now: ' + [p, g && g.phase !== st.name && g.phase, st.name].filter(Boolean).join(' · ') +
+                     (el == null ? '' : ` · ${mmss(el)}${lim ? '/' + mmss(lim) : ''}`), next: after(p, es, i) };
+        }
+        // in this stage but between steps: waiting at its barrier for the others
+        i = es.findIndex((x) => x.state === 'pending');
+        if (g && i > 0 && es.slice(0, i).some((x) => x.run)) {
+          const w = (g.waiting_on || []).filter((x) => x !== o.pos);
+          return { text: `now: ${p} · ${g.phase} · waiting` + (w.length ? ` for ${w.join(', ')}` : ''), next: `next: ${es[i].name}` };
+        }
+      }
+      return { text: `now: idle · ${this.statusText(o)}`, next: '' };
+    },
+    nowTitle(o) { const n = this.nowInfo(o); return [n.text, n.next].filter(Boolean).join(' · '); },
+    // a finished phase (every step passed / n/a, or Firmware read with notes) folds to its
+    // summary line; one with a failure, or not finished, stays open. A click toggles it.
+    phFinished(o, p) { return !!this.stepEntries(o, p).length && ['done', 'fwnote'].includes(this.phaseState(o, p)); },
+    phFolded(o, p) {
+      if (!o || !this.phFinished(o, p)) return false;
+      const k = `${o.pos}/${p}`;
+      return k in this.phOpen ? !this.phOpen[k] : true;
+    },
+    togglePh(o, p) { if (this.phFinished(o, p)) this.phOpen = { ...this.phOpen, [`${o.pos}/${p}`]: this.phFolded(o, p) }; },
     stepIcon(st) { return { done: '✓', run: '◌', cur: '◉', fault: '✕', pending: '·', skip: '–', held: '–', unknown: '?', unmeasured: '○', fwnote: '!' }[st] || '·'; },
     statusText(d) {
       if (!d) return '';
@@ -836,6 +890,14 @@ function App() {
       this.actionMsg = null; this.stepM = null; this.artM = null;
       this.sel = this.sel === key ? null : key;
       history.replaceState(null, '', this.sel ? '#sel=' + this.sel : location.pathname);
+      if (this.sel) this.scrollToRun();
+    },
+    // a drawer opens on the step running now (or the now-line when none runs)
+    scrollToRun() {
+      setTimeout(() => {
+        const el = document.querySelector('.drawer .step.run') || document.querySelector('.drawer .now-line');
+        if (el) el.scrollIntoView({ block: 'center' });
+      }, 0);
     },
     close() { this.sel = null; this.stepM = null; this.artM = null; history.replaceState(null, '', location.pathname); },
     // drawer header sub-line per kind

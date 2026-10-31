@@ -47,6 +47,9 @@ CREATE TABLE IF NOT EXISTS run_plan(
   id INTEGER PRIMARY KEY, pass INTEGER NOT NULL, started_at TEXT NOT NULL, who TEXT NOT NULL,
   options TEXT NOT NULL, state TEXT NOT NULL, stage TEXT, held TEXT, out TEXT,
   run_after INTEGER NOT NULL, finished_at TEXT);
+CREATE TABLE IF NOT EXISTS stage_start(
+  id INTEGER PRIMARY KEY, pos TEXT NOT NULL, stage TEXT NOT NULL,
+  run_after INTEGER NOT NULL, at TEXT NOT NULL);
 """
 # the current pass's marks: its rows are the runs / waivers with a higher id
 _RUN_AFTER = "COALESCE((SELECT run_after FROM pass ORDER BY id DESC LIMIT 1), 0)"
@@ -162,15 +165,39 @@ class OrderDB:
         return self.current_pass()
 
     # ------------------------------------------------------------ runs (current pass)
-    def latest_runs(self) -> dict:
+    def latest_runs(self, *, attempt=False) -> dict:
+        """{(pos, rung): its latest run row} of the current pass. attempt=True (the UI):
+        a row older than its device's latest start of that row's stage is left out --
+        a stage re-run for a device shows the steps it has not reached yet as not run,
+        never the earlier attempt's results (the gates and reports keep reading them)."""
         rows = self._all(
             "SELECT * FROM run WHERE id IN (SELECT MAX(id) FROM run "
             f"WHERE id > {_RUN_AFTER} GROUP BY pos, rung)")
-        return {(r["pos"], r["rung"]): {
+        out = {(r["pos"], r["rung"]): {
             "id": r["id"], "stage": r["stage"], "status": r["status"], "verdict": r["verdict"],
             "detail": json.loads(r["detail"]) if r["detail"] else None,
             "artifacts": json.loads(r["artifacts"]) if r["artifacts"] else {},
             "started_at": r["started_at"], "finished_at": r["finished_at"]} for r in rows}
+        if attempt:
+            marks = self.stage_starts()
+            out = {k: v for k, v in out.items()
+                   if v["id"] > marks.get((k[0].split(".")[0], v["stage"]), 0)}
+        return out
+
+    def mark_stage_start(self, stage: str, keys) -> None:
+        """A stage starts (again) for these keys (device pos / _sw-<id> / _rack; a
+        device's IOM rows <pos>.iomN go with it): its earlier attempt's rows of that
+        stage leave latest_runs(attempt=True)."""
+        with closing(self._conn()) as c, c:
+            c.execute("BEGIN IMMEDIATE")
+            mark = c.execute("SELECT COALESCE(MAX(id),0) m FROM run").fetchone()["m"]
+            c.executemany("INSERT INTO stage_start(pos,stage,run_after,at) VALUES(?,?,?,?)",
+                          [(k, stage, mark, _now()) for k in keys])
+
+    def stage_starts(self) -> dict:
+        """{(key, stage): run id mark} of each key's latest start of each stage."""
+        return {(r["pos"], r["stage"]): r["m"] for r in self._all(
+            "SELECT pos, stage, MAX(run_after) m FROM stage_start GROUP BY pos, stage")}
 
     def last_passed(self, rungs, *, all_passes=False) -> dict:
         """{(pos, rung): detail} of the latest PASSING run of each of `rungs` (what was

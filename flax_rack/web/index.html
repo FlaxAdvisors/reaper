@@ -91,7 +91,8 @@
   <div class="run-strip" v-if="s.run && !s.closed_at" :class="'rs-' + s.run.state" :title="runTitle()">
     <span class="rs-main">run: {{runText()}}</span>
     <span class="rs-held" v-for="x in runStrip()" :class="x.cls"><b>{{x.k}}</b> {{x.text}}</span>
-    <span class="rs-held out" v-for="(why, k) in (['done', 'running'].includes(s.run.state) ? (s.run.out || {}) : {})"><b>{{k}}</b> left out: {{why}}</span>
+    <span class="rs-held out" v-for="(why, k) in (['done', 'running'].includes(s.run.state) ? (s.run.out || {}) : {})"
+          :class="{ok: (s.run.out_resolved || []).includes(k)}" :title="why"><b>{{k}}</b> {{(s.run.out_resolved || []).includes(k) ? 'deployed since' : 'left out: ' + why}}</span>
     <span class="rs-held rs-fw" v-if="runFw().length" :title="runFwTitle()">firmware: {{runFw().length}} to note</span>
     <button class="discbtn depbtn" v-if="s.run.can_continue" :disabled="s.stage_running" @click="openContinue()">Continue to Deploy…</button>
     <button class="closebtn" v-if="s.run.can_continue && !s.stage_running" @click="endRun()" title="end this Run (nothing runs; the tiles keep every result)">End run</button>
@@ -134,7 +135,7 @@
             </div>
             <div class="bars">
               <div class="bar"><span class="seg" v-for="c in phaseSegs(swObj(row.sw))" :class="c"></span></div>
-              <div class="bar steps"><span class="seg" v-for="c in stepSegs(swObj(row.sw))" :class="c"></span></div>
+              <div class="bar steps" :title="nowTitle(swObj(row.sw))"><span class="seg" v-for="c in stepSegs(swObj(row.sw))" :class="c"></span></div>
             </div>
           </div>
 
@@ -166,7 +167,7 @@
                 </div>
                 <div class="bars">
                   <div class="bar"><span class="seg" v-for="c in phaseSegs(cellObj(cell))" :class="c"></span></div>
-                  <div class="bar steps"><span class="seg" v-for="c in stepSegs(cellObj(cell))" :class="c"></span></div>
+                  <div class="bar steps" :title="nowTitle(cellObj(cell))"><span class="seg" v-for="c in stepSegs(cellObj(cell))" :class="c"></span></div>
                 </div>
               </div>
             </div>
@@ -352,17 +353,21 @@
 
     <!-- ---- pipeline: Post's step names per phase; a step opens its evidence ---- -->
     <div class="section-l">pipeline</div>
+    <div class="now-line" :class="{on: nowInfo(selObj).text.indexOf('now: idle') !== 0}" :title="nowTitle(selObj)">
+      <span class="mono">{{nowInfo(selObj).text}}</span><span class="now-next" v-if="nowInfo(selObj).next">{{nowInfo(selObj).next}}</span></div>
     <div class="checklist">
-      <div class="phase" v-for="p in s.phases" :class="{bad: phaseState(selObj,p)==='fault', unm: phaseState(selObj,p)==='unmeasured'}">
-        <div class="phase-h"><span class="dot" :class="phaseDot(selObj,p)"></span>{{p}}
-          <span class="pct">{{phasePct(selObj,p)}}</span></div>
-        <div class="steps" v-if="stepEntries(selObj,p).length">
+      <div class="phase" v-for="p in s.phases" :class="{bad: phaseState(selObj,p)==='fault', unm: phaseState(selObj,p)==='unmeasured', folded: phFolded(selObj,p)}">
+        <div class="phase-h" :class="{clk: phFinished(selObj,p)}" @click="togglePh(selObj,p)"
+             :title="phFinished(selObj,p) ? (phFolded(selObj,p) ? 'finished: click to show its steps' : 'click to fold') : ''"><span class="dot" :class="phaseDot(selObj,p)"></span>{{p}}<span class="ph-ok" v-if="phFolded(selObj,p)">{{phaseState(selObj,p)==='fwnote' ? '!' : '✓'}}</span>
+          <span class="pct">{{phasePct(selObj,p)}}</span><span class="caret" v-if="phFinished(selObj,p)">{{phFolded(selObj,p) ? '▸' : '▾'}}</span></div>
+        <div class="steps" v-if="phFolded(selObj,p)"></div>
+        <div class="steps" v-else-if="stepEntries(selObj,p).length">
           <div class="step evable" v-for="st in stepEntries(selObj,p)" :class="st.state" :title="st.title" @click="openStep(selObj, p, st)">
             <span class="si">{{stepIcon(st.state)}}</span>{{st.name}}<span class="note" v-if="st.note"> · {{st.note}}</span>
             <span class="art" v-for="a in st.arts" :title="a.url" @click.stop="openStepArt(selObj, p, st, a)">{{a.name}}</span></div>
         </div>
         <div class="steps" v-else><div class="step pending"><span class="si">·</span>{{selKind==='dev' ? 'none for this device' : 'none for this endpoint'}}</div></div>
-        <div v-if="p==='firmware' && selKind==='dev'"><div class="ep-fw" v-for="x in endpointFw(selDev)">
+        <div v-if="p==='firmware' && selKind==='dev' && !phFolded(selObj,p)"><div class="ep-fw" v-for="x in endpointFw(selDev)">
           <div class="ep-h clk" @click="select(selDev?.pos + '.' + x.ep)">{{x.ep.toUpperCase()}} ›</div>
           <div class="steps">
             <div class="step evable" v-for="st in x.entries" :class="st.state" :title="st.title" @click="openStep(selDev, 'firmware ' + x.ep.toUpperCase(), st)">

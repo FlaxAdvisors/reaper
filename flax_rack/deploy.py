@@ -889,10 +889,14 @@ def run_deploy(ctx, *, positions: list[str] | None = None, from_phase: str = "in
     xs = [_Dev(d, ips.get(d.pos, {}), rows.get(d.pos) or {"pos": d.pos}, names.get(d.pos))
           for d in targets]
     prog = _Progress(ctx, PHASES, ctx.db.set_deploy_progress)
+    if from_phase in ("install", "firstboot"):  # from a later phase: the earlier ones' rows stand
+        ctx.db.mark_stage_start(STAGE, [x.pos for x in xs])
     for x in xs:        # an installed disk kept: its install row says so (deploy_why)
         if from_phase == "firstboot" or x.pos in fb:
+            # na: nothing to do by design (the disk is kept), so the phase reads complete
             why = "installed disk kept: deployed from firstboot (no reinstall)"
-            _record(ctx, x.pos, "install", RungResult("skip", {"reason": why, "headline": why}))
+            _record(ctx, x.pos, "install", RungResult("skip", {"reason": why, "headline": why,
+                                                               "na": True}))
     try:
         for phase in PHASES[PHASES.index(from_phase):]:
             if phase != "install":          # install checks Cancel per device

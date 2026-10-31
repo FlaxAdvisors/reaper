@@ -613,7 +613,12 @@ class FakeRungs:
         stages = stages or ORDER_STAGES
         self.calls.append(("launch", pos, stages))
         self.stages_of[pos] = stages.split(",")
-        return RungResult("pass", {"mode": "fresh", "stages": stages})
+        return RungResult("pass", {"mode": "fresh", "stages": stages, "rows": [
+            ["ssh", f"{user}@{host_ip} ok · up 212 s"],
+            ["fetch", "http://bang/post.tgz -> 172.32.0.1, 1 tries, 0 s"],
+            ["unpack", "post.tgz unpacked"],
+            ["launch", "post.sh postautomate started, flax-qual-agent active"],
+            ["agent port", "8087 answered after 2 s"]]})
 
     def stop_agent(self, host_ip, user, pw, *, runner=None):
         from flax_rungs.result import RungResult

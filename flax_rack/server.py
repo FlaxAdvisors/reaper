@@ -100,8 +100,8 @@ from .linkmon import LinkPoller
 from .orderdb import OrderDB
 from . import run as runmod
 from .poller import INTERVAL_S, BmcPoller
-from .qualify import (AGENT_STAGES, OLD_RUNG_NAMES, PHASES as QUALIFY_PHASES, device_rungs,
-                      pop_default, qualify_passed, qualify_why, run_qualify)
+from .qualify import (AGENT_STAGES, OLD_RUNG_NAMES, PHASE_STAGES, PHASES as QUALIFY_PHASES,
+                      device_rungs, pop_default, qualify_passed, qualify_why, run_qualify)
 from .stages import close_order, run_discover, start_fresh
 from .version import __version__
 
@@ -302,7 +302,7 @@ class Rack:
 # _NA_SKIP reads only rows written before that flag existed (2026-10-30).
 _NA_SKIP = re.compile(r"(an IOM has no host|no BMC \(|no firmware reader for kind|"
                       r"switch endpoints are discovered|a switch has no |"
-                      r"already in the live image|up on its installed OS)")
+                      r"already in the live image|up on its installed OS|installed disk kept)")
 
 
 def _skip_reason(run: dict) -> str:
@@ -394,7 +394,9 @@ def rack_state(r: Rack) -> dict:
     g, db = r.g, r.db
     by_pos: dict[str, dict] = {}
     raw = db.latest_runs()                  # untrimmed: the switch port tables read fdb/lldp
-    for (pos, rung), v in raw.items():
+    # the steps drawn: a stage re-run for a device shows only its new attempt's rows (the
+    # rest read not run until reached); the gates below read every latest row
+    for (pos, rung), v in db.latest_runs(attempt=True).items():
         by_pos.setdefault(pos, {})[rung] = _trim(v)
     for runs in by_pos.values():            # rows from before Post's step names
         for old, new in OLD_RUNG_NAMES.items():
@@ -491,6 +493,7 @@ def rack_state(r: Rack) -> dict:
         "agent_stages": list(AGENT_STAGES),
         "hidden_rungs": {k: list(v) for k, v in HIDDEN_RUNGS.items()},
         "qualify_phases": list(QUALIFY_PHASES),
+        "qualify_phase_stages": {k: list(v) for k, v in PHASE_STAGES.items()},
         "qualify": {"passed": passed, "not_passed": not_passed,
                     "why": qualify_why(raw, g), "progress": db.qualify_progress()},
         "deploy_phases": list(DEPLOY_PHASES), "deploy_from": list(FROM_PHASES),
@@ -529,6 +532,7 @@ def _run_view(r: Rack, lr: dict | None = None) -> dict | None:
     x = r.db.run_plan()
     if x is None:
         return None
+    lr = r.db.latest_runs() if lr is None else lr
     state = x["state"]
     if state == "running" and not r.lock.busy():
         state = "interrupted"
@@ -546,9 +550,10 @@ def _run_view(r: Rack, lr: dict | None = None) -> dict | None:
             "of": len(runmod.STAGES), "reinstall": bool(x["options"].get("reinstall")),
             "who": x["who"], "started_at": x["started_at"], "finished_at": x["finished_at"],
             "held": x["held"], "out": x["out"], "can_continue": state in runmod.CONTINUABLE,
+            # left out of its Deploy, deployed since (a drawer Deploy): resolved
+            "out_resolved": sorted(set(x["out"]) - set(deploy_why(lr, r.g))) if x["out"] else [],
             **now,
-            "firmware": runmod.firmware_findings(
-                r.db.latest_runs() if lr is None else lr,
+            "firmware": runmod.firmware_findings(lr,
                 [d.pos for d in r.g.devices] + runmod._sw_keys(r.g, firmware=True))}
 
 
