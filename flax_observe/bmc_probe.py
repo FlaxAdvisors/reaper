@@ -151,8 +151,8 @@ def _default_ssh_runner(host, user, password, cmd, timeout=SSH_TIMEOUT_SECS,
     builds whose dropbear only offers diffie-hellman-group14-sha1 + ssh-rsa.
     "+algo" *adds* to the default set, so modern BMCs are unaffected.
 
-    The password is passed to sshpass as an argv item (-p) and is never
-    logged here -- this runner emits no log records.
+    The password travels in the SSHPASS env var (`sshpass -e`), never argv
+    (ps-visible), and is never logged here -- this runner emits no log records.
     """
     # No pseudo-TTY: this runs a single non-interactive command whose stdout we
     # parse (os-release, FRU, ipmitool). Forcing one (-tt) makes Phosphor
@@ -160,7 +160,7 @@ def _default_ssh_runner(host, user, password, cmd, timeout=SSH_TIMEOUT_SECS,
     # command output and exits non-zero -> the openbmc probe branch silently
     # fails and the board misclassifies as 'redfish'/OEM off the flaky IPMI
     # fallback. Interactive SOL uses a different path, not this runner.
-    full = ["sshpass", "-p", password, "ssh",
+    full = ["sshpass", "-e", "ssh",
             "-o", "StrictHostKeyChecking=no",
             "-o", f"UserKnownHostsFile={SSH_KNOWN_HOSTS}",
             "-o", "ConnectTimeout=%d" % connect_timeout,
@@ -168,7 +168,8 @@ def _default_ssh_runner(host, user, password, cmd, timeout=SSH_TIMEOUT_SECS,
             "-o", "HostKeyAlgorithms=+ssh-rsa",
             f"{user}@{host}", cmd]
     return subprocess.check_output(full, timeout=timeout, text=True,
-                                   stderr=subprocess.DEVNULL)
+                                   stderr=subprocess.DEVNULL,
+                                   env=dict(os.environ, SSHPASS=password or ""))
 
 
 def _patient_ssh_runner(host, user, password, cmd):

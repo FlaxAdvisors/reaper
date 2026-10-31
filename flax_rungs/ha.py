@@ -1,10 +1,10 @@
 """HA-path check: each host's pcieN NIC ports must show up in LLDP on the
 wedge and breakout lane the geometry cables them to (named the way that switch's
-NOS names it: flax_rack.switches.link_iface)."""
+NOS names it: portname.link_iface). A link whose switch is not in the geometry
+fails as such, never guessed at with one NOS's naming."""
 import re
 
-from flax_rack.switches import LldpEntry, link_iface
-
+from .portname import LldpEntry, link_iface
 from .result import RungResult
 
 
@@ -43,7 +43,9 @@ def check(g, lldp_by_switch: dict[str, list[LldpEntry]],
         rows = {}
         # exact matches claim their entry first so a leftover can be named as "seen"
         for name, l in links.items():
-            want = link_iface(sws.get(l.switch), l.port, l.lane)
+            if l.switch not in sws:
+                continue
+            want = link_iface(sws[l.switch], l.port, l.lane)
             for i, (sw, e) in enumerate(seen):
                 if i not in claimed and sw == l.switch and e.local_iface == want:
                     claimed.add(i)
@@ -52,7 +54,12 @@ def check(g, lldp_by_switch: dict[str, list[LldpEntry]],
         problems = []
         details = []
         for name, l in links.items():
-            want = link_iface(sws.get(l.switch), l.port, l.lane)
+            if l.switch not in sws:
+                details.append({"link": name, "expected": None, "seen": None,
+                                "ifname": None})
+                problems.append(f"{name}: switch {l.switch} not in geometry")
+                continue
+            want = link_iface(sws[l.switch], l.port, l.lane)
             exp = f"{l.switch} {want} ({l.port}" + (f"/{l.lane})" if l.lane else ")")
             i = rows.get(name)
             if i is None:

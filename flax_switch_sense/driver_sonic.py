@@ -217,8 +217,17 @@ class SonicDriver:
     _split_sections = staticmethod(CumulusDriver._split_sections)
 
     def refresh(self) -> None:
-        """Fetch every per-poll read in ONE ssh session and cache the sections."""
-        self._sections = self._split_sections(self.runner(self._build_batch_script()))
+        """Fetch every per-poll read in ONE ssh session and cache the sections.
+
+        Raises SonicError (rc None: reachable, unreadable) when the interface
+        section lists no port -- e.g. `sudo -n` refused: every show then prints
+        nothing, and a reachable switch with zero ports would read as all-gone."""
+        sections = self._split_sections(self.runner(self._build_batch_script()))
+        if not parse_interfaces_status(sections.get("ifstatus", "")):
+            self._sections = None
+            raise SonicError(f"{self.host}: reachable but `show interfaces status` "
+                             "listed no ports (sudo -n refused?)")
+        self._sections = sections
 
     def _section(self, key: str, cmd: str) -> str:
         if self._sections is not None and key in self._sections:

@@ -165,15 +165,22 @@
     extra_args: "--target {{ apply_rackpost_dest_dir }}/vendor"
 
 # The shared EOS driver (eAPI) imports requests + urllib3, which the bangs' host
-# python3.11 lacks (bang-rhythm): vendored the same way.
+# python3.11 lacks (bang-rhythm): vendored the same way, PINNED. pip --target
+# always reports changed, so the pinned versions' dist-info dirs are the marker:
+# pip (and the restart) runs only when one is missing, i.e. first deploy or a pin bump.
+- name: Check the vendored requests + urllib3 pins
+  ansible.builtin.stat:
+    path: "{{ apply_rackpost_dest_dir }}/vendor/{{ item }}.dist-info"
+  loop: "{{ apply_rackpost_switch_driver_pips | map('replace', '==', '-') | list }}"
+  register: apply_rackpost_pip_markers
+
 - name: Install requests + urllib3 for the switch drivers
   become: true
   ansible.builtin.pip:
-    name:
-      - requests
-      - urllib3
+    name: "{{ apply_rackpost_switch_driver_pips }}"
     executable: pip3.11
-    extra_args: "--target {{ apply_rackpost_dest_dir }}/vendor"
+    extra_args: "--upgrade --target {{ apply_rackpost_dest_dir }}/vendor"
+  when: apply_rackpost_pip_markers.results | rejectattr('stat.exists') | list | length > 0
   notify: Restart flax-rackpost
 
 - name: Deploy flax-rackpost systemd unit

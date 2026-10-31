@@ -1,6 +1,10 @@
 """Runtime credentials, read from the vault-deployed /etc/flax files (never stored in the repo)."""
 import json
+import logging
 from dataclasses import dataclass, field
+
+
+log = logging.getLogger(__name__)
 
 
 class CredsError(Exception):
@@ -42,8 +46,10 @@ def _optional_rows(path):
 def load_creds(main="/etc/flax/credentials.json", bmc="/etc/flax/credentials-bmc.json",
                host="/etc/flax/credentials-host.json",
                redfish="/etc/flax/credentials-redfish.json", noses=("sonic",)) -> Creds:
-    """noses: the rack switches' NOSes (geometry `nos`): each one's login is required
-    (a site with no SONiC rack switch needs no sonic keys)."""
+    """noses: the rack switches' NOSes (geometry `nos`): each known one's login is
+    required (a site with no SONiC rack switch needs no sonic keys). An unknown nos
+    is logged and skipped: its switch fails on its own ("no driver"), the rest of
+    the rack keeps its creds."""
     try:
         with open(main) as f:
             m = json.load(f)
@@ -51,8 +57,9 @@ def load_creds(main="/etc/flax/credentials.json", bmc="/etc/flax/credentials-bmc
         raise CredsError(f"cannot read {main}: {e}") from e
     for nos in sorted(set(noses)):
         if nos not in SWITCH_KEYS:
-            raise CredsError(f"unsupported switch nos {nos!r} (want one of "
-                             f"{', '.join(sorted(SWITCH_KEYS))})")
+            log.warning("load_creds: skipping unsupported switch nos %r (want one of %s)",
+                        nos, ", ".join(sorted(SWITCH_KEYS)))
+            continue
         u, p = SWITCH_KEYS[nos]
         if not m.get(u) or not m.get(p):
             raise CredsError(f"add {u}/{p} to the vaulted credentials.json")

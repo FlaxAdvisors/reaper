@@ -240,10 +240,14 @@ class Sonic:
     def set_access_vlan(self, port, vid):
         """Make `port` an untagged member of `vid` only, then `config save -y`.
 
-        Reads `show vlan brief` first: drops every other membership (and a
-        tagged membership of `vid`), adds `vid` untagged unless it already is.
-        No-op when the port is already access on `vid`. One chained command so
-        a failed step stops the rest (and the save).
+        Reads `show vlan brief` first. The ADD of `vid` untagged comes first, so
+        a failed add leaves the port as it was; only then are the other
+        memberships removed, and the save runs only after every step succeeded
+        (one `&&` chain). SONiC refuses a second untagged membership (and a
+        tagged one of the same vid), so those "blocking" memberships are
+        dropped immediately before the add, and the add's `||` branch re-adds
+        them and fails the chain: a refused add still leaves the port as it
+        was. No-op when the port is already access on `vid`.
         """
         port = _sonic_port(port)
         vid = int(vid)
@@ -251,14 +255,26 @@ class Sonic:
             self.runner("show vlan brief </dev/null")).get(port, [])
         if members == [(vid, False)]:
             return
+
+        def member(op, v, tagged):
+            return ("sudo -n config vlan member " + op + " "
+                    + ("" if tagged or op == "del" else "-u ")
+                    + str(v) + " " + port + " </dev/null")
+
         cmds = []
-        for v, tagged in members:
-            if v != vid or tagged:
-                cmds.append("sudo -n config vlan member del " + str(v) + " "
-                            + port + " </dev/null")
         if (vid, False) not in members:
-            cmds.append("sudo -n config vlan member add -u " + str(vid) + " "
-                        + port + " </dev/null")
+            blocking = [(v, t) for v, t in members
+                        if (v == vid and t) or (v != vid and not t)]
+            add = member("add", vid, False)
+            if blocking:
+                cmds += [member("del", v, t) for v, t in blocking]
+                undo = "; ".join(member("add", v, t) for v, t in blocking)
+                add = "{ " + add + " || { " + undo + "; false; }; }"
+            cmds.append(add)
+        else:
+            blocking = []
+        cmds += [member("del", v, t) for v, t in members
+                 if (v, t) != (vid, False) and (v, t) not in blocking]
         cmds.append("sudo -n config save -y </dev/null")
         self.runner(" && ".join(cmds))
 
@@ -391,9 +407,11 @@ def _make_ios_runner(host, user, password):
     feedback_ios_ssh_controlmaster_session_is_a_trap). The runner already sends
     the entire config session in one payload, so each call is a single plain
     foreground ssh that subprocess fully reaps — no warm socket needed.
+
+    The password travels in the SSHPASS env var (`sshpass -e`), never argv.
     """
     def runner(cmd):
-        full = ["sshpass", "-p", password, "ssh",
+        full = ["sshpass", "-e", "ssh",
                 "-tt",
                 "-o", "StrictHostKeyChecking=no",
                 "-o", "UserKnownHostsFile=" + _SSH_KNOWN_HOSTS,
@@ -406,8 +424,9 @@ def _make_ios_runner(host, user, password):
         if not payload.endswith("\n"):
             payload += "\n"
         try:
-            return subprocess.check_output(full, input=payload, timeout=60,
-                                           text=True)
+            return subprocess.check_output(
+                full, input=payload, timeout=60, text=True,
+                env=dict(os.environ, SSHPASS=password or ""))
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             raise SwitchUnreachable(str(e))
 
@@ -423,24 +442,27 @@ def _make_cumulus_runner(host, user, password, timeout=15):
     caused exit 3 failures with reaper's original -tt approach). Accept any host
     key via UserKnownHostsFile=/dev/null because switch certs rotate.
 
-    Password redaction: on error we NEVER echo the subprocess argv (which
-    contains '-p <password>'); we report only the remote command + exit code
-    so the password is never leaked into logs or tracebacks.
+    Password: travels in the SSHPASS env var (`sshpass -e`), never argv (argv
+    is world-readable in ps). On error we report only the remote command + exit
+    code.
 
     py3.11 note: no f-strings with backslashes are used here; ConnectTimeout
     uses str() + int(), not an f-string expression.
     """
     def runner(cmd):
-        full = ["sshpass", "-p", password, "ssh",
+        full = ["sshpass", "-e", "ssh",
                 "-o", "StrictHostKeyChecking=no",
                 "-o", "UserKnownHostsFile=/dev/null",
                 "-o", "LogLevel=ERROR",
                 "-o", "ConnectTimeout=" + str(max(1, int(timeout))),
                 user + "@" + host, cmd]
         try:
-            return subprocess.check_output(full, timeout=timeout, text=True)
+            return subprocess.check_output(
+                full, timeout=timeout, text=True,
+                env=dict(os.environ, SSHPASS=password or ""))
         except subprocess.CalledProcessError as e:
-            # NEVER include `full` (contains '-p <password>') in the exception.
+            # Keep `full` out of the exception anyway (the password is in
+            # SSHPASS, not argv, but errors stay host + command + exit only).
             raise SwitchUnreachable(host + ": " + repr(cmd) + " exited " + str(e.returncode))
         except subprocess.TimeoutExpired:
             raise SwitchUnreachable(host + ": " + repr(cmd) + " timed out")
@@ -549,8 +571,9 @@ def load_switches(switches_path, switch_creds_path, host_creds_path):
     Supported drivers: 'eos' (Arista eAPI write), 'ios' (Cisco IOS ssh write),
     'cumulus' (Cumulus Linux NCLU ssh write via plain sshpass+ssh — no -tt,
     no ControlMaster, password never logged), 'sonic' (community SONiC `config`
-    over sshpass -e + ssh, sonicuser/sonicpass; no SONiC switch is listed in any
-    site's switches.json -- capability only). Unknown driver types are skipped
+    over sshpass -e + ssh, sonicuser/sonicpass -- built ONLY when the entry
+    carries `"reconcile": true`; switches.json is shared with switch-sense, so a
+    SONiC entry without it is read-only and skipped here). Unknown driver types are skipped
     with a warning so reconcile degrades gracefully when a new type appears in
     switches.json before its write transport is implemented.
     """
@@ -591,6 +614,15 @@ def load_switches(switches_path, switch_creds_path, host_creds_path):
                 switch_creds.get("cumpass", ""))
             switches[name] = Cumulus(name, runner=runner)
         elif kind == "sonic":
+            # switches.json is shared with flax-switch-sense: a SONiC entry is
+            # there to be READ (customer rack switches are never put under
+            # management). Reconcile becomes a writer only on an explicit
+            # opt-in, `"reconcile": true` on the entry.
+            if entry.get("reconcile") is not True:
+                log.warning("load_switches: skipping switch %s -- sonic entry "
+                            "has no \"reconcile\": true (read-only for "
+                            "switch-sense)", name)
+                continue
             runner = _make_sonic_runner(
                 host,
                 switch_creds.get("sonicuser", ""),

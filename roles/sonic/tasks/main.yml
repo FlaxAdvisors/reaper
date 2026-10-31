@@ -11,9 +11,10 @@
 # - raw allocates a tty, which merges stderr into stdout; `show runningconfiguration
 #   all` prints "No such container: bgp" on stderr when bgp is disabled, which
 #   would break the JSON. 2>/dev/null on that command.
-# - config/config_db.json is committed: it goes through redact_secrets, whose JSON
-#   path replaces SNMP_COMMUNITY keys, SNMP_USER/TACPLUS/RADIUS/... secrets with
-#   {{ vault_cfg_* }} placeholders and raises on unparsable JSON (fail closed).
+# - config/config_db.json is committed: it goes through redact_sonic_config_db
+#   (NOT the generic redact_secrets sniff), which extracts the JSON object, replaces
+#   SNMP_COMMUNITY keys, SNMP_USER/TACPLUS/RADIUS/... secrets with
+#   {{ vault_cfg_* }} placeholders and raises when there is no object (fail closed).
 
 - name: Collect show runningconfiguration all (config_db JSON)
   ansible.builtin.raw: sudo -n show runningconfiguration all </dev/null 2>/dev/null  # noqa: no-changed-when
@@ -24,7 +25,7 @@
 - name: Write config_db.json
   delegate_to: localhost
   ansible.builtin.copy:
-    content: "{{ sonic_running_config.stdout | regex_replace('\\r', '') | redact_secrets }}"
+    content: "{{ sonic_running_config.stdout | regex_replace('\\r', '') | redact_sonic_config_db }}"
     dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/config/config_db.json"
     mode: "0644"
 

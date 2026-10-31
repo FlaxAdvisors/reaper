@@ -271,7 +271,7 @@ def ssh_uptime(ip, host_creds, timeout=SSH_TIMEOUT_SECS):
     for c in host_creds:
         try:
             cp = subprocess.run(
-                ["sshpass", "-p", c["pass"], "ssh",
+                ["sshpass", "-e", "ssh",
                  "-tt",
                  "-o", "StrictHostKeyChecking=no",
                  "-o", f"UserKnownHostsFile={SSH_KNOWN_HOSTS}",
@@ -279,6 +279,7 @@ def ssh_uptime(ip, host_creds, timeout=SSH_TIMEOUT_SECS):
                  "-l", c["user"], ip, "uptime"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 timeout=timeout + 2,
+                env=dict(os.environ, SSHPASS=c["pass"] or ""),
             )
         except (subprocess.TimeoutExpired, FileNotFoundError):
             tried_any = True

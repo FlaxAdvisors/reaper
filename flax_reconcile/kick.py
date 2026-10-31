@@ -68,7 +68,8 @@ def _default_ssh_runner(host, user, password, cmd):
     # (Phosphor distros on AST2400/2500 BMCs). ConnectTimeout=3 keeps
     # unreachable hosts fast (3s); reachable hosts get the full budget for
     # the actual command. Tested empirically on a vid-17 tiogapass BMC.
-    full = ["sshpass", "-p", password, "ssh",
+    # Password in the SSHPASS env var (`sshpass -e`), never argv (ps-visible).
+    full = ["sshpass", "-e", "ssh",
             "-tt",
             "-o", "StrictHostKeyChecking=no",
             "-o", f"UserKnownHostsFile={SSH_KNOWN_HOSTS}",
@@ -76,7 +77,8 @@ def _default_ssh_runner(host, user, password, cmd):
             "-o", "ServerAliveInterval=5",
             f"{user}@{host}", cmd]
     return subprocess.check_output(full, timeout=25, text=True,
-                                   stderr=subprocess.DEVNULL)
+                                   stderr=subprocess.DEVNULL,
+                                   env=dict(os.environ, SSHPASS=password or ""))
 
 
 # Forces a DUT's DHCP client to release and re-acquire. Modern netplan +

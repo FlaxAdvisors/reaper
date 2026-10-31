@@ -38,13 +38,19 @@ pushed into a password line locks us out of a remote lab switch. Only cleartext
 is in scope. If that changes, add rules here and vault vars to every site.
 
 SONiC (2026-10-31): roles/sonic writes `show runningconfiguration all` -- a
-config_db JSON object, not line config -- to config/config_db.json. Text that
-starts with `{` takes the JSON path (_redact_sonic): known secret fields are
-replaced by placeholders (SNMP_COMMUNITY's secret is the KEY), any other field
-whose NAME looks secret gets a per-table/field placeholder, and the FRR text in
-`bgpraw` goes through the line rules. Output is re-serialised as SONiC does
-(indent 4, key order kept). JSON-looking text that does not parse RAISES rather
-than passing through: an unparsed config_db would publish its community key.
+config_db JSON object, not line config -- to config/config_db.json, through the
+EXPLICIT `redact_sonic_config_db` filter (never the generic sniff below): it
+extracts the JSON object from the output (leading noise such as a stray stderr
+line is dropped; no object, or anything but whitespace after it, RAISES), then
+replaces known secret fields by placeholders (SNMP_COMMUNITY's secret is the
+KEY), gives any other field whose NAME looks secret a per-table/field
+placeholder, and runs the FRR text in `bgpraw` through the line rules. Output is
+re-serialised as SONiC does (indent 4, key order kept). A value counts as
+already redacted only when it is EXACTLY `{{ vault_cfg_<name> }}`; a real secret
+that merely contains `{{` is still replaced.
+
+`redact_secrets` itself keeps a backstop: text whose first non-blank byte is `{`
+takes the same JSON path (and raises if it does not parse).
 """
 import json
 import re
@@ -54,8 +60,13 @@ _LINE_BLOCK_RE = re.compile(r"^line\s+(con|vty|aux)\b")
 # Any non-indented line ends the sub-mode.
 _TOP_LEVEL_RE = re.compile(r"^\S")
 
-# A value that is already a placeholder -- leave it alone (idempotency).
-_PLACEHOLDER_RE = re.compile(r"\{\{")
+# A value that is already a placeholder -- leave it alone (idempotency). Only
+# the exact form _ph emits counts: a secret that merely contains `{{` is still
+# a secret. _AT_PLACEHOLDER_RE is matched where a line rule's secret starts (the
+# line rules capture \S+, i.e. only the `{{` of a placeholder), optionally
+# behind the quote _quoted keeps.
+_PLACEHOLDER_RE = re.compile(r"^\{\{ vault_cfg_\w+ \}\}$")
+_AT_PLACEHOLDER_RE = re.compile(r"""['"]?\{\{ vault_cfg_\w+ \}\}""")
 
 # Cisco password type digit. Types 5/7/8/9 are hashed or (7) reversibly
 # encrypted; we only touch the untyped -- i.e. genuinely cleartext -- form,
@@ -105,7 +116,8 @@ def _apply(line, regex, var, ph=_ph):
     if not m:
         return None
     prefix, secret, suffix = m.group(1), m.group(2), m.group(3)
-    if not secret or _PLACEHOLDER_RE.search(secret) or _TYPED_RE.match(secret):
+    if (not secret or _AT_PLACEHOLDER_RE.match(line, m.start(2))
+            or _TYPED_RE.match(secret)):
         return None
     return "%s%s%s" % (prefix, _quoted(secret, ph(var, _unquoted(secret))), suffix)
 
@@ -151,7 +163,7 @@ def _redact_sonic_row(table, row, ph=_ph):
         if var is None and _SONIC_SECRET_FIELD_RE.search(field):
             var = _sonic_var_name(table, field)
         if (var and isinstance(value, str) and value
-                and not _PLACEHOLDER_RE.search(value)):
+                and not _PLACEHOLDER_RE.match(value)):
             value = ph(var, value)
         out[field] = value
     return out
@@ -161,7 +173,7 @@ def _redact_sonic_communities(rows, ph=_ph):
     out = {}
     used = set(rows)                # placeholders already in the input
     for name, row in rows.items():
-        if _PLACEHOLDER_RE.search(name):
+        if _PLACEHOLDER_RE.match(name):
             out[name] = row
             continue
         kind = (row.get("TYPE", "RO") if isinstance(row, dict) else "RO").upper()
@@ -183,6 +195,45 @@ def _redact_sonic(text, ph=_ph):
                          "(refusing to pass it through unredacted): %s" % e)
     if not isinstance(db, dict):
         raise ValueError("redact_secrets: JSON config is not an object")
+    return json.dumps(_redact_sonic_db(db, ph), indent=4) + "\n"
+
+
+# Where a config_db object may start: a `{` opening a line.
+_JSON_START_RE = re.compile(r"^[ \t]*\{", re.M)
+
+
+def _extract_config_db(text):
+    """The config_db object in `text`, which may carry leading noise (a stray
+    stderr line merged by raw's tty). Tries each line-opening `{` in order; the
+    first that decodes to an object must be followed by whitespace only.
+    RAISES when there is no object: nothing passes through unparsed."""
+    if not isinstance(text, str):
+        raise ValueError("redact_sonic_config_db: config_db is not text")
+    dec = json.JSONDecoder()
+    for m in _JSON_START_RE.finditer(text):
+        start = m.end() - 1
+        try:
+            db, end = dec.raw_decode(text, start)
+        except ValueError:
+            continue
+        if not isinstance(db, dict):
+            continue
+        if text[end:].strip():
+            raise ValueError("redact_sonic_config_db: trailing data after the "
+                             "config_db object (refusing to guess)")
+        return db
+    raise ValueError("redact_sonic_config_db: no config_db JSON object found "
+                     "(refusing to pass it through unredacted)")
+
+
+def redact_sonic_config_db(text):
+    """SONiC config_db filter for roles/sonic: extract the JSON object (see
+    _extract_config_db), redact it field-wise, return SONiC-format JSON text."""
+    return json.dumps(_redact_sonic_db(_extract_config_db(text)), indent=4) + "\n"
+
+
+def _redact_sonic_db(db, ph=_ph):
+    """Redact a parsed config_db dict; returns a new dict, key order kept."""
     out = {}
     for table, rows in db.items():
         if table == "SNMP_COMMUNITY" and isinstance(rows, dict):
@@ -193,7 +244,7 @@ def _redact_sonic(text, ph=_ph):
             out[table] = {k: _redact_sonic_row(table, r, ph) for k, r in rows.items()}
         else:
             out[table] = rows
-    return json.dumps(out, indent=4) + "\n"
+    return out
 
 
 def redact_secrets(text):
@@ -236,4 +287,5 @@ def _redact(text, ph):
 
 class FilterModule(object):
     def filters(self):
-        return {"redact_secrets": redact_secrets}
+        return {"redact_secrets": redact_secrets,
+                "redact_sonic_config_db": redact_sonic_config_db}

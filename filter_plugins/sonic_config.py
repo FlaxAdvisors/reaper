@@ -113,7 +113,7 @@ def _mask(db, values):
             return "{{ %s }}" % var
         digest = hashlib.sha256((secret or "").encode()).hexdigest()[:12]
         return "<%s sha256:%s>" % (var, digest)
-    return json.loads(_redact_mod._redact(json.dumps(db), ph))
+    return _redact_mod._redact_sonic_db(db, ph)
 
 
 def _leaves(db):

@@ -59,6 +59,11 @@ apply_rackpost_post_modules:
   - nicd/classify.py
   - nicd/manifest.py
   - nicd/driver.py
+# Vendored for the shared EOS read driver; the versions bang-gouda's python3.11
+# carries. Exact pins: the dist-info dir of each is the "already installed" marker.
+apply_rackpost_switch_driver_pips:
+  - requests==2.31.0
+  - urllib3==2.0.7
 # flax_switch_sense modules rackpost's switch reads import (flax_rack/switches.py ->
 # drivers.make_driver -> the four read drivers). drivers.py, not fetcher.py: the
 # fetcher is the daemon's psycopg side.
