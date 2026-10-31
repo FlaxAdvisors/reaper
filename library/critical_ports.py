@@ -159,7 +159,8 @@ def parse_cumulus_diff(desired_text, live_text):
     return changed
 
 
-def find_critical_changes(topology, arista_changed, cumulus_changed, cisco_changed, jumphost_changed):
+def find_critical_changes(topology, arista_changed, cumulus_changed, cisco_changed, jumphost_changed,
+                          sonic_changed=frozenset()):
     """Cross-reference changed ports against topology critical_links.
 
     Args:
@@ -168,6 +169,7 @@ def find_critical_changes(topology, arista_changed, cumulus_changed, cisco_chang
         cumulus_changed: set of Cumulus interface names that changed
         cisco_changed: set of Cisco IOS interface names that changed (short form)
         jumphost_changed: set of (host_name, port_name) tuples that changed
+        sonic_changed: set of SONiC port names (EthernetN, PortChannelN, ethN) that changed
 
     Returns list of dicts: [{device, port, peer_device, peer_port, peer_role}, ...]
     """
@@ -179,8 +181,9 @@ def find_critical_changes(topology, arista_changed, cumulus_changed, cisco_chang
         peer_port = link.get('peer_port')
         peer_role = link.get('peer_role')
 
-        # Check switch side (cumulus, arista, or cisco)
-        if local_port in cumulus_changed or local_port in arista_changed or local_port in cisco_changed:
+        # Check switch side (cumulus, arista, cisco, or sonic)
+        if (local_port in cumulus_changed or local_port in arista_changed
+                or local_port in cisco_changed or local_port in sonic_changed):
             critical.append({
                 'device': local_device,
                 'port': local_port,
@@ -213,6 +216,7 @@ def analyse_site(site_dir, topology_path):
     cumulus_changed = set()
     cisco_changed = set()
     jumphost_changed = set()
+    sonic_changed = set()
 
     for entry in os.scandir(site_dir):
         if not entry.is_dir():
@@ -239,12 +243,18 @@ def analyse_site(site_dir, topology_path):
             if result.get('changed'):
                 cisco_changed |= parse_cisco_commands(result.get('commands', []))
 
+        elif device_type == 'sonic':
+            # changed_ports comes from sonic_config_diff (config_db keys).
+            if result.get('changed'):
+                sonic_changed |= set(result.get('changed_ports', []))
+
         elif device_type == 'jumphost':
             if result.get('changed'):
                 for port in result.get('changed_ports', []):
                     jumphost_changed.add((entry.name, port))
 
-    return find_critical_changes(topology, arista_changed, cumulus_changed, cisco_changed, jumphost_changed)
+    return find_critical_changes(topology, arista_changed, cumulus_changed, cisco_changed, jumphost_changed,
+                                 sonic_changed)
 
 
 # ── Ansible module entrypoint ─────────────────────────────────────────────────

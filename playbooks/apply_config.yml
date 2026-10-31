@@ -1,5 +1,5 @@
 ---
-# Apply switch config (Arista + Cumulus). Used for push and plan (check mode).
+# Apply switch config (Arista + Cisco + Cumulus + SONiC). Used for push and plan (check mode).
 # In check mode, writes per-device .check_result.json for critical_ports analysis.
 # Final play runs critical_ports module on localhost and writes .critical_changes.json.
 
@@ -135,6 +135,161 @@
               'desired_content': desired_interfaces.content | b64decode} | to_nice_json }}
         dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/.check_result.json"
         mode: "0644"
+
+# ── SONiC ─────────────────────────────────────────────────────────────────────
+# config/config_db.json (from roles/sonic, redacted) is rendered by placeholder
+# substitution, not Jinja: the SNMP community placeholder is a JSON KEY, vault
+# values must be JSON-escaped, and config_db may hold literal `{{`. See
+# filter_plugins/sonic_config.py.
+#
+# SONiC CLI rules: every command is `sudo -n ... </dev/null` (passwordless sudo;
+# a line on stdin would run as a command). No secret goes in argv: the rendered
+# file reaches the switch through the copy module's file transfer, mode 0600.
+#
+# `config load` MERGES into CONFIG_DB: it writes the `set` leaves and never
+# deletes. Leaves only the switch has (`unset`) are reported, not removed.
+#
+# Never automatic: a real run writes nothing unless the operator also passes
+# -e sonic_apply_confirm=true (customer/sales-rack switches are never in an
+# inventory at all -- operator ruling 2026-10-31). --check --diff only reads.
+# A failed load stops before `config save`, so the startup config is the old
+# one, and the previous running config is saved first to
+# /etc/sonic/config_db.json.bak-<ts> (restore: sudo config reload -y <that>).
+
+- name: Apply SONiC config
+  hosts: sonic
+  gather_facts: false
+  vars:
+    sonic_src: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/config/config_db.json"
+    sonic_stage: /tmp/.reaper_config_db.json
+  tasks:
+    - name: Read desired config_db.json
+      delegate_to: localhost
+      ansible.builtin.slurp:
+        src: "{{ sonic_src }}"
+      register: sonic_desired
+      check_mode: false
+
+    - name: Look up the vault values its placeholders name
+      ansible.builtin.set_fact:
+        sonic_vault: "{{ dict(_names | zip(query('ansible.builtin.vars', *_names))) }}"
+      vars:
+        _names: "{{ sonic_desired.content | b64decode | sonic_placeholders }}"
+      no_log: true
+
+    - name: Render config_db.json
+      ansible.builtin.set_fact:
+        sonic_rendered: "{{ sonic_desired.content | b64decode | sonic_render(sonic_vault) }}"
+      no_log: true
+
+    - name: Fetch running config_db
+      # 2>/dev/null: "No such container: bgp" on stderr would break the JSON.
+      ansible.builtin.raw: sudo -n show runningconfiguration all </dev/null 2>/dev/null
+      register: sonic_running
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Diff rendered config_db against the running config
+      ansible.builtin.set_fact:
+        sonic_diff: "{{ sonic_running.stdout | sonic_config_diff(sonic_rendered, sonic_vault) }}"
+
+    - name: Show config_db diff
+      when: ansible_check_mode or ansible_diff_mode
+      ansible.builtin.debug:
+        msg:
+          diff: "{{ sonic_diff.diff.splitlines() }}"
+          config_load_writes: "{{ sonic_diff.set }}"
+          not_removed_by_config_load: "{{ sonic_diff.unset }}"
+
+    - name: Write check result for critical_ports analysis
+      delegate_to: localhost
+      check_mode: false
+      ansible.builtin.copy:
+        # Masked by sonic_config_diff: placeholders / hashes, never a secret value.
+        content: >-
+          {{ {'device_type': 'sonic', 'changed': sonic_diff.changed,
+          'diff': sonic_diff.diff, 'set': sonic_diff.set, 'unset': sonic_diff.unset,
+          'changed_ports': sonic_diff.changed_ports} | to_nice_json }}
+        dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/.check_result.json"
+        mode: "0644"
+
+    - name: Not applied without confirmation
+      when:
+        - not ansible_check_mode
+        - sonic_diff.set | length > 0
+        - not (sonic_apply_confirm | default(false) | bool)
+      ansible.builtin.debug:
+        msg: >-
+          {{ sonic_diff.set | length }} config_db leaves differ; nothing written.
+          SONiC pushes are operator-run: rerun with -e sonic_apply_confirm=true.
+
+    - name: Push config_db
+      when:
+        - not ansible_check_mode
+        - sonic_diff.set | length > 0
+        - sonic_apply_confirm | default(false) | bool
+      block:
+        - name: Pick the backup name
+          ansible.builtin.set_fact:
+            sonic_backup: "/etc/sonic/config_db.json.bak-{{ now(utc=true, fmt='%Y%m%dT%H%M%SZ') }}"
+
+        - name: Stage rendered config_db on the switch
+          ansible.builtin.copy:
+            content: "{{ sonic_rendered }}"
+            dest: "{{ sonic_stage }}"
+            mode: "0600"
+          no_log: true
+
+        - name: Save the current running config as the backup
+          ansible.builtin.raw: "sudo -n config save -y {{ sonic_backup }} </dev/null"
+          changed_when: true
+
+        - name: Load rendered config_db
+          ansible.builtin.raw: "sudo -n config load -y {{ sonic_stage }} </dev/null"
+          register: sonic_load
+          changed_when: sonic_load.rc == 0
+          failed_when: false
+
+        - name: Report a failed load
+          when: sonic_load.rc != 0
+          ansible.builtin.fail:
+            msg: >-
+              config load failed (rc={{ sonic_load.rc }}): {{ sonic_load.stdout | default('') | trim }}.
+              NOT saved: the startup config is unchanged. CONFIG_DB may hold part of the
+              load. Previous running config: {{ sonic_backup }} on the switch
+              (restore: sudo config reload -y {{ sonic_backup }}).
+
+        - name: Save the loaded config
+          ansible.builtin.raw: sudo -n config save -y </dev/null
+          changed_when: true
+
+        - name: Re-read running config_db
+          ansible.builtin.raw: sudo -n show runningconfiguration all </dev/null 2>/dev/null
+          register: sonic_after
+          changed_when: false
+          no_log: true
+
+        - name: Diff running config_db after the load
+          ansible.builtin.set_fact:
+            sonic_verify: "{{ sonic_after.stdout | sonic_config_diff(sonic_rendered, sonic_vault) }}"
+
+        - name: Verify the running config matches the rendered one
+          ansible.builtin.assert:
+            that: sonic_verify.set | length == 0
+            fail_msg: >-
+              Loaded and saved, but the running config still differs at
+              {{ sonic_verify.set }}. Previous config: {{ sonic_backup }}.
+            quiet: true
+
+        - name: Report leaves config load does not remove
+          when: sonic_verify.unset | length > 0
+          ansible.builtin.debug:
+            msg: "Still on the switch, not in config_db.json (config load merges): {{ sonic_verify.unset }}"
+      always:
+        - name: Remove staged config_db
+          ansible.builtin.raw: rm -f {{ sonic_stage }} </dev/null
+          changed_when: false
 
 # ── Critical change analysis (localhost) ──────────────────────────────────────
 

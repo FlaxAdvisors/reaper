@@ -88,14 +88,26 @@ def _quoted(original, placeholder):
     return placeholder
 
 
-def _apply(line, regex, var):
+def _unquoted(original):
+    if len(original) >= 2 and original[0] == original[-1] and original[0] in "'\"":
+        return original[1:-1]
+    return original
+
+
+def _ph(var, secret=None):
+    """Default replacement: the vault placeholder. `secret` is ignored here;
+    sonic_config's display mask passes its own function, which uses it."""
+    return "{{ %s }}" % var
+
+
+def _apply(line, regex, var, ph=_ph):
     m = regex.match(line)
     if not m:
         return None
     prefix, secret, suffix = m.group(1), m.group(2), m.group(3)
     if not secret or _PLACEHOLDER_RE.search(secret) or _TYPED_RE.match(secret):
         return None
-    return "%s%s%s" % (prefix, _quoted(secret, "{{ %s }}" % var), suffix)
+    return "%s%s%s" % (prefix, _quoted(secret, ph(var, _unquoted(secret))), suffix)
 
 
 # --- SONiC config_db JSON -------------------------------------------------
@@ -130,11 +142,7 @@ def _sonic_var_name(table, field):
                                          ("%s_%s" % (table, field)).lower()).strip("_")
 
 
-def _ph(var):
-    return "{{ %s }}" % var
-
-
-def _redact_sonic_row(table, row):
+def _redact_sonic_row(table, row, ph=_ph):
     if not isinstance(row, dict):
         return row
     out = {}
@@ -144,13 +152,14 @@ def _redact_sonic_row(table, row):
             var = _sonic_var_name(table, field)
         if (var and isinstance(value, str) and value
                 and not _PLACEHOLDER_RE.search(value)):
-            value = _ph(var)
+            value = ph(var, value)
         out[field] = value
     return out
 
 
-def _redact_sonic_communities(rows):
+def _redact_sonic_communities(rows, ph=_ph):
     out = {}
+    used = set(rows)                # placeholders already in the input
     for name, row in rows.items():
         if _PLACEHOLDER_RE.search(name):
             out[name] = row
@@ -158,14 +167,15 @@ def _redact_sonic_communities(rows):
         kind = (row.get("TYPE", "RO") if isinstance(row, dict) else "RO").upper()
         base = _SONIC_COMMUNITY_VAR.get(kind, "vault_cfg_snmp_ro_community")
         var, n = base, 1
-        while _ph(var) in out:      # a second community of the same TYPE
+        while _ph(var) in used:     # a second community of the same TYPE
             n += 1
             var = "%s_%d" % (base, n)
-        out[_ph(var)] = row
+        used.add(_ph(var))
+        out[ph(var, name)] = row
     return out
 
 
-def _redact_sonic(text):
+def _redact_sonic(text, ph=_ph):
     try:
         db = json.loads(text)
     except ValueError as e:
@@ -176,11 +186,11 @@ def _redact_sonic(text):
     out = {}
     for table, rows in db.items():
         if table == "SNMP_COMMUNITY" and isinstance(rows, dict):
-            out[table] = _redact_sonic_communities(rows)
+            out[table] = _redact_sonic_communities(rows, ph)
         elif table == "bgpraw" and isinstance(rows, str):
-            out[table] = redact_secrets(rows)
+            out[table] = _redact(rows, ph)
         elif isinstance(rows, dict):
-            out[table] = {k: _redact_sonic_row(table, r) for k, r in rows.items()}
+            out[table] = {k: _redact_sonic_row(table, r, ph) for k, r in rows.items()}
         else:
             out[table] = rows
     return json.dumps(out, indent=4) + "\n"
@@ -190,10 +200,15 @@ def redact_secrets(text):
     """Return `text` with every known cleartext secret replaced by its
     `{{ vault_* }}` placeholder. Non-string input is returned unchanged.
     A JSON object (SONiC config_db) is redacted field-wise; see _redact_sonic."""
+    return _redact(text, _ph)
+
+
+def _redact(text, ph):
+    """redact_secrets with a pluggable replacement: ph(var, secret) -> str."""
     if not isinstance(text, str) or not text:
         return text
     if text.lstrip().startswith("{"):
-        return _redact_sonic(text)
+        return _redact_sonic(text, ph)
 
     out = []
     in_line_block = False
@@ -205,11 +220,11 @@ def redact_secrets(text):
 
         replaced = None
         for regex, var in _RULES:
-            replaced = _apply(line, regex, var)
+            replaced = _apply(line, regex, var, ph)
             if replaced is not None:
                 break
         if replaced is None and in_line_block:
-            replaced = _apply(line, _LINE_PASSWORD_RE, _LINE_PASSWORD_VAR)
+            replaced = _apply(line, _LINE_PASSWORD_RE, _LINE_PASSWORD_VAR, ph)
 
         out.append(replaced if replaced is not None else line)
 
