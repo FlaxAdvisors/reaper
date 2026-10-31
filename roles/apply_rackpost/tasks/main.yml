@@ -68,6 +68,7 @@
     - "{{ apply_rackpost_dest_dir }}/flax_post/web"
     - "{{ apply_rackpost_dest_dir }}/flax_post/web/static"
     - "{{ apply_rackpost_dest_dir }}/flax_post/web/static/vendor"
+    - "{{ apply_rackpost_dest_dir }}/flax_switch_sense"
 
 - name: Deploy flax_rack and flax_rungs
   become: true
@@ -95,7 +96,7 @@
       {{ lookup('file', apply_rackpost_repo ~ '/flax_post/version.py')
          | regex_findall('__version__ = "([^"]+)"') | first }}
     _sha: "{{ lookup('pipe', 'git -C ' ~ (apply_rackpost_repo | quote) ~ ' rev-parse --short HEAD') }}"
-    _dirs: "flax_rack flax_rungs flax_post roles/apply_rackpost"
+    _dirs: "flax_rack flax_rungs flax_post flax_switch_sense roles/apply_rackpost"
     _dirty: >-
       {{ lookup('pipe', 'cd ' ~ (apply_rackpost_repo | quote) ~ ' && test -n "$(git status'
          ~ ' --porcelain --untracked-files=all -- ' ~ _dirs ~ ')" && { git diff HEAD -- '
@@ -131,6 +132,19 @@
   loop: "{{ apply_rackpost_post_modules }}"
   notify: Restart flax-rackpost
 
+# rackpost reads every switch through flax-switch-sense's read drivers
+# (flax_rack/switches.py); only those modules, never the daemon's psycopg side.
+- name: Deploy shared flax_switch_sense driver modules
+  become: true
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../flax_switch_sense/{{ item }}"
+    dest: "{{ apply_rackpost_dest_dir }}/flax_switch_sense/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ apply_rackpost_switch_sense_modules }}"
+  notify: Restart flax-rackpost
+
 - name: Install rackpost wrapper
   become: true
   ansible.builtin.template:
@@ -140,7 +154,7 @@
     group: root
     mode: "0755"
 
-# Only the BOM importer needs it; the daemon is stdlib.
+# Only the BOM importer needs it; the daemon is stdlib (+ requests, below).
 # Vendored under the deploy dir (not root's --user site) so `rackpost import-bom`
 # works for any operator, not only root; the wrapper puts vendor/ on PYTHONPATH.
 - name: Install openpyxl for import-bom
@@ -149,6 +163,18 @@
     name: openpyxl
     executable: pip3.11
     extra_args: "--target {{ apply_rackpost_dest_dir }}/vendor"
+
+# The shared EOS driver (eAPI) imports requests + urllib3, which the bangs' host
+# python3.11 lacks (bang-rhythm): vendored the same way.
+- name: Install requests + urllib3 for the switch drivers
+  become: true
+  ansible.builtin.pip:
+    name:
+      - requests
+      - urllib3
+    executable: pip3.11
+    extra_args: "--target {{ apply_rackpost_dest_dir }}/vendor"
+  notify: Restart flax-rackpost
 
 - name: Deploy flax-rackpost systemd unit
   become: true

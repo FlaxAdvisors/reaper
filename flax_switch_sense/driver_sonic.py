@@ -11,8 +11,12 @@ Arista (eAPI), Cumulus and IOS. Ports are named EthernetN.
                            (the lldpd JSON `show lldp neighbors` renders; the
                            `show lldp table` summary has no chassis id)
 
-Parsing of the show-text tables is ported from flax_rungs.sonic (rackpost's
-readers, live-verified on the Dell N3248TE and the Wedge100S).
+Beyond the contract (rackpost reads these; the other drivers have no equivalent):
+  interfaces_detail()      the same status table with admin + speed
+  platform_info()          sudo -n show platform syseeprom (TlvInfo: serial ...)
+
+Parsing of the show-text tables is ported from rackpost's former private
+readers (flax_rungs.sonic, live-verified on the Dell N3248TE and the Wedge100S).
 
 SONiC CLI rules learned live, honoured by every command here:
   - sudo is passwordless on these builds: always `sudo -n` (never prompts) and
@@ -36,6 +40,8 @@ _CMD_IFSTATUS = "sudo -n show interfaces status </dev/null"
 _CMD_VLAN = "show vlan brief </dev/null"
 _CMD_MAC = "show mac </dev/null"
 _CMD_LLDP = "sudo -n docker exec lldp lldpctl -f json </dev/null"
+# root-only on community SONiC (not batched: identity, read once by Discover)
+_CMD_SYSEEPROM = "sudo -n show platform syseeprom </dev/null"
 
 # refresh() runs every read in ONE ssh, each output bracketed by a marker line
 # (the same batching as driver_cumulus). (key, command), on-wire order.
@@ -52,7 +58,12 @@ _MAC_ROW = re.compile(
 
 
 class SonicError(Exception):
-    """ssh transport or command failure (password never included)."""
+    """ssh transport or command failure (password never included). rc: the ssh
+    exit code (255 = never connected; 124 = timed out) when ssh ran."""
+
+    def __init__(self, msg, rc=None):
+        super().__init__(msg)
+        self.rc = rc
 
 
 def parse_interfaces_status(text: str) -> dict[str, dict]:
@@ -109,6 +120,26 @@ def parse_show_mac(text: str) -> list[tuple[int, str, str, str]]:
     return out
 
 
+def parse_syseeprom(text: str) -> dict[str, str]:
+    """`show platform syseeprom` TLV table -> {TLV Name: Value}. Columns are cut at the
+    dash ruler under the `TLV Name  Code  Len  Value` header; Value runs to line end."""
+    starts, out = None, {}
+    for line in (text or "").splitlines():
+        if starts is None:
+            if line.startswith("TLV Name"):
+                starts = []
+            continue
+        if not starts:
+            starts = [m.start() for m in re.finditer(r"-+", line)]
+            continue
+        if not line.strip() or len(starts) < 4:
+            break
+        name, value = line[:starts[1]].strip(), line[starts[3]:].strip()
+        if name and name not in out:
+            out[name] = value
+    return out
+
+
 def _lldpd_interfaces(data) -> list[dict]:
     """SONiC's lldpctl JSON lists interfaces as [{"Ethernet4": {...}}, ...]
     (one name-keyed dict per neighbour); flatten to [{"name": .., ...}] — the
@@ -158,14 +189,16 @@ class SonicDriver:
                 f"{self.user}@{self.host}", cmd]
         env = dict(os.environ, SSHPASS=self.password or "")
         try:
-            return subprocess.check_output(argv, input="", env=env,
+            return subprocess.check_output(argv, input="", env=env, stderr=subprocess.PIPE,
                                            timeout=self._timeout, text=True)
         except subprocess.CalledProcessError as e:
-            raise SonicError(f"{self.host}: ssh exited {e.returncode}") from None
+            tail = (e.stderr or e.output or "").strip()[-200:]
+            raise SonicError(f"{self.host}: ssh exited {e.returncode}"
+                             + (f": {tail}" if tail else ""), e.returncode) from None
         except subprocess.TimeoutExpired:
-            raise SonicError(f"{self.host}: ssh timed out") from None
+            raise SonicError(f"{self.host}: ssh timed out", 124) from None
         except OSError as e:
-            raise SonicError(f"{self.host}: ssh exec failed: {e}") from None
+            raise SonicError(f"{self.host}: ssh exec failed: {e}", 127) from None
 
     # -- per-poll batched snapshot (one ssh, split back into sections) --
 
@@ -194,11 +227,21 @@ class SonicDriver:
 
     # -- public read methods (EosDriver contract) --
 
+    def interfaces_detail(self) -> dict[str, dict]:
+        """{EthernetN: {oper, admin, speed}} as `show interfaces status` prints them."""
+        return parse_interfaces_status(self._section("ifstatus", _CMD_IFSTATUS))
+
+    def platform_info(self) -> dict:
+        """The switch's TlvInfo EEPROM: {fields: {TLV Name: Value}, checksum_valid,
+        text (the raw table)}. Raises SonicError when it cannot be read."""
+        text = self.runner(_CMD_SYSEEPROM)
+        return {"fields": parse_syseeprom(text), "checksum_valid": "checksum valid" in text,
+                "text": text}
+
     def interfaces_status(self) -> dict[str, str]:
         """Return {port_name: 'link' | 'nolink' | 'unknown'} for every port."""
         out = {}
-        for port, st in parse_interfaces_status(
-                self._section("ifstatus", _CMD_IFSTATUS)).items():
+        for port, st in self.interfaces_detail().items():
             oper = st["oper"].lower()
             out[port] = ("link" if oper == "up" else
                          "nolink" if oper == "down" else "unknown")
@@ -227,7 +270,7 @@ class SonicDriver:
                 if kind == "dynamic" and port.startswith("Ethernet")]
 
     def lldp_neighbors_detail(self) -> dict[str, list[dict]]:
-        """Return {port_name: [{mac, sysname, port_description, mgmt_addrs[]}]}
+        """Return {port_name: [{mac, sysname, port_description, port_id, mgmt_addrs[]}]}
         from lldpd's JSON (chassis id = neighbour mac, as on the other NOSes)."""
         data = CumulusDriver._decode_json(self._section("lldp", _CMD_LLDP))
         out: dict[str, list[dict]] = {}
@@ -243,6 +286,7 @@ class SonicDriver:
                     "mac": mac,
                     "sysname": CumulusDriver._lldp_sysname(chassis),
                     "port_description": CumulusDriver._lldp_port_descr(entry),
+                    "port_id": CumulusDriver._lldp_port_id(entry),
                     "mgmt_addrs": CumulusDriver._lldp_mgmt_addrs(chassis),
                 })
         return out

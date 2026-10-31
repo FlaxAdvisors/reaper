@@ -39,7 +39,12 @@ _KNOWN_HOSTS = "/dev/null"
 
 
 class CumulusError(Exception):
-    """ssh failed or a show command produced unparseable output."""
+    """ssh failed or a show command produced unparseable output. rc: the ssh
+    exit code (255 = never connected; 124 = timed out) when ssh ran."""
+
+    def __init__(self, msg, rc=None):
+        super().__init__(msg)
+        self.rc = rc
 
 
 # Read commands. We deliberately AVOID NCLU (`net show ...`): on the old
@@ -144,23 +149,24 @@ class CumulusDriver:
         which made `net show ... json` fail with exit 3. The commands succeed
         with a plain ssh (verified on the live turtle 3.7.3). Accept any host
         key (UserKnownHostsFile=/dev/null) since switch certs rotate."""
-        full = ["sshpass", "-p", self.password, "ssh",
+        full = ["sshpass", "-e", "ssh",
                 "-o", "StrictHostKeyChecking=no",
                 "-o", "UserKnownHostsFile=/dev/null",
                 "-o", "LogLevel=ERROR",
                 "-o", f"ConnectTimeout={max(1, int(self._timeout))}",
                 f"{self.user}@{self.host}", cmd]
+        # the password rides SSHPASS (sshpass -e), never argv (visible in ps)
+        env = dict(os.environ, SSHPASS=self.password or "")
         try:
-            return subprocess.check_output(full, timeout=self._timeout, text=True)
+            return subprocess.check_output(full, timeout=self._timeout, text=True,
+                                           env=env)
         except subprocess.CalledProcessError as e:
-            # NEVER echo `full` (it contains `-p <password>`); report only the
-            # remote command + exit code.
             raise CumulusError(
-                f"{self.host}: {cmd!r} exited {e.returncode}") from None
+                f"{self.host}: {cmd!r} exited {e.returncode}", e.returncode) from None
         except subprocess.TimeoutExpired:
-            raise CumulusError(f"{self.host}: {cmd!r} timed out") from None
+            raise CumulusError(f"{self.host}: {cmd!r} timed out", 124) from None
         except OSError as e:
-            raise CumulusError(f"{self.host}: ssh exec failed: {e}") from None
+            raise CumulusError(f"{self.host}: ssh exec failed: {e}", 127) from None
 
     @staticmethod
     def _decode_json(raw):
@@ -400,6 +406,7 @@ class CumulusDriver:
                     "mac": mac,
                     "sysname": self._lldp_sysname(chassis),
                     "port_description": self._lldp_port_descr(iface_entry),
+                    "port_id": self._lldp_port_id(iface_entry),
                     "mgmt_addrs": self._lldp_mgmt_addrs(chassis),
                 }
                 out.setdefault(port, []).append(neighbor)
@@ -511,6 +518,20 @@ class CumulusDriver:
         if isinstance(pid, dict):
             return str(pid.get("value", "") or "")
         return ""
+
+    @classmethod
+    def _lldp_port_id(cls, iface_entry: dict) -> str:
+        """The neighbour's port id (port.id.value): its MAC on a live-image host,
+        its ifname on a switch (`Gi1/0/19`)."""
+        port = iface_entry.get("port")
+        if isinstance(port, list) and port:
+            port = port[0]
+        pid = port.get("id") if isinstance(port, dict) else None
+        if isinstance(pid, list) and pid:
+            pid = pid[0]
+        if isinstance(pid, dict):
+            return str(pid.get("value", "") or "")
+        return str(pid) if isinstance(pid, str) else ""
 
     @classmethod
     def _lldp_mgmt_addrs(cls, chassis: dict) -> list[str]:

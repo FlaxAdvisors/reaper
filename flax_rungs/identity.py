@@ -194,8 +194,8 @@ def wedge_bmc(bmc_ip: str, user: str, pw: str, *, syseeprom: dict | None = None,
               runner=subprocess.run) -> RungResult:
     """Wedge identity from `weutil` (Product Serial Number; Local MAC = the BMC,
     Extended MAC Base = the SONiC side) + OpenBMC release + CPLD revision (report only).
-    `syseeprom`, a sonic.read_syseeprom detail, adds the cross-check rows: a serial
-    that differs from the SONiC side's fails (the two endpoints are not one switch)."""
+    `syseeprom`, a flax_rack.switches.read_syseeprom detail, adds the cross-check rows: a
+    serial that differs from the SONiC side's fails (the two endpoints are not one switch)."""
     rc, out, err = ssh_cmd(bmc_ip, user, pw, WEUTIL, runner=runner)
     arts = {"weutil.txt": out + err}
     if rc != 0:

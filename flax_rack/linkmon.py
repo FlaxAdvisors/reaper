@@ -1,6 +1,7 @@
-"""Live link monitor: every 30 s each rack switch is read once (one ssh session:
-`show interfaces status; show lldp table; show mac`, flax_rungs.sonic.read_live) and
-every geometry link is judged against that snapshot. Read-only: no switch config, no
+"""Live link monitor: every 30 s each rack switch is read once (switches.read_live:
+the shared flax_switch_sense driver of its geometry `nos`, one batched read of status,
+LLDP and FDB -- one ssh on SONiC/Cumulus/IOS) and every geometry link is judged
+against that snapshot. Read-only: no switch config, no
 power action, never a `run` row.
 
 Per link (evaluate):
@@ -44,10 +45,9 @@ import time
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 
-from flax_rungs import sonic
-from flax_rungs.sonic import wedge_iface
-
+from . import switches
 from .stages import creds
+from .switches import link_iface  # noqa: F401 -- linkmon.link_iface: report, deploy
 
 INTERVAL_S = 30
 STALE_S = 90
@@ -68,13 +68,6 @@ def _d(x):
 
 def _colon(m):
     return ":".join(m[i:i + 2] for i in range(0, 12, 2)) if m and len(m) == 12 else m
-
-
-def link_iface(sw, port: int, lane: int | None) -> str:
-    """Geometry port (+lane) on switch `sw` -> SONiC interface name."""
-    if sw.model == "wedge100s":
-        return wedge_iface(port, lane)
-    return f"Ethernet{port - 1}"           # N3248TE: front port N = EthernetN-1
 
 
 def device_names(g) -> dict[str, str]:
@@ -242,7 +235,8 @@ def site_link(s, snap, fresh, now) -> dict:
     if not fresh:
         return {**base, "state": "unknown", "seen": {"lldp": None, "macs": []},
                 "text": f"switch {s.id} last read {int(now - at)} s ago"}
-    nbs = [_d(e) for e in snap.get("lldp") or [] if _d(e).get("local_iface") == "eth0"]
+    nbs = [_d(e) for e in snap.get("lldp") or []
+           if _d(e).get("local_iface") in switches.MGMT_IFACES]
     seen = [(e.get("remote_device") or "", e.get("remote_port") or "", e.get("remote_descr") or "")
             for e in nbs]
     base["seen"] = {"lldp": seen[0][0] if seen else None, "macs": []}
@@ -337,9 +331,8 @@ class LinkPoller(threading.Thread):
             if not ip:
                 err = f"no mgmt IP for switch {s.id} (Discover has not found it)"
             else:
-                user, pw = creds(ctx).sonic
-                read = getattr(ctx.rungs, "read_live", None) or sonic.read_live
-                r = read(ip, user, pw, runner=ctx.runner)
+                read = getattr(ctx.rungs, "read_live", None) or switches.read_live
+                r = read(ip, s.nos, creds(ctx).switch)
                 if r.verdict == "pass":
                     snap = {**r.detail, "at": self.clock()}
                 else:

@@ -15,7 +15,7 @@ table: mgmt switch = FDB MACs per port -> the geometry device cabled there + lin
 (the device's switchportlink read); a wedge = each geometry pcieN lane -> device +
 the LLDP neighbour Qualify read on that interface.
 """
-from flax_rungs.sonic import iface_port, wedge_iface
+from .switches import front_panel, link_iface
 
 
 def _fmt(m):
@@ -132,13 +132,13 @@ def mgmt_ports(g, s, raw: dict) -> list[dict]:
     ports: dict[int, dict] = {}
 
     def p(n):
-        return ports.setdefault(n, {"port": str(n), "iface": f"Ethernet{n - 1}", "seen": [],
+        return ports.setdefault(n, {"port": str(n), "iface": link_iface(s, n, None), "seen": [],
                                     "devices": [], "oper": None, "note": ""})
     for e in fdb:
-        try:
-            n = iface_port(e.get("iface") or "")
-        except ValueError:
+        fp = front_panel(s, e.get("iface") or "")
+        if fp is None:
             continue
+        n = fp[0]
         m = _fmt(e.get("mac"))
         if m not in p(n)["seen"]:
             p(n)["seen"].append(m)
@@ -171,7 +171,7 @@ def tor_ports(g, s, raw: dict) -> list[dict]:
         for name, l in sorted(d.links.items()):
             if l.switch != s.id:
                 continue
-            ifn = wedge_iface(l.port, l.lane)
+            ifn = link_iface(s, l.port, l.lane)
             seen.add(ifn)
             rows.append({"port": f"{l.port}" + (f"/{l.lane}" if l.lane else ""), "iface": ifn,
                          "seen": by_if.get(ifn, []),
@@ -181,7 +181,10 @@ def tor_ports(g, s, raw: dict) -> list[dict]:
         if ifn not in seen:
             rows.append({"port": "", "iface": ifn, "seen": nb, "devices": [], "oper": None,
                          "note": "neighbour on a lane no device claims"})
-    rows.sort(key=lambda r: int(r["iface"][8:]) if r["iface"][8:].isdigit() else 1 << 30)
+    def order(r):
+        fp = front_panel(s, r["iface"])
+        return (fp[0], fp[1] or 0) if fp else (1 << 30, 0)
+    rows.sort(key=order)
     return rows
 
 

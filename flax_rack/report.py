@@ -29,7 +29,7 @@ ran a rung has "" there, not a neighbour's value. Sources:
                       device without one: the MAC of the port Qualify's latest ha-path
                       saw on each wedge (inventory ip-d-link)
   *_port              FRONT-PANEL `<switch id>:<port>[/<lane>]` as geometry writes links
-                      (never SONiC EthernetN): mgmt = the link to the mgmt switch,
+                      (never a NOS name: EthernetN, swpN): mgmt = the link to the mgmt switch,
                       fabric_a/b = the link to wedge A/B. AS-BUILT: when the live link
                       monitor's fresh snapshot sees the device (its LLDP name, its MACs;
                       an IOM link its own MAC) on exactly one other port of that switch
@@ -57,7 +57,7 @@ from pathlib import Path
 from flax_post import inventory
 from flax_rungs import bond
 
-from . import linkmon
+from . import linkmon, switches
 from .addressing import plan_addresses
 from .deploy import deploy_rungs, deploy_why
 from .discover_ladder import DISCOVER_STEPS
@@ -332,16 +332,14 @@ def _port(l: Link | None) -> str:
 
 
 def _front(sw, iface: str, lane_hint) -> Link | None:
-    """SONiC EthernetN on switch sw -> its front-panel Link (a wedge: 4 lanes a port; the
-    lane is written when the geometry link had one or it is not lane 1)."""
-    m = re.fullmatch(r"Ethernet(\d+)", iface or "")
-    if not m:
+    """Switch sw's interface name (switches.front_panel: SONiC EthernetN, EOS
+    Et<n>/<lane>, Cumulus swpN[sL]) -> its front-panel Link; the lane is written when
+    the geometry link had one or it is not lane 1."""
+    fp = switches.front_panel(sw, iface)
+    if fp is None:
         return None
-    n = int(m[1])
-    if sw.model == "wedge100s":
-        port, lane = divmod(n, 4)
-        return Link(sw.id, port + 1, lane + 1 if lane_hint is not None or lane else None)
-    return Link(sw.id, n + 1, None)
+    port, lane = fp
+    return Link(sw.id, port, lane if lane and (lane_hint is not None or lane != 1) else None)
 
 
 def _fresh(snaps, sid, now) -> dict | None:
@@ -373,7 +371,7 @@ def _as_built(d, name, l, sws, snaps, now, macs, base) -> Link:
             n = (e.get("remote_device") or "").strip().lower()
             if n == base or n.startswith(base + "-"):
                 seen.add(e.get("local_iface"))
-    seen -= up | {"eth0", None}
+    seen -= up | switches.MGMT_IFACES | {None}
     if linkmon.link_iface(sw, l.port, l.lane) in seen or len(seen) != 1:
         return l
     return _front(sw, seen.pop(), l.lane) or l
@@ -389,7 +387,7 @@ def _site_port(s, snaps, now) -> str:
     if snap is None or linkmon.site_link(s, snap, True, now)["state"] != "wrong":
         return want
     nbs = [linkmon._d(e) for e in snap.get("lldp") or []
-           if linkmon._d(e).get("local_iface") == "eth0"]
+           if linkmon._d(e).get("local_iface") in switches.MGMT_IFACES]
     if len(nbs) != 1 or not nbs[0].get("remote_device") or not nbs[0].get("remote_port"):
         return want
     return f"{nbs[0]['remote_device'].split('.')[0]}:{nbs[0]['remote_port']}"

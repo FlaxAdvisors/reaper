@@ -205,8 +205,9 @@ def fake_context_factory(rack_dir, g, db) -> OrderContext:
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
     return OrderContext(rack_dir, g, db, kea,
-                        Creds(("u", "p"), [("u", "p")], ("flax", "p"), [("u", "p")],
-                              ("u", "p"), ("u", "p")), runner, rungs)
+                        Creds({"sonicuser": "u", "sonicpass": "p", "cisco_user": "u",
+                               "cisco_pass": "p"}, [("u", "p")], ("flax", "p"), [("u", "p")],
+                              ("u", "p")), runner, rungs)
 
 
 # ---------------------------------------------------------------- canned Qualify
@@ -334,7 +335,9 @@ class FakeRungs:
         self.iperf_fail = IPERF_FAIL if iperf_fail is None else iperf_fail
         self.pos_of = {a.ip: a.pos for a in plan_addresses(g)}
         self.calls = []
-        self.fdb_runner = fdb_runner           # True: the FDB is read through ctx.runner
+        # a driver runner(cmd) -> text: the FDB is read through the real switches.read_fdb
+        # (SonicDriver) on that output (e.g. the RRORD-101 Dell fixture)
+        self.fdb_runner = fdb_runner
         self.host_macs: dict[str, str] = {}    # pos -> host MAC12 (BOOTIF), else canned
         # Firmware: R05's BMC and R37's BIOS are off target, L37's NIC has its UEFI ROM off
         self.fw_bmc_ver = {"R05": "flax-onetree-1.1.3"}
@@ -440,16 +443,14 @@ class FakeRungs:
             self.t += s
 
     def site_switches(self):
-        return {"turtle-gouda": "fake-turtle"}
+        return {"turtle-gouda": {"name": "turtle-gouda", "driver": "ios", "host": "fake-turtle"}}
 
-    def read_fdb(self, host, user, pw, *, runner=None):
-        from dataclasses import asdict
-        from flax_rungs.result import RungResult
-        from flax_rungs.sonic import FdbEntry, parse_show_mac, read_fdb
+    def read_fdb(self, host, nos, cred, *, runner=None):
+        from .switches import FdbEntry, read_fdb
         self.calls.append(("read_fdb", host))
         if self.fdb_runner:                    # e.g. the RRORD-101 Dell fixture
             from .discover import match
-            r = read_fdb(host, user, pw, runner=runner)
+            r = read_fdb(host, nos, cred, runner=self.fdb_runner)
             if r.verdict == "pass":
                 sw = next(s.id for s in self.g.switches if s.mgmt_ip == host)
                 m = match(self.g, [FdbEntry(**e) for e in r.detail["fdb"]], sw)
@@ -457,16 +458,14 @@ class FakeRungs:
             return r
         text, _ = canned_fdb(self.g, hosts_up={p for p, b in self.boots.items()
                                                if b["kernel"] <= self.t})
-        e = parse_show_mac(text)
-        return RungResult("pass", {"fdb": [asdict(x) for x in e], "count": len(e)},
-                          {"show-mac.txt": text})
+        return read_fdb(host, "sonic", {}, runner=lambda cmd: text)
 
-    def read_ifstatus(self, host, user, pw, *, runner=None):
+    def read_ifstatus(self, host, nos, cred, *, runner=None):
         from flax_rungs.result import RungResult
         st = {f"Ethernet{p}": {"oper": "up", "admin": "up", "speed": "1G"} for p in range(52)}
         return RungResult("pass", {"status": st, "count": len(st)})
 
-    def mac_table(self, host, user, pw, ports, *, ping_ips=(), runner=None):
+    def mac_table(self, host, nos, cred, ports, *, ping_ips=(), runner=None):
         from flax_rungs.result import RungResult
         self.calls.append(("mac_table", host, tuple(ports)))
         got = {}
@@ -624,7 +623,7 @@ class FakeRungs:
                            f"Local MAC: {mac}\nExtended MAC Base: {ext}\n",
              "issue.txt": "OpenBMC Release wedge100-v29\n", "cpld.txt": "6.101\n"})
 
-    def read_syseeprom(self, ip, user, pw, *, runner=None):
+    def read_syseeprom(self, ip, nos, cred, *, runner=None):
         from flax_rungs.result import RungResult
         s, role, _m = self._sw_of(ip)
         if role != "sonic":
@@ -753,10 +752,10 @@ class FakeRungs:
                 "devices": ["nvme0n1", "nvme1n1"]} if n == "fio" else {}}, arts)
         return out
 
-    def read_lldp(self, ip, user, pw, *, runner=None):
+    def read_lldp(self, ip, nos, cred, *, runner=None):
         from dataclasses import asdict
         from flax_rungs.result import RungResult
-        from flax_rungs.sonic import LldpEntry, wedge_iface
+        from .switches import LldpEntry, wedge_iface
         sw = next(s.id for s in self.g.switches if s.mgmt_ip == ip)
         self.calls.append(("read_lldp", sw))
         rows = []
@@ -771,7 +770,7 @@ class FakeRungs:
         return RungResult("pass", {"lldp": [asdict(e) for e in rows], "count": len(rows)},
                           {"show-lldp-table.txt": text})
 
-    def read_live(self, host, user, pw, *, runner=None, timeout=25):
+    def read_live(self, host, nos, cred, *, runner=None):
         """The live link monitor's one-session read. Mgmt switch: the canned FDB (a
         booted host shows its host MAC too), a port up when it carries a MAC or is an
         uplink. Wedge: a geometry pcieN lane is up (with an LLDP row naming the first
@@ -780,7 +779,7 @@ class FakeRungs:
         (unmeasured); a "<switch id> <iface>" in `pulled` (or a line of pull_file: the
         served fake's cable pull, <order dir>/.fake-pull) is down."""
         from flax_rungs.result import UNMEASURED, RungResult
-        from flax_rungs.sonic import IfStatus, LldpEntry, parse_show_mac, wedge_iface
+        from .switches import FdbEntry, IfStatus, LldpEntry, read_fdb, wedge_iface
         s = next(s for s in self.g.switches if s.mgmt_ip == host)
         self.calls.append(("read_live", s.id))
         if s.id in getattr(self, "live_down", ()):
@@ -788,7 +787,9 @@ class FakeRungs:
         booted = {p for p, b in self.boots.items() if b["kernel"] <= self.t}
         ifaces, lldp, fdb = {}, [], []
         if s.role == "mgmt":
-            fdb = [e for e in parse_show_mac(canned_fdb(self.g, hosts_up=booted)[0])]
+            text = canned_fdb(self.g, hosts_up=booted)[0]
+            fdb = [FdbEntry(**e) for e in read_fdb(host, "sonic", {},
+                                                   runner=lambda cmd: text).detail["fdb"]]
             busy = {e.iface for e in fdb} | {f"Ethernet{p - 1}" for p in s.uplink_ports}
             ifaces = {f"Ethernet{p}": IfStatus("up" if f"Ethernet{p}" in busy else "down",
                                                "up", "1G") for p in range(52)}

@@ -139,7 +139,7 @@ class EosDriver:
         return out
 
     def lldp_neighbors_detail(self) -> dict[str, list[dict]]:
-        """Return {port_name: [{mac, sysname, port_description, mgmt_addrs[]}]}.
+        """Return {port_name: [{mac, sysname, port_description, port_id, mgmt_addrs[]}]}.
         Per-port list because a port can have multiple LLDP neighbors (rare;
         seen on misconfigured trunks)."""
         result = self._post(["show lldp neighbors detail"])
@@ -153,11 +153,14 @@ class EosDriver:
                     continue
                 mgmt = [m.get("address", "") for m in n.get("managementAddresses", [])
                         if m.get("address")]
+                nif = n.get("neighborInterfaceInfo", {})
                 out.setdefault(port, []).append({
                     "mac": mac,
                     "sysname": n.get("systemName", ""),
-                    "port_description": n.get("neighborInterfaceInfo", {})
-                                          .get("interfaceDescription", ""),
+                    "port_description": nif.get("interfaceDescription", ""),
+                    # eAPI quotes the id ("\"Ethernet1\""); _v2 is the bare form
+                    "port_id": nif.get("interfaceId_v2")
+                               or (nif.get("interfaceId") or "").strip('"'),
                     "mgmt_addrs": mgmt,
                 })
         return out

@@ -14,7 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from flax_rack.geometry import KIND_ENDPOINTS, Device, Geometry, parse_endpoints
-from flax_rungs.sonic import FdbEntry, iface_port
+from flax_rack.switches import FdbEntry, front_panel
 
 
 @dataclass
@@ -33,14 +33,15 @@ class Match:
     unexpected: list[tuple[int, str]]   # (port, mac)
 
 
-def _port_macs(fdb: list[FdbEntry]) -> dict[int, list[str]]:
+def _port_macs(fdb: list[FdbEntry], sw=None) -> dict[int, list[str]]:
+    """front-panel port -> its MACs (sw: the switch the FDB is from; its nos/model name
+    the ports; None = a Dell SONiC mgmt switch, EthernetN = port N+1)."""
     out: dict[int, list[str]] = {}
     for e in fdb:
-        try:
-            port = iface_port(e.iface)
-        except ValueError:
+        fp = front_panel(sw, e.iface)
+        if fp is None:
             continue                   # PortChannel, Vlan, etc.
-        macs = out.setdefault(port, [])
+        macs = out.setdefault(fp[0], [])
         if e.mac not in macs:
             macs.append(e.mac)
     for macs in out.values():
@@ -112,8 +113,9 @@ def matcher_for(d: Device) -> Matcher | None:
 
 
 def match(g: Geometry, fdb: list[FdbEntry], switch_id: str = "C") -> Match:
-    uplinks = {p for s in g.switches if s.id == switch_id for p in s.uplink_ports}
-    by_port = _port_macs(fdb)
+    sw = next((s for s in g.switches if s.id == switch_id), None)
+    uplinks = set(sw.uplink_ports) if sw else set()
+    by_port = _port_macs(fdb, sw)
     assigned: set[int] = set()
     devices: dict[str, DeviceMatch] = {}
     for d in g.devices:

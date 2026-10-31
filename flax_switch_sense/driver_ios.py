@@ -17,6 +17,7 @@ privileged exec (no `enable`); every command is prefixed with `terminal length 0
 so long SHOW output never blocks on `--More--`.
 """
 import logging
+import os
 import re
 import subprocess
 
@@ -44,7 +45,12 @@ _POLL_SHOWS = ("show interfaces status",
 
 
 class IosError(Exception):
-    """ssh transport or command failure (password never included)."""
+    """ssh transport or command failure (password never included). rc: the ssh
+    exit code (255 = never connected; 124 = timed out) when ssh ran."""
+
+    def __init__(self, msg, rc=None):
+        super().__init__(msg)
+        self.rc = rc
 
 
 def _dotted_to_colon(dotted: str) -> str:
@@ -80,9 +86,9 @@ class IosDriver:
         pty workarounds lifted from reaper_leased CiscoIOSSSH). NO ControlMaster:
         a backgrounded master ssh reparents to PID-1 python and leaks as a zombie
         (see feedback_ios_ssh_controlmaster_session_is_a_trap). Every call is a
-        plain foreground ssh that subprocess fully reaps. NEVER echo the argv
-        (it carries `-p <password>`)."""
-        return ["sshpass", "-p", self.password, "ssh", "-tt",
+        plain foreground ssh that subprocess fully reaps. The password rides
+        SSHPASS (`sshpass -e`, set by _default_runner), never argv."""
+        return ["sshpass", "-e", "ssh", "-tt",
                 "-o", "StrictHostKeyChecking=no",
                 "-o", "UserKnownHostsFile=" + _SSH_KNOWN_HOSTS,
                 "-o", "KexAlgorithms=+diffie-hellman-group14-sha1",
@@ -98,15 +104,17 @@ class IosDriver:
         """
         full = self._build_ssh_argv()
         payload = "terminal length 0\n" + cmd + "\n"
+        env = dict(os.environ, SSHPASS=self.password or "")
         try:
-            return subprocess.check_output(full, input=payload,
+            return subprocess.check_output(full, input=payload, env=env,
                                            timeout=self._timeout, text=True)
         except subprocess.CalledProcessError as e:
-            raise IosError(f"{self.host}: {cmd!r} exited {e.returncode}") from None
+            raise IosError(f"{self.host}: {cmd!r} exited {e.returncode}",
+                           e.returncode) from None
         except subprocess.TimeoutExpired:
-            raise IosError(f"{self.host}: {cmd!r} timed out") from None
+            raise IosError(f"{self.host}: {cmd!r} timed out", 124) from None
         except OSError as e:
-            raise IosError(f"{self.host}: ssh exec failed: {e}") from None
+            raise IosError(f"{self.host}: ssh exec failed: {e}", 127) from None
 
     # -- per-poll snapshot (one connection, leak-proof) --
 
@@ -193,7 +201,7 @@ class IosDriver:
         return out
 
     def lldp_neighbors_detail(self) -> dict:
-        """Return {port: [{mac, sysname, port_description, mgmt_addrs[]}]}.
+        """Return {port: [{mac, sysname, port_description, port_id, mgmt_addrs[]}]}.
 
         Parses `show lldp neighbors detail`, which IOS renders as blocks
         delimited by a `Local Intf:` line. Per block: Chassis id (mac, if
@@ -212,6 +220,7 @@ class IosDriver:
                     "mac": cur["mac"],
                     "sysname": cur.get("sysname", ""),
                     "port_description": cur.get("port_description", ""),
+                    "port_id": cur.get("port_id", ""),
                     "mgmt_addrs": cur.get("mgmt_addrs", []),
                 })
 
@@ -229,6 +238,9 @@ class IosDriver:
                 in_mgmt = False
             elif line.startswith("System Name:"):
                 cur["sysname"] = line.split(":", 1)[1].strip()
+                in_mgmt = False
+            elif line.startswith("Port id:"):
+                cur["port_id"] = line.split(":", 1)[1].strip()
                 in_mgmt = False
             elif line.startswith("Port Description:"):
                 cur["port_description"] = line.split(":", 1)[1].strip()

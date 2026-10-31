@@ -7,14 +7,25 @@ class CredsError(Exception):
     pass
 
 
+# credentials.json's flat switch-login keys per NOS (= flax_switch_sense make_driver's)
+SWITCH_KEYS = {"sonic": ("sonicuser", "sonicpass"), "eos": ("eosuser", "eospass"),
+               "cumulus": ("cumuser", "cumpass"), "ios": ("cisco_user", "cisco_pass")}
+
+
 @dataclass
 class Creds:
-    sonic: tuple[str, str]
+    # the switch logins present in credentials.json, by its flat keys (the dict
+    # flax_switch_sense's make_driver takes): rack switches by geometry nos, the site
+    # turtle (ios: cisco_user/cisco_pass)
+    switch: dict
     bmc: list[tuple[str, str]]
     host: tuple = ()  # (user, pass) of the "flax" row; () when the file is absent
     redfish: list = field(default_factory=list)  # [(rfuser, rfpass)]; [] when absent
-    cisco: tuple = ()  # the site turtle (IOS): cisco_user/cisco_pass; () when absent
     obmc: tuple = ()   # Facebook-OpenBMC ssh (wedge BMC, BC IOM): obmcuser/obmcpass
+
+    def has_switch(self, nos: str) -> bool:
+        k = SWITCH_KEYS.get(nos)
+        return bool(k and self.switch.get(k[0]) and k[1] in self.switch)
 
 
 def _optional_rows(path):
@@ -30,14 +41,22 @@ def _optional_rows(path):
 
 def load_creds(main="/etc/flax/credentials.json", bmc="/etc/flax/credentials-bmc.json",
                host="/etc/flax/credentials-host.json",
-               redfish="/etc/flax/credentials-redfish.json") -> Creds:
+               redfish="/etc/flax/credentials-redfish.json", noses=("sonic",)) -> Creds:
+    """noses: the rack switches' NOSes (geometry `nos`): each one's login is required
+    (a site with no SONiC rack switch needs no sonic keys)."""
     try:
         with open(main) as f:
             m = json.load(f)
     except (OSError, ValueError) as e:
         raise CredsError(f"cannot read {main}: {e}") from e
-    if not m.get("sonicuser") or not m.get("sonicpass"):
-        raise CredsError("add sonicuser/sonicpass to the vaulted credentials.json")
+    for nos in sorted(set(noses)):
+        if nos not in SWITCH_KEYS:
+            raise CredsError(f"unsupported switch nos {nos!r} (want one of "
+                             f"{', '.join(sorted(SWITCH_KEYS))})")
+        u, p = SWITCH_KEYS[nos]
+        if not m.get(u) or not m.get(p):
+            raise CredsError(f"add {u}/{p} to the vaulted credentials.json")
+    switch = {k: m[k] for pair in SWITCH_KEYS.values() for k in pair if k in m}
     try:
         with open(bmc) as f:
             rows = json.load(f)
@@ -50,6 +69,5 @@ def load_creds(main="/etc/flax/credentials.json", bmc="/etc/flax/credentials-bmc
     rf = [(r["rfuser"], r["rfpass"]) for r in _optional_rows(redfish)
           if r.get("rfuser") and "rfpass" in r]
     opt = lambda u, p: (m[u], m[p]) if m.get(u) and p in m else ()
-    return Creds((m["sonicuser"], m["sonicpass"]), pairs,
-                 (hrow["user"], hrow["pass"]) if hrow else (), rf,
-                 opt("cisco_user", "cisco_pass"), opt("obmcuser", "obmcpass"))
+    return Creds(switch, pairs, (hrow["user"], hrow["pass"]) if hrow else (), rf,
+                 opt("obmcuser", "obmcpass"))

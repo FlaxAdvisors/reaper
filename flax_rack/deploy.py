@@ -91,11 +91,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from flax_rungs import (agent, ansible, bond, fabric, hatest, hostssh, install, iperf, pxeboot,
-                        sol, solscan, sonic, stress)
+                        sol, solscan, stress)
 from flax_rungs.remote import unreachable
 from flax_rungs.result import UNMEASURED, RungResult, not_passed
 
-from . import linkmon
+from . import linkmon, switches
 from .addressing import plan_addresses
 from .qualify import (AGENT_STAGES, _Progress, _artifact, _measured, _safe, _stage_ok,
                       device_rungs, device_verdict, iface_of, parse_ip_link, qualify_why)
@@ -127,7 +127,7 @@ def real_rungs():
         install=install.install, firstboot=install.firstboot, sol_start=sol.start,
         sol_stop=sol.stop, sol_scan=solscan.scan_file, flax_user=ansible.flax_user,
         bond_config=bond.configure, fabric_up=bond.bring_up, ha_test=hatest.run,
-        read_live=sonic.read_live, mesh=iperf.mesh, host_run=hostssh.run, stress=stress.run,
+        read_live=switches.read_live, mesh=iperf.mesh, host_run=hostssh.run, stress=stress.run,
         clock=time.monotonic, sleep=time.sleep)
 
 
@@ -685,13 +685,13 @@ def _snapshots(ctx, R) -> tuple[dict, float | None, int]:
         return lm.snapshots(), lm.clock(), lm.interval_s
     out = {}
     try:
-        ips, (user, pw) = linkmon.switch_ips(ctx), creds(ctx).sonic
+        ips, cred = linkmon.switch_ips(ctx), creds(ctx).switch
     except Exception:                       # noqa: BLE001 -- no switch logins: no live view
         return {}, None, linkmon.INTERVAL_S
     for s in ctx.g.switches:
         if s.id in ("A", "B") and ips.get(s.id):
             try:
-                r = R.read_live(ips[s.id], user, pw, runner=ctx.runner)
+                r = R.read_live(ips[s.id], s.nos, cred)
             except Exception:               # noqa: BLE001
                 continue
             if r.verdict == "pass":

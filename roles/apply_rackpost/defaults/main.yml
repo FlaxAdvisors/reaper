@@ -59,3 +59,14 @@ apply_rackpost_post_modules:
   - nicd/classify.py
   - nicd/manifest.py
   - nicd/driver.py
+# flax_switch_sense modules rackpost's switch reads import (flax_rack/switches.py ->
+# drivers.make_driver -> the four read drivers). drivers.py, not fetcher.py: the
+# fetcher is the daemon's psycopg side.
+apply_rackpost_switch_sense_modules:
+  - __init__.py
+  - version.py
+  - drivers.py
+  - driver_cumulus.py
+  - driver_eos.py
+  - driver_ios.py
+  - driver_sonic.py

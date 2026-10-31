@@ -62,14 +62,17 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 
 from flax_post.observe import bootlog, family_map_live, fru
-from flax_rungs import agent, bmc, hostssh, identity, install, ios, liveboot, redfish, sonic
+from flax_rungs import agent, bmc, hostssh, identity, install, liveboot, redfish
 from flax_rungs.result import UNMEASURED, RungResult
-from flax_rungs.sonic import FdbEntry
+
+from . import switches
 
 from .addressing import plan_addresses
+from .creds import SWITCH_KEYS
 from .discover import _port_macs, match
 from .kea_client import KeaError
 from .stages import cancelled, creds, source
+from .switches import FdbEntry
 
 STAGE = "discover"
 DISCOVER_STEPS = (      # = flax_post.blades.DISCOVER_STEPS (parity-tested)
@@ -101,11 +104,11 @@ SITE_SWITCHES = "/etc/flax/switches.json"
 
 def real_rungs():
     return SimpleNamespace(
-        read_fdb=sonic.read_fdb, read_ifstatus=sonic.read_interfaces_status,
-        mac_table=ios.mac_table, ping=bmc.ping, power_status=bmc.power_status,
+        read_fdb=switches.read_fdb, read_ifstatus=switches.read_ifstatus,
+        mac_table=switches.mac_table, ping=bmc.ping, power_status=bmc.power_status,
         power_action=bmc.power_action, set_boot_pxe=redfish.set_boot_pxe,
         host_run=hostssh.run, tp_fru=identity.tp_fru, iom=identity.iom,
-        wedge_bmc=identity.wedge_bmc, read_syseeprom=sonic.read_syseeprom,
+        wedge_bmc=identity.wedge_bmc, read_syseeprom=switches.read_syseeprom,
         boot_marks=boot_marks, site_switches=site_switches,
         clock=time.monotonic, wall=time.time, sleep=time.sleep)
 
@@ -137,11 +140,12 @@ def ev(verdict, headline, rows=(), notes=(), arts=None, **extra) -> RungResult:
     return RungResult(verdict, d, arts or {})
 
 
-def site_switches(path=SITE_SWITCHES) -> dict[str, str]:
-    """{name: host} from the site switches.json ([{name, driver, host}])."""
+def site_switches(path=SITE_SWITCHES) -> dict[str, dict]:
+    """{name: {name, driver, host}} from the site switches.json (flax-switch-sense's
+    list): the turtle is read with the driver switch-sense uses for it."""
     with open(path) as f:
         data = json.load(f)
-    return {e["name"]: e["host"] for e in data if isinstance(e, dict)
+    return {e["name"]: e for e in data if isinstance(e, dict)
             and e.get("name") and e.get("host")}
 
 
@@ -300,14 +304,15 @@ def _portlink(env, link, port) -> RungResult:
     sw = env.sw
     if env.fdb_err:
         return ev("fail", f"mgmt switch FDB not read: {env.fdb_err}")
-    iface = f"Ethernet{port - 1}"
+    iface = switches.link_iface(sw, port, None)
     st = (env.ifstatus or {}).get(iface)
     macs = env.by_port.get(port, [])
     rows = [["link", f"{link} -> {sw.id}:{port} ({iface})"],
             ["oper", (st or {}).get("oper") or "unread"], ["admin", (st or {}).get("admin")],
             ["speed", (st or {}).get("speed")],
             ["MACs on wire", ", ".join(_colon(m) for m in macs) or "none"]]
-    notes = [f"`show interfaces status` + `show mac` on the mgmt switch {sw.id} ({sw.mgmt_ip})"]
+    notes = [f"interface status + MAC table ({sw.nos}) on the mgmt switch {sw.id} "
+             f"({sw.mgmt_ip})"]
     if st:
         if st.get("oper") == "up":
             return ev("pass", f"{iface} up · {len(macs)} MAC(s)", rows, notes)
@@ -719,11 +724,10 @@ def _host_mac_seen(ctx, env, d, port, want, host_ip) -> RungResult:
         return ev("pass", f"{_colon(want)} seen at Discover start",
                   rows + [["seen on this port", "yes"]])
     R.ping(host_ip, runner=ctx.runner)          # let the switch learn it again
-    user, pw = env.cr.sonic
-    r = R.read_fdb(env.sw.mgmt_ip, user, pw, runner=ctx.runner)
+    r = R.read_fdb(env.sw.mgmt_ip, env.sw.nos, env.cr.switch)
     if r.verdict != "pass":
         return ev("fail", f"FDB re-read failed: {r.detail.get('error')}", rows)
-    macs = _port_macs([FdbEntry(**e) for e in r.detail["fdb"]]).get(port, [])
+    macs = _port_macs([FdbEntry(**e) for e in r.detail["fdb"]], env.sw).get(port, [])
     rows += [["seen on this port", "yes" if want in macs else "no"],
              ["MACs on wire (re-read)", ", ".join(_colon(m) for m in macs) or "none"]]
     notes = ["not on the port at Discover start (a powered-off node): the FDB is re-read "
@@ -1006,13 +1010,15 @@ def _switch_ladder(ctx, env, s, turtles, prev):
             return ev("fail", f"no switch endpoints for model {s.model}")
         if not sp:
             return ev("fail", f"switch {s.id} has no site_port in geometry.json")
-        host = turtles.get(sp["switch"])
-        if not host:
+        t = turtles.get(sp["switch"])
+        if not t:
             return ev("fail", f"{sp['switch']} not in {SITE_SWITCHES}")
-        if not cr.cisco:
-            return ev("fail", "add cisco_user/cisco_pass to the vaulted credentials.json")
+        host, nos = t["host"], t.get("driver") or "ios"
+        if not cr.has_switch(nos):
+            u, p = SWITCH_KEYS.get(nos, ("?", "?"))
+            return ev("fail", f"add {u}/{p} to the vaulted credentials.json")
         ping_ips = [ip for ip in (s.mgmt_ip, *prev) if ip and not str(ip).startswith("fake-")]
-        r = R.mac_table(host, *cr.cisco, [sp["port"]], ping_ips=ping_ips, runner=ctx.runner)
+        r = R.mac_table(host, nos, cr.switch, [sp["port"]], ping_ips=ping_ips)
         info["macs"] = (r.detail.get("ports") or {}).get(sp["port"]) or []
         d = dict(r.detail)
         d["rows"] = [["turtle", f"{sp['switch']} ({host})"], ["port", sp["port"]]] + d.get("rows", [])
@@ -1096,7 +1102,7 @@ def _switch_ladder(ctx, env, s, turtles, prev):
     def serial():
         sip = ip_of("sonic")
         if sip:
-            sonic_r["r"] = R.read_syseeprom(sip, *cr.sonic, runner=ctx.runner)
+            sonic_r["r"] = R.read_syseeprom(sip, s.nos, cr.switch)
         sys_ = sonic_r.get("r")
         if ep.get("bmc"):
             bip = ip_of("bmc")
@@ -1184,14 +1190,14 @@ def _read_mgmt(ctx, env):
         env.fdb_err = "no mgmt switch with mgmt_ip in geometry"
         run_step(ctx, "_rack", "switch-fdb", lambda: ev("fail", env.fdb_err))
         return
-    user, pw = env.cr.sonic
+    sw, cred = env.sw, env.cr.switch
     r = run_step(ctx, "_rack", "switch-fdb",
-                 lambda: _fdb_ev(R.read_fdb(env.sw.mgmt_ip, user, pw, runner=ctx.runner)))
+                 lambda: _fdb_ev(R.read_fdb(sw.mgmt_ip, sw.nos, cred)))
     if r.verdict != "pass":
         env.fdb_err = r.detail.get("error") or "fail"
         return
     fdb = [FdbEntry(**e) for e in r.detail["fdb"]]
-    env.by_port = _port_macs(fdb)
+    env.by_port = _port_macs(fdb, sw)
     env.match = match(g, fdb, env.sw.id)
     # MACs on ports no slot claims: the other half of a mis-cabled device's 'missing'
     m = env.match
@@ -1202,7 +1208,7 @@ def _read_mgmt(ctx, env):
         unexpected=[{"port": p, "mac": mac} for p, mac in m.unexpected],
         count=len(m.unexpected)))
     try:
-        s = R.read_ifstatus(env.sw.mgmt_ip, user, pw, runner=ctx.runner)
+        s = R.read_ifstatus(sw.mgmt_ip, sw.nos, cred)
         if s.verdict == "pass":
             env.ifstatus = s.detail.get("status") or {}
         else:

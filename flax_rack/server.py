@@ -1430,8 +1430,10 @@ def default_context_factory(rack_dir: Path, g: Geometry, db: OrderDB):
     from .creds import load_creds
     from .kea_client import KeaClient
     from .stages import OrderContext
-    # creds load lazily (first switch/BMC rung): Close needs Kea only
-    return OrderContext(rack_dir, g, db, KeaClient(), load_creds)
+    # creds load lazily (first switch/BMC rung): Close needs Kea only. The rack
+    # switches' NOSes say which switch logins are required.
+    noses = {s.nos for s in g.switches}
+    return OrderContext(rack_dir, g, db, KeaClient(), lambda: load_creds(noses=noses))
 
 
 def make_server(orders_root: Path, *, port=8452, bind="127.0.0.1", static_dirs=None,

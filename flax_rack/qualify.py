@@ -80,13 +80,14 @@ from types import SimpleNamespace
 
 from flax_post import population, qualify_rules, shipchecks
 from flax_post.observe import family_map_live, fru
-from flax_rungs import agent, fabric, fio, ha, hostssh, identity, iperf, liveboot, sol, sonic
+from flax_rungs import agent, fabric, fio, ha, hostssh, identity, iperf, liveboot, sol
 from flax_rungs.result import UNMEASURED, RungResult, not_passed
-from flax_rungs.sonic import LldpEntry
 
+from . import switches
 from .addressing import plan_addresses
 from .discover_ladder import DISCOVER_STEPS
 from .stages import _rung, cancelled, creds
+from .switches import LldpEntry
 from .version import BUILD
 
 STAGE = "qualify"
@@ -117,7 +118,7 @@ def real_rungs():
     return SimpleNamespace(
         boot_live=liveboot.boot_live, launch=agent.launch, poll=agent.poll,
         stop_agent=agent.stop,
-        read_lldp=sonic.read_lldp, apply_fabric=fabric.apply, mesh=iperf.mesh,
+        read_lldp=switches.read_lldp, apply_fabric=fabric.apply, mesh=iperf.mesh,
         host_run=hostssh.run, sol_start=sol.start, sol_stop=sol.stop,
         tp_fru=identity.tp_fru)
 
@@ -928,7 +929,7 @@ def _network(ctx, R, prog, scope, ips, cr, not_ready, guest=None):
                 res = RungResult("fail", {"error": f"switch {s.id} has no mgmt_ip in geometry.json"})
             else:
                 try:
-                    res = R.read_lldp(s.mgmt_ip, *cr.sonic, runner=ctx.runner)
+                    res = R.read_lldp(s.mgmt_ip, s.nos, cr.switch)
                 except Exception as e:      # noqa: BLE001
                     res = RungResult("fail", {"error": f"{type(e).__name__}: {e}"})
             # the table text goes to artifacts/_rack/q<run>/lldp-<id>/; the row keeps its path
