@@ -8,6 +8,7 @@ from .db import get_pool
 from .driver_cumulus import CumulusDriver
 from .driver_eos import EosDriver
 from .driver_ios import IosDriver
+from .driver_sonic import SonicDriver
 from .publisher import build_switch_facts_row, write_switch_facts, write_ack
 from .slice import slice_by_port
 
@@ -21,7 +22,7 @@ class ConfigError(Exception):
 
 def load_switches(path: str) -> list[dict]:
     """Load /etc/flax/switches.json. Expected schema (list of dicts):
-    [{"name": "<switch>", "driver": "eos|cumulus|ios", "host": "<dns-or-ip>"}]"""
+    [{"name": "<switch>", "driver": "eos|cumulus|ios|sonic", "host": "<dns-or-ip>"}]"""
     with open(path) as f:
         data = json.load(f)
     if not isinstance(data, list):
@@ -61,6 +62,14 @@ def make_driver(entry: dict, credentials: dict):
             host=entry["host"],
             user=credentials.get("cisco_user", ""),
             password=credentials.get("cisco_pass", ""),
+        )
+    if driver_kind == "sonic":
+        # Community SONiC (e.g. the Dell N3248TE / Wedge100S rack switches).
+        # Flat creds sonicuser/sonicpass, as the rackpost readers use.
+        return SonicDriver(
+            host=entry["host"],
+            user=credentials.get("sonicuser", ""),
+            password=credentials.get("sonicpass", ""),
         )
     raise ConfigError(
         f"unsupported driver {driver_kind!r} for switch {entry['name']!r}"
