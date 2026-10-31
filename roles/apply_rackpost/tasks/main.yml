@@ -84,8 +84,10 @@
 
 # The build id the header shows and every open page reloads on (rackpost.js
 # checkBuild): computed here on the controller from the checkout being deployed,
-# `<flax_post version>·<short sha>[-dirty]` (dirty = uncommitted changes to tracked
-# files). The daemon reads BUILD at start, so a new id restarts it.
+# `<flax_post version>·<short sha>[-dirty-<hash>]`: dirty = uncommitted or untracked
+# (not ignored) files under the deployed dirs; hash = 7 hex of `git diff HEAD` + the
+# untracked files' names and contents there, so two dirty deploys differ. The daemon
+# reads BUILD at start, so a new id restarts it.
 - name: Write the rackpost build id
   become: true
   vars:
@@ -93,9 +95,14 @@
       {{ lookup('file', apply_rackpost_repo ~ '/flax_post/version.py')
          | regex_findall('__version__ = "([^"]+)"') | first }}
     _sha: "{{ lookup('pipe', 'git -C ' ~ (apply_rackpost_repo | quote) ~ ' rev-parse --short HEAD') }}"
-    _dirty: "{{ lookup('pipe', 'git -C ' ~ (apply_rackpost_repo | quote) ~ ' status --porcelain --untracked-files=no') }}"
+    _dirs: "flax_rack flax_rungs flax_post roles/apply_rackpost"
+    _dirty: >-
+      {{ lookup('pipe', 'cd ' ~ (apply_rackpost_repo | quote) ~ ' && test -n "$(git status'
+         ~ ' --porcelain --untracked-files=all -- ' ~ _dirs ~ ')" && { git diff HEAD -- '
+         ~ _dirs ~ '; git ls-files -o --exclude-standard -z -- ' ~ _dirs
+         ~ ' | xargs -0r sha1sum; } | sha1sum | cut -c1-7 || true') }}
   ansible.builtin.copy:
-    content: "{{ _ver }}·{{ _sha }}{{ '-dirty' if _dirty else '' }}\n"
+    content: "{{ _ver }}·{{ _sha }}{{ ('-dirty-' ~ _dirty) if _dirty else '' }}\n"
     dest: "{{ apply_rackpost_dest_dir }}/BUILD"
     owner: root
     group: root

@@ -9,8 +9,11 @@ the kernel log and stress-ng's own exit code.
            `stress-ng --cpu 0 --vm VM_WORKERS --vm-bytes 80% --timeout <s>s
            --metrics-brief` detached (setsid) on the node, output + exit code under /run;
            --timeout ends it on its own, so a daemon that dies cannot leave it running
-  wait     <s> seconds, then the exit-code files are polled until every node has one or
-           the deadline passes (stress-ng still running then is killed: a fail)
+  wait     <s> seconds (in POLL_S steps: Cancel stops stress-ng on every node with the
+           deadline's pkill and skips the after ssh, an `unmeasured`), then the exit-code
+           files are polled until every node has one or the deadline (counted from the
+           launch, not the prep's apt-get) passes (stress-ng still running then is killed:
+           a fail)
   after    per node: stress-ng's output + exit code and the kernel log lines stamped after
            T0 (one ssh), then SDR + SEL again
 
@@ -138,11 +141,12 @@ class _Node:
 
 class _Run:
     def __init__(self, nodes, user, pw, bmc_creds, seconds, vm, deadline_s, runner, sleep,
-                 clock, poll_s):
+                 clock, poll_s, cancelled):
         self.st = [_Node(n) for n in nodes]
         self.user, self.pw, self.bmc_creds = user, pw, bmc_creds
         self.seconds, self.vm, self.deadline_s = seconds, vm, deadline_s
         self.runner, self.sleep, self.clock, self.poll_s = runner, sleep, clock, poll_s
+        self.cancelled = cancelled
 
     def ssh(self, x, script, timeout=60):
         return hostssh.run(x.n["host_ip"], self.user, self.pw, script, timeout=timeout,
@@ -188,13 +192,21 @@ class _Run:
                                   f"{hostssh.tail(out, err, 120)}".rstrip())
         _par(one, xs)
 
-    def wait(self, xs, t_start):
-        self.sleep(self.seconds)
+    def wait(self, xs, t_launch) -> bool:
+        """-> False when Cancel stopped the run (stress-ng killed on every node)."""
+        while (left := self.seconds - (self.clock() - t_launch)) > 0:
+            if self.cancelled():
+                _par(lambda x: self.ssh(x, _KILL), xs)
+                for x in xs:
+                    x.unanswered.append("cancelled: stress-ng stopped "
+                                        f"{self.clock() - t_launch:.0f} s into its run")
+                return False
+            self.sleep(min(self.poll_s, left))
         pending = list(xs)
         while pending:
             res = _par(lambda x: self.ssh(x, _DONE), pending)
             pending = [x for x in pending if "DONE" not in res[x.pos][1]]
-            if not pending or self.clock() - t_start >= self.deadline_s:
+            if not pending or self.clock() - t_launch >= self.deadline_s:
                 break
             self.sleep(self.poll_s)
         for x in pending:       # no exit code by the deadline: stop it
@@ -202,6 +214,7 @@ class _Run:
             x.problems.append(f"stress-ng gave no exit code within the {self.deadline_s} s "
                               "deadline" + ("; killed" if "KILLED" in k[1] else
                                             "; kill not confirmed"))
+        return True
 
     def collect(self, x):
         rc, out, err = self.ssh(x, _COLLECT, timeout=120)
@@ -271,10 +284,12 @@ class _Run:
 
 def run(nodes: list[dict], *, user: str, pw: str, bmc_creds, seconds: int = SECONDS,
         vm: int = VM_WORKERS, deadline_s: int = DEADLINE_S, runner=subprocess.run,
-        sleep=time.sleep, clock=time.monotonic, poll_s: int = POLL_S) -> dict[str, RungResult]:
-    """nodes: [{"pos", "host_ip", "bmc_ip"}]. One RungResult per pos."""
-    R = _Run(nodes, user, pw, bmc_creds, seconds, vm, deadline_s, runner, sleep, clock, poll_s)
-    t_start = clock()
+        sleep=time.sleep, clock=time.monotonic, poll_s: int = POLL_S,
+        cancelled=lambda: False) -> dict[str, RungResult]:
+    """nodes: [{"pos", "host_ip", "bmc_ip"}]. One RungResult per pos. cancelled(): the
+    stage's Cancel, checked every poll_s of the run."""
+    R = _Run(nodes, user, pw, bmc_creds, seconds, vm, deadline_s, runner, sleep, clock, poll_s,
+             cancelled)
     _par(R.prep, R.st)
     ready = [x for x in R.st if x.t0 is not None and not x.problems]
     spread = None
@@ -283,7 +298,7 @@ def run(nodes: list[dict], *, user: str, pw: str, bmc_creds, seconds: int = SECO
         went = [x for x in ready if x.started is not None]
         if went:
             spread = max(x.started for x in went) - min(x.started for x in went)
-            R.wait(went, t_start)
-            _par(R.collect, went)
+            if R.wait(went, min(x.started for x in went)):
+                _par(R.collect, went)
     _par(lambda x: (R.oob(x, "after"), R.judge_sel(x)), [x for x in R.st if x.t0 is not None])
     return {x.pos: R.result(x, spread) for x in R.st}

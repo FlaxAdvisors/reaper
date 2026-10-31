@@ -51,7 +51,9 @@ action, no install, no Qualify gate (the node already went through it). Each tar
 needs its earlier Deploy phases passed in this pass (deploy_why before deploy-iperf:
 install-or-kept / firstboot / flax-user / ha-config / ha-test), or an installed OS (any
 pass) with bond0 up (this pass's ha-config passed; a node without fabric links: the
-installed OS alone); anything else is refused naming what is missing.
+installed OS alone); anything else is refused naming what is missing. A target whose
+current-pass Qualify is not passed is let through but named in an event ("deployed
+rungs re-run on <pos> whose qualify is <state>").
 
 A device failing a phase (fail or unmeasured on its rung) gets `skip` ("failed in phase
 <p>" / "not measured in phase <p>" / "cancelled") on the later phases' rungs; the rest
@@ -96,7 +98,7 @@ from flax_rungs.result import UNMEASURED, RungResult, not_passed
 from . import linkmon
 from .addressing import plan_addresses
 from .qualify import (AGENT_STAGES, _Progress, _artifact, _measured, _safe, _stage_ok,
-                      device_rungs, device_verdict, iface_of, parse_ip_link)
+                      device_rungs, device_verdict, iface_of, parse_ip_link, qualify_why)
 from .stages import cancelled, creds
 
 STAGE = "deploy"
@@ -1009,7 +1011,8 @@ def _stress(ctx, R, cr, prog, xs):
         user, pw = cr.host
         out = R.stress([{"pos": x.pos, "host_ip": x.ips["host"], "bmc_ip": x.ips["bmc"]}
                         for x in xs], user=user, pw=pw, bmc_creds=cr.bmc,
-                       deadline_s=DEADLINES["stress"], runner=ctx.runner)
+                       deadline_s=DEADLINES["stress"], runner=ctx.runner,
+                       cancelled=lambda: cancelled(ctx))
     except Exception as e:                  # noqa: BLE001
         out = {p: RungResult("fail", {"error": f"{type(e).__name__}: {e}"}) for p in rids}
     spread = next((r.detail.get("launch_spread_s") for r in out.values()
@@ -1055,6 +1058,12 @@ def run_deploy(ctx, *, positions: list[str] | None = None, from_phase: str = "in
                                + (f"; from firstboot (installed): {', '.join(sorted(fb))}"
                                   if fb else "")
                                + (" (reinstall confirmed)" if reinstall == g.order else ""))
+    if from_phase in LATE_FROM:     # no Qualify gate (operator-accepted): say who it let by
+        qwhy = qualify_why(lr, g)
+        unq = [f"{d.pos} whose qualify is {qwhy[d.pos]}" for d in targets if d.pos in qwhy]
+        if unq:
+            ctx.db.add_event("deploy", f"deploy from {from_phase} skips the Qualify gate: "
+                                       "deployed rungs re-run on " + "; ".join(unq))
     if incomplete:
         ctx.db.add_event("deploy", "rack incomplete: "
                          + ", ".join(f"{p} ({y})" for p, y in incomplete.items()))

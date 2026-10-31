@@ -3,8 +3,8 @@ Every one lists the rack top down: highest OU first, then column L, C, R; a JBOD
 after it by side (A, B); no order column (it is in the file name), a `rack` column only
 when the order has a rack tag (multi-rack), no hostnames.
 
-Named <customer>-<order>-<kind>.csv (geometry customer + order, filename-safe:
-csv_names); before 2026-10-31 they were customer-{devices,firmware,components}.csv, which
+Named <customer>-<order>[-<rack>]-<kind>.csv (geometry customer + order, + the rack tag
+when there is one, filename-safe: csv_names); before 2026-10-31 they were customer-{devices,firmware,components}.csv, which
 csv_path still reads (and Start fresh still renames).
 
 <c>-<o>-devices.csv      PHYSICAL: one row per geometry device (pos), per JBOD IOM
@@ -94,8 +94,10 @@ _NIC_SN_RE = re.compile(r"^BusID:\s*(?P<bus>[^,\s]+),\s*\[SN\] Serial number:\s*
 
 
 def csv_names(g) -> dict[str, str]:
-    """{kind: "<customer>-<order>-<kind>.csv"}, filename-safe."""
-    tag = re.sub(r"[^A-Za-z0-9._-]+", "_", f"{g.customer or 'customer'}-{g.order}").strip("_")
+    """{kind: "<customer>-<order>[-<rack>]-<kind>.csv"}, filename-safe (the rack tag keeps
+    two racks of one order apart)."""
+    tag = f"{g.customer or 'customer'}-{g.order}" + (f"-{g.rack}" if g.rack else "")
+    tag = re.sub(r"[^A-Za-z0-9._-]+", "_", tag).strip("_")
     return {k: f"{tag}-{k}.csv" for k in CSV_KINDS}
 
 
@@ -208,10 +210,21 @@ def _done(lr, key, rung):
     return r if r.get("status") == "done" else {}
 
 
-def _from_why(why: str | None) -> str:
+def _from_why(why: str | None, failed: bool = False) -> str:
+    """qualify_why / deploy_why's reason as the CSV's word. "fail" only for a real
+    failure (failed: one of the stage's rungs failed, though an earlier one never ran);
+    "" when the first hole is a rung not run (no verdict to report)."""
     if why is None:
         return "pass"
-    return "unmeasured" if why.startswith("not measured") else "fail"
+    if failed:
+        return "fail"
+    if why.startswith("not measured"):
+        return "unmeasured"
+    return "" if why.endswith(" not run") else "fail"
+
+
+def _failed(lr, key, rungs) -> bool:
+    return any((lr.get((key, r)) or {}).get("verdict") == "fail" for r in rungs)
 
 
 def _fw(lr, key, prefix) -> str:
@@ -264,12 +277,15 @@ def device_rows(order_dir, g, db) -> list[dict]:
         inv = inventory_text(order_dir, lr, d.pos)
         fru = (inventory.parse(inv).get("fru") or {}) if inv else {}
         if device_rungs(d):
-            qualify = _from_why(qwhy.get(d.pos)) if _stage_ran(lr, d.pos, "qualify") else ""
+            qualify = (_from_why(qwhy.get(d.pos), _failed(lr, d.pos, device_rungs(d)))
+                       if _stage_ran(lr, d.pos, "qualify") else "")
         else:       # an IOM-only device qualifies by its Discover ladder
             ran = any((d.pos, s) in lr for s in DISCOVER_STEPS)
-            qualify = _from_why(qwhy.get(d.pos)) if ran else ""
+            qualify = _from_why(qwhy.get(d.pos), _failed(lr, d.pos, DISCOVER_STEPS)) \
+                if ran else ""
         dr = deploy_rungs(d)
-        deploy = (_from_why(dwhy.get(d.pos)) if any((d.pos, r) in lr for r in dr) else "")
+        deploy = (_from_why(dwhy.get(d.pos), _failed(lr, d.pos, dr))
+                  if any((d.pos, r) in lr for r in dr) else "")
         fmac = _fabric_macs(order_dir, lr, d.pos)
         hosts = [names[k] for k in sorted(names) if k[0] == d.pos and k[1].startswith("host")]
         out.append(_blank(

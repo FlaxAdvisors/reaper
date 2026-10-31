@@ -364,6 +364,7 @@ class FakeRungs:
         self.override_fail: set[str] = set()
         self.pxe_first: set[str] = set()        # efibootmgr BootOrder starts with PXE
         self.pxe_dir = None
+        self.ident: dict[str, str] = {}         # pos -> the identify state chassis status reports
         self.stress_hosts = StressHosts(self.pos_of)   # Deploy stress: its knobs
         self.stress_pause_s = 0.0              # real pause per stress wait + Deploy mesh (served fake)
         self.sol_dir = None                    # the fake relay's capture dir (relay_dir())
@@ -525,7 +526,12 @@ class FakeRungs:
         if info is not None:
             info.update(user="u", cipher=17)
         state = {"0": "Off", "force": "Indefinite(On)"}.get(arg, "Temporary(On)")
+        self.ident[pos] = state
         return {"ok": True, "ident": state, "error": None}
+
+    def chassis_status(self, ip, creds, *, runner=None):
+        pos, _ = self.ip_role.get(ip, (None, None))
+        return {"power": self.power.get(pos), "ident": self.ident.get(pos)}
 
     def set_boot_pxe(self, ip, creds, *, enable=True, ipmi_creds=None, runner=None):
         from flax_rungs.result import RungResult
@@ -1161,7 +1167,8 @@ class FakeRungs:
                     {"ping-cut-A.txt": "120 packets transmitted, 118 received\n"} if not srv else {})
         return out
 
-    def stress(self, nodes, *, user, pw, bmc_creds, deadline_s=None, runner=None):
+    def stress(self, nodes, *, user, pw, bmc_creds, deadline_s=None, runner=None,
+               cancelled=lambda: False):
         """The real stress.run over StressHosts, on the virtual clock (stress_pause_s of
         real time per wait so the served fake's phase can be watched)."""
         import time
@@ -1174,7 +1181,8 @@ class FakeRungs:
         self.calls.append(("stress", sorted(n["pos"] for n in nodes)))
         return stress.run(nodes, user=user, pw=pw, bmc_creds=bmc_creds,
                           deadline_s=deadline_s or stress.DEADLINE_S,
-                          runner=self.stress_hosts, sleep=sleep, clock=self.wall)
+                          runner=self.stress_hosts, sleep=sleep, clock=self.wall,
+                          cancelled=cancelled)
 
     # ------------------------------------------------------------ Done stand-ins
     def end_summary(self, host_ip, bmc_ip, *, host_user, host_pw, bmc_creds, runner=None):

@@ -183,10 +183,10 @@
     <div class="d-sub">{{subLine(selObj)}}</div>
 
     <div class="actions" v-if="selKind==='dev'">
-      <button :class="pwrCls(selDev)" :disabled="!hostBmc(selDev)" @click="openPwr(selDev)"
-              :title="hostBmc(selDev) ? 'power: ' + pwrTitle(selDev) + ' · on / off / cycle / reset' : 'no host BMC'">PWR</button>
-      <button :class="{lit: identOn(selDev)}" :disabled="!hostBmc(selDev)" @click="openIdnt(selDev)"
-              :title="hostBmc(selDev) ? identTitle(selDev) : 'no host BMC'">IDNT</button>
+      <button :class="pwrCls(selDev)" :disabled="!hostBmc(selDev) || !!s.closed_at" @click="openPwr(selDev)"
+              :title="!hostBmc(selDev) ? 'no host BMC' : 'power: ' + pwrTitle(selDev) + (s.closed_at ? ' · order is closed' : ' · on / off / cycle / reset')">PWR</button>
+      <button :class="{lit: identOn(selDev)}" :disabled="!hostBmc(selDev) || !!s.closed_at" @click="openIdnt(selDev)"
+              :title="!hostBmc(selDev) ? 'no host BMC' : identTitle(selDev) + (s.closed_at ? ' · order is closed' : '')">IDNT</button>
       <button :disabled="!(selDev?.addrs || {}).bmc" @click="openSol(selDev)"
               title="the live serial console: the flax-post-sol relay's session to this BMC (watching never opens a second SOL)">SOL</button>
       <button :disabled="!invUrl(selDev)" @click="openInv(selDev)"

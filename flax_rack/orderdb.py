@@ -377,6 +377,15 @@ class OrderDB:
                 cur[pos] = state
             self._set_meta_json("ident", cur)
 
+    def set_ident_reported(self, pos, at: str, reported: str) -> None:
+        """The BmcPoller's read of the BMC's identify state onto pos's IDNT row, unless a
+        command since its read replaced the row (`at` no longer the row's)."""
+        with self._mu:
+            cur = self._meta_json("ident") or {}
+            if (cur.get(pos) or {}).get("at") == at:
+                cur[pos]["reported"] = reported
+                self._set_meta_json("ident", cur)
+
     def idents(self) -> dict:
         return self._meta_json("ident") or {}
 

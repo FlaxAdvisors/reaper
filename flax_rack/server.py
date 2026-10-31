@@ -32,14 +32,15 @@ checked before the stage starts: a refusal is a 409 naming what blocks.
 POST api/stage/done starts Done (flax_rack.done: end summary, boot reset, components,
 then the customer CSVs): rack-wide with the typed order id, a positions run with
 {"confirm": true}. GET api/report/devices.csv, api/report/firmware.csv and
-api/report/inventory.csv download those CSVs as <customer>-<order>-<kind>.csv
+api/report/inventory.csv download those CSVs as <customer>-<order>[-<rack>]-<kind>.csv
 (attachment; 404 until Done has written them).
 
 POST api/power {"pos", "action": on|off|cycle|reset, "confirm": <pos> (not for on)} and
 POST api/identify {"pos", "mode": on|force|off} are the drawer's PWR and IDNT
 (flax_rack.nodeact): a host's BMC, an event each; power is refused (409) while a stage
 or Run holds the rack lock with the node in its scope (`stage_positions`: None =
-rack-wide). /api/state carries per device `ident` (nodeact.ident_view).
+rack-wide); a power call holds a free lock itself, so no stage starts inside it.
+/api/state carries per device `ident` (nodeact.ident_view).
 
 POST api/run {"confirm": <order id>, "reinstall": <order id> | false} starts a Run
 (flax_rack.run: Discover -> Firmware -> Qualify -> Deploy -> Done, held before Deploy
@@ -274,6 +275,8 @@ class Rack:
         self.stage = None                        # name of the stage this daemon runs
         self.stage_positions = None              # ... its scope (None = rack-wide)
         self.cancel = threading.Event()          # Cancel pressed for that stage
+        self.powering: set[str] = set()          # PWR calls in flight under the stage lock
+        self.power_mu = threading.Lock()         # ... guards it with the lock's take/release
         self.mtime = mtime
         self.linkmon = None                      # the rack's LinkPoller (set by the App)
         self.db.init(g)
@@ -663,7 +666,8 @@ class App:
         if DRAIN_FILE.exists():
             return 409, {"error": DRAINING}
         if not r.lock.acquire():
-            return 409, {"error": f"a stage ({r.stage or 'cli'}) is already running for this rack"}
+            busy = r.stage or ("power" if r.powering else "cli")
+            return 409, {"error": f"a stage ({busy}) is already running for this rack"}
         r.cancel = cancel = threading.Event()    # a fresh flag: an old Cancel never carries
         r.stage = name
         r.stage_positions = scope
@@ -939,7 +943,7 @@ class App:
         return text.replace("<head>", '<head><base href="../../">', 1).encode()
 
     def report_file(self, r: Rack, name: str) -> tuple[Path, str] | None:
-        """(the CSV Done wrote, its download name <customer>-<order>-<kind>.csv) or None
+        """(the CSV Done wrote, its download name report.csv_names) or None
         (unknown, not written yet)."""
         kind = REPORTS.get(name)
         p = report.csv_path(r.dir, r.g, kind) if kind else None
@@ -968,6 +972,8 @@ class App:
             return "a CLI stage holds this rack"
         if not r.lock.locked():
             return None
+        if r.powering:                       # the lock is held by PWR calls, not a stage
+            return f"a power action is in flight for {pos}" if pos in r.powering else None
         sp = r.stage_positions
         if sp is None or pos in sp:
             return f"{r.stage or 'a stage'} is running for " + ("the rack" if sp is None else pos)
@@ -983,11 +989,27 @@ class App:
             return 400, {"error": f"action must be one of {', '.join(nodeact.POWER_ACTIONS)}"}
         if action != "on" and body.get("confirm") != pos:
             return 400, {"error": f"confirm the power {action} with the position ({pos})"}
-        why = self.holds(r, pos)
-        if why:
-            return 409, {"error": f"power {action} refused: {why}"}
-        return nodeact.power(self.factory(r.dir, r.g, r.db), pos, ip, action,
-                             clean_who(body.get("by") or who))
+        # the check and the call are one: a free stage lock is held for the call (so no
+        # stage starts inside its ~1 min), shared by concurrent PWR calls on other nodes;
+        # a node outside a running stage's scope powers under that stage's lock
+        with r.power_mu:
+            why = self.holds(r, pos)
+            mine = not why and not r.lock.locked()
+            if mine and not r.powering and not r.lock.acquire():
+                why = "a CLI stage holds this rack"
+            if why:
+                return 409, {"error": f"power {action} refused: {why}"}
+            if mine or r.powering:
+                r.powering.add(pos)
+        try:
+            return nodeact.power(self.factory(r.dir, r.g, r.db), pos, ip, action,
+                                 clean_who(body.get("by") or who))
+        finally:
+            with r.power_mu:
+                if pos in r.powering:
+                    r.powering.discard(pos)
+                    if not r.powering:
+                        r.lock.release()
 
     def node_identify(self, r: Rack, body: dict, who: str = "?"):
         err, node = self._node(r, body)

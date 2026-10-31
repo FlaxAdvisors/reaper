@@ -47,7 +47,7 @@
 // Drawer PWR / IDNT (a host's BMC, api/power + api/identify): PWR shows the poller's
 // power, on / off / cycle / reset (off, cycle and reset confirm naming the node; refused
 // while a stage runs for it: stage_positions, null = the rack); IDNT on 240 s / force /
-// off, lit while on, and the tile carries a blinking ID marker.
+// off, lit while on, and the tile carries a blinking ID marker. Both disabled on a closed order.
 // Serial console: the shared flax-post-sol relay holds the BMC's one SOL session.
 // While a device's console / install-console rung runs, the drawer tails the relay's
 // capture file (api/console/<pos>, every CON_MS); the SOL button opens the Post UI's
@@ -1314,7 +1314,7 @@ function App() {
     },
     get pwrDev() { return this.pwrM ? (this.s.devices || []).find((d) => d.pos === this.pwrM.pos) || null : null; },
     get idntDev() { return this.idntM ? (this.s.devices || []).find((d) => d.pos === this.idntM.pos) || null : null; },
-    openPwr(d) { if (this.hostBmc(d)) { this.pwrChoice = null; this.pwrConfirm = false; this.pwrM = { pos: d.pos, ip: d.addrs.bmc, msg: null }; } },
+    openPwr(d) { if (this.hostBmc(d) && !this.s.closed_at) { this.pwrChoice = null; this.pwrConfirm = false; this.pwrM = { pos: d.pos, ip: d.addrs.bmc, msg: null }; } },
     async doPower() {
       const m = this.pwrM, a = this.pwrChoice; if (!m || !a) return;
       this.busy = true; this.pwrConfirm = false; this.pwrM = { ...m, msg: `power ${a}…` };
@@ -1334,7 +1334,7 @@ function App() {
       const st = this.identOn(d) ? (x.mode === 'force' ? 'on (force, until off)' : `on until ${new Date(x.until).toLocaleTimeString()}`) : 'off';
       return `identify ${st}` + (x.reported ? ` · BMC reports ${x.reported}` : ' · BMC does not report it: last command') + ` · ${x.mode} by ${x.who} ${x.at}`;
     },
-    openIdnt(d) { if (this.hostBmc(d)) { this.idntMode = this.identOn(d) ? 'off' : 'on'; this.idntM = { pos: d.pos, ip: d.addrs.bmc, msg: null }; } },
+    openIdnt(d) { if (this.hostBmc(d) && !this.s.closed_at) { this.idntMode = this.identOn(d) ? 'off' : 'on'; this.idntM = { pos: d.pos, ip: d.addrs.bmc, msg: null }; } },
     async doIdent() {
       const m = this.idntM; if (!m) return;
       this.busy = true;

@@ -119,6 +119,18 @@ def parse_chassis_status(text: str) -> dict:
     return out
 
 
+def chassis_status(ip: str, creds: list[tuple[str, str]], *,
+                   runner=subprocess.run) -> dict | None:
+    """`chassis status` (parse_chassis_status) on the pair that answers a status read,
+    None when none answers."""
+    s = _session(ip, creds, runner=runner)
+    if s is None:
+        return None
+    user, pw, cipher, _ = s
+    p = _ipmi(ip, user, pw, ["chassis", "status"], cipher=cipher, runner=runner)
+    return parse_chassis_status(p.stdout if p is not None and p.returncode == 0 else "")
+
+
 def identify(ip: str, creds: list[tuple[str, str]], arg: str, *, info: dict | None = None,
              runner=subprocess.run) -> dict:
     """`chassis identify <arg>` (seconds | 'force' | '0' = off) on the pair that answers a

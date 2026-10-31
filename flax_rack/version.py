@@ -1,4 +1,4 @@
-"""rackpost's build id: `<flax_post version>·<git short sha>[-dirty]`.
+"""rackpost's build id: `<flax_post version>·<git short sha>[-dirty-<hash>]`.
 
 The apply_rackpost role computes it on the controller from the checkout it deploys
 and writes it to <deploy dir>/BUILD (beside flax_rack/); read once at daemon start.
