@@ -1,0 +1,58 @@
+---
+# Collects configuration and show-command output from SONiC switches (community
+# 202511 on the Dell N3248TE, our wedge100s build on the Wedge100S).
+# Uses ansible.builtin.ssh + ansible.builtin.raw, like cumulus_linux.
+# Output is written to files/configs/{{ site_name }}/{{ inventory_hostname }}/.
+#
+# SONiC CLI rules (learned live):
+# - sudo is passwordless: always `sudo -n` with EMPTY stdin (`</dev/null`); a line
+#   on stdin would run as a command. As a plain user `show interfaces status`
+#   dies on the Dell reading the platform EEPROM, so every show runs under sudo.
+# - raw allocates a tty, which merges stderr into stdout; `show runningconfiguration
+#   all` prints "No such container: bgp" on stderr when bgp is disabled, which
+#   would break the JSON. 2>/dev/null on that command.
+# - config/config_db.json is committed: it goes through redact_secrets, whose JSON
+#   path replaces SNMP_COMMUNITY keys, SNMP_USER/TACPLUS/RADIUS/... secrets with
+#   {{ vault_cfg_* }} placeholders and raises on unparsable JSON (fail closed).
+
+- name: Collect show runningconfiguration all (config_db JSON)
+  ansible.builtin.raw: sudo -n show runningconfiguration all </dev/null 2>/dev/null  # noqa: no-changed-when
+  register: sonic_running_config
+  changed_when: false
+  check_mode: false
+
+- name: Write config_db.json
+  delegate_to: localhost
+  ansible.builtin.copy:
+    content: "{{ sonic_running_config.stdout | regex_replace('\\r', '') | redact_secrets }}"
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/config/config_db.json"
+    mode: "0644"
+
+- name: Collect show output
+  when: not ansible_check_mode
+  ansible.builtin.raw: "sudo -n {{ item.cmd }} </dev/null"  # noqa: no-changed-when
+  register: sonic_show
+  changed_when: false
+  check_mode: false
+  # A show that errors (e.g. no LLDP neighbours yet) still writes what it got.
+  failed_when: false
+  loop:
+    - { cmd: "show version", file: show-version.txt }
+    - { cmd: "show interfaces status", file: show-interfaces.txt }
+    - { cmd: "show lldp table", file: show-lldp.txt }
+    - { cmd: "show mac", file: show-mac.txt }
+    - { cmd: "show vlan brief", file: show-vlan.txt }
+    - { cmd: "show platform syseeprom", file: show-syseeprom.txt }
+  loop_control:
+    label: "{{ item.cmd }}"
+
+- name: Write show output
+  delegate_to: localhost
+  when: not ansible_check_mode
+  ansible.builtin.copy:
+    content: "{{ item.stdout | default('') | regex_replace('\\r', '') }}"
+    dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/show/{{ item.item.file }}"
+    mode: "0644"
+  loop: "{{ sonic_show.results }}"
+  loop_control:
+    label: "{{ item.item.file }}"

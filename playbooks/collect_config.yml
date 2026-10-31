@@ -7,7 +7,7 @@
 # Jump host failover: ansible-playbook playbooks/collect_config.yml -e lab_jump_host=100.93.229.59
 
 - name: Collect configuration from network switches
-  hosts: "arista:cumulus:cisco"
+  hosts: "arista:cumulus:cisco:sonic"
   gather_facts: false
   roles:
     - collect_config
