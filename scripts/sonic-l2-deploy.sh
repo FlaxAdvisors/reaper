@@ -71,8 +71,9 @@ SSH_OPTS=(-o StrictHostKeyChecking=no -o ConnectTimeout=10)
 [[ -n "${SSH_JUMP:-}" ]] && SSH_OPTS+=(-o "ProxyJump=$SSH_JUMP")
 if [[ -n "$PASS" ]]; then
   command -v sshpass >/dev/null || { echo "SONIC_PASS set but sshpass not installed" >&2; exit 2; }
-  SSH=(sshpass -p "$PASS" ssh "${SSH_OPTS[@]}")
-  SCP=(sshpass -p "$PASS" scp "${SSH_OPTS[@]}")
+  export SSHPASS="$PASS"     # sshpass -e reads it; the password never appears in argv
+  SSH=(sshpass -e ssh "${SSH_OPTS[@]}")
+  SCP=(sshpass -e scp "${SSH_OPTS[@]}")
 else
   SSH=(ssh "${SSH_OPTS[@]}")
   SCP=(scp "${SSH_OPTS[@]}")
