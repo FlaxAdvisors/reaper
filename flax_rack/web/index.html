@@ -97,6 +97,27 @@
       <div class="ab-b">on mgmt-switch ports no slot claims (a device cabled to the wrong port shows missing on its own slot):
         <span class="lk bad" v-for="u in s.unexpected">port {{u.port}} · {{u.mac}}</span></div>
     </div>
+    <!-- lab racks: hardware on the rack switch no BOM slot holds; the operator places it -->
+    <div class="alert-box unplaced" v-if="s.lab && (s.unplaced || []).length">
+      <div class="ab-h">{{s.unplaced.length}} unplaced<span class="ab-tag"> · place each into its BOM slot (on-site positions)</span></div>
+      <div class="ab-b">
+        <div class="up-row" v-for="u in s.unplaced" :key="u.port_label">
+          <span class="lk">{{u.port_label}}</span>
+          <span class="mono">{{u.product || 'no FRU answer'}}</span>
+          <span class="mono">{{u.serial || '—'}}</span>
+          <span class="lk" v-if="u.bmc_ip">BMC {{u.bmc_ip}}</span>
+          <span class="d-place-in" v-if="u.bmc_mac">
+            <select class="popsel" v-model="placeSel[u.port_label]" :disabled="s.stage_running || busy">
+              <option value="">slot…</option>
+              <option v-for="d in absentSlots()" :value="d.pos">{{d.pos}} · {{d.kind}}{{placeNote(u, d)}}</option>
+            </select>
+            <button class="press" :disabled="!placeSel[u.port_label] || s.stage_running || busy" @click="place(u)">Place</button>
+          </span>
+          <span class="muted" v-if="!u.bmc_mac">cannot be placed until its BMC answers FRU</span>
+        </div>
+        <p class="action-msg" v-if="placeMsg">{{placeMsg}}</p>
+      </div>
+    </div>
     <div v-for="g in layout" :key="g.key">
       <div class="gap" v-if="g.gap">{{g.gap}}</div>
       <div class="group">
@@ -136,6 +157,8 @@
                 <span class="pres" v-if="!cell.empty" :class="presence(cell).cls" :title="presence(cell).title"></span>
                 <span class="t-port">{{cell.label}}</span>
                 <span class="kind" v-if="cell.kindLabel">{{cell.kindLabel}}</span>
+                <span class="lk dev" v-if="!cell.empty && cell.dev?.deviation" :title="cell.dev.deviation">≠</span>
+                <span class="lk" v-if="!cell.empty && cell.dev?.absent" title="no hardware placed in this BOM slot yet">absent</span>
                 <span class="idm" v-if="!cell.empty && !cell.iom && identOn(cell.dev)" :title="identTitle(cell.dev)">ID</span>
                 <span class="watt" v-if="!cell.empty && power(cell)" :class="power(cell).cls" :title="power(cell).title">{{power(cell).t}}</span>
                 <span class="dot" :class="cell.empty ? 'grey' : dotCls(cellObj(cell))"></span>
@@ -182,6 +205,22 @@
     </div>
     <div class="d-sub">{{subLine(selObj)}}</div>
 
+    <div class="d-place" v-if="s.lab && selKind==='dev'">
+      <span class="d-place-in" v-if="selDev?.placement">
+        <span class="lk">{{selDev.placement.port_label}}</span>
+        <span class="mono">{{selDev.placement.product}} · {{selDev.placement.serial}}</span>
+        <span class="lk dev" v-if="selDev.deviation">{{selDev.deviation}}</span>
+        <button class="press" :disabled="s.stage_running || busy" @click="unplace(selDev.pos)"
+                title="take this hardware out of the slot (back to Unplaced)">Unplace</button>
+        <select class="popsel" v-model="moveTo" :disabled="s.stage_running || busy">
+          <option value="">move to…</option>
+          <option v-for="d in absentSlots()" :value="d.pos">{{d.pos}} · {{d.kind}}</option>
+        </select>
+        <button class="press" :disabled="!moveTo || s.stage_running || busy" @click="move(selDev.pos)">Move</button>
+      </span>
+      <span class="muted" v-if="!selDev?.placement">absent: no hardware placed in this slot yet</span>
+      <p class="action-msg" v-if="placeMsg">{{placeMsg}}</p>
+    </div>
     <div class="actions" v-if="selKind==='dev'">
       <button :class="pwrCls(selDev)" :disabled="!hostBmc(selDev) || !!s.closed_at" @click="openPwr(selDev)"
               :title="!hostBmc(selDev) ? 'no host BMC' : 'power: ' + pwrTitle(selDev) + (s.closed_at ? ' · order is closed' : ' · on / off / cycle / reset')">PWR</button>

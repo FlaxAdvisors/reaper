@@ -22,6 +22,7 @@ import os
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from .geometry import deviation
 
 HTML = "process-report.html"
 JSON = "process-report.json"
@@ -144,7 +145,7 @@ def build(order_dir, g, db) -> dict:
             p["restarts"].append(e)
         elif e["kind"] == "error":
             p["errors"].append(e)
-        elif e["kind"] in ("power", "identify"):
+        elif e["kind"] in ("power", "identify", "place", "unplace", "move"):
             p["actions"].append(e)
     prev: dict[tuple, tuple] = {}
     for e in links:
@@ -166,7 +167,12 @@ def build(order_dir, g, db) -> dict:
             totals[f["category"]] = totals.get(f["category"], 0) + f["count"]
         p["pulls"] = sum(1 for e in p["links"] if e["kind"] == "pull")
         p["replugs"] = sum(1 for e in p["links"] if e["kind"] == "re-plug")
+    # lab racks: hardware placed against what its BOM slot expects (kept as found, shown)
+    pl = db.placements() if g.lab else {}
+    deviations = [{"pos": d.pos, "text": t} for d in g.devices
+                  if (t := deviation(d, pl.get(d.pos)))]
     return {"order": g.order, "customer": g.customer, "rack": g.rack, "prefix": g.url_prefix,
+            "lab": g.lab, "deviations": deviations,
             "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "closed_at": db.closed_at(), "passes": out,
             "failure_totals": [{"category": c, "count": n} for c, n in
@@ -282,6 +288,10 @@ def render(data: dict) -> str:
          + (f"<span>closed {_e(data['closed_at'])}</span>" if data["closed_at"] else "")
          + "</header><main>"]
     ps = data["passes"]
+    if data.get("deviations"):
+        t.append("<h3>deviations (hardware vs its BOM slot)</h3>")
+        t.append(_table(("slot", "deviation"),
+                        [[_e(x["pos"]), _e(x["text"])] for x in data["deviations"]]))
     t.append("<h3>passes</h3>")
     t.append(_table(
         ("pass", "started", "by", "reason", "attempts", "fail", "not measured", "interrupted",
@@ -342,7 +352,7 @@ def render(data: dict) -> str:
                           f'<a href="{_e(s["artifact"])}">sol</a>' if s["artifact"] else ""]
                          for s in p["sol"]], {1: "n", 3: "n"}))
         if p["actions"]:
-            t.append("<h3>operator actions (PWR / IDNT)</h3>")
+            t.append("<h3>operator actions (PWR / IDNT / placement)</h3>")
             t.append(_table(("at", "action", "what"),
                             [[_t(e["ts"]), _e(e["kind"]), _e(e["text"])] for e in p["actions"]],
                             {0: "t", 2: "hl"}))

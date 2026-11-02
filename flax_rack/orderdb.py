@@ -50,7 +50,8 @@ CREATE TABLE IF NOT EXISTS run_plan(
   run_after INTEGER NOT NULL, finished_at TEXT);
 CREATE TABLE IF NOT EXISTS placement(
   pos TEXT PRIMARY KEY, serial TEXT, product TEXT, switch TEXT NOT NULL, port INTEGER NOT NULL,
-  lane INTEGER, host_mac TEXT, bmc_mac TEXT, at TEXT NOT NULL, who TEXT NOT NULL);
+  lane INTEGER, host_mac TEXT, bmc_mac TEXT, at TEXT NOT NULL, who TEXT NOT NULL,
+  family TEXT);
 CREATE TABLE IF NOT EXISTS stage_start(
   id INTEGER PRIMARY KEY, pos TEXT NOT NULL, stage TEXT NOT NULL,
   run_after INTEGER NOT NULL, at TEXT NOT NULL);
@@ -440,15 +441,16 @@ class OrderDB:
     def placements(self) -> dict[str, dict]:
         return {r["pos"]: dict(r) for r in self._all("SELECT * FROM placement ORDER BY pos")}
 
-    def place(self, pos, *, serial, product, switch, port, lane, host_mac, bmc_mac, who) -> None:
+    def place(self, pos, *, serial, product, switch, port, lane, host_mac, bmc_mac, who,
+              family=None) -> None:
         with closing(self._conn()) as c, c:
             c.execute("BEGIN IMMEDIATE")
             if c.execute("SELECT 1 FROM placement WHERE pos=?", (pos,)).fetchone():
                 raise ValueError(f"{pos} is already placed (unplace it first)")
             c.execute("INSERT INTO placement(pos,serial,product,switch,port,lane,host_mac,"
-                      "bmc_mac,at,who) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                      "bmc_mac,at,who,family) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                       (pos, serial, product, switch, int(port), lane, norm_mac(host_mac),
-                       norm_mac(bmc_mac), _now(), who))
+                       norm_mac(bmc_mac), _now(), who, family))
             c.execute("INSERT INTO event(ts,kind,text) VALUES(?,?,?)",
                       (_now(), "place", f"{who}: {serial or '?'} ({product or '?'}) placed in "
                        f"{pos} (port {port}" + (f"/{lane}" if lane else "") + ")"))

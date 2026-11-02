@@ -238,6 +238,7 @@ function App() {
     s: { switches: [], devices: [], phases: ['discover', 'firmware', 'qualify', 'deploy', 'done'], profiles: [], rack_runs: {}, events: [] },
     layout: [],                // buildLayout(s), rebuilt on every poll (refresh)
     live: null, bootBuild: null, sel: selFromHash(), filter: null, q: '', popOpen: null, now: Date.now(),
+    placeSel: {}, moveTo: '', placeMsg: null,   // lab racks: Place / Move inputs
     actionMsg: null, hdrMsg: null, stepM: null, artM: null, artSeq: 0, closing: false, confirmText: '', closeMsg: null, busy: false,
     qualifying: false, qualText: '', discovering: false, discText: '', finishing: false, doneText: '',
     freshing: false, freshText: '', freshReason: '', freshMsg: null,
@@ -920,9 +921,32 @@ function App() {
         .some((v) => v && v.toLowerCase().includes(q));
     },
     get matchCount() { return (this.s.devices || []).filter((d) => this.matches(d)).length; },
+    // lab racks: the BOM slots no hardware has been placed into, and a Place hint
+    absentSlots() { return (this.s.devices || []).filter((d) => d.absent); },
+    placeNote(u, d) {
+      const fam = { 'compute-tp': ['tiogapass'], 'compute-leopard': ['leopard'] }[d.kind];
+      return fam && u.family && !fam.includes(u.family) ? ` (≠ ${u.family})` : '';
+    },
+    async placeCall(path, body, ok) {
+      this.busy = true; this.placeMsg = null;
+      try { const r = await api(path, body); this.placeMsg = ok(r); this.moveTo = ''; }
+      catch (e) { this.placeMsg = `${path.slice(4)}: ${e.message}`; }
+      this.busy = false; await this.refresh();
+    },
+    place(u) {
+      const pos = this.placeSel[u.port_label];
+      return this.placeCall('api/place', { pos, port: u.port, lane: u.lane },
+        (r) => `${u.serial} placed in ${pos}` + (r.deviation ? ` · ${r.deviation}` : ''));
+    },
+    unplace(pos) { return this.placeCall('api/unplace', { pos }, () => `${pos} unplaced`); },
+    move(pos) {
+      const to = this.moveTo;
+      return this.placeCall('api/move', { pos, to }, (r) => `${pos} moved to ${to}` + (r.deviation ? ` · ${r.deviation}` : ''));
+    },
     wrapCls(c) {
       if (c.empty) return 'empty';
       const cl = [];
+      if (c.dev?.absent) cl.push('absent');
       if (this.sel === this.cellObj(c).pos) cl.push('active');
       if (this.q) cl.push(this.matches(c.dev) ? 'match' : 'faded');
       else if (this.filter && !this.inFilter(c.dev, this.filter)) cl.push('faded');

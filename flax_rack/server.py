@@ -102,7 +102,8 @@ from .deploy import (_REASON_MAX, CONSOLE as INSTALL_CONSOLE, FROM_PHASES, PHASE
 from .done import DONE_RUNGS, done_rungs, run as run_done, targets as done_targets
 from .discover_ladder import DISCOVER_STEPS, OLD_DISCOVER_RUNGS, wanted as stage_positions
 from .firmware import FIRMWARE_RUNGS, run_firmware
-from .geometry import Geometry, load_geometry
+from .discover import port_label
+from .geometry import Geometry, absent, deviation, load_geometry, with_placements
 from .kea_client import KeaError
 from . import linkmon
 from .linkmon import LinkPoller
@@ -130,6 +131,15 @@ FIRMWARE_OLD_RUNGS = ()
 PROFILES = ("f4-compute-tp", "f4-bc-head-tp", "f4-bc-head-25g", "f4-bc-jbod", "ovh-bare-tp")
 _PROFILE_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 _PREFIX_RE = re.compile(r"[a-z]{2}[0-9]{3}[a-z]?")      # the nginx location regex
+# a lab rack is named for itself (/howlin/): nginx lists those names exactly
+# (rackpost_lab_prefixes); never one of this server's own top-level paths
+_LAB_PREFIX_RE = re.compile(r"[a-z][a-z0-9]{1,15}")
+_RESERVED = frozenset(("rackpost", "static", "api"))
+
+
+def prefix_ok(prefix: str, lab: bool) -> bool:
+    return bool(_PREFIX_RE.fullmatch(prefix) or (
+        lab and _LAB_PREFIX_RE.fullmatch(prefix) and prefix not in _RESERVED))
 _STATIC_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 _ART_SEG_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,127}")
 _MAX_BODY = 64 * 1024
@@ -184,9 +194,10 @@ class Registry:
                 conflicts.append({"key": d.name, "dirs": [str(d)],
                                   "error": f"geometry: {type(e).__name__}: {e}"})
                 continue
-            if not _PREFIX_RE.fullmatch(g.url_prefix):
+            if not prefix_ok(g.url_prefix, g.lab):
                 conflicts.append({"key": d.name, "dirs": [str(d)],
-                                  "error": f"prefix {g.prefix!r} is not <2 letters><3 digits>[tag]-"})
+                                  "error": f"prefix {g.prefix!r} is not <2 letters><3 digits>[tag]- "
+                                           "(a lab rack: a lower-case name)"})
                 continue
             found.append((d, g))
         bad: set[Path] = set()
@@ -427,8 +438,31 @@ def _ep_view(runs: dict, n: int, dbdev: dict, last: dict, want_side=None) -> dic
             "want_side": want_side}
 
 
+def _placement_view(g: Geometry, p: dict | None) -> dict | None:
+    if not p:
+        return None
+    sw = next((s for s in g.switches if s.id == p.get("switch")), None)
+    return {"serial": p.get("serial"), "product": p.get("product"), "family": p.get("family"),
+            "port": p.get("port"), "lane": p.get("lane"), "at": p.get("at"), "who": p.get("who"),
+            "port_label": port_label(sw, (p.get("port"), p.get("lane"))),
+            "host_mac": _fmt_mac(p.get("host_mac")), "bmc_mac": _fmt_mac(p.get("bmc_mac"))}
+
+
+def _unplaced_view(g: Geometry, entries: list[dict]) -> list[dict]:
+    out = []
+    for e in entries:
+        sw = next((s for s in g.switches if s.id == e.get("switch")), None)
+        out.append({**e, "port_label": port_label(sw, (e.get("port"), e.get("lane"))),
+                    "host_mac": _fmt_mac(e.get("host_mac")), "bmc_mac": _fmt_mac(e.get("bmc_mac"))})
+    return out
+
+
 def rack_state(r: Rack) -> dict:
     g, db = r.g, r.db
+    # a lab rack: its placed hardware's ports as links; never-placed BOM slots are absent
+    placements = db.placements() if g.lab else {}
+    gone = absent(g, placements)
+    g = with_placements(g, placements) if g.lab else g
     by_pos: dict[str, dict] = {}
     raw = db.latest_runs()                  # untrimmed: the switch port tables read fdb/lldp
     # the steps drawn: a stage re-run for a device shows only its new attempt's rows (the
@@ -471,6 +505,9 @@ def rack_state(r: Rack) -> dict:
         _fio_view(r.dir, runs)
         devices.append({
             "pos": d.pos, "ou": d.ou, "h": d.h, "col": d.col, "kind": d.kind, "part": d.part,
+            "absent": d.pos in gone, "drives": d.drives, "expect": d.expect,
+            "placement": _placement_view(g, placements.get(d.pos)),
+            "deviation": deviation(d, placements.get(d.pos)),
             "links": {k: _link_str(l) for k, l in d.links.items()},
             # a JBOD's IOMs walk their own Discover ladders (key <pos>.iomN)
             "endpoint_runs": {f"iom{n}": by_pos.get(f"{d.pos}.iom{n}", {})
@@ -524,6 +561,8 @@ def rack_state(r: Rack) -> dict:
     return clean_ha({
         "order": g.order, "customer": g.customer, "vid": g.vid, "site": g.site, "rack": g.rack,
         "prefix": g.url_prefix, "version": __version__, "build": BUILD, "closed_at": db.closed_at(),
+        "lab": g.lab, "integration_tests": g.integration_tests,
+        "unplaced": _unplaced_view(g, db.unplaced()) if g.lab else [],
         "iperf_server": g.iperf_server, "pass": _pass_view(db), "run": _run_view(r, raw),
         "stage_running": r.lock.busy(), "stage": r.stage if r.lock.locked() else None,
         "stage_positions": r.stage_positions if r.lock.locked() and r.stage else None,
@@ -1090,6 +1129,77 @@ class App:
         r.db.add_event("pop", f"{pos} pop -> {profile or 'default ' + default}")
         return 200, {"pos": pos, "pop": profile or default, "pop_overridden": bool(profile)}
 
+    # -- lab racks: placement (an operator action; a fact, not a verdict) --
+    def _placing(self, r: Rack, fn):
+        if not r.g.lab:
+            return 409, {"error": "placement is for lab racks (this is an order)"}
+        if DRAIN_FILE.exists():
+            return 409, {"error": DRAINING}
+        if not r.lock.acquire():
+            return 409, {"error": "a stage is running for this rack"}
+        try:
+            return fn()
+        except ValueError as e:
+            return 409, {"error": str(e)}
+        finally:
+            r.lock.release()
+
+    def _slot(self, r: Rack, pos):
+        if not isinstance(pos, str) or pos not in {d.pos for d in r.g.devices}:
+            return None
+        return r.g.device(pos)
+
+    def place(self, r: Rack, body: dict, who: str = "?"):
+        d = self._slot(r, body.get("pos"))
+        if d is None:
+            return 400, {"error": f"not a slot of this rack: {body.get('pos')!r}"}
+        port, lane = body.get("port"), body.get("lane")
+
+        def do():
+            e = next((x for x in r.db.unplaced()
+                      if x.get("port") == port and x.get("lane") == lane), None)
+            if e is None:
+                return 409, {"error": f"no unplaced hardware on port {port}"
+                                      + (f"/{lane}" if lane else "") + " (run Discover)"}
+            if not e.get("bmc_mac"):
+                return 409, {"error": "that port's hardware gave no FRU answer: it cannot be "
+                                      "placed until its BMC answers"}
+            r.db.place(d.pos, serial=e.get("serial"), product=e.get("product"),
+                       family=e.get("family"), switch=e["switch"], port=port, lane=lane,
+                       host_mac=e.get("host_mac"), bmc_mac=e.get("bmc_mac"), who=who)
+            r.db.set_unplaced([x for x in r.db.unplaced() if x is not e and
+                               not (x.get("port") == port and x.get("lane") == lane)])
+            return 200, {"placed": d.pos, "deviation": deviation(d, r.db.placements()[d.pos])}
+        return self._placing(r, do)
+
+    def unplace(self, r: Rack, body: dict, who: str = "?"):
+        d = self._slot(r, body.get("pos"))
+        if d is None:
+            return 400, {"error": f"not a slot of this rack: {body.get('pos')!r}"}
+
+        def do():
+            p = r.db.placements().get(d.pos)
+            r.db.unplace(d.pos, who)
+            if p:       # back on the Unplaced list until the next Discover re-reads the port
+                r.db.set_unplaced(r.db.unplaced() + [{
+                    k: p.get(k) for k in ("switch", "port", "lane", "host_mac", "bmc_mac",
+                                          "product", "serial", "family")}
+                    | {"host_ip": None, "bmc_ip": None,
+                       "macs": [m for m in (p.get("host_mac"), p.get("bmc_mac")) if m]}])
+            return 200, {"unplaced": d.pos}
+        return self._placing(r, do)
+
+    def move(self, r: Rack, body: dict, who: str = "?"):
+        d, to = self._slot(r, body.get("pos")), self._slot(r, body.get("to"))
+        if d is None or to is None:
+            return 400, {"error": "pos and to must be slots of this rack"}
+
+        def do():
+            r.db.move(d.pos, to.pos, who)
+            return 200, {"moved": d.pos, "to": to.pos,
+                         "deviation": deviation(to, r.db.placements()[to.pos])}
+        return self._placing(r, do)
+
     def close(self, r: Rack, body: dict):
         if body.get("confirm") != r.g.order:
             return 400, {"error": "type the order id to confirm"}
@@ -1358,7 +1468,7 @@ class _Handler(BaseHTTPRequestHandler):
             if method == "GET" and rest.startswith("static/"):
                 return self._static(rest[len("static/"):])
             return self._json(404, {"error": "not found"})
-        if not _PREFIX_RE.fullmatch(head):
+        if not prefix_ok(head, lab=True):
             return self._json(404, {"error": "not found"})
         r = app.rack(head)
         if r is None:
@@ -1419,6 +1529,10 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(*app.fresh(r, body, who=f"ui {ip}"))
         if rest == "api/close":
             return self._json(*app.close(r, body))
+        if rest in ("api/place", "api/unplace", "api/move"):
+            ip = self.headers.get("X-Real-IP") or self.client_address[0]
+            fn = {"api/place": app.place, "api/unplace": app.unplace, "api/move": app.move}[rest]
+            return self._json(*fn(r, body, who=f"ui {ip}"))
         if rest in ("api/power", "api/identify"):
             ip = self.headers.get("X-Real-IP") or self.client_address[0]
             fn = app.node_power if rest == "api/power" else app.node_identify

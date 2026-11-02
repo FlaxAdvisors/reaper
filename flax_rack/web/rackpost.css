@@ -234,3 +234,13 @@ textarea.confirm-in{font:inherit;font-size:.8rem;resize:vertical}
   border-radius:3px;padding:0 .25rem;margin-left:.35rem;animation:rp-blink 1s steps(2,start) infinite}
 @keyframes rp-blink{to{visibility:hidden}}
 .m-sub b.on{color:var(--green)} .m-sub b.off{color:var(--accent)} .m-sub b.unk{color:var(--muted)}
+
+/* lab racks: absent BOM slots, the Unplaced box, the drawer's placement line */
+.tile.absent{opacity:.45;border-style:dashed}
+.alert-box.unplaced{border-color:var(--accent)}
+.up-row{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin:.2rem 0}
+.d-place{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin:.3rem 0 .5rem}
+.up-row .mono,.d-place .mono{font-family:ui-monospace,monospace;font-size:.72rem}
+.up-row .muted,.d-place .muted{color:var(--muted);font-size:.72rem}
+.up-row .press,.d-place .press{width:auto;padding:.15rem .6rem;font:600 .72rem system-ui,sans-serif}
+.d-place-in{display:inline-flex;flex-wrap:wrap;gap:.4rem;align-items:center}

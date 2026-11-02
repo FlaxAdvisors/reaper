@@ -274,6 +274,23 @@ def parse_geometry(data: dict) -> Geometry:
         lab=lab, integration_tests=integ)
 
 
+# the hardware family (BMC FRU, flax_post family-map) each slot kind is built from;
+# another family placed there is a deviation (shown, recorded, never refused)
+KIND_FAMILIES = {"compute-tp": {"tiogapass"}, "bc-head-tp": {"tiogapass"},
+                 "compute-leopard": {"leopard"}, "bb-head": {"tiogapass", "leopard"},
+                 "lightning-head": {"tiogapass", "leopard"}, "bc-head": {"tiogapass", "leopard"}}
+
+
+def deviation(d: Device, placed: dict | None) -> str | None:
+    """'kind: leopard in a compute-tp slot' when the placed hardware's family is not one the
+    slot's kind is built from; None when it is (or nothing is placed / no family read)."""
+    fam = (placed or {}).get("family")
+    want = KIND_FAMILIES.get(d.kind)
+    if not fam or want is None or fam in want:
+        return None
+    return f"kind: {fam} in a {d.kind} slot"
+
+
 def with_placements(g: Geometry, placements: dict[str, dict]) -> Geometry:
     """The effective geometry of a lab rack: each placed device gets the switch port its
     hardware was seen on as its mezz0 link (an IOM key "<pos>.iomN" as that device's iomN
