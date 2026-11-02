@@ -1616,13 +1616,19 @@ def poll_ctx(factory, r):
     return effective(factory(r.dir, r.g, r.db))
 
 
+def switch_noses(g: Geometry) -> set[str]:
+    """The NOSes rackpost logs in to: a switch with a mgmt_ip (read over its NOS) or a SONiC
+    half on its turtle port; a BMC-only or not-read switch (Wedge 400, a spare) needs none."""
+    return {s.nos for s in g.switches if s.mgmt_ip or s.endpoints.get("sonic")}
+
+
 def default_context_factory(rack_dir: Path, g: Geometry, db: OrderDB):
     from .creds import load_creds
     from .kea_client import KeaClient
     from .stages import OrderContext
-    # creds load lazily (first switch/BMC rung): Close needs Kea only. The rack
-    # switches' NOSes say which switch logins are required.
-    noses = {s.nos for s in g.switches}
+    # creds load lazily (first switch/BMC rung): Close needs Kea only. The NOSes of the
+    # switches rackpost logs in to say which switch logins are required.
+    noses = switch_noses(g)
     return OrderContext(rack_dir, g, db, KeaClient(), lambda: load_creds(noses=noses))
 
 
