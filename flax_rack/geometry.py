@@ -201,9 +201,13 @@ def parse_drives(v, ctx: str) -> tuple:
 
 
 def merged_expect(g: "Geometry", d: Device) -> dict:
-    """What a head must see behind it: its driven enclosures' expects, summed."""
+    """What a head must see behind it: its driven enclosures' expects, summed (an enclosure
+    not in this geometry -- absent, e.g. powered off and never placed -- adds nothing)."""
     out: dict = {}
+    have = {x.pos for x in g.devices}
     for e in d.drives:
+        if e not in have:
+            continue
         for k, n in g.device(e).expect.items():
             out[k] = out.get(k, 0) + n
     return out

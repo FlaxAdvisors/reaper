@@ -118,7 +118,9 @@ PHASE_RUNG = {"install": "install", "firstboot": "firstboot", "user": "flax-user
               "ha-config": "ha-config", "ha-test": "ha-test", "iperf": "deploy-iperf",
               "stress": "deploy-stress"}
 CONSOLE = "install-console"
-NON_GATING = (CONSOLE,)
+# kind-check: a lab-rack head's setup, checked -- red when wrong, but stress still runs
+# (operator 2026-11-02: checks AND stress on the live hosts)
+NON_GATING = (CONSOLE, "kind-check")
 MAX_PARALLEL = 8            # concurrent installs / first boots (BMC power actions)
 LLDP_WAIT_POLLS = 2         # ha-config: link-monitor intervals to wait for a raised port's LLDP
 _REASON_MAX = 500
@@ -1053,8 +1055,8 @@ def _kind_check(ctx, R, cr, x):
         rc, out, _err = R.host_run(ip, user, pw, script, timeout=120, runner=ctx.runner)
         return rc, out
     enc = merged_expect(ctx.g, x.d)
-    r = _rung(ctx, x.pos, "kind-check", lambda: R.kind_check(x.d.kind, run, enc))
-    _out(x, "kind-check", r)
+    _rung(ctx, x.pos, "kind-check", lambda: R.kind_check(x.d.kind, run, enc))
+    # never gates (NON_GATING): its verdict still fails the device in deploy_why
 
 
 def _stress(ctx, R, cr, prog, xs):
