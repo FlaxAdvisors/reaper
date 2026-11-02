@@ -90,6 +90,7 @@ class Device:
     drives: str | None = None       # a head: the enclosure pos it drives (HEAD_KINDS)
     expect: dict = field(default_factory=dict)   # an enclosure: {"gpu": 8} / {"nvme": 4} / {"disks": 4}
     placed: dict | None = None      # lab racks: the operator's placement (with_placements)
+    integration: bool = True        # the rack's integration_tests (rack-wide rungs: iperf mesh)
 
 
 @dataclass
@@ -252,6 +253,10 @@ def parse_geometry(data: dict) -> Geometry:
             sides=parse_sides(kind, x.get("sides"), endpoints["ioms"], pos),
             drives=x.get("drives"), expect=parse_expect(x.get("expect"), pos)))
     kinds = {d.pos: d.kind for d in devices}
+    lab = data.get("lab", False)
+    integ = data.get("integration_tests", not lab)
+    for d in devices:
+        d.integration = integ
     for d in devices:
         if d.drives is None:
             continue
@@ -261,8 +266,6 @@ def parse_geometry(data: dict) -> Geometry:
         if kinds.get(d.drives) != want:
             raise GeometryError(f"{d.pos}: drives {d.drives!r} must name a {want} "
                                 f"(got {kinds.get(d.drives) or 'no such device'})")
-    lab = data.get("lab", False)
-    integ = data.get("integration_tests", not lab)
     if not isinstance(lab, bool) or not isinstance(integ, bool):
         raise GeometryError("lab / integration_tests must be true or false")
 

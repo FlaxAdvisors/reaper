@@ -49,7 +49,7 @@ from flax_rungs.result import RungResult
 from . import report
 from .addressing import plan_addresses
 from .qualify import _artifact as _qartifact, _record as _qrecord
-from .stages import cancelled, creds
+from .stages import cancelled, creds, effective
 
 STAGE = "done"
 DONE_RUNGS = ("end-summary", "boot-reset", "components")
@@ -210,6 +210,7 @@ def run(ctx, positions: list[str] | None = None) -> dict:
     "csv": {"devices": path, "firmware": path, "inventory": path} | None (cancelled)}."""
     if ctx.db.closed_at():
         raise RuntimeError("order is closed")
+    ctx = effective(ctx)            # a lab rack: placed devices only
     g = ctx.g
     devs = targets(g, positions)
     cr = creds(ctx)

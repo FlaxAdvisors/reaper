@@ -86,7 +86,7 @@ from flax_rungs.result import UNMEASURED, RungResult, not_passed
 from . import switches
 from .addressing import plan_addresses
 from .discover_ladder import DISCOVER_STEPS
-from .stages import _rung, cancelled, creds
+from .stages import _rung, cancelled, creds, effective
 from .switches import LldpEntry
 from .version import BUILD
 
@@ -139,7 +139,8 @@ def device_rungs(d) -> list[str]:
            *PHASE_STAGES["burn"], "agent-stages"]
     if any(n.startswith("pcie") for n in d.links):
         out += ["ha-path", "fabric-addr"]
-    return out + ["iperf-mesh", "console"]
+    # a lab standup rack has no rack integration test (geometry integration_tests false)
+    return out + (["iperf-mesh"] if d.integration else []) + ["console"]
 
 
 def _stage_ok(run) -> bool:
@@ -1032,6 +1033,7 @@ def _measured(r: RungResult | None) -> bool:
 def run_qualify(ctx, *, positions: list[str] | None = None) -> None:
     if ctx.db.closed_at():
         raise RuntimeError("order is closed")
+    ctx = effective(ctx)            # a lab rack: placed devices only
     g = ctx.g
     hosts = [d for d in g.devices if d.endpoints.get("hosts")]
     if positions:

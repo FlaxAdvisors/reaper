@@ -84,7 +84,7 @@ import sqlite3
 import threading
 import time
 import urllib.parse
-from dataclasses import asdict, dataclass, field
+from dataclasses import replace, asdict, dataclass, field
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -539,8 +539,10 @@ def rack_state(r: Rack) -> dict:
             "ident": nodeact.ident_view(idents.get(d.pos)),
             "runs": runs})
     rack_runs = by_pos.get("_rack", {})
-    passed, not_passed = qualify_passed(db, g)
-    dwhy = deploy_why(raw, g)
+    # rack-wide verdicts judge the present devices (a lab rack's absent slots never block)
+    gp = replace(g, devices=[d for d in g.devices if d.pos not in gone]) if gone else g
+    passed, not_passed = qualify_passed(db, gp)
+    dwhy = deploy_why(raw, gp)
     fdb = rack_runs.get("switch-fdb")
     switches = []
     for s in g.switches:
@@ -562,6 +564,7 @@ def rack_state(r: Rack) -> dict:
         "order": g.order, "customer": g.customer, "vid": g.vid, "site": g.site, "rack": g.rack,
         "prefix": g.url_prefix, "version": __version__, "build": BUILD, "closed_at": db.closed_at(),
         "lab": g.lab, "integration_tests": g.integration_tests,
+        "present": len(g.devices) - len(gone), "total": len(g.devices),
         "unplaced": _unplaced_view(g, db.unplaced()) if g.lab else [],
         "iperf_server": g.iperf_server, "pass": _pass_view(db), "run": _run_view(r, raw),
         "stage_running": r.lock.busy(), "stage": r.stage if r.lock.locked() else None,
@@ -578,7 +581,7 @@ def rack_state(r: Rack) -> dict:
                     "why": qualify_why(raw, g), "progress": db.qualify_progress()},
         "deploy_phases": list(DEPLOY_PHASES), "deploy_from": list(FROM_PHASES),
         "deploy": {"passed": not dwhy,
-                   "not_passed": [d.pos for d in g.devices if d.pos in dwhy],
+                   "not_passed": [d.pos for d in gp.devices if d.pos in dwhy],
                    "why": dwhy, "progress": db.deploy_progress(), "ha_mode": ha,
                    "waivers": db.waivers(history=True)},
         "done_rungs": list(DONE_RUNGS),

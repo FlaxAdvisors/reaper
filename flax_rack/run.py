@@ -58,7 +58,7 @@ from .discover_ladder import DISCOVER_STEPS
 from .done import run as run_done
 from .firmware import FIRMWARE_RUNGS, run_firmware
 from .qualify import device_rungs, run_qualify
-from .stages import cancelled, run_discover
+from .stages import cancelled, effective, run_discover
 
 STAGE = "run"
 STAGES = ("discover", "firmware", "qualify", "deploy", "done")
@@ -226,7 +226,8 @@ def run(ctx, *, who: str = "?", reinstall: bool = False, on_stage=None) -> int:
 def _run(x: _Run, start: str = "discover"):
     """The Run from `start` (a fresh Run: discover; a Continue of an interrupted one: the
     stage it was in, re-run) through Qualify, then the hold or Deploy -> Done."""
-    ctx, db, g = x.ctx, x.db, x.ctx.g
+    ctx = effective(x.ctx)          # a lab rack: the placements as they stand now
+    db, g = x.db, ctx.g
     after = db.run_plan(x.rid)["run_after"]
     i = STAGES.index(start)
     if i <= 0:
@@ -262,7 +263,7 @@ def _firmware(x: _Run, positions) -> bool:
     run_firmware(x.ctx, positions=positions)
     if x.stopped():
         return False
-    keys = positions or [d.pos for d in x.ctx.g.devices] + _sw_keys(x.ctx.g, firmware=True)
+    keys = positions or [d.pos for d in effective(x.ctx).g.devices] + _sw_keys(effective(x.ctx).g, firmware=True)
     if found := firmware_findings(x.db.latest_runs(), keys):
         x.db.add_event(STAGE, f"run {x.rid} firmware findings (report only, not held): "
                               + "; ".join(f"{k} ({', '.join(b)})" for k, b in found.items()))
@@ -290,7 +291,7 @@ def cont(ctx, rid: int, *, waive=None, who: str = "?", on_stage=None) -> None:
 
 
 def _requalify_deploy_done(x: _Run, waive, who):
-    rq = deploy_choice(x.db, x.ctx.g, x.db.run_plan(x.rid))["requalify"]
+    rq = deploy_choice(x.db, effective(x.ctx).g, x.db.run_plan(x.rid))["requalify"]
     if rq:
         x.db.add_event(STAGE, f"run {x.rid}: qualify in this Run first: {', '.join(rq)}")
         x.stage("firmware")
@@ -304,7 +305,8 @@ def _requalify_deploy_done(x: _Run, waive, who):
 
 
 def _deploy_done(x: _Run, waive, who):
-    ctx, db, g = x.ctx, x.db, x.ctx.g
+    ctx = effective(x.ctx)          # a lab rack: the placements as they stand now
+    db, g = x.db, ctx.g
     row = db.run_plan(x.rid)
     ch = deploy_choice(db, g, row, waive)
     db.set_run_plan(x.rid, out=ch["out"])

@@ -559,6 +559,8 @@ function App() {
       if (r) return r;                    // a stage re-run now: its steps, not the last phase's
       return this.hasRuns(d, 'done') ? 'done' : this.hasRuns(d, 'deploy') ? 'deploy' : this.hasRuns(d, 'qualify') ? 'qualify' : 'discover'; },
     phaseState(d, p) {
+      // a lab rack's absent BOM slot: nothing placed, nothing judged (grey, never green)
+      if (d?.absent || d?.dev?.absent) return 'grey';
       const v = this.stepEntries(d, p).map((x) => x.state);
       // nothing to do for this endpoint (a BC IOM's Qualify/Deploy/Done, a switch's): complete,
       // whatever the phase before it says (operator 2026-10-30: never looks like waiting)
@@ -742,13 +744,15 @@ function App() {
     // (an unwaived fault outside Firmware), a phase = chipPhase (each device once)
     counted(d, key) { return key === 'alert' ? this.faulted(d, ALERT_PHASES) : this.chipPhase(d) === key; },
     get counts() {
-      const ds = this.s.devices || [];
+      const ds = (this.s.devices || []).filter((d) => !d.absent);   // absent slots count nowhere
       return Object.fromEntries(this.metricList.map((m) => [m.key, ds.filter((d) => this.counted(d, m.key)).length]));
     },
     // the phase chip of the stage now running (a Run's inner stage) is lit
     metricLit(m) { return !!this.s.stage_running && this.s.stage === m.key; },
     metricTitle(m) {
-      return `${m.title} · ${this.counts[m.key]} of ${(this.s.devices || []).length} devices` +
+      const n = (this.s.devices || []).filter((d) => !d.absent).length;
+      return `${m.title} · ${this.counts[m.key]} of ${n} devices` +
+        (this.s.lab ? ` present (${this.s.total} in the BOM)` : '') +
         (m.key === 'alert' ? '' : ' · each device counted once, in the phase it has reached') +
         (this.metricLit(m) ? ' · running now' : '') + ' · click to show only them';
     },
@@ -1286,7 +1290,8 @@ function App() {
     // {n, of}: the endpoints the stage applies to (it has steps for them) and how many
     // passed it this pass (Firmware: read to the end, whatever it found)
     stagePass(p) {
-      const os = this.tileObjs().filter((o) => this.stepEntries(o, p).length);
+      // a lab rack's absent slots are not judged: they count in no stage button
+      const os = this.tileObjs().filter((o) => !(o.absent || o.dev?.absent) && this.stepEntries(o, p).length);
       return { n: os.filter((o) => this.chipState(o, p) === 'done').length, of: os.length };
     },
     stageOk(p) {

@@ -52,7 +52,7 @@ from flax_rungs.result import UNMEASURED, RungResult, not_passed
 
 from .addressing import plan_addresses
 from .discover_ladder import _installed_os, _rollup, run_step, wanted
-from .stages import cancelled, creds
+from .stages import cancelled, creds, effective
 
 STAGE = "firmware"
 MAX_PARALLEL = 8
@@ -341,6 +341,7 @@ def run_firmware(ctx, *, positions: list[str] | None = None) -> None:
     positions and/or switch ids (A or _sw-A)."""
     if ctx.db.closed_at():
         raise RuntimeError("order is closed")
+    ctx = effective(ctx)            # a lab rack: placed devices only
     g = ctx.g
     devs, sws = wanted(g, positions)
     ctx.db.mark_stage_start("firmware", [d.pos for d in devs] + [f"_sw-{s.id}" for s in sws])

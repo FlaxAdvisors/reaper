@@ -99,7 +99,7 @@ from . import linkmon, switches
 from .addressing import plan_addresses
 from .qualify import (AGENT_STAGES, _Progress, _artifact, _measured, _safe, _stage_ok,
                       device_rungs, device_verdict, iface_of, parse_ip_link, qualify_why)
-from .stages import cancelled, creds
+from .stages import cancelled, creds, effective
 
 STAGE = "deploy"
 PHASES = ("install", "firstboot", "user", "ha-config", "ha-test", "iperf", "stress")
@@ -138,7 +138,8 @@ def deploy_rungs(d) -> list[str]:
     out = ["install", "firstboot", CONSOLE, "flax-user"]
     if any(n.startswith("pcie") for n in d.links):
         out += ["ha-config", "ha-test"]
-    return out + ["deploy-iperf", "deploy-stress"]
+    # a lab standup rack: no rack integration test, so no iperf mesh (integration_tests)
+    return out + (["deploy-iperf"] if d.integration else []) + ["deploy-stress"]
 
 
 def deploy_why(lr, g, before: str | None = None) -> dict[str, str]:
@@ -1035,6 +1036,7 @@ def run_deploy(ctx, *, positions: list[str] | None = None, from_phase: str = "in
     skip the install (installed disks: plan() checks them)."""
     if ctx.db.closed_at():
         raise RuntimeError("order is closed")
+    ctx = effective(ctx)            # a lab rack: placed devices only
     g = ctx.g
     lr = ctx.db.latest_runs()
     targets, waivers, incomplete = plan(lr, g, positions=positions, from_phase=from_phase,
