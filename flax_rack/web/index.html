@@ -108,6 +108,7 @@
           <span class="mono">{{u.product || 'no FRU answer'}}</span>
           <span class="mono">{{u.serial || '—'}}</span>
           <span class="lk" v-if="u.bmc_ip">BMC {{u.bmc_ip}}</span>
+          <span class="lk bad" v-if="u.on_slot" :title="'on the port placed for ' + u.on_slot + ' (its placed hardware is not there): unplace ' + u.on_slot + ' first'">on {{u.on_slot}}'s port</span>
           <span class="d-place-in" v-if="u.bmc_mac">
             <select class="popsel" v-model="placeSel[u.port_label]" :disabled="s.stage_running || busy">
               <option value="">slot…</option>

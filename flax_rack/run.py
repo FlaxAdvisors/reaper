@@ -253,6 +253,12 @@ def _run(x: _Run, start: str = "discover"):
         if fw and not _firmware(x, None if not disc else fw):
             return
     hosts = _hosts(g)
+    if g.lab and not hosts:
+        # a lab rack with no host placed yet: nothing to qualify or deploy -- done, not held
+        db.add_event(STAGE, f"run {x.rid}: 0 present host(s) on this lab rack; "
+                            "Qualify / Deploy / Done have nothing to do")
+        x.end("done", "done")
+        return
     ok = [d.pos for d in hosts if d.pos not in disc]
     x.stage("qualify")
     if ok:

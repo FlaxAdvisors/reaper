@@ -39,13 +39,17 @@ def find(by_port, placements, leases, fru_probe, uplinks, switch_id="H") -> list
     """The unplaced hardware, one entry per (port, lane), port order.
     by_port {(port, lane): [mac]}, placements {pos: {switch, port, lane, ...}},
     leases {mac: ip} (active), fru_probe(ip) -> {product, serial, family} | None."""
-    claimed = {(int(p["port"]), p.get("lane")) for p in placements.values()
+    claimed = {(int(p["port"]), p.get("lane")): (pos, p) for pos, p in placements.items()
                if p.get("switch") == switch_id}
     out = []
     for key in sorted(by_port, key=lambda k: (k[0], k[1] or 0)):
-        if key in claimed or key[0] in uplinks:
+        if key[0] in uplinks:
             continue
         macs = list(by_port[key])
+        on = claimed.get(key)
+        if on and (not on[1].get("bmc_mac") or on[1]["bmc_mac"] in macs):
+            continue                    # the placed hardware itself
+        # a claimed port whose placed BMC is gone: other hardware there, listed beside it
         bmc, info = None, None
         for m in macs:
             ip = leases.get(m)
@@ -59,5 +63,6 @@ def find(by_port, placements, leases, fru_probe, uplinks, switch_id="H") -> list
                     "host_mac": host, "bmc_mac": bmc,
                     "host_ip": leases.get(host) if host else None,
                     "bmc_ip": leases.get(bmc) if bmc else None, "macs": macs,
-                    **(info or {"product": "", "serial": "", "family": ""})})
+                    **(info or {"product": "", "serial": "", "family": ""}),
+                    **({"on_slot": on[0]} if on else {})})
     return out

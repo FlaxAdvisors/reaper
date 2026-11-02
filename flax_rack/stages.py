@@ -138,7 +138,9 @@ def snapshot(ctx) -> dict:
         if src and Path(src).is_file():
             shutil.copy2(src, out / Path(src).name)
             copied.append(Path(src).name)
-    p = archive.payload(ctx.g, ctx.db, ctx.dir, closed_at=archive.now())
+    # the archive holds the hardware this pass had (never-placed BOM slots are not devices
+    # yet); the process report above keeps the whole BOM
+    p = archive.payload(effective(ctx).g, ctx.db, ctx.dir, closed_at=archive.now())
     p.update(snapshot=True, **{"pass": n})
     counts = ctx.kea.archive(p)                 # raises KeaError: nothing more happens
     ndev = (counts or {}).get("devices", len(p["devices"]))

@@ -32,7 +32,7 @@ class DeviceMatch:
 @dataclass
 class Match:
     devices: dict[str, DeviceMatch]
-    unexpected: list[tuple[int | str, str]]   # (port, mac); a lane port as "5/1"
+    unexpected: list[tuple[int, str]]   # (port, mac)
 
 
 def port_label(sw, key: PortKey) -> str:
@@ -136,6 +136,11 @@ def match_placed(d: Device, mine: dict[str, PortKey], by_port, switch_id: str,
             where = port_label(sw, k)
             return DeviceMatch(d.pos, "moved",
                                note=f"serial {p.get('serial') or '?'} now on port {where}")
+    if here:
+        # something else answers on the placed port: a swapped blade, never re-placed here
+        return DeviceMatch(d.pos, "replaced",
+                           note=f"placed {p.get('serial') or '?'} not on its port; other MACs "
+                                f"there: {', '.join(here)} (unplace, then place what is there)")
     return DeviceMatch(d.pos, "missing", note="placed MACs not on the port")
 
 
@@ -180,7 +185,9 @@ def match(g: Geometry, fdb: list[FdbEntry], switch_id: str = "C") -> Match:
                                          note=f"no MAC matcher for kind {d.kind} ({ep})")
         else:
             devices[d.pos] = fn(d, mine, by_port, switch_id)
-    unexpected = [(k[0] if k[1] is None else f"{k[0]}/{k[1]}", m)
+    # the front-panel port only (an int, as the port tables sort it); a lab rack's lanes
+    # are listed in full by Unplaced
+    unexpected = [(k[0], m)
                   for k in sorted(by_port, key=lambda k: (k[0], k[1] or 0))
                   if k not in assigned and k[0] not in uplinks for m in by_port[k]]
     return Match(devices, unexpected)

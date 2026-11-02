@@ -926,7 +926,10 @@ function App() {
     },
     get matchCount() { return (this.s.devices || []).filter((d) => this.matches(d)).length; },
     // lab racks: the BOM slots no hardware has been placed into, and a Place hint
-    absentSlots() { return (this.s.devices || []).filter((d) => d.absent); },
+    absentSlots() {
+      return [...(this.s.devices || []).filter((d) => d.absent),
+              ...(this.s.iom_slots || []).map((k) => ({ pos: k, kind: 'iom' }))];
+    },
     placeNote(u, d) {
       const fam = { 'compute-tp': ['tiogapass'], 'compute-leopard': ['leopard'] }[d.kind];
       return fam && u.family && !fam.includes(u.family) ? ` (≠ ${u.family})` : '';

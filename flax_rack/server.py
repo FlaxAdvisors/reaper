@@ -490,8 +490,9 @@ def rack_state(r: Rack) -> dict:
         addrs.setdefault(a.pos, {})[a.role] = a.ip
         names.setdefault(a.pos, {})[a.role] = a.name
     profiles = set(PROFILES)
-    unexpected = ((by_pos.get("_rack", {}).get("slot-match") or {}).get("detail") or {}) \
-        .get("unexpected") or []
+    # a lab rack lists unclaimed hardware as Unplaced (to be placed), not as a red alarm
+    unexpected = [] if g.lab else \
+        ((by_pos.get("_rack", {}).get("slot-match") or {}).get("detail") or {}).get("unexpected") or []
     waivers = db.waivers()
     last: dict[str, dict] = {}
     # last seen in ANY pass: a MAC / serial is a fact about the hardware, not a verdict
@@ -577,6 +578,10 @@ def rack_state(r: Rack) -> dict:
         "lab": g.lab, "integration_tests": g.integration_tests,
         "present": len(g.devices) - len(gone), "total": len(g.devices),
         "unplaced": _unplaced_view(g, db.unplaced()) if g.lab else [],
+        # a lab rack's IOM slots not placed yet (a JBOD's IOMs are placed one by one)
+        "iom_slots": [f"{d.pos}.iom{n}" for d in g.devices
+                      for n in range(1, d.endpoints.get("ioms", 0) + 1)
+                      if f"{d.pos}.iom{n}" not in placements] if g.lab else [],
         "iperf_server": g.iperf_server, "pass": _pass_view(db), "run": _run_view(r, raw),
         "stage_running": r.lock.busy(), "stage": r.stage if r.lock.locked() else None,
         "stage_positions": r.stage_positions if r.lock.locked() and r.stage else None,
@@ -1108,13 +1113,13 @@ class App:
             if r is None:
                 continue
             if d not in self._pollers:
-                p = BmcPoller(lambda r=r: self.factory(r.dir, r.g, r.db), interval_s,
+                p = BmcPoller(lambda r=r: poll_ctx(self.factory, r), interval_s,
                               name=f"bmc-poller-{prefix}")
                 self._pollers[d] = p
                 p.start()
             if d not in self._linkmons:
                 # its own 30 s period (operator: links live within ~30 s)
-                lp = LinkPoller(lambda r=r: self.factory(r.dir, r.g, r.db),
+                lp = LinkPoller(lambda r=r: poll_ctx(self.factory, r),
                                 self.link_interval_s, name=f"link-poller-{prefix}")
                 self._linkmons[d] = r.linkmon = lp
                 lp.start()
@@ -1159,14 +1164,24 @@ class App:
             r.lock.release()
 
     def _slot(self, r: Rack, pos):
-        if not isinstance(pos, str) or pos not in {d.pos for d in r.g.devices}:
+        """A BOM slot: a device position, or "<pos>.iomN" of a device with IOMs."""
+        if not isinstance(pos, str):
             return None
-        return r.g.device(pos)
+        if pos in {d.pos for d in r.g.devices}:
+            return r.g.device(pos)
+        dpos, _, ep = pos.partition(".")
+        if dpos in {d.pos for d in r.g.devices} and ep.startswith("iom") and ep[3:].isdigit():
+            d = r.g.device(dpos)
+            if 1 <= int(ep[3:]) <= d.endpoints.get("ioms", 0):
+                return d
+        return None
 
     def place(self, r: Rack, body: dict, who: str = "?"):
         d = self._slot(r, body.get("pos"))
         if d is None:
             return 400, {"error": f"not a slot of this rack: {body.get('pos')!r}"}
+        slot = body["pos"]
+        iom = slot != d.pos
         port, lane = body.get("port"), body.get("lane")
 
         def do():
@@ -1175,15 +1190,25 @@ class App:
             if e is None:
                 return 409, {"error": f"no unplaced hardware on port {port}"
                                       + (f"/{lane}" if lane else "") + " (run Discover)"}
-            if not e.get("bmc_mac"):
+            if iom:
+                # an IOM's BMC talks ssh (fruid-util), not IPMI: one MAC on its port is it;
+                # Discover's IOM ladder then reads its serial and checks its A/B side
+                if len(e.get("macs") or []) != 1:
+                    return 409, {"error": "an IOM port carries exactly one MAC (its BMC); saw "
+                                          + ", ".join(e.get("macs") or []) or "none"}
+                bmc, host = e["macs"][0], None
+            elif not e.get("bmc_mac"):
                 return 409, {"error": "that port's hardware gave no FRU answer: it cannot be "
                                       "placed until its BMC answers"}
-            r.db.place(d.pos, serial=e.get("serial"), product=e.get("product"),
+            else:
+                bmc, host = e.get("bmc_mac"), e.get("host_mac")
+            r.db.place(slot, serial=e.get("serial"), product=e.get("product"),
                        family=e.get("family"), switch=e["switch"], port=port, lane=lane,
-                       host_mac=e.get("host_mac"), bmc_mac=e.get("bmc_mac"), who=who)
+                       host_mac=host, bmc_mac=bmc, who=who)
             r.db.set_unplaced([x for x in r.db.unplaced() if x is not e and
                                not (x.get("port") == port and x.get("lane") == lane)])
-            return 200, {"placed": d.pos, "deviation": deviation(d, r.db.placements()[d.pos])}
+            return 200, {"placed": slot,
+                         "deviation": None if iom else deviation(d, r.db.placements()[slot])}
         return self._placing(r, do)
 
     def unplace(self, r: Rack, body: dict, who: str = "?"):
@@ -1191,16 +1216,18 @@ class App:
         if d is None:
             return 400, {"error": f"not a slot of this rack: {body.get('pos')!r}"}
 
+        key = body["pos"]
+
         def do():
-            p = r.db.placements().get(d.pos)
-            r.db.unplace(d.pos, who)
+            p = r.db.placements().get(key)
+            r.db.unplace(key, who)
             if p:       # back on the Unplaced list until the next Discover re-reads the port
                 r.db.set_unplaced(r.db.unplaced() + [{
                     k: p.get(k) for k in ("switch", "port", "lane", "host_mac", "bmc_mac",
                                           "product", "serial", "family")}
                     | {"host_ip": None, "bmc_ip": None,
                        "macs": [m for m in (p.get("host_mac"), p.get("bmc_mac")) if m]}])
-            return 200, {"unplaced": d.pos}
+            return 200, {"unplaced": key}
         return self._placing(r, do)
 
     def move(self, r: Rack, body: dict, who: str = "?"):
@@ -1208,10 +1235,14 @@ class App:
         if d is None or to is None:
             return 400, {"error": "pos and to must be slots of this rack"}
 
+        src, dst = body["pos"], body["to"]
+        if (src == d.pos) != (dst == to.pos):
+            return 400, {"error": "move a device to a device slot, an IOM to an IOM slot"}
+
         def do():
-            r.db.move(d.pos, to.pos, who)
-            return 200, {"moved": d.pos, "to": to.pos,
-                         "deviation": deviation(to, r.db.placements()[to.pos])}
+            r.db.move(src, dst, who)
+            return 200, {"moved": src, "to": dst,
+                         "deviation": deviation(to, r.db.placements()[dst]) if dst == to.pos else None}
         return self._placing(r, do)
 
     def snapshot(self, r: Rack, body: dict):
@@ -1576,6 +1607,13 @@ class _Handler(BaseHTTPRequestHandler):
             fn = app.node_power if rest == "api/power" else app.node_identify
             return self._json(*fn(r, body, who=f"ui {ip}"))
         return self._json(404, {"error": "not found"})
+
+
+def poll_ctx(factory, r):
+    """The pollers' context, every tick: a lab rack's placed hardware on its seen ports (a
+    pull is seen, the link pills light), its never-placed slots not polled at all."""
+    from .stages import effective
+    return effective(factory(r.dir, r.g, r.db))
 
 
 def default_context_factory(rack_dir: Path, g: Geometry, db: OrderDB):
