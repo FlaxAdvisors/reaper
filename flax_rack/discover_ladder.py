@@ -300,14 +300,15 @@ def _wait(R, budget, poll, probe):
         R.sleep(poll)
 
 
-def _portlink(env, link, port) -> RungResult:
+def _portlink(env, link, key) -> RungResult:
     sw = env.sw
     if env.fdb_err:
         return ev("fail", f"mgmt switch FDB not read: {env.fdb_err}")
-    iface = switches.link_iface(sw, port, None)
+    port, lane = key
+    iface = switches.link_iface(sw, port, lane)
     st = (env.ifstatus or {}).get(iface)
-    macs = env.by_port.get(port, [])
-    rows = [["link", f"{link} -> {sw.id}:{port} ({iface})"],
+    macs = env.by_port.get(key, [])
+    rows = [["link", f"{link} -> {sw.id}:{port}" + (f"/{lane}" if lane else "") + f" ({iface})"],
             ["oper", (st or {}).get("oper") or "unread"], ["admin", (st or {}).get("admin")],
             ["speed", (st or {}).get("speed")],
             ["MACs on wire", ", ".join(_colon(m) for m in macs) or "none"]]
@@ -437,7 +438,7 @@ def _host_ladder(ctx, env, d):
     host_ip, bmc_ip = ips.get("host"), ips.get("bmc")
     dm = env.match.devices.get(d.pos) if env.match else None
     mezz = d.links.get("mezz0")
-    port = mezz.port if mezz and env.sw and mezz.switch == env.sw.id else None
+    port = (mezz.port, mezz.lane) if mezz and env.sw and mezz.switch == env.sw.id else None
     st = _Boot()
     want = (dm.host_mac if dm else None)
 
@@ -863,7 +864,7 @@ def _iom_ladder(ctx, env, d, n, ip) -> Walk:
     key = f"{d.pos}.iom{n}"
     w = Walk(ctx, key)
     link = d.links.get(f"iom{n}")
-    port = link.port if link and env.sw and link.switch == env.sw.id else None
+    port = (link.port, link.lane) if link and env.sw and link.switch == env.sw.id else None
     macs = env.by_port.get(port, []) if port else []
     mac = macs[0] if len(macs) == 1 else None
     out = {"mac": mac}

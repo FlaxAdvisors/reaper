@@ -1,7 +1,7 @@
 """Rack geometry model: parse and validate an order's geometry.json."""
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 # what each kind exposes on the rack network (addressing.py turns these into IPs).
 # A geometry device may override with its own "endpoints" (e.g. a Yosemite sled
@@ -89,6 +89,7 @@ class Device:
     sides: dict[str, str] = field(default_factory=dict)       # {"iom1": "A", ...} expected
     drives: str | None = None       # a head: the enclosure pos it drives (HEAD_KINDS)
     expect: dict = field(default_factory=dict)   # an enclosure: {"gpu": 8} / {"nvme": 4} / {"disks": 4}
+    placed: dict | None = None      # lab racks: the operator's placement (with_placements)
 
 
 @dataclass
@@ -271,6 +272,35 @@ def parse_geometry(data: dict) -> Geometry:
         vid=int(_req(net, "vid", "network")), cidr=_req(net, "cidr", "network"),
         iperf_server=data.get("iperf_server"), switches=switches, devices=devices,
         lab=lab, integration_tests=integ)
+
+
+def with_placements(g: Geometry, placements: dict[str, dict]) -> Geometry:
+    """The effective geometry of a lab rack: each placed device gets the switch port its
+    hardware was seen on as its mezz0 link (an IOM key "<pos>.iomN" as that device's iomN
+    link) and carries its placement; unplaced devices are unchanged. The committed
+    geometry is not modified."""
+    devs = []
+    for d in g.devices:
+        links, placed = dict(d.links), placements.get(d.pos)
+        if placed:
+            links["mezz0"] = Link(placed["switch"], int(placed["port"]),
+                                  placed.get("lane") and int(placed["lane"]))
+        for k, p in placements.items():
+            if k.startswith(d.pos + ".iom"):
+                links[k.split(".", 1)[1]] = Link(p["switch"], int(p["port"]),
+                                                 p.get("lane") and int(p["lane"]))
+        devs.append(replace(d, links=links, placed=placed) if links != d.links or placed
+                    else d)
+    return replace(g, devices=devs)
+
+
+def absent(g: Geometry, placements: dict[str, dict]) -> set[str]:
+    """Lab racks: the BOM positions no hardware has been placed into (an IOM placement
+    "<pos>.iomN" makes its JBOD present). An order (lab False) has no absent devices."""
+    if not g.lab:
+        return set()
+    have = {k.split(".", 1)[0] for k in placements}
+    return {d.pos for d in g.devices if d.pos not in have}
 
 
 def load_geometry(path) -> Geometry:

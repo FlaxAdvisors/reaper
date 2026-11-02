@@ -48,6 +48,9 @@ CREATE TABLE IF NOT EXISTS run_plan(
   id INTEGER PRIMARY KEY, pass INTEGER NOT NULL, started_at TEXT NOT NULL, who TEXT NOT NULL,
   options TEXT NOT NULL, state TEXT NOT NULL, stage TEXT, held TEXT, out TEXT,
   run_after INTEGER NOT NULL, finished_at TEXT);
+CREATE TABLE IF NOT EXISTS placement(
+  pos TEXT PRIMARY KEY, serial TEXT, product TEXT, switch TEXT NOT NULL, port INTEGER NOT NULL,
+  lane INTEGER, host_mac TEXT, bmc_mac TEXT, at TEXT NOT NULL, who TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS stage_start(
   id INTEGER PRIMARY KEY, pos TEXT NOT NULL, stage TEXT NOT NULL,
   run_after INTEGER NOT NULL, at TEXT NOT NULL);
@@ -423,6 +426,47 @@ class OrderDB:
                  "rungs": json.loads(r["rungs"]), "reason": r["reason"], "who": r["who"],
                  "at": r["at"]}
                 for r in self._all(f"SELECT * FROM waiver {where} ORDER BY id")]
+
+    # ------------------------------------------------------------ placement (lab racks)
+    # A fact like the installed OS: the operator put this hardware in this BOM slot. Not
+    # a verdict, so Start fresh keeps it; each change is an event (the process report).
+    def placements(self) -> dict[str, dict]:
+        return {r["pos"]: dict(r) for r in self._all("SELECT * FROM placement ORDER BY pos")}
+
+    def place(self, pos, *, serial, product, switch, port, lane, host_mac, bmc_mac, who) -> None:
+        with closing(self._conn()) as c, c:
+            c.execute("BEGIN IMMEDIATE")
+            if c.execute("SELECT 1 FROM placement WHERE pos=?", (pos,)).fetchone():
+                raise ValueError(f"{pos} is already placed (unplace it first)")
+            c.execute("INSERT INTO placement(pos,serial,product,switch,port,lane,host_mac,"
+                      "bmc_mac,at,who) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                      (pos, serial, product, switch, int(port), lane, norm_mac(host_mac),
+                       norm_mac(bmc_mac), _now(), who))
+            c.execute("INSERT INTO event(ts,kind,text) VALUES(?,?,?)",
+                      (_now(), "place", f"{who}: {serial or '?'} ({product or '?'}) placed in "
+                       f"{pos} (port {port}" + (f"/{lane}" if lane else "") + ")"))
+
+    def unplace(self, pos, who) -> None:
+        with closing(self._conn()) as c, c:
+            c.execute("BEGIN IMMEDIATE")
+            row = c.execute("SELECT serial FROM placement WHERE pos=?", (pos,)).fetchone()
+            if row is None:
+                raise ValueError(f"{pos} is not placed")
+            c.execute("DELETE FROM placement WHERE pos=?", (pos,))
+            c.execute("INSERT INTO event(ts,kind,text) VALUES(?,?,?)",
+                      (_now(), "unplace", f"{who}: {row[0] or '?'} unplaced from {pos}"))
+
+    def move(self, pos, to, who) -> None:
+        with closing(self._conn()) as c, c:
+            c.execute("BEGIN IMMEDIATE")
+            row = c.execute("SELECT serial FROM placement WHERE pos=?", (pos,)).fetchone()
+            if row is None:
+                raise ValueError(f"{pos} is not placed")
+            if c.execute("SELECT 1 FROM placement WHERE pos=?", (to,)).fetchone():
+                raise ValueError(f"{to} is occupied")
+            c.execute("UPDATE placement SET pos=?, at=?, who=? WHERE pos=?", (to, _now(), who, pos))
+            c.execute("INSERT INTO event(ts,kind,text) VALUES(?,?,?)",
+                      (_now(), "move", f"{who}: {row[0] or '?'} moved {pos} -> {to}"))
 
     def set_closed(self, at: str | None = None) -> None:
         """Mark the order closed at `at` (UTC iso; now when None). A first close wins."""

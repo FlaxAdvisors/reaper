@@ -14,7 +14,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from flax_rack.geometry import KIND_ENDPOINTS, Device, Geometry, parse_endpoints
-from flax_rack.switches import FdbEntry, front_panel
+from flax_rack.switches import FdbEntry, front_panel, link_iface
+
+PortKey = tuple[int, int | None]       # (front-panel port, breakout lane or None)
 
 
 @dataclass
@@ -30,18 +32,31 @@ class DeviceMatch:
 @dataclass
 class Match:
     devices: dict[str, DeviceMatch]
-    unexpected: list[tuple[int, str]]   # (port, mac)
+    unexpected: list[tuple[int | str, str]]   # (port, mac); a lane port as "5/1"
 
 
-def _port_macs(fdb: list[FdbEntry], sw=None) -> dict[int, list[str]]:
-    """front-panel port -> its MACs (sw: the switch the FDB is from; its nos/model name
-    the ports; None = a Dell SONiC mgmt switch, EthernetN = port N+1)."""
-    out: dict[int, list[str]] = {}
+def port_label(sw, key: PortKey) -> str:
+    """The port as an operator reads it on the faceplate / in EOS tables: Et5/1."""
+    port, lane = key
+    if getattr(sw, "nos", None) == "eos":
+        return f"Et{port}" + (f"/{lane}" if lane else "")
+    return link_iface(sw, port, lane) if sw else f"{port}" + (f"/{lane}" if lane else "")
+
+
+def key_of(link) -> PortKey:
+    return (link.port, link.lane)
+
+
+def _port_macs(fdb: list[FdbEntry], sw=None) -> dict[PortKey, list[str]]:
+    """(front-panel port, lane) -> its MACs (sw: the switch the FDB is from; its nos/model
+    name the ports; None = a Dell SONiC mgmt switch, EthernetN = port N+1). Breakout
+    lanes stay apart: two devices on Et5/1 and Et5/4 are two keys."""
+    out: dict[PortKey, list[str]] = {}
     for e in fdb:
         fp = front_panel(sw, e.iface)
         if fp is None:
             continue                   # PortChannel, Vlan, etc.
-        macs = out.setdefault(fp[0], [])
+        macs = out.setdefault(fp, [])
         if e.mac not in macs:
             macs.append(e.mac)
     for macs in out.values():
@@ -63,8 +78,8 @@ def _match_host_bmc_macs(pos: str, macs: list[str]) -> DeviceMatch:
                        note="want host + bmc(host+2), saw " + ",".join(macs))
 
 
-def _match_ioms(pos: str, iom_ports: list[tuple[int, int]],
-                by_port: dict[int, list[str]]) -> DeviceMatch:
+def _match_ioms(pos: str, iom_ports: list[tuple[int, PortKey]],
+                by_port: dict[PortKey, list[str]]) -> DeviceMatch:
     n = max((i for i, _ in iom_ports), default=0)
     ioms = [""] * n
     missing, bad = [], []
@@ -83,27 +98,48 @@ def _match_ioms(pos: str, iom_ports: list[tuple[int, int]],
     return DeviceMatch(pos, "found", iom_macs=ioms)
 
 
-def match_host_bmc(d: Device, mine: dict[str, int], by_port, switch_id: str) -> DeviceMatch:
+def match_host_bmc(d: Device, mine: dict[str, PortKey], by_port, switch_id: str) -> DeviceMatch:
     """TiogaPass: host + BMC (host+2) share the mezz0 port."""
     if "mezz0" not in mine:
         return DeviceMatch(d.pos, "missing", note=f"no {switch_id} mezz0 link")
     return _match_host_bmc_macs(d.pos, by_port.get(mine["mezz0"], []))
 
 
-def match_ioms(d: Device, mine: dict[str, int], by_port, switch_id: str) -> DeviceMatch:
+def match_ioms(d: Device, mine: dict[str, PortKey], by_port, switch_id: str) -> DeviceMatch:
     """One MAC per iomN port (Bryce Canyon JBOD)."""
     iom_ports = sorted((int(m.group(1)), p) for name, p in mine.items()
                        if (m := re.fullmatch(r"iom(\d+)", name)))
     return _match_ioms(d.pos, iom_ports, by_port)
 
 
-def match_none(d: Device, mine: dict[str, int], by_port, switch_id: str) -> DeviceMatch:
+def match_none(d: Device, mine: dict[str, PortKey], by_port, switch_id: str) -> DeviceMatch:
     """A kind with no switch-side identity yet (an enclosure's own BMC that is not cabled to
     the rack switch -- judged through its head -- or a Yosemite chassis: a later plan)."""
     return DeviceMatch(d.pos, "unsupported", note=f"no MAC matcher for kind {d.kind}")
 
 
-Matcher = Callable[[Device, dict[str, int], dict[int, list[str]], str], DeviceMatch]
+def match_placed(d: Device, mine: dict[str, PortKey], by_port, switch_id: str,
+                 sw=None) -> DeviceMatch:
+    """A lab rack's placed device: the MACs recorded at placement (paired by the BMC's FRU
+    answer, not by an offset) on the placed port = found; seen on ANOTHER port = moved
+    (flagged, never re-placed); else missing."""
+    p = d.placed or {}
+    want = [m for m in (p.get("host_mac"), p.get("bmc_mac")) if m]
+    key = mine.get("mezz0")
+    here = by_port.get(key, []) if key else []
+    if want and all(m in here for m in want) or (p.get("bmc_mac") and p["bmc_mac"] in here):
+        host = p.get("host_mac")
+        return DeviceMatch(d.pos, "found", host_mac=host, bmc_mac=p.get("bmc_mac"),
+                           note="" if host in here else "host MAC not seen")
+    for k, macs in by_port.items():
+        if k != key and any(m in macs for m in want):
+            where = port_label(sw, k)
+            return DeviceMatch(d.pos, "moved",
+                               note=f"serial {p.get('serial') or '?'} now on port {where}")
+    return DeviceMatch(d.pos, "missing", note="placed MACs not on the port")
+
+
+Matcher = Callable[[Device, dict[str, PortKey], dict[PortKey, list[str]], str], DeviceMatch]
 MATCHERS: dict[str, Matcher] = {
     "compute-tp": match_host_bmc,
     "bc-head-tp": match_host_bmc,
@@ -130,18 +166,21 @@ def match(g: Geometry, fdb: list[FdbEntry], switch_id: str = "C") -> Match:
     sw = next((s for s in g.switches if s.id == switch_id), None)
     uplinks = set(sw.uplink_ports) if sw else set()
     by_port = _port_macs(fdb, sw)
-    assigned: set[int] = set()
+    assigned: set[PortKey] = set()
     devices: dict[str, DeviceMatch] = {}
     for d in g.devices:
-        mine = {name: l.port for name, l in d.links.items() if l.switch == switch_id}
+        mine = {name: key_of(l) for name, l in d.links.items() if l.switch == switch_id}
         assigned.update(mine.values())
         fn = matcher_for(d)
-        if fn is None:
+        if d.placed is not None:
+            devices[d.pos] = match_placed(d, mine, by_port, switch_id, sw)
+        elif fn is None:
             ep = ", ".join(f"{k} {v}" for k, v in d.endpoints.items() if v)
             devices[d.pos] = DeviceMatch(d.pos, "unsupported",
                                          note=f"no MAC matcher for kind {d.kind} ({ep})")
         else:
             devices[d.pos] = fn(d, mine, by_port, switch_id)
-    unexpected = [(p, m) for p in sorted(by_port) if p not in assigned and p not in uplinks
-                  for m in by_port[p]]
+    unexpected = [(k[0] if k[1] is None else f"{k[0]}/{k[1]}", m)
+                  for k in sorted(by_port, key=lambda k: (k[0], k[1] or 0))
+                  if k not in assigned and k[0] not in uplinks for m in by_port[k]]
     return Match(devices, unexpected)
