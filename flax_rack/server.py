@@ -113,7 +113,7 @@ from .poller import INTERVAL_S, BmcPoller
 from .qualify import (AGENT_STAGES, OLD_RUNG_NAMES, PHASE_STAGES, PHASES as QUALIFY_PHASES,
                       device_rungs, fio_detail, pop_default, qualify_passed, qualify_why,
                       run_qualify)
-from .stages import close_order, run_discover, start_fresh
+from .stages import close_order, run_discover, snapshot, start_fresh
 from .version import BUILD, __version__
 
 # The apply_rackpost role creates this before it copies code and restarts the daemon,
@@ -1214,7 +1214,29 @@ class App:
                          "deviation": deviation(to, r.db.placements()[to.pos])}
         return self._placing(r, do)
 
+    def snapshot(self, r: Rack, body: dict):
+        if not r.g.lab:
+            return 409, {"error": "Snapshot is for lab racks: an order is closed (Close)"}
+        if body.get("confirm") != r.g.order:
+            return 400, {"error": "type the rack id to confirm"}
+        if DRAIN_FILE.exists():
+            return 409, {"error": DRAINING}
+        if not r.lock.acquire():
+            return 409, {"error": "a stage is running for this rack"}
+        try:
+            return 200, snapshot(self.factory(r.dir, r.g, r.db))
+        except KeaError as e:
+            r.db.add_event("error", f"snapshot: {e}")
+            return 502, {"error": str(e)}
+        except Exception as e:               # noqa: BLE001
+            r.db.add_event("error", f"snapshot: {type(e).__name__}: {e}")
+            return 500, {"error": f"{type(e).__name__}: {e}"}
+        finally:
+            r.lock.release()
+
     def close(self, r: Rack, body: dict):
+        if r.g.lab:
+            return 409, {"error": "lab rack: use Snapshot (a lab rack stays open)"}
         if body.get("confirm") != r.g.order:
             return 400, {"error": "type the order id to confirm"}
         if DRAIN_FILE.exists():
@@ -1543,6 +1565,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(*app.fresh(r, body, who=f"ui {ip}"))
         if rest == "api/close":
             return self._json(*app.close(r, body))
+        if rest == "api/snapshot":
+            return self._json(*app.snapshot(r, body))
         if rest in ("api/place", "api/unplace", "api/move"):
             ip = self.headers.get("X-Real-IP") or self.client_address[0]
             fn = {"api/place": app.place, "api/unplace": app.unplace, "api/move": app.move}[rest]

@@ -334,6 +334,25 @@ def _process_report(a) -> int:
     return 0
 
 
+def _snapshot(a) -> int:
+    from .kea_client import KeaError
+    from .stages import snapshot
+    ctx, lock = _order_ctx(a.confirm)
+    try:
+        if not ctx.g.lab:
+            print("snapshot is for lab racks (an order is closed with `close`)", file=sys.stderr)
+            return 2
+        out = snapshot(ctx)
+    except KeaError as e:
+        print(f"snapshot failed: {e}", file=sys.stderr)
+        return 1
+    finally:
+        lock.release()
+    print(f"snapshot of pass {out['pass']}: {len(out['files'])} file(s) in {out['dir']}; "
+          f"archived {out['archived'].get('devices', 0)} device(s); the rack stays open")
+    return 0
+
+
 def _close(a) -> int:
     from .kea_client import KeaError
     from .stages import close_order
@@ -431,6 +450,10 @@ def main(argv=None) -> int:
     sub.add_parser("process-report", help="write the internal process report (every attempt "
                                           "of every pass) into this order dir"
                    ).set_defaults(fn=_process_report)
+    p = sub.add_parser("snapshot", help="lab rack: archive this pass (process report, CSVs) "
+                                        "and keep the rack open")
+    p.add_argument("--confirm", required=True, metavar="RACK")
+    p.set_defaults(fn=_snapshot)
     p = sub.add_parser("close", help="release this rack's reservations and close it")
     p.add_argument("--confirm", required=True, metavar="ORDER")
     p.set_defaults(fn=_close)

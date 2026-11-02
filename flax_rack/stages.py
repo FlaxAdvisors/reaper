@@ -119,6 +119,34 @@ def _retract(ctx, p) -> str:
                 "order closed until Close is re-run")
 
 
+def snapshot(ctx) -> dict:
+    """A lab rack's Snapshot: the record of this pass -- the process report and the CSVs
+    Done last wrote, copied to snapshots/pass-<n>/ (every pass's record stays here), and
+    the archive posted to flax-control as Close does -- its rackpost.* rows hold the LATEST
+    snapshot (closed_at = the snapshot time; flax-control ignores the payload's snapshot /
+    pass marks) -- while the rack stays OPEN: no reservation is released, nothing is
+    marked closed (the next pass begins with Start fresh)."""
+    import shutil
+    from . import archive, process_report, report
+    n = ctx.db.current_pass()["id"]
+    html = process_report.write(ctx.dir, ctx.g, ctx.db)
+    out = Path(ctx.dir) / "snapshots" / f"pass-{n}"
+    out.mkdir(parents=True, exist_ok=True)
+    copied = []
+    for src in (html, html.with_suffix(".json"),
+                *(report.csv_path(ctx.dir, ctx.g, k) for k in report.CSV_KINDS)):
+        if src and Path(src).is_file():
+            shutil.copy2(src, out / Path(src).name)
+            copied.append(Path(src).name)
+    p = archive.payload(ctx.g, ctx.db, ctx.dir, closed_at=archive.now())
+    p.update(snapshot=True, **{"pass": n})
+    counts = ctx.kea.archive(p)                 # raises KeaError: nothing more happens
+    ndev = (counts or {}).get("devices", len(p["devices"]))
+    ctx.db.add_event("snapshot", f"snapshot of pass {n}: archived {ndev} device(s); "
+                                 f"{len(copied)} file(s) kept in snapshots/pass-{n}/; rack stays open")
+    return {"pass": n, "archived": counts or {}, "files": copied, "dir": str(out)}
+
+
 def close_order(ctx) -> dict:
     """Close -> {"released": n reservations, "archived": flax-control's row counts}.
 

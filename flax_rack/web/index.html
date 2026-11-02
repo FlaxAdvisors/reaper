@@ -72,6 +72,8 @@
         <button class="closebtn freshbtn" v-if="s.order && !s.closed_at" :disabled="s.stage_running" @click="openFresh()"
                 :title="s.stage_running ? 'a stage is running' : 'start a new pass: the runs, waivers and CSVs so far leave the tiles, gates and reports (kept as history in the process report; nothing is deleted, no power action, Kea unchanged)'">Start fresh…</button>
         <span class="closed-chip" v-if="s.closed_at" :title="'closed ' + s.closed_at">closed</span>
+        <button class="closebtn" v-else-if="s.order && s.lab" @click="openClose()"
+                title="lab rack: archive this pass's record (process report, CSVs) and keep the rack open; no reservation is released">Snapshot…</button>
         <button class="closebtn" v-else-if="s.order" @click="openClose()"
                 title="release this rack's reservations, mark the order closed">Close order…</button>
       </div></div>
@@ -718,9 +720,18 @@
   <!-- ================= close-order modal (typed confirm) ================= -->
   <div class="m-scrim" v-if="closing" @click="closing=false">
     <div class="m-box" @click.stop>
-      <div class="m-h"><span class="m-title">Close order {{s.order}}{{s.rack ? ' rack ' + s.rack : ''}}</span>
+      <div class="m-h"><span class="m-title">{{s.lab ? 'Snapshot' : 'Close order'}} {{s.order}}{{s.rack ? ' rack ' + s.rack : ''}}</span>
         <span class="x" @click="closing=false">✕</span></div>
-      <div class="m-b">
+      <div class="m-b" v-if="s.lab">
+        <p class="m-sub">Writes the internal process report, keeps it and the CSVs Done last wrote in
+          <span class="mono">snapshots/pass-{{(s.pass || {}).id || '?'}}/</span>, and archives this pass.
+          The rack stays open: no reservation is released, stages keep running; the next pass begins
+          with Start fresh. Type the rack id to confirm.</p>
+        <input class="confirm-in" name="rp-confirm" autocomplete="off" v-model="confirmText" :placeholder="s.order">
+        <button class="press" :disabled="confirmText!==s.order || busy" @click="doSnapshot()">Snapshot</button>
+        <p class="action-msg" v-if="closeMsg">{{closeMsg}}</p>
+      </div>
+      <div class="m-b" v-if="!s.lab">
         <p class="m-sub">Writes the internal process report (every pass), then archives the order and
           releases every Kea reservation of this rack (source
           <span class="mono">order:{{s.order}}{{s.rack ? '/' + s.rack : ''}}</span>) and marks it closed.

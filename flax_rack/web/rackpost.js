@@ -1394,6 +1394,15 @@ function App() {
 
     // ---- close order ----
     openClose() { this.closing = true; this.confirmText = ''; this.closeMsg = null; },
+    async doSnapshot() {
+      this.busy = true; this.closeMsg = 'snapshot…';
+      try {
+        const r = await api('api/snapshot', { confirm: this.confirmText });
+        this.closeMsg = `pass ${r.pass} kept in snapshots/pass-${r.pass}/ (${(r.files || []).length} file(s)); ${(r.archived || {}).devices || 0} device(s) archived; the rack stays open`;
+      } catch (e) { this.closeMsg = 'snapshot failed: ' + e.message; }
+      this.busy = false;
+      await this.refresh();
+    },
     async doClose() {
       this.busy = true; this.closeMsg = 'closing…';
       try {
