@@ -53,7 +53,7 @@ interrupted one.
 from flax_rungs.result import UNMEASURED, not_passed
 
 from .deploy import (NOT_BLANK, GateError, check_waivers, disk_blank, gate_blockers, gate_why,
-                     installed_positions, run_deploy)
+                     install_disk, installed_positions, run_deploy)
 from .discover_ladder import DISCOVER_STEPS
 from .done import run as run_done
 from .firmware import FIRMWARE_RUNGS, run_firmware
@@ -158,7 +158,7 @@ def deploy_choice(db, g, row: dict, waive=None) -> dict:
                 waivable[d.pos] = [r for r in gate_blockers(run_lr, d)
                                    if not r.startswith("verdict ")]
         elif not reinstall and d.pos not in installed \
-                and (blank := disk_blank(db.path.parent, run_lr, d.pos))[0] is not True:
+                and (blank := disk_blank(db.path.parent, run_lr, d.pos, install_disk(d)))[0] is not True:
             out[d.pos] = f"{NOT_BLANK} ({blank[1]})"
             blockers[d.pos] = [f"deploy: {out[d.pos]}"]
         else:
@@ -168,6 +168,16 @@ def deploy_choice(db, g, row: dict, waive=None) -> dict:
         fb = db.ever_passed(("install",), after=row["run_after"]) & set(targets)
     else:
         fb = installed & set(targets)
+    if g.lab and not reinstall and fb:
+        # a lab rack keeps a live host's own OS: its Run deploys the installed hosts from
+        # checks (kind-check, stress); a blank one is installed by its own Deploy
+        for pos in [p for p in targets if p not in fb]:
+            out[pos] = "lab rack: a Run deploys installed hosts from checks; install this one with its own Deploy"
+            blockers[pos] = [f"deploy: {out[pos]}"]
+        targets = [p for p in targets if p in fb]
+        return {"targets": targets, "out": out, "blockers": blockers, "waivable": waivable,
+                "requalify": requalify, "firstboot": [], "from_phase": "checks",
+                "reinstall": None, "waive": {p: x for p, x in w.items() if p in targets}}
     return {"targets": targets, "out": out, "blockers": blockers, "waivable": waivable,
             "requalify": requalify, "firstboot": sorted(fb),
             "from_phase": "firstboot" if targets and fb == set(targets) else "install",

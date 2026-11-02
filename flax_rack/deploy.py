@@ -90,25 +90,31 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from flax_rungs import (agent, ansible, bond, fabric, hatest, hostssh, install, iperf, pxeboot,
+from flax_rungs import (agent, ansible, bond, fabric, hatest, hostssh, install, iperf, kindcheck, pxeboot,
                         sol, solscan, stress)
 from flax_rungs.remote import unreachable
 from flax_rungs.result import UNMEASURED, RungResult, not_passed
 
 from . import linkmon, switches
 from .addressing import plan_addresses
+from .geometry import HEAD_KINDS
 from .qualify import (AGENT_STAGES, _Progress, _artifact, _measured, _safe, _stage_ok,
                       device_rungs, device_verdict, iface_of, parse_ip_link, qualify_why)
 from .stages import cancelled, creds, effective
 
 STAGE = "deploy"
-PHASES = ("install", "firstboot", "user", "ha-config", "ha-test", "iperf", "stress")
-FROM_PHASES = ("install", "firstboot", "iperf", "stress")
+PHASES = ("install", "firstboot", "user", "kind-check", "ha-config", "ha-test", "iperf", "stress")
+# "checks": a lab rack's live host on its own installed OS -- no install, no first boot,
+# no flax-user (their rows: n/a "existing OS kept"), then kind-check onward
+FROM_PHASES = ("install", "firstboot", "checks", "iperf", "stress")
+CHECKS_FROM = "kind-check"          # the phase a "checks" start begins at
+EXISTING_OS = "existing OS kept"
 # a re-run of just these on deployed nodes (no power action, no install or gate)
 LATE_FROM = ("iperf", "stress")
-DEADLINES = {"install": 3600, "firstboot": 1200, "user": 1800, "ha-config": 300,
+DEADLINES = {"install": 3600, "firstboot": 1200, "user": 1800, "kind-check": 300, "ha-config": 300,
              "ha-test": 1200, "iperf": 900, "stress": 1200}
 PHASE_RUNG = {"install": "install", "firstboot": "firstboot", "user": "flax-user",
+              "kind-check": "kind-check",
               "ha-config": "ha-config", "ha-test": "ha-test", "iperf": "deploy-iperf",
               "stress": "deploy-stress"}
 CONSOLE = "install-console"
@@ -126,6 +132,7 @@ def real_rungs():
     return SimpleNamespace(
         install=install.install, firstboot=install.firstboot, sol_start=sol.start,
         sol_stop=sol.stop, sol_scan=solscan.scan_file, flax_user=ansible.flax_user,
+        kind_check=kindcheck.check,
         bond_config=bond.configure, fabric_up=bond.bring_up, ha_test=hatest.run,
         read_live=switches.read_live, mesh=iperf.mesh, host_run=hostssh.run, stress=stress.run,
         clock=time.monotonic, sleep=time.sleep)
@@ -136,10 +143,22 @@ def deploy_rungs(d) -> list[str]:
     if not d.endpoints.get("hosts"):
         return []
     out = ["install", "firstboot", CONSOLE, "flax-user"]
+    if d.kind in HEAD_KINDS and d.drives:      # a lab-rack head: its kind setup checked
+        out += ["kind-check"]
     if any(n.startswith("pcie") for n in d.links):
         out += ["ha-config", "ha-test"]
     # a lab standup rack: no rack integration test, so no iperf mesh (integration_tests)
     return out + (["deploy-iperf"] if d.integration else []) + ["deploy-stress"]
+
+
+def phases_for(g) -> tuple:
+    """The Deploy phases a rack has: kind-check is a lab rack's (its heads' kind setup)."""
+    return PHASES if g.lab else tuple(p for p in PHASES if p != "kind-check")
+
+
+def from_phases_for(g) -> tuple:
+    """The starts a rack offers: "checks" (a live host's own OS kept) is a lab rack's."""
+    return FROM_PHASES if g.lab else tuple(p for p in FROM_PHASES if p != "checks")
 
 
 def deploy_why(lr, g, before: str | None = None) -> dict[str, str]:
@@ -152,7 +171,10 @@ def deploy_why(lr, g, before: str | None = None) -> dict[str, str]:
     for d in g.devices:
         rungs = deploy_rungs(d)
         for r in (rungs[:rungs.index(before)] if before in rungs else rungs):
-            v = (lr.get((d.pos, r)) or {}).get("verdict")
+            run_ = lr.get((d.pos, r)) or {}
+            v = run_.get("verdict")
+            if v == "skip" and (run_.get("detail") or {}).get("reason") == EXISTING_OS:
+                continue                # a lab rack's live host: its own OS, kept on purpose
             if r == "install" and v in (None, "skip") \
                     and (lr.get((d.pos, "firstboot")) or {}).get("verdict") == "pass":
                 continue
@@ -251,7 +273,16 @@ _BLKID_DISK = re.compile(rf"^/dev/{INSTALL_DISK}(p\d+)?:", re.M)
 NOT_BLANK = "disk not blank / unknown — reinstall needs the typed order id"
 
 
-def disk_blank(odir, lr, pos) -> tuple[bool | None, str]:
+def install_disk(d) -> str:
+    """The disk the OS lives on: SATA sda on a Leopard (by kind, or the FRU family of the
+    hardware placed in a head's slot), the wiwynn-tp autoinstall's nvme0n1 otherwise."""
+    fam = (d.placed or {}).get("family") if getattr(d, "placed", None) else None
+    if d.kind == "compute-leopard" or fam == "leopard":
+        return "sda"
+    return INSTALL_DISK
+
+
+def disk_blank(odir, lr, pos, disk: str = INSTALL_DISK) -> tuple[bool | None, str]:
     """Is the install disk (INSTALL_DISK) of `pos` blank, by the live image's inventory
     in `lr` (its lsblk + blkid captures)? (True, why): lsblk lists it as a disk with no
     child row (no partition, LVM, md, dm) and blkid names no signature on it or its
@@ -266,21 +297,24 @@ def disk_blank(odir, lr, pos) -> tuple[bool | None, str]:
             return None
     lsblk, blkid = text("lsblk"), text("blkid")
     if not lsblk or not lsblk.lstrip().startswith("NAME") or not (blkid or "").strip():
-        return None, f"no inventory lsblk/blkid capture for {INSTALL_DISK}"
+        return None, f"no inventory lsblk/blkid capture for {disk}"
     lines = lsblk.splitlines()[1:]
-    at = next((i for i, ln in enumerate(lines) if ln.split()[:1] == [INSTALL_DISK]), None)
+    at = next((i for i, ln in enumerate(lines) if ln.split()[:1] == [disk]), None)
     if at is None or "disk" not in lines[at].split()[5:6]:
-        return None, f"{INSTALL_DISK} not listed as a disk by lsblk"
+        return None, f"{disk} not listed as a disk by lsblk"
     nxt = lines[at + 1] if at + 1 < len(lines) else ""
     if nxt and not nxt[:1].isalnum():
-        return False, f"{INSTALL_DISK} has {nxt.split()[0].lstrip('├└│─ ')} (lsblk)"
-    if m := _BLKID_DISK.search(blkid):
+        return False, f"{disk} has {nxt.split()[0].lstrip('├└│─ ')} (lsblk)"
+    sig = re.compile(rf"^/dev/{disk}(p?\d+)?:", re.M)
+    if m := sig.search(blkid):
         return False, f"blkid: {m.group(0).rstrip(':')} has a signature"
-    return True, f"{INSTALL_DISK} blank (lsblk: no partition; blkid: no signature)"
+    return True, f"{disk} blank (lsblk: no partition; blkid: no signature)"
 
 
-def blank_positions(odir, lr, positions) -> set[str]:
-    return {p for p in positions if disk_blank(odir, lr, p)[0] is True}
+def blank_positions(odir, lr, positions, disks: dict | None = None) -> set[str]:
+    """disks: {pos: install disk} (install_disk per device); INSTALL_DISK when absent."""
+    return {p for p in positions
+            if disk_blank(odir, lr, p, (disks or {}).get(p, INSTALL_DISK))[0] is True}
 
 
 def plan(lr, g, *, positions=None, from_phase="install", reinstall=None, waive=None,
@@ -294,8 +328,8 @@ def plan(lr, g, *, positions=None, from_phase="install", reinstall=None, waive=N
     install target with no install record must have its install disk proven blank."""
     if installed is None:
         installed = _installed_now(lr)
-    if from_phase not in FROM_PHASES:
-        raise GateError(f"from must be one of {', '.join(FROM_PHASES)}")
+    if from_phase not in from_phases_for(g):
+        raise GateError(f"from must be one of {', '.join(from_phases_for(g))}")
     hosts = [d for d in g.devices if d.endpoints.get("hosts")]
     if positions:
         unknown = sorted(set(positions) - {d.pos for d in hosts})
@@ -307,6 +341,12 @@ def plan(lr, g, *, positions=None, from_phase="install", reinstall=None, waive=N
     if not targets:
         raise GateError("no host-bearing device to deploy")
     w = check_waivers(g, waive, [d.pos for d in targets])
+    if from_phase == "checks":
+        none = [d.pos for d in targets if d.pos not in installed]
+        if none:
+            raise GateError(f"deploy from checks needs an installed OS (Discover found the "
+                            f"node up on it): {', '.join(none)}")
+        return targets, {}, {}
     if from_phase in LATE_FROM:
         pre = deploy_why(lr, g, before="deploy-iperf")
 
@@ -1004,6 +1044,19 @@ def _iperf(ctx, R, cr, prog, ips, xs, all_xs):
 
 
 # ---------------------------------------------------------------- stress
+def _kind_check(ctx, R, cr, x):
+    """A lab-rack head's kind setup, checked on its OS (nothing is changed)."""
+    user, pw = cr.host
+    ip = x.ips.get("host")
+
+    def run(script):
+        rc, out, _err = R.host_run(ip, user, pw, script, timeout=120, runner=ctx.runner)
+        return rc, out
+    enc = ctx.g.device(x.d.drives).expect if x.d.drives else {}
+    r = _rung(ctx, x.pos, "kind-check", lambda: R.kind_check(x.d.kind, run, enc))
+    _out(x, "kind-check", r)
+
+
 def _stress(ctx, R, cr, prog, xs):
     if not xs:
         return
@@ -1043,7 +1096,8 @@ def run_deploy(ctx, *, positions: list[str] | None = None, from_phase: str = "in
                                         reinstall=reinstall, waive=waive,
                                         installed=installed_positions(ctx.db, lr),
                                         blank=blank_positions(ctx.dir, lr,
-                                                              [d.pos for d in g.devices]),
+                                                              [d.pos for d in g.devices],
+                                                              {d.pos: install_disk(d) for d in g.devices}),
                                         firstboot=firstboot)
     fb = set(firstboot) if from_phase == "install" else set()
     who = clean_who(who)
@@ -1060,7 +1114,7 @@ def run_deploy(ctx, *, positions: list[str] | None = None, from_phase: str = "in
                                + (f"; from firstboot (installed): {', '.join(sorted(fb))}"
                                   if fb else "")
                                + (" (reinstall confirmed)" if reinstall == g.order else ""))
-    if from_phase in LATE_FROM:     # no Qualify gate (operator-accepted): say who it let by
+    if from_phase in (*LATE_FROM, "checks"):   # no Qualify gate (operator-accepted): say who it let by
         qwhy = qualify_why(lr, g)
         unq = [f"{d.pos} whose qualify is {qwhy[d.pos]}" for d in targets if d.pos in qwhy]
         if unq:
@@ -1077,11 +1131,16 @@ def run_deploy(ctx, *, positions: list[str] | None = None, from_phase: str = "in
     rows = {x["pos"]: x for x in ctx.db.devices()}
     xs = [_Dev(d, ips.get(d.pos, {}), rows.get(d.pos) or {"pos": d.pos}, names.get(d.pos))
           for d in targets]
-    prog = _Progress(ctx, PHASES, ctx.db.set_deploy_progress)
-    if from_phase in ("install", "firstboot"):  # from a later phase: the earlier ones' rows stand
+    prog = _Progress(ctx, phases_for(g), ctx.db.set_deploy_progress)
+    if from_phase in ("install", "firstboot", "checks"):  # a later phase: earlier rows stand
         ctx.db.mark_stage_start(STAGE, [x.pos for x in xs])
     for x in xs:        # a late re-run captures no console: the install-console row stands
-        x.sol_done = from_phase in LATE_FROM
+        x.sol_done = from_phase in (*LATE_FROM, "checks")
+    if from_phase == "checks":      # a lab rack's live host: its own OS stays as it is
+        for x in xs:
+            for rung in ("install", "firstboot", CONSOLE, "flax-user"):
+                _record(ctx, x.pos, rung, RungResult(
+                    "skip", {"reason": EXISTING_OS, "headline": EXISTING_OS, "na": True}))
     for x in xs:        # an installed disk kept: its install row says so (deploy_why)
         if from_phase == "firstboot" or x.pos in fb:
             # na: nothing to do by design (the disk is kept), so the phase reads complete
@@ -1089,7 +1148,9 @@ def run_deploy(ctx, *, positions: list[str] | None = None, from_phase: str = "in
             _record(ctx, x.pos, "install", RungResult("skip", {"reason": why, "headline": why,
                                                                "na": True}))
     try:
-        for phase in PHASES[PHASES.index(from_phase):]:
+        start = CHECKS_FROM if from_phase == "checks" else from_phase
+        ph = phases_for(g)
+        for phase in ph[ph.index(start):]:
             if phase != "install":          # install checks Cancel per device
                 _cancel_out(ctx, xs)
             for x in xs:
@@ -1104,6 +1165,8 @@ def run_deploy(ctx, *, positions: list[str] | None = None, from_phase: str = "in
                 _wave(ctx, phase, run, lambda x: _firstboot(ctx, R, cr, x), MAX_PARALLEL, prog)
             elif phase == "user":
                 _user(ctx, R, cr, prog, run)
+            elif phase == "kind-check":
+                _wave(ctx, phase, run, lambda x: _kind_check(ctx, R, cr, x), len(run) or 1, prog)
             elif phase == "ha-config":
                 lr = ctx.db.latest_runs()
                 _wave(ctx, phase, run, lambda x: _ha_config(ctx, R, cr, lr, x), len(run), prog)

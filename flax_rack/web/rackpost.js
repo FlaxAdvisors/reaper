@@ -79,7 +79,7 @@ const ALERT_PHASES = ['discover', 'qualify', 'deploy', 'done'];
 const STAGE_BTNS = [['run', 'Run'], ['discover', 'Discover'], ['firmware', 'Firmware'],
                     ['qualify', 'Qualify'], ['deploy', 'Deploy'], ['done', 'Done']];
 // Deploy start-at phases that re-run just themselves on deployed nodes (no install, no gate)
-const LATE_FROM = ['iperf', 'stress'];
+const LATE_FROM = ['checks', 'iperf', 'stress'];   // no Qualify gate, no waiver
 // terminal escapes (colour, cursor moves, charset picks) and bare CRs out of the
 // relay's raw capture: the viewer is a <pre>, not a terminal
 const stripAnsi = (t) => t.replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]|\x1b[()][0-9A-Za-z]|\x1b[=>78DEHMc]|\r/g, '');
@@ -1131,7 +1131,7 @@ function App() {
     },
     openDeployDev(d) {
       if (!d) return;
-      this.devFrom = this.installed(d) ? 'firstboot' : 'install'; this.devReinText = ''; this.devReason = '';
+      this.devFrom = this.installed(d) ? (this.s.lab ? 'checks' : 'firstboot') : 'install'; this.devReinText = ''; this.devReason = '';
       this.devWaive = Object.fromEntries((d.gate_blockers || []).filter((r) => !r.startsWith('verdict ')).map((r) => [r, false]));
       this.depM = { pos: d.pos, msg: null };
     },
@@ -1146,7 +1146,8 @@ function App() {
     fromNote(f) {
       return f === 'firstboot' ? 'skip the install: boot the installed OS, then the rest'
         : f === 'iperf' ? 'deployed nodes: iperf, then stress (no power action)'
-        : f === 'stress' ? 'deployed nodes: stress only (no power action)' : '';
+        : f === 'stress' ? 'deployed nodes: stress only (no power action)'
+        : f === 'checks' ? 'lab rack, a live host: its own OS kept (no install / first boot / flax-user), kind checks + stress' : '';
     },
     depReady() {
       if (!this.depM || this.depLeft().length) return false;

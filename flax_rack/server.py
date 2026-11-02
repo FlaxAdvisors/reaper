@@ -95,7 +95,7 @@ from flax_rungs.pxeboot import PXE_DIR
 
 from . import devview, nodeact, process_report, report
 from .addressing import plan_addresses
-from .deploy import (_REASON_MAX, CONSOLE as INSTALL_CONSOLE, FROM_PHASES, PHASES as DEPLOY_PHASES,
+from .deploy import (_REASON_MAX, from_phases_for, phases_for, CONSOLE as INSTALL_CONSOLE, FROM_PHASES, PHASES as DEPLOY_PHASES,
                      GateError, blank_positions, clean_who, deploy_rungs,
                      deploy_why, gate_blockers, gate_why, ha_mode_of, installed_positions,
                      plan as deploy_plan, run_deploy, sweep_interrupted_installs)
@@ -590,7 +590,7 @@ def rack_state(r: Rack) -> dict:
         "qualify_phase_stages": {k: list(v) for k, v in PHASE_STAGES.items()},
         "qualify": {"passed": passed, "not_passed": not_passed,
                     "why": qualify_why(raw, g), "progress": db.qualify_progress()},
-        "deploy_phases": list(DEPLOY_PHASES), "deploy_from": list(FROM_PHASES),
+        "deploy_phases": list(phases_for(g)), "deploy_from": list(from_phases_for(g)),
         "deploy": {"passed": not dwhy,
                    "not_passed": [d.pos for d in gp.devices if d.pos in dwhy],
                    "why": dwhy, "progress": db.deploy_progress(), "ha_mode": ha,
@@ -854,8 +854,8 @@ class App:
                 return 400, {"error": f"unknown position: {', '.join(unknown)}"}
             kw["positions"] = sorted(set(pos))
         frm = body.get("from", "install")
-        if frm not in FROM_PHASES:
-            return 400, {"error": f"from must be one of {', '.join(FROM_PHASES)}"}
+        if frm not in from_phases_for(r.g):
+            return 400, {"error": f"from must be one of {', '.join(from_phases_for(r.g))}"}
         rein = body.get("reinstall")
         if rein is not None and rein != r.g.order:
             return 400, {"error": "reinstall must be the order id"}
