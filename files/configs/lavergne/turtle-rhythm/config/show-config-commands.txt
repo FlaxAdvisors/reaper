@@ -24,5 +24,4 @@ net add time ntp server 1.cumulusnetworks.pool.ntp.org iburst
 net add time ntp server 2.cumulusnetworks.pool.ntp.org iburst
 net add time ntp server 3.cumulusnetworks.pool.ntp.org iburst
 net add time ntp source eth0
-net add dns nameserver ipv4 192.168.88.1
-net add dns nameserver ipv4 192.168.88.2
+net add dns nameserver ipv4 192.168.88.10
