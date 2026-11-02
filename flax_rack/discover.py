@@ -127,10 +127,13 @@ def match_placed(d: Device, mine: dict[str, PortKey], by_port, switch_id: str,
     want = [m for m in (p.get("host_mac"), p.get("bmc_mac")) if m]
     key = mine.get("mezz0")
     here = by_port.get(key, []) if key else []
-    if want and all(m in here for m in want) or (p.get("bmc_mac") and p["bmc_mac"] in here):
-        host = p.get("host_mac")
-        return DeviceMatch(d.pos, "found", host_mac=host, bmc_mac=p.get("bmc_mac"),
-                           note="" if host in here else "host MAC not seen")
+    if any(m in here for m in want):
+        # either placed MAC on the placed port is this hardware (a powered-off host, or a
+        # BMC whose MAC aged out of the FDB, leaves only the other one)
+        host, bmc = p.get("host_mac"), p.get("bmc_mac")
+        unseen = [n for n, m in (("host", host), ("BMC", bmc)) if m and m not in here]
+        return DeviceMatch(d.pos, "found", host_mac=host, bmc_mac=bmc,
+                           note=", ".join(f"{n} MAC not seen" for n in unseen))
     for k, macs in by_port.items():
         if k != key and any(m in macs for m in want):
             where = port_label(sw, k)
