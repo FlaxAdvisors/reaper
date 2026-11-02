@@ -71,6 +71,7 @@ from .addressing import plan_addresses
 from .creds import SWITCH_KEYS
 from . import unplaced
 from .discover import _port_macs, match, port_label
+from .geometry import VIA_HEAD
 from .kea_client import KeaError
 from .stages import cancelled, creds, effective, source
 from .switches import FdbEntry
@@ -997,6 +998,15 @@ def _unsupported(ctx, env, d):
         w.skip(s, "switchportlink failed")
 
 
+def _via_head(ctx, env, d):
+    """A lab-rack enclosure with no switch-side identity (Big Basin, Lightning): every
+    step n/a -- it is judged through its head's PCIe (Qualify enclosure-check)."""
+    w = Walk(ctx, d.pos)
+    head = next((x.pos for x in ctx.g.devices if x.drives == d.pos), None)
+    for s in DISCOVER_STEPS:
+        w.skip(s, f"judged through its head {head or '?'} (Qualify enclosure-check)", na=True)
+
+
 # ---------------------------------------------------------------- switches
 def _switch_ladder(ctx, env, s, turtles, prev):
     """Wedge (sonic + bmc) / Dell (sonic): MACs from the turtle port, IPs from leases."""
@@ -1304,7 +1314,9 @@ def run_discover(ctx, *, positions: list[str] | None = None) -> None:
     for d in devs:
         ep = d.endpoints
         dm = env.match.devices.get(d.pos) if env.match else None
-        if ep["ioms"] and not ep["hosts"] and not ep["bmc"]:
+        if d.kind in VIA_HEAD:
+            jobs.append((d.pos, lambda d=d: _via_head(ctx, env, d)))
+        elif ep["ioms"] and not ep["hosts"] and not ep["bmc"]:
             jobs.append((d.pos, lambda d=d: _jbod(ctx, env, d)))
         elif env.fdb_err is None and dm is not None and dm.status == "unsupported":
             jobs.append((d.pos, lambda d=d: _unsupported(ctx, env, d)))

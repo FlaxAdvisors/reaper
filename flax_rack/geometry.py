@@ -23,6 +23,10 @@ _EP_KEYS = ("hosts", "bmc", "ioms")
 # head kind -> the kind of enclosure it drives (Device.drives names that enclosure's pos);
 # the enclosure is judged through the head's PCIe (Qualify enclosure-check)
 HEAD_KINDS = {"bb-head": "bigbasin", "lightning-head": "lightning", "bc-head": "bc-jbod"}
+# enclosures with no switch-side identity of their own (their BMC is not on the rack
+# switch): present when the head that drives them is placed; the BC JBOD is not one --
+# its IOMs are on the switch and are placed like any hardware
+VIA_HEAD = frozenset(("bigbasin", "lightning"))
 # which BryceCanyon IOM each iomN link is cabled to: `check_pal_sku.sh` reports it as
 # "IOM Location: Side A|B". A device may set its own {"sides": {"iom1": "A", ...}}.
 KIND_SIDES = {"bc-jbod": {"iom1": "A", "iom2": "B"}}
@@ -320,6 +324,8 @@ def absent(g: Geometry, placements: dict[str, dict]) -> set[str]:
     if not g.lab:
         return set()
     have = {k.split(".", 1)[0] for k in placements}
+    have |= {d.drives for d in g.devices if d.pos in have and d.drives
+             and g.device(d.drives).kind in VIA_HEAD}
     return {d.pos for d in g.devices if d.pos not in have}
 
 

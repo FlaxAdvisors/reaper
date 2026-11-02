@@ -80,11 +80,12 @@ from types import SimpleNamespace
 
 from flax_post import population, qualify_rules, shipchecks
 from flax_post.observe import family_map_live, fru
-from flax_rungs import agent, fabric, fio, ha, hostssh, identity, iperf, liveboot, sol
+from flax_rungs import agent, enclosure, fabric, fio, ha, hostssh, identity, iperf, liveboot, sol
 from flax_rungs.result import UNMEASURED, RungResult, not_passed
 
 from . import switches
 from .addressing import plan_addresses
+from .geometry import HEAD_KINDS, VIA_HEAD
 from .discover_ladder import DISCOVER_STEPS
 from .stages import _rung, cancelled, creds, effective
 from .switches import LldpEntry
@@ -101,7 +102,9 @@ PHASE_STAGES = {    # the agent's FLAX_QUAL_STAGES per phase; together = ORDER_S
 NET_RUNGS = ("ha-path", "fabric-addr", "iperf-mesh")
 # judged by the engine from the inventory capture (Post's order: after fio); never gate
 ENGINE_CHECKS = ("population-check", *shipchecks.SHIP_CHECKS)
-NON_GATING = (*ENGINE_CHECKS, "console")
+# a lab-rack head: its enclosure judged through its PCIe from the inventory captures
+ENCLOSURE = "enclosure-check"
+NON_GATING = (*ENGINE_CHECKS, ENCLOSURE, "console")
 # order.db rows written before Post's names were adopted: shown under the new name
 OLD_RUNG_NAMES = {"pop": "population-check", "agent-launch": "agent-reachable"}
 MAX_PARALLEL = 8            # concurrent live boots (BMC power actions) in the boot phase
@@ -136,6 +139,7 @@ def device_rungs(d) -> list[str]:
     # the battery: a dead agent is named on the stage it was in first (_poll)
     out = ["pxe-live", "agent-reachable",
            *PHASE_STAGES["inventory"], *PHASE_STAGES["storage"], *ENGINE_CHECKS,
+           *([ENCLOSURE] if d.kind in HEAD_KINDS and d.drives else []),
            *PHASE_STAGES["burn"], "agent-stages"]
     if any(n.startswith("pcie") for n in d.links):
         out += ["ha-path", "fabric-addr"]
@@ -181,9 +185,17 @@ def qualify_why(lr, g) -> dict[str, str]:
     order) that is not passed, as result.not_passed words it ("not measured: <rung>"
     for an unmeasured one); Post's verdict when every rung looks passed but it is not."""
     out = {}
+    heads = {x.drives: x.pos for x in g.devices if x.drives}
     for d in g.devices:
         need = device_rungs(d)
         run = lambda r: lr.get((d.pos, r)) or {}    # noqa: E731
+        if d.kind in VIA_HEAD:
+            # judged through its head: passed exactly when the head's enclosure-check did
+            h = heads.get(d.pos)
+            v = (lr.get((h, ENCLOSURE)) or {}).get("verdict") if h else None
+            if v != "pass":
+                out[d.pos] = f"through {h or 'no head'}: " + not_passed(ENCLOSURE, v)
+            continue
         if not need:
             bad = [s for s in DISCOVER_STEPS
                    if run(s).get("verdict") not in ("pass", "skip")
@@ -333,6 +345,19 @@ def oob_fru0(R, cr, bmc_ip, *, runner=None) -> tuple[str | None, str | None]:
     r = R.tp_fru(bmc_ip, cr.bmc, runner=runner)
     text = (r.artifacts or {}).get("fru0.txt")
     return (text, None) if text else (None, r.detail.get("error") or "FRU 0 not read")
+
+
+def enclosure_rung(g, d, arts: dict) -> RungResult:
+    """A lab-rack head's enclosure (d.drives) judged from its inventory captures against
+    the enclosure's BoM `expect`; no lspci capture is a fail, never a pass."""
+    text = arts.get("lspci-vv")
+    if not text:
+        return RungResult("fail", {"headline": "no lspci -vv capture from the inventory",
+                                   "error": "no lspci -vv capture"})
+    enc = g.device(d.drives)
+    r = enclosure.judge(d.kind, enc.expect, enclosure.facts(text, arts.get("lsscsi-c") or ""))
+    r.detail["enclosure"] = enc.pos
+    return r
 
 
 def population_rung(ctx, d, arts: dict, fru0=(None, "not read")) -> RungResult:
@@ -531,7 +556,8 @@ def _phase_rungs(phase, d) -> list[tuple[str, str]]:
         return [("pxe-live", STAGE)]
     if phase == "inventory":
         return [(r, STAGE) for r in ("agent-reachable", "agent-stages",
-                                     *PHASE_STAGES["inventory"], *ENGINE_CHECKS)]
+                                     *PHASE_STAGES["inventory"], *ENGINE_CHECKS,
+                                     *([ENCLOSURE] if ENCLOSURE in device_rungs(d) else []))]
     if phase in PHASE_STAGES:
         return [(r, STAGE) for r in PHASE_STAGES[phase]]
     return [(r, STAGE) for r in NET_RUNGS if r in device_rungs(d)]
@@ -734,7 +760,8 @@ def _agent_phase(ctx, R, cr, prog, phase, xs):
             return
         x.failed = phase
         _skip(ctx, x.pos, ["agent-stages", *want]
-              + (list(ENGINE_CHECKS) if phase == "inventory" else []), "agent-reachable failed")
+              + ([*ENGINE_CHECKS, *([ENCLOSURE] if ENCLOSURE in device_rungs(x.d) else [])]
+                 if phase == "inventory" else []), "agent-reachable failed")
         prog.done(x.pos)
 
     _wave(ctx, phase, xs, launch, len(xs))
@@ -833,6 +860,12 @@ def _poll(ctx, R, cr, phase, x):
             except Exception as e:          # noqa: BLE001 -- a judge never sinks the phase
                 res = RungResult("fail", {"error": f"{type(e).__name__}: {e}"})
             _record(ctx, pos, name, res, STAGE, run_seg)
+        if ENCLOSURE in device_rungs(x.d):
+            try:
+                res = enclosure_rung(ctx.g, x.d, arts)
+            except Exception as e:          # noqa: BLE001 -- a judge never sinks the phase
+                res = RungResult("fail", {"error": f"{type(e).__name__}: {e}"})
+            _record(ctx, pos, ENCLOSURE, res, STAGE, run_seg)
 
 
 def fio_detail(detail: dict, verdict, fio_text, alldisks, lsblk) -> dict:
