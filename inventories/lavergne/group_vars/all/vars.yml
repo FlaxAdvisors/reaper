@@ -425,3 +425,6 @@ apply_pxe_payloads_override_vids: [31, 32, 33]
 # the primary bang; eindhoven keeps the role default (bang-gouda).
 apply_post_fleet_viewer_hosts: ["bang-rhythm"]
 apply_rackpost_hosts: ["bang-rhythm"]   # customer-rack order server; lavergne serves its orders from bang-rhythm
+# lab racks rackpost serves by name (/howlin/, /c2g/): nginx proxies exactly these
+# (roles apply_flax_stack + apply_bang_services nginx templates); spec 2026-11-02 lab racks
+rackpost_lab_prefixes: ["howlin", "c2g"]
