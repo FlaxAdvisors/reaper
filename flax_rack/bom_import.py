@@ -63,6 +63,9 @@ def import_bom(xlsx_path, *, order, customer, site, vid, prefix):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")  # pivot-cache UserWarning
         wb = openpyxl.load_workbook(str(xlsx_path), data_only=True)
+    if HOWLIN_SHEET in wb.sheetnames:
+        return _import_lab(wb[HOWLIN_SHEET], order=order, customer=customer, site=site,
+                           vid=vid, prefix=prefix)
     ws = wb["F4 rack elevation"]
     guide = _cable_guide(wb["Cable Guide v5"]) if "Cable Guide v5" in wb.sheetnames else {}
 
@@ -165,3 +168,86 @@ def import_bom(xlsx_path, *, order, customer, site, vid, prefix):
         "iperf_server": None, "switches": switches, "devices": devices,
     }
     return geometry, contradictions
+
+
+# ---------------------------------------------------------------- lab racks (howlin)
+# The howlin elevation ("HOWLIN Elevation", BOM v2 2025-07-21): one title per device,
+# the number in the title is the device's BOTTOM OU (the row's OU label is its top).
+# No links: howlin's single Arista replaced the BOM's Wedge/DCS202 plan, so ports are
+# learned by operator placement. A head's `drives` comes from the enclosure titles
+# ("connected to R18") or, for Big Basin / Bryce Canyon, from the BoM sheet.
+HOWLIN_SHEET = "HOWLIN Elevation"
+_LAB_TITLES = [
+    (re.compile(r"^(?:Bang )?Leopard ([LCR])(\d\d)$"), "compute-leopard"),
+    (re.compile(r"^Tioga Pass ([LCR])(\d\d)$"), "compute-tp"),
+    (re.compile(r"^Lightning Tioga Pass ([LCR])(\d\d)$"), "lightning-head"),
+    (re.compile(r"^Big Basin control Tioga Pass ([LCR])(\d\d)$"), "bb-head"),
+    (re.compile(r"^JBOD Bryce Canyon Tioga Pass ([LCR])(\d\d)$"), "bc-head"),
+    (re.compile(r"^Lightning (U\.2|M\.2) JBOF (\d\d) \(connected to ([LCR]\d\d)\)$"), "lightning"),
+    (re.compile(r"^Big Basin (\d\d)$"), "bigbasin"),
+    (re.compile(r"^Yosemite v2 ([A-D])(\d\d)$"), "yv2"),
+    (re.compile(r"^Yosemite v3 (\d\d)$"), "yv3"),
+]
+_LIGHTNING_NVME = {"U.2": 4, "M.2": 8}     # BoM: 4x 256GB U.2 / 8x 256GB M.2 per JBOF
+BIGBASIN_GPUS = 8                          # BoM: Big Basin w/ 8x V100 SXM2
+BC_DISKS = 4                               # BoM: Bryce Canyon JBOD w/ 4x 1TB SAS HDD
+# the rack as built (survey 2026-11-02): ONE Arista carries hosts and BMCs (NC-SI)
+LAB_SWITCH = {"id": "H", "role": "mgmt", "ou": 39, "model": "arista", "nos": "eos",
+              "mgmt_ip": "192.168.88.34", "uplink_ports": [32]}
+
+
+def _import_lab(ws, *, order, customer, site, vid, prefix):
+    devices, notes, drives = [], [], {}
+    for r in range(1, ws.max_row + 1):
+        top = _txt(ws.cell(r, 1).value)
+        if not top.isdigit():
+            continue
+        for c in range(2, 26):
+            t = _txt(ws.cell(r, c).value)
+            for rx, kind in _LAB_TITLES:
+                m = rx.match(t)
+                if not m:
+                    continue
+                g, col, extra = m.groups(), None, {}
+                if kind == "lightning":
+                    bottom, pos = int(g[1]), f"J{g[1]}"
+                    extra["expect"] = {"nvme": _LIGHTNING_NVME[g[0]]}
+                    drives[g[2]] = pos
+                elif kind == "bigbasin":
+                    bottom, pos = int(g[0]), f"BB{g[0]}"
+                    extra["expect"] = {"gpu": BIGBASIN_GPUS}
+                elif kind == "yv2":
+                    bottom, pos, col = int(g[1]), f"{g[0]}{g[1]}", "ABCD".index(g[0]) + 1
+                elif kind == "yv3":
+                    bottom, pos = int(g[0]), f"Y{g[0]}"
+                else:
+                    col, bottom = g[0], int(g[1])
+                    pos = f"{col}{g[1]}"
+                devices.append({"pos": pos, "ou": bottom, "h": int(top) - bottom + 1,
+                                "col": col, "kind": kind, "part": "", **extra})
+    by_kind = {}
+    for d in devices:
+        by_kind.setdefault(d["kind"], []).append(d)
+    for d in by_kind.get("bb-head", []):
+        bb = by_kind.get("bigbasin", [])
+        if len(bb) == 1:
+            drives[d["pos"]] = bb[0]["pos"]
+    # the Bryce Canyon JBOD is on the BoM sheet but not in the elevation: seeded at the
+    # free OU 9-10 driven by the bc-head, for the operator to check
+    for d in by_kind.get("bc-head", []):
+        devices.append({"pos": "BC09", "ou": 9, "h": 2, "col": None, "kind": "bc-jbod",
+                        "part": "", "expect": {"disks": BC_DISKS}})
+        drives[d["pos"]] = "BC09"
+        notes.append("BC09 (Bryce Canyon JBOD) placed from the BoM sheet, check the OU: "
+                     "the elevation has no JBOD title")
+    for d in devices:
+        if d["pos"] in drives:
+            d["drives"] = drives[d["pos"]]
+    devices.sort(key=lambda d: (-d["ou"], str(d["col"] or "")))
+    geometry = {
+        "order": order, "rack": "", "customer": customer, "site": site, "lab": True,
+        "integration_tests": False,
+        "network": {"vid": vid, "cidr": f"172.{vid}.0.0/16", "prefix": prefix},
+        "iperf_server": None, "switches": [dict(LAB_SWITCH)], "devices": devices,
+    }
+    return geometry, notes
