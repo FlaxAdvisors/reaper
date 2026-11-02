@@ -97,11 +97,25 @@ def match_ioms(d: Device, mine: dict[str, int], by_port, switch_id: str) -> Devi
     return _match_ioms(d.pos, iom_ports, by_port)
 
 
+def match_none(d: Device, mine: dict[str, int], by_port, switch_id: str) -> DeviceMatch:
+    """A kind with no switch-side identity yet (an enclosure's own BMC that is not cabled to
+    the rack switch -- judged through its head -- or a Yosemite chassis: a later plan)."""
+    return DeviceMatch(d.pos, "unsupported", note=f"no MAC matcher for kind {d.kind}")
+
+
 Matcher = Callable[[Device, dict[str, int], dict[int, list[str]], str], DeviceMatch]
 MATCHERS: dict[str, Matcher] = {
     "compute-tp": match_host_bmc,
     "bc-head-tp": match_host_bmc,
     "bc-jbod": match_ioms,
+    "compute-leopard": match_host_bmc,
+    "bb-head": match_host_bmc,
+    "lightning-head": match_host_bmc,
+    "bc-head": match_host_bmc,
+    "bigbasin": match_none,
+    "lightning": match_none,
+    "yv2": match_none,
+    "yv3": match_none,
 }
 
 
