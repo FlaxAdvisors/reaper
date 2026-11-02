@@ -15,6 +15,8 @@ KIND_ENDPOINTS = {"compute-tp": {"bmc": 1, "hosts": 1},
                   "bb-head": {"bmc": 1, "hosts": 1},
                   "lightning-head": {"bmc": 1, "hosts": 1},
                   "bc-head": {"bmc": 1, "hosts": 1},
+                  "gc-head": {"bmc": 1, "hosts": 1},
+                  "grandcanyon": {"ioms": 2},
                   "bigbasin": {"bmc": 1},
                   "lightning": {"bmc": 1},
                   "yv2": {"bmc": 1, "hosts": 4},
@@ -22,18 +24,21 @@ KIND_ENDPOINTS = {"compute-tp": {"bmc": 1, "hosts": 1},
 _EP_KEYS = ("hosts", "bmc", "ioms")
 # head kind -> the kind of enclosure it drives (Device.drives names that enclosure's pos);
 # the enclosure is judged through the head's PCIe (Qualify enclosure-check)
-HEAD_KINDS = {"bb-head": "bigbasin", "lightning-head": "lightning", "bc-head": "bc-jbod"}
+HEAD_KINDS = {"bb-head": "bigbasin", "lightning-head": "lightning", "bc-head": "bc-jbod",
+              "gc-head": "grandcanyon"}
 # enclosures with no switch-side identity of their own (their BMC is not on the rack
 # switch): present when the head that drives them is placed; the BC JBOD is not one --
 # its IOMs are on the switch and are placed like any hardware
 VIA_HEAD = frozenset(("bigbasin", "lightning"))
 # which BryceCanyon IOM each iomN link is cabled to: `check_pal_sku.sh` reports it as
 # "IOM Location: Side A|B". A device may set its own {"sides": {"iom1": "A", ...}}.
-KIND_SIDES = {"bc-jbod": {"iom1": "A", "iom2": "B"}}
+KIND_SIDES = {"bc-jbod": {"iom1": "A", "iom2": "B"}, "grandcanyon": {"iom1": "A", "iom2": "B"}}
 IOM_SIDES = ("A", "B")
 # a switch's own endpoints on the site mgmt network (the turtle port in site_port):
 # discovered by MAC + current lease, never reserved (vid 26 is a dynamic pool)
-SWITCH_ENDPOINTS = {"wedge100s": {"sonic": 1, "bmc": 1}, "dell-n3248te": {"sonic": 1}}
+SWITCH_ENDPOINTS = {"wedge100s": {"sonic": 1, "bmc": 1}, "dell-n3248te": {"sonic": 1},
+                    # a development target (SONiC port pending): its BMC only -- FRU + weutil
+                    "wedge400": {"bmc": 1}}
 MAX_COL = 5
 COL_ALIAS = {"L": 1, "C": 2, "R": 3}
 
@@ -91,7 +96,7 @@ class Device:
     pop: str | None = None
     endpoints: dict[str, int] = field(default_factory=dict)   # {hosts, bmc, ioms}, all keys
     sides: dict[str, str] = field(default_factory=dict)       # {"iom1": "A", ...} expected
-    drives: str | None = None       # a head: the enclosure pos it drives (HEAD_KINDS)
+    drives: tuple = ()              # a head: the enclosure pos(es) it drives (HEAD_KINDS)
     expect: dict = field(default_factory=dict)   # an enclosure: {"gpu": 8} / {"nvme": 4} / {"disks": 4}
     placed: dict | None = None      # lab racks: the operator's placement (with_placements)
     integration: bool = True        # the rack's integration_tests (rack-wide rungs: iperf mesh)
@@ -185,6 +190,29 @@ def parse_site_port(sp, ctx: str) -> dict | None:
     return dict(sp)
 
 
+def parse_drives(v, ctx: str) -> tuple:
+    """A head's driven enclosure(s): one pos or a list (a Lightning cubby holds two JBOFs)."""
+    if v is None:
+        return ()
+    vs = [v] if isinstance(v, str) else v
+    if not isinstance(vs, list) or not vs or not all(isinstance(x, str) for x in vs):
+        raise GeometryError(f"{ctx}: bad drives {v!r} (a pos or a list of them)")
+    return tuple(vs)
+
+
+def merged_expect(g: "Geometry", d: Device) -> dict:
+    """What a head must see behind it: its driven enclosures' expects, summed."""
+    out: dict = {}
+    for e in d.drives:
+        for k, n in g.device(e).expect.items():
+            out[k] = out.get(k, 0) + n
+    return out
+
+
+def head_of(g: "Geometry", pos: str):
+    return next((x for x in g.devices if pos in x.drives), None)
+
+
 def parse_expect(ex, ctx: str) -> dict:
     """What an enclosure must show through its head: {"gpu"|"nvme"|"disks": n}."""
     if ex is None:
@@ -255,21 +283,22 @@ def parse_geometry(data: dict) -> Geometry:
             kind=kind, part=_req(x, "part", pos), links=links, pop=x.get("pop"),
             endpoints=endpoints,
             sides=parse_sides(kind, x.get("sides"), endpoints["ioms"], pos),
-            drives=x.get("drives"), expect=parse_expect(x.get("expect"), pos)))
+            drives=parse_drives(x.get("drives"), pos), expect=parse_expect(x.get("expect"), pos)))
     kinds = {d.pos: d.kind for d in devices}
     lab = data.get("lab", False)
     integ = data.get("integration_tests", not lab)
     for d in devices:
         d.integration = integ
     for d in devices:
-        if d.drives is None:
+        if not d.drives:
             continue
         want = HEAD_KINDS.get(d.kind)
         if want is None:
-            raise GeometryError(f"{d.pos}: a {d.kind} drives nothing (drives {d.drives!r})")
-        if kinds.get(d.drives) != want:
-            raise GeometryError(f"{d.pos}: drives {d.drives!r} must name a {want} "
-                                f"(got {kinds.get(d.drives) or 'no such device'})")
+            raise GeometryError(f"{d.pos}: a {d.kind} drives nothing (drives {list(d.drives)})")
+        for e in d.drives:
+            if kinds.get(e) != want:
+                raise GeometryError(f"{d.pos}: drives {e!r} must name a {want} "
+                                    f"(got {kinds.get(e) or 'no such device'})")
     if not isinstance(lab, bool) or not isinstance(integ, bool):
         raise GeometryError("lab / integration_tests must be true or false")
 
@@ -285,7 +314,8 @@ def parse_geometry(data: dict) -> Geometry:
 # another family placed there is a deviation (shown, recorded, never refused)
 KIND_FAMILIES = {"compute-tp": {"tiogapass"}, "bc-head-tp": {"tiogapass"},
                  "compute-leopard": {"leopard"}, "bb-head": {"tiogapass", "leopard"},
-                 "lightning-head": {"tiogapass", "leopard"}, "bc-head": {"tiogapass", "leopard"}}
+                 "lightning-head": {"tiogapass", "leopard"}, "bc-head": {"tiogapass", "leopard"},
+                 "gc-head": {"tiogapass", "leopard"}}
 
 
 def deviation(d: Device, placed: dict | None) -> str | None:
@@ -324,8 +354,8 @@ def absent(g: Geometry, placements: dict[str, dict]) -> set[str]:
     if not g.lab:
         return set()
     have = {k.split(".", 1)[0] for k in placements}
-    have |= {d.drives for d in g.devices if d.pos in have and d.drives
-             and g.device(d.drives).kind in VIA_HEAD}
+    have |= {e for d in g.devices if d.pos in have for e in d.drives
+             if g.device(e).kind in VIA_HEAD}
     return {d.pos for d in g.devices if d.pos not in have}
 
 

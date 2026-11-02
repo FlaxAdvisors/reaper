@@ -458,7 +458,7 @@ def _unplaced_view(g: Geometry, entries: list[dict]) -> list[dict]:
 
 
 def _via_head(g: Geometry, d, by_pos: dict) -> dict | None:
-    head = next((x for x in g.devices if x.drives == d.pos), None)
+    head = next((x for x in g.devices if d.pos in x.drives), None)
     if head is None:
         return None
     run = by_pos.get(head.pos, {}).get("enclosure-check") or {}
@@ -515,7 +515,7 @@ def rack_state(r: Rack) -> dict:
         _fio_view(r.dir, runs)
         devices.append({
             "pos": d.pos, "ou": d.ou, "h": d.h, "col": d.col, "kind": d.kind, "part": d.part,
-            "absent": d.pos in gone, "drives": d.drives, "expect": d.expect,
+            "absent": d.pos in gone, "drives": list(d.drives), "expect": d.expect,
             "placement": _placement_view(g, placements.get(d.pos)),
             # a lab-rack enclosure: what its head's Qualify enclosure-check saw
             "via_head": _via_head(g, d, by_pos),

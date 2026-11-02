@@ -1002,7 +1002,7 @@ def _via_head(ctx, env, d):
     """A lab-rack enclosure with no switch-side identity (Big Basin, Lightning): every
     step n/a -- it is judged through its head's PCIe (Qualify enclosure-check)."""
     w = Walk(ctx, d.pos)
-    head = next((x.pos for x in ctx.g.devices if x.drives == d.pos), None)
+    head = next((x.pos for x in ctx.g.devices if d.pos in x.drives), None)
     for s in DISCOVER_STEPS:
         w.skip(s, f"judged through its head {head or '?'} (Qualify enclosure-check)", na=True)
 
@@ -1074,7 +1074,9 @@ def _switch_ladder(ctx, env, s, turtles, prev):
                     info["role"]["bmc"], info["bmc_r"] = m, r
                     break
             rest = [m for m in macs if m != info["role"].get("bmc")]
-            if "bmc" in info["role"] and len(rest) == 1:
+            if "bmc" in info["role"] and not ep.get("sonic"):
+                pass                    # a BMC-only switch (Wedge 400 dev target)
+            elif "bmc" in info["role"] and len(rest) == 1:
                 info["role"]["sonic"] = rest[0]
             elif "bmc" not in info["role"]:
                 info["role_err"] = "no turtle MAC answered weutil as its own Local MAC"
@@ -1179,6 +1181,14 @@ def _switch_ladder(ctx, env, s, turtles, prev):
     bmc_block = w.blocked
     if w.blocked != "switchportlink":
         w.blocked = None
+    if not ep.get("sonic"):             # a BMC-only switch: no SONiC half to walk
+        why = f"no SONiC on {s.model} (BMC only)"
+        for st_ in ("host-mac-seen", "host-reserved", "host-leased", "live-iso-seen",
+                    "host-pinged", "host-ssh"):
+            w.skip(st_, why, na=True)
+        w.blocked = bmc_block
+        w.step("bmc-ready", ready)
+        return w
     w.step("host-mac-seen", lambda: mac_seen("sonic"))
     w.skip("host-reserved", no_res, na=True)
     w.step("host-leased", lambda: _leased(ctx, R, "SONiC", info["role"]["sonic"], None,

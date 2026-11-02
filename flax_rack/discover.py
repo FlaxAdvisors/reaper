@@ -153,6 +153,8 @@ MATCHERS: dict[str, Matcher] = {
     "bb-head": match_host_bmc,
     "lightning-head": match_host_bmc,
     "bc-head": match_host_bmc,
+    "gc-head": match_host_bmc,
+    "grandcanyon": match_ioms,
     "bigbasin": match_none,
     "lightning": match_none,
     "yv2": match_none,

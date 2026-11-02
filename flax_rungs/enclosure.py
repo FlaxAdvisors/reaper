@@ -18,7 +18,8 @@ _DEV = re.compile(r"^([0-9a-f]{2}):([0-9a-f]{2})\.([0-7])\s+([^:]+):\s*(.*)$")
 _BUS = re.compile(r"Bus:\s*primary=([0-9a-f]{2}),\s*secondary=([0-9a-f]{2}),\s*subordinate=([0-9a-f]{2})")
 _LNK = re.compile(r"LnkSta:\s*Speed [^,]*,\s*Width x(\d+)")
 _SWITCH = re.compile(r"PMC-Sierra|Microsemi|PM85\d\d", re.I)
-NAMES = {"bb-head": "Big Basin", "lightning-head": "Lightning", "bc-head": "Bryce Canyon JBOD"}
+NAMES = {"bb-head": "Big Basin", "lightning-head": "Lightning", "bc-head": "Bryce Canyon JBOD",
+         "gc-head": "Grand Canyon"}
 
 
 def _blocks(text: str) -> list[dict]:
@@ -95,11 +96,13 @@ def judge(head_kind: str, expect: dict, f: dict) -> RungResult:
             return out(False, f"no PM8536 fanout switch (no {NAMES[head_kind]} link)")
         return out(f["nvme_behind_switch"] == want,
                    f"{f['nvme_behind_switch']}/{want} NVMe behind the PM8536")
-    if head_kind == "bc-head":
-        want = expect.get("disks", 0)
+    if head_kind in ("bc-head", "gc-head"):
         if not f["sas_hba"]:
             return out(False, "no SAS HBA")
         if not f["sas_expander"]:
             return out(False, "no SAS expander")
+        if "disks" not in expect:       # no BoM count (Grand Canyon): the expander is the check
+            return out(True, f"{f['disks']} SAS disks (no BoM count)")
+        want = expect["disks"]
         return out(f["disks"] == want, f"{f['disks']}/{want} SAS disks")
     return RungResult("skip", {"headline": f"{head_kind} drives no enclosure", "na": True})

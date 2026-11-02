@@ -85,7 +85,7 @@ from flax_rungs.result import UNMEASURED, RungResult, not_passed
 
 from . import switches
 from .addressing import plan_addresses
-from .geometry import HEAD_KINDS, VIA_HEAD
+from .geometry import HEAD_KINDS, VIA_HEAD, merged_expect
 from .discover_ladder import DISCOVER_STEPS
 from .stages import _rung, cancelled, creds, effective
 from .switches import LldpEntry
@@ -185,7 +185,7 @@ def qualify_why(lr, g) -> dict[str, str]:
     order) that is not passed, as result.not_passed words it ("not measured: <rung>"
     for an unmeasured one); Post's verdict when every rung looks passed but it is not."""
     out = {}
-    heads = {x.drives: x.pos for x in g.devices if x.drives}
+    heads = {e: x.pos for x in g.devices for e in x.drives}
     for d in g.devices:
         need = device_rungs(d)
         run = lambda r: lr.get((d.pos, r)) or {}    # noqa: E731
@@ -354,9 +354,9 @@ def enclosure_rung(g, d, arts: dict) -> RungResult:
     if not text:
         return RungResult("fail", {"headline": "no lspci -vv capture from the inventory",
                                    "error": "no lspci -vv capture"})
-    enc = g.device(d.drives)
-    r = enclosure.judge(d.kind, enc.expect, enclosure.facts(text, arts.get("lsscsi-c") or ""))
-    r.detail["enclosure"] = enc.pos
+    r = enclosure.judge(d.kind, merged_expect(g, d),
+                        enclosure.facts(text, arts.get("lsscsi-c") or ""))
+    r.detail["enclosure"] = ", ".join(d.drives)
     return r
 
 

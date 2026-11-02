@@ -97,7 +97,7 @@ from flax_rungs.result import UNMEASURED, RungResult, not_passed
 
 from . import linkmon, switches
 from .addressing import plan_addresses
-from .geometry import HEAD_KINDS
+from .geometry import HEAD_KINDS, merged_expect
 from .qualify import (AGENT_STAGES, _Progress, _artifact, _measured, _safe, _stage_ok,
                       device_rungs, device_verdict, iface_of, parse_ip_link, qualify_why)
 from .stages import cancelled, creds, effective
@@ -1052,7 +1052,7 @@ def _kind_check(ctx, R, cr, x):
     def run(script):
         rc, out, _err = R.host_run(ip, user, pw, script, timeout=120, runner=ctx.runner)
         return rc, out
-    enc = ctx.g.device(x.d.drives).expect if x.d.drives else {}
+    enc = merged_expect(ctx.g, x.d)
     r = _rung(ctx, x.pos, "kind-check", lambda: R.kind_check(x.d.kind, run, enc))
     _out(x, "kind-check", r)
 
