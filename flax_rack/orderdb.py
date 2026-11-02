@@ -428,6 +428,13 @@ class OrderDB:
                 for r in self._all(f"SELECT * FROM waiver {where} ORDER BY id")]
 
     # ------------------------------------------------------------ placement (lab racks)
+    def set_unplaced(self, entries: list[dict]) -> None:
+        """Discover's latest list of hardware on the rack switch that no slot holds."""
+        self._set_meta_json("unplaced", entries)
+
+    def unplaced(self) -> list[dict]:
+        return self._meta_json("unplaced") or []
+
     # A fact like the installed OS: the operator put this hardware in this BOM slot. Not
     # a verdict, so Start fresh keeps it; each change is an event (the process report).
     def placements(self) -> dict[str, dict]:

@@ -69,9 +69,10 @@ from . import switches
 
 from .addressing import plan_addresses
 from .creds import SWITCH_KEYS
-from .discover import _port_macs, match
+from . import unplaced
+from .discover import _port_macs, match, port_label
 from .kea_client import KeaError
-from .stages import cancelled, creds, source
+from .stages import cancelled, creds, effective, source
 from .switches import FdbEntry
 
 STAGE = "discover"
@@ -1200,6 +1201,8 @@ def _read_mgmt(ctx, env):
     fdb = [FdbEntry(**e) for e in r.detail["fdb"]]
     env.by_port = _port_macs(fdb, sw)
     env.match = match(g, fdb, env.sw.id)
+    if g.lab:
+        run_step(ctx, "_rack", "unplaced", lambda: _unplaced(ctx, env))
     # MACs on ports no slot claims: the other half of a mis-cabled device's 'missing'
     m = env.match
     run_step(ctx, "_rack", "slot-match", lambda: ev(
@@ -1216,6 +1219,28 @@ def _read_mgmt(ctx, env):
             env.ifstatus_err = s.detail.get("error") or "fail"
     except Exception as e:                  # noqa: BLE001 -- only evidence for switchportlink
         env.ifstatus_err = f"{type(e).__name__}: {e}"
+
+
+def _unplaced(ctx, env) -> RungResult:
+    """Lab racks: list (never place) the hardware on ports no placement claims."""
+    macs = sorted({m for ms in env.by_port.values() for m in ms})
+    leases = {}
+    try:
+        for i in range(0, len(macs), 64):                  # GET /leases: <= 64 per call
+            for m, l in ctx.kea.leases(macs[i:i + 64]).items():
+                if lease_active(l, env.R.wall()):
+                    leases[m] = l.get("ip")
+    except KeaError as e:
+        return ev("unmeasured", f"leases not read: {e}")
+    probe = unplaced.fru_prober(env.R.tp_fru, env.cr.bmc, runner=ctx.runner)
+    found = unplaced.find(env.by_port, ctx.db.placements(), leases, probe,
+                          set(env.sw.uplink_ports), env.sw.id)
+    ctx.db.set_unplaced(found)
+    return ev("pass", f"{len(found)} unplaced device(s)",
+              [[port_label(env.sw, (e["port"], e["lane"])),
+                f"{e['product'] or 'no FRU answer'} {e['serial']}".strip()] for e in found],
+              ["hardware on the rack switch that no BOM slot holds: place it from the UI"],
+              unplaced=found, count=len(found))
 
 
 def _fdb_ev(r: RungResult) -> RungResult:
@@ -1251,6 +1276,7 @@ def wanted(g, positions):
 def run_discover(ctx, *, positions: list[str] | None = None) -> None:
     if ctx.db.closed_at():
         raise RuntimeError("order is closed")
+    ctx = effective(ctx)            # a lab rack: placed devices only, on their seen ports
     g = ctx.g
     devs, sws = wanted(g, positions)
     ctx.db.mark_stage_start("discover", [d.pos for d in devs] + [f"_sw-{s.id}" for s in sws]

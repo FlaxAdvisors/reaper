@@ -17,7 +17,7 @@ Discover rung needs the switch or BMC login, so missing creds never block Close.
 """
 import subprocess
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
@@ -25,7 +25,7 @@ from flax_rungs.ansible import INVENTORY
 from flax_rungs.result import RungResult
 
 from .creds import Creds
-from .geometry import Geometry
+from .geometry import Geometry, absent, with_placements
 from .kea_client import KeaClient
 from .orderdb import OrderDB
 
@@ -43,6 +43,18 @@ class OrderContext:
     rungs: object = None        # Discover's + Qualify's rung functions (None = the real ones)
     cancel: threading.Event = field(default_factory=threading.Event)   # the rack's Cancel
     links: object = None        # the rack's LinkPoller (live switch snapshots); None = read here
+
+
+def effective(ctx) -> "OrderContext":
+    """The context a stage runs with: on a lab rack, the geometry carries the operator's
+    placements (each placed device's mezz0 = the port its hardware was seen on) and the
+    absent BOM positions are left out; an order's context is returned as it is."""
+    if not ctx.g.lab:
+        return ctx
+    pl = ctx.db.placements()
+    eg = with_placements(ctx.g, pl)
+    gone = absent(ctx.g, pl)
+    return replace(ctx, g=replace(eg, devices=[d for d in eg.devices if d.pos not in gone]))
 
 
 def source(ctx) -> str:
