@@ -8,8 +8,21 @@ from dataclasses import dataclass, field
 # with 4 cards: {"bmc": 1, "hosts": 4}).
 KIND_ENDPOINTS = {"compute-tp": {"bmc": 1, "hosts": 1},
                   "bc-head-tp": {"bmc": 1, "hosts": 1},
-                  "bc-jbod": {"ioms": 2}}
+                  "bc-jbod": {"ioms": 2},
+                  # lab racks (howlin): a head's kind names the enclosure it drives; its
+                  # platform (Leopard / Tioga Pass) is the BMC FRU's, not the kind's
+                  "compute-leopard": {"bmc": 1, "hosts": 1},
+                  "bb-head": {"bmc": 1, "hosts": 1},
+                  "lightning-head": {"bmc": 1, "hosts": 1},
+                  "bc-head": {"bmc": 1, "hosts": 1},
+                  "bigbasin": {"bmc": 1},
+                  "lightning": {"bmc": 1},
+                  "yv2": {"bmc": 1, "hosts": 4},
+                  "yv3": {"bmc": 1, "hosts": 9}}       # sled model: a later plan
 _EP_KEYS = ("hosts", "bmc", "ioms")
+# head kind -> the kind of enclosure it drives (Device.drives names that enclosure's pos);
+# the enclosure is judged through the head's PCIe (Qualify enclosure-check)
+HEAD_KINDS = {"bb-head": "bigbasin", "lightning-head": "lightning", "bc-head": "bc-jbod"}
 # which BryceCanyon IOM each iomN link is cabled to: `check_pal_sku.sh` reports it as
 # "IOM Location: Side A|B". A device may set its own {"sides": {"iom1": "A", ...}}.
 KIND_SIDES = {"bc-jbod": {"iom1": "A", "iom2": "B"}}
@@ -74,6 +87,8 @@ class Device:
     pop: str | None = None
     endpoints: dict[str, int] = field(default_factory=dict)   # {hosts, bmc, ioms}, all keys
     sides: dict[str, str] = field(default_factory=dict)       # {"iom1": "A", ...} expected
+    drives: str | None = None       # a head: the enclosure pos it drives (HEAD_KINDS)
+    expect: dict = field(default_factory=dict)   # an enclosure: {"gpu": 8} / {"nvme": 4} / {"disks": 4}
 
 
 @dataclass
@@ -88,6 +103,11 @@ class Geometry:
     iperf_server: str | None
     switches: list[Switch]
     devices: list[Device]
+    # a lab standup rack (howlin): full-BOM geometry, hardware placed by the operator,
+    # Snapshot instead of Close; integration_tests False drops the rack-wide rungs (HA,
+    # iperf mesh) -- default: on for an order, off for a lab rack
+    lab: bool = False
+    integration_tests: bool = True
 
     def device(self, pos: str) -> Device:
         for d in self.devices:
@@ -159,6 +179,16 @@ def parse_site_port(sp, ctx: str) -> dict | None:
     return dict(sp)
 
 
+def parse_expect(ex, ctx: str) -> dict:
+    """What an enclosure must show through its head: {"gpu"|"nvme"|"disks": n}."""
+    if ex is None:
+        return {}
+    if (not isinstance(ex, dict) or set(ex) - {"gpu", "nvme", "disks"}
+            or any(not isinstance(v, int) or isinstance(v, bool) or v < 0 for v in ex.values())):
+        raise GeometryError(f"{ctx}: bad expect {ex!r} (keys gpu / nvme / disks, ints)")
+    return dict(ex)
+
+
 def _req(d: dict, key: str, ctx: str):
     if key not in d:
         raise GeometryError(f"{ctx}: missing {key!r}")
@@ -218,13 +248,29 @@ def parse_geometry(data: dict) -> Geometry:
             pos=pos, ou=int(_req(x, "ou", pos)), h=int(_req(x, "h", pos)), col=col,
             kind=kind, part=_req(x, "part", pos), links=links, pop=x.get("pop"),
             endpoints=endpoints,
-            sides=parse_sides(kind, x.get("sides"), endpoints["ioms"], pos)))
+            sides=parse_sides(kind, x.get("sides"), endpoints["ioms"], pos),
+            drives=x.get("drives"), expect=parse_expect(x.get("expect"), pos)))
+    kinds = {d.pos: d.kind for d in devices}
+    for d in devices:
+        if d.drives is None:
+            continue
+        want = HEAD_KINDS.get(d.kind)
+        if want is None:
+            raise GeometryError(f"{d.pos}: a {d.kind} drives nothing (drives {d.drives!r})")
+        if kinds.get(d.drives) != want:
+            raise GeometryError(f"{d.pos}: drives {d.drives!r} must name a {want} "
+                                f"(got {kinds.get(d.drives) or 'no such device'})")
+    lab = data.get("lab", False)
+    integ = data.get("integration_tests", not lab)
+    if not isinstance(lab, bool) or not isinstance(integ, bool):
+        raise GeometryError("lab / integration_tests must be true or false")
 
     return Geometry(
         order=order, customer=_req(data, "customer", "geometry"),
         site=_req(data, "site", "geometry"), rack=rack, prefix=prefix,
         vid=int(_req(net, "vid", "network")), cidr=_req(net, "cidr", "network"),
-        iperf_server=data.get("iperf_server"), switches=switches, devices=devices)
+        iperf_server=data.get("iperf_server"), switches=switches, devices=devices,
+        lab=lab, integration_tests=integ)
 
 
 def load_geometry(path) -> Geometry:
