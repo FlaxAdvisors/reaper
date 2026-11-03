@@ -193,7 +193,9 @@ def switch_view(g, s, runs: dict, raw: dict) -> dict:
     ep = s.endpoints
     return {"serial": (identity(runs) or {}).get("serial"), "identity": identity(runs),
             "fw": firmware(runs),
-            "sonic": endpoint(runs, "host-mac-seen", "host-leased") if ep.get("sonic") else None,
+            # the switch's own mgmt port: SONiC, or a Wedge 400's x86 CPU module (no SONiC yet)
+            "sonic": endpoint(runs, "host-mac-seen", "host-leased")
+            if ep.get("sonic") or ep.get("cpu") else None,
             "bmc": endpoint(runs, "bmc-mac-seen", "bmc-leased") if ep.get("bmc") else None,
             "ports": mgmt_ports(g, s, raw) if s.role == "mgmt" else tor_ports(g, s, raw),
             "ports_from": ("FDB (Discover's switch-fdb) + switchportlink" if s.role == "mgmt"
