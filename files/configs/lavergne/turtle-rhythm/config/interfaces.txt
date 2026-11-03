@@ -102,7 +102,7 @@ iface swp20
 
 auto swp21
 iface swp21
-    bridge-access 4
+    bridge-access 31
 
 auto swp22
 iface swp22
@@ -214,7 +214,7 @@ iface swp48
 
 auto swp49
 iface swp49
-    bridge-vids 2 4 26 27
+    bridge-vids 2 4 26 27 31
 
 auto swp50
 iface swp50
@@ -225,5 +225,5 @@ iface swp50
 auto bridge
 iface bridge
     bridge-ports swp1 swp2 swp3 swp4 swp5 swp6 swp7 swp8 swp9 swp10 swp11 swp12 swp13 swp14 swp15 swp16 swp17 swp18 swp19 swp20 swp21 swp22 swp23 swp24 swp25 swp26 swp27 swp28 swp29 swp30 swp31 swp32 swp33 swp34 swp35 swp36 swp37 swp38 swp39 swp40 swp41 swp42 swp43 swp44 swp45 swp46 swp47 swp48 swp49 swp50
-    bridge-vids 1 2 4 26 27
+    bridge-vids 1 2 4 26 27 31
     bridge-vlan-aware yes
