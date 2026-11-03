@@ -1008,6 +1008,9 @@ def _via_head(ctx, env, d):
 
 
 # ---------------------------------------------------------------- switches
+_ROLE_LABEL = {"bmc": "BMC", "sonic": "SONiC", "cpu": "CPU module"}
+
+
 def _switch_ladder(ctx, env, s, turtles, prev):
     """Wedge (sonic + bmc) / Dell (sonic): MACs from the turtle port, IPs from leases."""
     R, cr = env.R, env.cr
@@ -1075,7 +1078,11 @@ def _switch_ladder(ctx, env, s, turtles, prev):
                     break
             rest = [m for m in macs if m != info["role"].get("bmc")]
             if "bmc" in info["role"] and not ep.get("sonic"):
-                pass                    # a BMC-only switch (Wedge 400 dev target)
+                # no SONiC half: a Wedge 400's other turtle MAC is its x86 CPU module
+                if ep.get("cpu") and len(rest) == 1:
+                    info["role"]["cpu"] = rest[0]
+                elif ep.get("cpu"):
+                    info["role_err"] = f"want one CPU-module MAC beside the BMC, saw {len(rest)}"
             elif "bmc" in info["role"] and len(rest) == 1:
                 info["role"]["sonic"] = rest[0]
             elif "bmc" not in info["role"]:
@@ -1089,7 +1096,7 @@ def _switch_ladder(ctx, env, s, turtles, prev):
 
     def mac_seen(role):
         m = info["role"].get(role)
-        label = "BMC" if role == "bmc" else "SONiC"
+        label = _ROLE_LABEL[role]
         rows = [[f"{label} MAC", _colon(m) or "none"],
                 ["MACs on the turtle port", ", ".join(_colon(x) for x in info["macs"]) or "none"]]
         notes = ["the wedge's BMC is the turtle MAC whose `weutil` Local MAC is itself; the "
@@ -1103,7 +1110,7 @@ def _switch_ladder(ctx, env, s, turtles, prev):
 
     def pinged(role):
         ip = ip_of(role)
-        label = "BMC" if role == "bmc" else "SONiC"
+        label = _ROLE_LABEL[role]
         if not ip:
             return ev("fail", f"no {label} IP (no lease)")
         ok, waited = _pinged(R, ctx, ip, BMC_PING_WAIT_S)
@@ -1181,11 +1188,23 @@ def _switch_ladder(ctx, env, s, turtles, prev):
     bmc_block = w.blocked
     if w.blocked != "switchportlink":
         w.blocked = None
-    if not ep.get("sonic"):             # a BMC-only switch: no SONiC half to walk
-        why = f"no SONiC on {s.model} (BMC only)"
-        for st_ in ("host-mac-seen", "host-reserved", "host-leased", "live-iso-seen",
-                    "host-pinged", "host-ssh"):
-            w.skip(st_, why, na=True)
+    if not ep.get("sonic"):             # no SONiC half to walk
+        if ep.get("cpu"):
+            # a Wedge 400's x86 CPU module (a dev target: no SONiC yet): identified and
+            # pinged on its lease, never logged in to
+            w.step("host-mac-seen", lambda: mac_seen("cpu"))
+            w.skip("host-reserved", no_res, na=True)
+            w.step("host-leased", lambda: _leased(ctx, R, "CPU module", info["role"]["cpu"], None,
+                                                  BMC_LEASE_WAIT_S, dynamic=True))
+            w.skip("live-iso-seen", no_boot, na=True)
+            w.step("host-pinged", lambda: pinged("cpu"))
+            w.skip("host-ssh", f"{s.model} CPU module: identified, not logged in (development "
+                               "target)", na=True)
+        else:
+            why = f"no SONiC on {s.model} (BMC only)"
+            for st_ in ("host-mac-seen", "host-reserved", "host-leased", "live-iso-seen",
+                        "host-pinged", "host-ssh"):
+                w.skip(st_, why, na=True)
         w.blocked = bmc_block
         w.step("bmc-ready", ready)
         return w

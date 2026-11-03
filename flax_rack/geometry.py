@@ -37,8 +37,9 @@ IOM_SIDES = ("A", "B")
 # a switch's own endpoints on the site mgmt network (the turtle port in site_port):
 # discovered by MAC + current lease, never reserved (vid 26 is a dynamic pool)
 SWITCH_ENDPOINTS = {"wedge100s": {"sonic": 1, "bmc": 1}, "dell-n3248te": {"sonic": 1},
-                    # a development target (SONiC port pending): its BMC only -- FRU + weutil
-                    "wedge400": {"bmc": 1}}
+                    # a development target (SONiC port pending): its BMC -- FRU + weutil, as a
+                    # Wedge100S -- and its x86 CPU module (identified, never logged in to)
+                    "wedge400": {"bmc": 1, "cpu": 1}}
 MAX_COL = 5
 COL_ALIAS = {"L": 1, "C": 2, "R": 3}
 
