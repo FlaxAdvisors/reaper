@@ -58,3 +58,81 @@ def test_edac_totals_sums_ce_ue():
            "DIMM_B0   sn: 222   ce: 1   ue: 2\n")
     out = qs.edac_totals(txt)
     assert out == {"ce": 4, "ue": 2, "dimms": 2}
+
+
+# --- smart_health: one device's `smartctl --all` -> ok | warn | failed ---------------
+_SMART = os.path.join(os.path.dirname(__file__), "testdata", "smart")
+
+
+def _smart(serial):
+    with open(os.path.join(_SMART, serial + ".txt")) as f:
+        return qs.smart_health(f.read())
+
+
+def test_smart_health_real_ata_and_nvme_drives_pass():
+    for sn in ("2529DXD03109", "WX01DSV5", "WX01DSV8", "1926FR466409", "WX01DSV6",
+               "22292V800145"):
+        h = _smart(sn)
+        assert (h["serial"], h["verdict"], h["reasons"]) == (sn, "ok", []), sn
+        assert h["health"] == "PASSED" and h["model"]
+
+
+def test_smart_health_unknown_self_assessment_fails():
+    # RRORD-101 L05 Rear_ArrayDevice02 (2026-11-03): every SMART read aborted
+    h = _smart("WX01DSVB")
+    assert h["verdict"] == "failed"
+    assert "SMART self-assessment UNKNOWN!" in h["reasons"]
+
+
+_ATA = ("smartctl 7.4\n=== START OF INFORMATION SECTION ===\nDevice Model:     X\n"
+        "Serial Number:    S1\n=== START OF READ SMART DATA SECTION ===\n"
+        "SMART overall-health self-assessment test result: PASSED\n"
+        "ID# ATTRIBUTE_NAME          FLAG     VALUE WORST THRESH TYPE      UPDATED  WHEN_FAILED RAW_VALUE\n"
+        "  5 Reallocated_Sector_Ct   0x0033   100   100   010    Pre-fail  Always       -       %d\n"
+        "  9 Power_On_Hours          0x0032   084   084   000    Old_age   Always       -       14200 (12 34 0)\n"
+        "197 Current_Pending_Sector  0x0012   100   100   000    Old_age   Always       -       0\n")
+
+
+def test_smart_health_reallocated_sectors_fail_and_hours_are_read():
+    assert _smart_text(_ATA % 0)["verdict"] == "ok"
+    h = _smart_text(_ATA % 8)
+    assert h["verdict"] == "failed" and h["reasons"] == ["reallocated sectors: 8"]
+    assert h["power_on_hours"] == 14200
+
+
+def _smart_text(t):
+    return qs.smart_health(t)
+
+
+_NVME = ("=== START OF INFORMATION SECTION ===\nModel Number:   N\nSerial Number:  S2\n"
+         "=== START OF SMART DATA SECTION ===\n"
+         "SMART overall-health self-assessment test result: PASSED\n"
+         "Critical Warning:                   0x00\nAvailable Spare:                    %d%%\n"
+         "Available Spare Threshold:          10%%\nPercentage Used:                    %d%%\n"
+         "Media and Data Integrity Errors:    %d\nPower On Hours:                     1,234\n")
+
+
+def test_smart_health_nvme_wear_warns_and_media_errors_fail():
+    assert _smart_text(_NVME % (100, 3, 0))["verdict"] == "ok"
+    w = _smart_text(_NVME % (100, 85, 0))
+    assert w["verdict"] == "warn" and w["reasons"] == ["85% of rated write endurance used"]
+    assert _smart_text(_NVME % (100, 3, 2))["verdict"] == "failed"
+    assert _smart_text(_NVME % (10, 3, 0))["verdict"] == "failed"       # spare at threshold
+    assert _smart_text(_NVME % (100, 3, 0))["power_on_hours"] == 1234
+
+
+def test_smart_health_sas_status_and_grown_defects():
+    sas = ("=== START OF INFORMATION SECTION ===\nProduct:  P\nSerial number:  S3\n"
+           "SMART Health Status: OK\nElements in grown defect list: %d\n")
+    assert _smart_text(sas % 0)["verdict"] == "ok"
+    h = _smart_text(sas % 4)
+    assert h["verdict"] == "failed" and h["reasons"] == ["grown defect list: 4"]
+    assert _smart_text(sas % 0)["serial"] == "S3"
+
+
+def test_smart_health_never_passes_on_nothing():
+    # no report at all, or a report with no self-assessment line: failed, never ok
+    for t in ("", "/dev/sdz: Unable to detect device type\n",
+              "=== START OF INFORMATION SECTION ===\nSerial Number: S4\nSMART support is: Unavailable\n"):
+        h = _smart_text(t)
+        assert h["verdict"] == "failed" and h["reasons"], t

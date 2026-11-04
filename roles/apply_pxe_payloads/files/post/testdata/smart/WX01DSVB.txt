@@ -1,0 +1,35 @@
+smartctl 7.4 2023-08-01 r5530 [x86_64-linux-6.13.3-1-default] (SUSE RPM)
+Copyright (C) 2002-23, Bruce Allen, Christian Franke, www.smartmontools.org
+
+=== START OF INFORMATION SECTION ===
+Device Model:     ST6000NM019B-2TG103
+Serial Number:    WX01DSVB
+LU WWN Device Id: 5 000c50 087f988d1
+Firmware Version: SN05
+Rotation Rate:    7200 rpm
+Form Factor:      3.5 inches
+Device is:        Not in smartctl database 7.3/5528
+ATA Version is:   ACS-3 T13/2161-D revision 5
+SATA Version is:  SATA 3.1, 6.0 Gb/s (current: 6.0 Gb/s)
+Local Time is:    Tue Nov  3 12:31:12 2026 UTC
+SMART support is: Available - device has SMART capability.
+SMART support is: Enabled
+
+Read SMART Data failed: scsi error aborted command
+
+=== START OF READ SMART DATA SECTION ===
+SMART Status command failed: scsi error aborted command
+SMART overall-health self-assessment test result: UNKNOWN!
+SMART Status, Attributes and Thresholds cannot be read.
+
+Read SMART Log Directory failed: scsi error aborted command
+
+Read SMART Error Log failed: scsi error aborted command
+
+Read SMART Self-test Log failed: scsi error aborted command
+
+Selective Self-tests/Logging not supported
+
+The above only provides legacy SMART information - try 'smartctl -x' for more
+
+

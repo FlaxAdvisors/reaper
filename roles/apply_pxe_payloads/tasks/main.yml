@@ -90,6 +90,7 @@
     - setipmiuser.sh.j2
     - flax-qual.env.j2
     - BINARIES.md
+    - testdata
     - test_nic_fw_lock.py
     - test_qual_stages.py
     - test_qual_battery.py

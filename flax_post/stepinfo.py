@@ -288,6 +288,7 @@ _QUAL_HINTS = {
     "sel-post": "SEL after stress; CATERR here fails the run. Expect `unique_msgs` near 1 (the clear marker)",
     "tooling": "the battery's tools are present on the live ISO",
     "inventory": "macinv/dmidecode/lspci/... dumps; `tools` is the number of artifacts captured",
+    "smart-health": "SMART health of every disk fio reads (Triage's rules); one failed disk fails it and fio leaves that disk out; warn passes",
     "fio": "disk exercise on physical media; skipped with `no storage` on a diskless blade",
     "iperf": "network throughput against the bang's iperf server; `attempts` counts server-busy retries",
     "mem-pre": "EDAC correctable/uncorrectable error counters before stress (ce/ue must be 0)",

@@ -6,7 +6,7 @@ still-eligible device at once, with a barrier (wait for all) before the next:
   boot       pxe-live (identity checked)                       BOOT_DEADLINE_S
   inventory  agent: sdr-pre..inventory; then population-check,  INVENTORY_DEADLINE_S
              smbios-serial, tpm-state
-  storage    agent: fio                                        120 s + 120 s x disks
+  storage    agent: smart-health, fio                          120 s + 120 s x disks
   burn       agent: mem-pre, cpu-mem-stress .. sel-post        FLAX_STRESS_SECONDS + 900 s
   network    rack: lldp-<wedge>; per device ha-path, fabric-addr, iperf-mesh
 
@@ -80,7 +80,8 @@ from types import SimpleNamespace
 
 from flax_post import population, qualify_rules, shipchecks
 from flax_post.observe import family_map_live, fru
-from flax_rungs import agent, enclosure, fabric, fio, ha, hostssh, identity, iperf, liveboot, sol
+from flax_rungs import (agent, enclosure, fabric, fio, ha, hostssh, identity, iperf, liveboot,
+                        smart, sol)
 from flax_rungs.result import UNMEASURED, RungResult, not_passed
 
 from . import switches
@@ -96,7 +97,7 @@ AGENT_STAGES = tuple(agent.ORDER_STAGES.split(","))
 PHASES = ("boot", "inventory", "storage", "burn", "network")
 PHASE_STAGES = {    # the agent's FLAX_QUAL_STAGES per phase; together = ORDER_STAGES
     "inventory": ("sdr-pre", "sel-pre", "sel-clear", "tooling", "inventory"),
-    "storage": ("fio",),
+    "storage": ("smart-health", "fio"),
     "burn": ("mem-pre", "cpu-mem-stress", "mem-post", "sdr-post", "sel-post"),
 }
 NET_RUNGS = ("ha-path", "fabric-addr", "iperf-mesh")
@@ -836,6 +837,8 @@ def _poll(ctx, R, cr, phase, x):
             res = RungResult("skip", {"reason": f"agent-stages {word}"})
         if name == cur:
             res = watchdog_on(res, ar)
+        if name == "smart-health" and name in got:
+            res = smart_rung(res, x.alldisks)
         if name == "fio" and name in got:
             res = fio_rung(res, x.alldisks, x.lsblk)
         r = _record(ctx, pos, name, res, STAGE, run_seg if name in got else None)
@@ -873,9 +876,11 @@ def fio_detail(detail: dict, verdict, fio_text, alldisks, lsblk) -> dict:
     rows, notes; the headline (IOPS · MB/s · µs of the lead device) only on a pass, so a
     failure's error stays the headline. Never changes the verdict."""
     det = dict(detail or {})
-    if not fio_text:
+    summ = det.get("summary") or {}
+    excluded = summ.get("smart_excluded") or {}
+    if not fio_text and not excluded:
         return det
-    sm = fio.summarize(fio_text, (det.get("summary") or {}).get("devices"), alldisks, lsblk)
+    sm = fio.summarize(fio_text, summ.get("devices"), alldisks, lsblk, excluded=excluded)
     head = sm.pop("fio_headline")
     det.update(table=sm["table"], fio=sm["fio"],
                rows=[*sm["rows"], *(det.get("rows") or [])],
@@ -883,6 +888,21 @@ def fio_detail(detail: dict, verdict, fio_text, alldisks, lsblk) -> dict:
     if head and verdict == "pass" and not det.get("headline"):
         det["headline"] = head
     return det
+
+
+def smart_rung(res: RungResult, alldisks) -> RungResult:
+    """The smart-health stage with its per-drive table (flax_rungs.smart) and a headline
+    naming the failed drives (serial + enclosure slot). Never changes the verdict."""
+    det = dict(res.detail or {})
+    sm = smart.summarize(det.get("summary"), alldisks)
+    if sm["table"]["rows"]:
+        det.update(table=sm["table"], rows=[*sm["rows"], *(det.get("rows") or [])],
+                   notes=[*(det.get("notes") or []), *sm["notes"]])
+        if sm["headline"] and not det.get("headline"):
+            det["headline"] = sm["headline"]
+    elif (det.get("summary") or {}).get("reason") and not det.get("headline"):
+        det["headline"] = det["summary"]["reason"]
+    return RungResult(res.verdict, det, res.artifacts)
 
 
 def fio_rung(res: RungResult, alldisks, lsblk) -> RungResult:

@@ -94,10 +94,12 @@ def _n(v, unit=""):
     return f"{v:.1f}" if v < 100 else f"{v:.0f}"
 
 
-def summarize(fio_text: str | None, devices=None, alldisks=None, lsblk=None) -> dict:
+def summarize(fio_text: str | None, devices=None, alldisks=None, lsblk=None,
+              excluded=None) -> dict:
     """Detail additions for the fio rung: {"table": {"cols", "rows"}, "fio": {dev: {job:
     parse_job}}, "fio_headline": str | None, "rows", "notes"}. devices: the agent's list
-    (summary.devices), so a device with no output is named."""
+    (summary.devices), so a device with no output is named. excluded: the agent's
+    summary.smart_excluded ({dev: reasons}), the disks smart-health failed and fio left out."""
     secs = sections(fio_text or "")
     got: dict[str, dict] = {}
     for dev, job, out in secs:
@@ -141,5 +143,9 @@ def summarize(fio_text: str | None, devices=None, alldisks=None, lsblk=None) -> 
               or "none"]]
     if missing:
         srows.append(["missing", "; ".join(missing)])
+    if excluded:
+        srows.append(["left out (SMART failed)", "; ".join(
+            f"{d}" + (f" ({info[d]})" if info.get(d) else "") + f": {'; '.join(r or [])}"
+            for d, r in excluded.items())])
     return {"table": {"cols": list(COLS), "rows": rows}, "fio_headline": head,
             "fio": got, "rows": srows, "notes": list(NOTES)}

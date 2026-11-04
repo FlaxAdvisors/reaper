@@ -9,7 +9,7 @@ from . import hostssh
 from .result import UNMEASURED, RungResult
 
 # Every default stage except iperf (the mesh rung owns iperf). Order is the agent's own.
-ORDER_STAGES = ("sdr-pre,sel-pre,sel-clear,tooling,inventory,fio,mem-pre,"
+ORDER_STAGES = ("sdr-pre,sel-pre,sel-clear,tooling,inventory,smart-health,fio,mem-pre,"
                 "cpu-mem-stress,mem-post,sdr-post,sel-post")
 
 AGENT_PORT = 8087

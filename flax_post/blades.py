@@ -101,7 +101,7 @@ PHASE_STEPS = {
     "Firmware": ("bmc-checked", "bmc-updated", "bios-checked", "bios-updated",
                  "mlx-checked", "mlx-updated"),
     "Qualify": ("agent-reachable", "sdr-pre", "sel-pre", "sel-clear", "tooling",
-                "inventory", "fio", "population-check", "smbios-serial", "tpm-state",
+                "inventory", "smart-health", "fio", "population-check", "smbios-serial", "tpm-state",
                 "iperf", "mem-pre",
                 "cpu-mem-stress", "mem-post", "sdr-post", "sel-post", "console"),
     "Done": ("identify", "power-off", "done"),

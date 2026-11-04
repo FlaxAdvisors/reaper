@@ -13,6 +13,9 @@ import uuid
 import qual_stages
 
 _MAP = {"pass": "pass", "fail": "fail", "skip": "skip"}
+# State one stage hands a later stage of the SAME run (smart-health -> fio: the disks
+# SMART failed). run() clears it first, so a run never acts on an earlier run's reading.
+_RUN = {}
 
 
 class Battery(object):
@@ -38,6 +41,7 @@ class Battery(object):
         my_run_id = self.run_id
         if self.error:
             return
+        _RUN.clear()
         for i, s in enumerate(self._stages):
             with self._lock:
                 if self.state == "reset_pending" or self.run_id != my_run_id:
@@ -124,7 +128,7 @@ class Battery(object):
 
 
 # --- the real node battery (stage fns live in qual_stages via closures) ---
-from qual_stages import HWINFO_FLAGS, sel_digest, sel_recent, stress_cmd, edac_totals   # noqa: E402
+from qual_stages import HWINFO_FLAGS, sel_digest, sel_recent, stress_cmd, edac_totals, smart_health   # noqa: E402
 
 
 def _cap(runner, argv, timeout=60):
@@ -286,8 +290,8 @@ def _inventory(runner):
     return {"verdict": "pass", "summary": {"tools": len(arts)}, "artifacts": arts}
 
 
-def _fio(runner):
-    # RO fio on NON-mounted block devices (nvme*/sd*); bw/lat/iops jobs (fio_run_ro_tests.yml).
+def _fio_devs(runner):
+    """The disks fio reads: top-level nvme*/sd* with no mountpoint (`lsblk -ndo`)."""
     import re
     lsblk = _cap(runner, ["lsblk", "-ndo", "NAME,MOUNTPOINT"])
     devs = []
@@ -295,9 +299,47 @@ def _fio(runner):
         f = line.split()
         if f and re.match(r"^(nvme\d+n\d+|sd[a-z]+)$", f[0]) and len(f) < 2:  # no mountpoint col
             devs.append(f[0])
+    return devs
+
+
+def _smart(runner):
+    # SMART health of every disk fio would read (qual_stages.smart_health: ok | warn |
+    # failed). One failed disk fails the stage; fio then leaves the failed disks out.
+    devs = _fio_devs(runner)
+    _RUN["smart_failed"] = {}
     if not devs:
+        return {"verdict": "skip", "summary": {"reason": "no physical storage media"}, "artifacts": {}}
+    rows, out = [], []
+    for dev in devs:
+        _rc, o = runner(["smartctl", "--all", "/dev/" + dev], 60)   # rc is a bitmask, not the verdict
+        out.append("== /dev/%s ==\n%s" % (dev, o))
+        h = smart_health(o)
+        h["dev"] = dev
+        rows.append(h)
+        if h["verdict"] == "failed":
+            _RUN["smart_failed"][dev] = h["reasons"]
+    failed = [r["dev"] for r in rows if r["verdict"] == "failed"]
+    return {"verdict": "fail" if failed else "pass",
+            "summary": {"devices": rows, "failed": failed,
+                        "warn": [r["dev"] for r in rows if r["verdict"] == "warn"]},
+            "artifacts": {"smartctl": ("raw", "\n".join(out))}}
+
+
+def _fio(runner):
+    # RO fio on NON-mounted block devices (nvme*/sd*); bw/lat/iops jobs (fio_run_ro_tests.yml).
+    # A disk smart-health failed this run is left out (it would only slow fio down); it
+    # does not change fio's verdict, which is the tested disks' alone.
+    found = _fio_devs(runner)
+    if not found:
         # diskless node (RAM live-overlay, no physical media) -> skip, not fail
         return {"verdict": "skip", "summary": {"reason": "no physical storage media"}, "artifacts": {}}
+    bad = _RUN.get("smart_failed") or {}
+    excluded = dict((d, bad[d]) for d in found if d in bad)
+    devs = [d for d in found if d not in bad]
+    if not devs:
+        return {"verdict": "skip", "summary": {"reason": "every disk failed SMART",
+                                               "devices": [], "smart_excluded": excluded},
+                "artifacts": {}}
     runner(["sh", "-c", "sync; echo 3 > /proc/sys/vm/drop_caches"], 30)
     common = ("--numjobs=4 --runtime=30 --time_based --direct=1 --ioengine=libaio "
               "--group_reporting --readonly")
@@ -309,7 +351,8 @@ def _fio(runner):
         for jn, jargs in jobs.items():
             rc, o = runner(["sh", "-c", "/usr/bin/fio %s %s --filename /dev/%s" % (common, jargs, dev)], 120)
             out.append("== %s %s ==\n%s" % (dev, jn, o)); ok = ok and rc == 0
-    return {"verdict": "pass" if ok else "fail", "summary": {"devices": devs},
+    return {"verdict": "pass" if ok else "fail",
+            "summary": {"devices": devs, "smart_excluded": excluded},
             "artifacts": {"fio": ("raw", "\n".join(out))}}
 
 
@@ -354,7 +397,8 @@ def _stress(runner):
 DEFAULT_STAGES = [
     {"name": "sdr-pre", "fn": _sdr}, {"name": "sel-pre", "fn": _sel},
     {"name": "sel-clear", "fn": _sel_clear}, {"name": "tooling", "fn": _tooling},
-    {"name": "inventory", "fn": _inventory}, {"name": "fio", "fn": _fio},
+    {"name": "inventory", "fn": _inventory}, {"name": "smart-health", "fn": _smart},
+    {"name": "fio", "fn": _fio},
     {"name": "iperf", "fn": _iperf},
     {"name": "mem-pre", "fn": _mem}, {"name": "cpu-mem-stress", "fn": _stress},
     {"name": "mem-post", "fn": _mem}, {"name": "sdr-post", "fn": _sdr},

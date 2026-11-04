@@ -353,18 +353,18 @@ def test_tpmstate_script_reports_absent_device(tmp_path):
     assert (r.returncode, r.stdout) == (0, "device=absent\n")
 
 
-_ORDER = "sdr-pre,sel-pre,sel-clear,tooling,inventory,fio,mem-pre,cpu-mem-stress,mem-post,sdr-post,sel-post"
+_ORDER = "sdr-pre,sel-pre,sel-clear,tooling,inventory,smart-health,fio,mem-pre,cpu-mem-stress,mem-post,sdr-post,sel-post"
 
 
 def test_select_stages_default_unchanged():
     assert qual_battery.select_stages(None) is qual_battery.DEFAULT_STAGES
     assert qual_battery.select_stages("") is qual_battery.DEFAULT_STAGES
-    assert len(qual_battery.select_stages(None)) == 12
+    assert len(qual_battery.select_stages(None)) == 13
 
 
 def test_select_stages_order_mode_drops_iperf_keeps_default_order():
     got = [s["name"] for s in qual_battery.select_stages(_ORDER)]
-    assert len(got) == 11 and "iperf" not in got
+    assert len(got) == 12 and "iperf" not in got
     shuffled = ",".join(reversed(_ORDER.split(",")))
     assert [s["name"] for s in qual_battery.select_stages(shuffled)] == got
 
@@ -383,3 +383,81 @@ def test_battery_with_error_reports_health_and_runs_nothing():
     assert b.state == "fault" and b.verdict is None
     b.request_restart(); b.ack_restart()
     assert b.state == "fault"
+
+
+# --- smart-health stage + fio's exclusion of SMART-failed disks ----------------------
+_SMDIR = os.path.join(os.path.dirname(__file__), "testdata", "smart")
+_LSBLK_ND = "sda\nsdb\nsdc\nnvme0n1\nsdx /run/media\nnbd0\n"
+_DEV_SN = {"sda": "2529DXD03109", "sdb": "WX01DSV5", "sdc": "WX01DSVB",
+           "nvme0n1": "22292V800145"}
+
+
+def _disk_runner(seen):
+    def runner(argv, timeout):
+        seen.append(argv)
+        if argv[:3] == ["lsblk", "-ndo", "NAME,MOUNTPOINT"]:
+            return 0, _LSBLK_ND
+        if argv[0] == "smartctl":
+            with open(os.path.join(_SMDIR, _DEV_SN[argv[-1][5:]] + ".txt")) as f:
+                return 4, f.read()          # smartctl's rc is a bitmask: never the verdict
+        return 0, "fio ok\n"
+    return runner
+
+
+def test_smart_stage_reads_every_fio_disk_and_fails_on_one_bad_drive():
+    qual_battery._RUN.clear()
+    seen = []
+    res = qual_battery._smart(_disk_runner(seen))
+    assert [a[-1] for a in seen if a[0] == "smartctl"] == \
+        ["/dev/sda", "/dev/sdb", "/dev/sdc", "/dev/nvme0n1"]     # unmounted nvme/sd only
+    assert res["verdict"] == "fail"
+    s = res["summary"]
+    assert s["failed"] == ["sdc"] and s["warn"] == []
+    assert [d["dev"] for d in s["devices"]] == ["sda", "sdb", "sdc", "nvme0n1"]
+    bad = s["devices"][2]
+    assert (bad["serial"], bad["verdict"]) == ("WX01DSVB", "failed")
+    assert "== /dev/sdc ==" in res["artifacts"]["smartctl"][1]
+    assert qual_battery._RUN["smart_failed"] == {"sdc": bad["reasons"]}
+
+
+def test_smart_stage_all_good_passes_and_diskless_skips():
+    qual_battery._RUN.clear()
+    ok = qual_battery._smart(lambda a, t: (0, "sda\n") if a[0] == "lsblk" else
+                             (0, open(os.path.join(_SMDIR, "WX01DSV5.txt")).read()))
+    assert ok["verdict"] == "pass" and qual_battery._RUN["smart_failed"] == {}
+    none = qual_battery._smart(lambda a, t: (0, "sdx /\n"))
+    assert none["verdict"] == "skip"
+    assert none["summary"]["reason"] == "no physical storage media"
+
+
+def test_fio_leaves_out_smart_failed_disks_and_lists_them():
+    qual_battery._RUN.clear()
+    seen = []
+    r = _disk_runner(seen)
+    qual_battery._smart(r)
+    del seen[:]
+    res = qual_battery._fio(r)
+    fio_devs = sorted({a[2].rsplit("/dev/", 1)[1] for a in seen if a[0] == "sh" and "fio" in a[2]})
+    assert fio_devs == ["nvme0n1", "sda", "sdb"]
+    assert res["verdict"] == "pass"                       # the bad disk does not fail fio
+    assert res["summary"]["devices"] == ["sda", "sdb", "nvme0n1"]
+    assert list(res["summary"]["smart_excluded"]) == ["sdc"]
+
+
+def test_fio_with_every_disk_smart_failed_skips():
+    qual_battery._RUN.clear()
+    qual_battery._RUN["smart_failed"] = {"sda": ["x"]}
+    res = qual_battery._fio(lambda a, t: (0, "sda\n"))
+    assert res["verdict"] == "skip" and "SMART" in res["summary"]["reason"]
+
+
+def test_battery_run_forgets_the_previous_runs_smart_failures():
+    qual_battery._RUN["smart_failed"] = {"sda": ["stale"]}
+    b = Battery(runner=lambda a, t: (0, ""), stages=[_stage("sdr-pre")])
+    b.run()
+    assert "smart_failed" not in qual_battery._RUN
+
+
+def test_smart_health_sits_right_before_fio_in_the_default_battery():
+    names = [s["name"] for s in qual_battery.DEFAULT_STAGES]
+    assert names.index("smart-health") == names.index("fio") - 1

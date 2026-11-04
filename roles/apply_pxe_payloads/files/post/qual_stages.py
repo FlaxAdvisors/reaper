@@ -6,6 +6,7 @@ ipmitool sdr/sel elist over local KCS, stress with the burn_cpu_memory.yml math,
 bundled macinv/dimmerr). Every external command goes through the injectable RUNNER
 seam so tests never shell out. Stdlib only; imports under Python 3.6.
 """
+import re
 import subprocess
 
 AGENT_VER = "2"
@@ -113,3 +114,83 @@ def edac_totals(dimmerr_text):
         except (ValueError, IndexError):
             pass
     return {"ce": ce, "ue": ue, "dimms": dimms}
+
+
+# --- SMART health of one disk (the smart-health stage; fio leaves out a failed disk) ---
+# Same reading as Triage's Inventory health (triage services/api/smarthealth.py):
+# failed = data loss or a self-assessment that is not PASSED/OK; warn = wear or spare
+# getting close to its threshold (the drive works). Unlike Triage's per-node reader an
+# empty or self-assessment-less report is `failed`, never ok: a disk SMART cannot read
+# is not a healthy disk. ATA, NVMe and SAS (SCSI) dialects.
+_SMART_ITEM = re.compile(r"^([A-Za-z][A-Za-z0-9 /_.-]*?):\s+(.*?)\s*$")
+_SMART_ATTR = re.compile(r"^\s*(\d+)\s+(\S+)\s+0x[0-9a-fA-F]+\s+.*?\s-\s+(\d+)")
+_ATA_FATAL = (("Reallocated_Sector_Ct", "reallocated sectors"),
+              ("Current_Pending_Sector", "pending sectors"),
+              ("Offline_Uncorrectable", "offline uncorrectable sectors"),
+              ("Reported_Uncorrect", "reported uncorrectable errors"))
+SMART_WEAR_WARN_PCT = 80
+
+
+def _smart_int(text):
+    t = str(text).strip().replace(",", "").rstrip("%").split()[0] if str(text).strip() else ""
+    try:
+        return int(t, 16) if t.lower().startswith("0x") else int(t)
+    except ValueError:
+        return None
+
+
+def smart_health(text):
+    """One device's `smartctl --all` -> {serial, model, health, power_on_hours,
+    verdict: ok|warn|failed, reasons: [str]}."""
+    d = {"serial": None, "model": None, "health": None, "power_on_hours": None}
+    num, ata = {}, {}
+    for line in (text or "").splitlines():
+        a = _SMART_ATTR.match(line)
+        if a:
+            ata[a.group(2)] = int(a.group(3))
+            continue
+        m = _SMART_ITEM.match(line)
+        if not m:
+            continue
+        key, val = m.group(1).strip().lower(), m.group(2)
+        if key == "serial number" and not d["serial"]:
+            d["serial"] = val
+        elif key in ("device model", "model number", "product") and not d["model"]:
+            d["model"] = val
+        elif key.startswith("smart overall-health") or key == "smart health status":
+            d["health"] = val
+        elif key in ("critical warning", "available spare", "available spare threshold",
+                     "percentage used", "media and data integrity errors",
+                     "elements in grown defect list", "power on hours"):
+            num[key] = _smart_int(val)
+    if d["power_on_hours"] is None:
+        d["power_on_hours"] = num.get("power on hours", ata.get("Power_On_Hours"))
+    reasons = []
+    health = (d["health"] or "").upper()
+    if not health:
+        reasons.append("no SMART self-assessment")
+    elif health not in ("PASSED", "OK"):
+        reasons.append("SMART self-assessment %s" % d["health"])
+    if num.get("critical warning"):
+        reasons.append("critical warning 0x%02x" % num["critical warning"])
+    if num.get("media and data integrity errors"):
+        reasons.append("%d media/data integrity error(s)" % num["media and data integrity errors"])
+    if num.get("elements in grown defect list"):
+        reasons.append("grown defect list: %d" % num["elements in grown defect list"])
+    for name, label in _ATA_FATAL:
+        if ata.get(name):
+            reasons.append("%s: %d" % (label, ata[name]))
+    spare, thresh = num.get("available spare"), num.get("available spare threshold")
+    if spare is not None and thresh is not None and spare <= thresh:
+        reasons.append("available spare %d%% at/below threshold %d%%" % (spare, thresh))
+    if reasons:
+        d.update(verdict="failed", reasons=reasons)
+        return d
+    warn = []
+    pct = num.get("percentage used")
+    if pct is not None and pct >= SMART_WEAR_WARN_PCT:
+        warn.append("%d%% of rated write endurance used" % pct)
+    if spare is not None and thresh is not None and spare < 100 and spare <= thresh * 2:
+        warn.append("available spare %d%% approaching threshold %d%%" % (spare, thresh))
+    d.update(verdict="warn" if warn else "ok", reasons=warn)
+    return d
