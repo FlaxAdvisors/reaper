@@ -128,7 +128,7 @@ DISCOVER_RUNGS = DISCOVER_STEPS            # Post's 16 steps; OLD_DISCOVER_RUNGS
 # rows stay in `runs` but no step list names them, so they are never drawn
 FIRMWARE_OLD_RUNGS = ()
 # v1 hand-written profile names (spec 5.4); a geometry `pop` or an override may add others
-PROFILES = ("f4-compute-tp", "f4-bc-head-tp", "ovh-bare-tp")
+PROFILES = ("f4-compute-tp", "f4-bc-head-tp", "f4-bc-jbod", "ovh-bare-tp")
 _PROFILE_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 _PREFIX_RE = re.compile(r"[a-z]{2}[0-9]{3}[a-z]?")      # the nginx location regex
 # a lab rack is named for itself (/howlin/): nginx lists those names exactly
