@@ -1,0 +1,259 @@
+#!/usr/bin/env python3.11
+"""Mine the bang archive's fio results into per-model baselines (fio-baselines-v1.json)
+plus a what-if table.  Read-only over --root (e.g. /export/bangs).
+
+Archive: <root>/bang-*/nodes/SESORD-<n>[r2|p2|...]/fio-results/<host>/<job>-test-job-<dev>.out
+joined to  .../SESORD-<n>*/post-*/latest/{hostname.txt, alldisks-v*.txt|hwinfo.txt|smartctl--all.txt}.
+Runs on a bang with flax_rungs/ and flax_post/ copied beside it."""
+import argparse
+import datetime
+import json
+import re
+import statistics
+import sys
+from pathlib import Path
+
+_HERE = Path(__file__).resolve().parent
+for _p in (_HERE.parent, _HERE):
+    if (_p / "flax_rungs").is_dir() and str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
+
+from flax_rungs.fio import parse_job  # noqa: E402
+from flax_post.fio_judge import (  # noqa: E402
+    CLIP_ROUNDS, CLIP_SIGMA, FLAG_SIGMA, METRICS, SUITE, normalise_model)
+
+JOBS = {"bw": "--bs=64k --iodepth=64 --rw=read --name=raw-read",
+        "lat": "--bs=4k --iodepth=1 --rw=randread --name=readlatency",
+        "iops": "--bs=4k --iodepth=256 --rw=read --name=iops"}
+COMMON = ("--numjobs=4 --runtime=30 --time_based --direct=1 --ioengine=libaio "
+          "--group_reporting --readonly")
+_OUT = re.compile(r"^(bw|iops|lat)-test-job-(.+)\.out$")
+_ORDER = re.compile(r"^(.*?)(?:r\d+|p\d+)$")
+_SKIP = (".old", ".pre-renetwork")
+
+
+def sigma_clip(values):
+    vals = [float(v) for v in values]
+    clipped = 0
+    for _ in range(CLIP_ROUNDS):
+        if len(vals) < 2:
+            break
+        m, s = statistics.fmean(vals), statistics.pstdev(vals)
+        keep = [v for v in vals if s == 0 or abs(v - m) <= CLIP_SIGMA * s]
+        if len(keep) == len(vals):
+            break
+        clipped += len(vals) - len(keep)
+        vals = keep
+    return {"n": len(vals),
+            "mean": statistics.fmean(vals) if vals else 0.0,
+            "std": statistics.pstdev(vals) if len(vals) > 1 else 0.0,
+            "clipped": clipped,
+            "min": min(vals) if vals else 0.0,
+            "max": max(vals) if vals else 0.0}
+
+
+def _read(p):
+    try:
+        return p.read_text(errors="replace")
+    except OSError:
+        return None
+
+
+def _alldisks(text):
+    out = {}
+    for ln in text.splitlines():
+        f = ln.split()
+        if not f or not f[0].startswith("/dev/"):
+            continue
+        at = next((i for i, x in enumerate(f) if x.endswith("rotational")), None)
+        if at is None or at < 1 or len(f) < 3:
+            continue
+        size = None
+        if at + 1 < len(f) and re.fullmatch(r"[\d.]+", f[at + 1]):
+            size = float(f[at + 1])
+        out[f[0][5:]] = {"model": f[-2], "controller": f[at - 1], "size_gb": size}
+    return out
+
+
+def _hwinfo(text):
+    out = {}
+    for blk in re.split(r"\n(?=\d+: )", text):
+        if "Hardware Class: disk" not in blk:
+            continue
+        dev = re.search(r"Device File: /dev/(\S+)", blk)
+        if not dev:
+            continue
+        mod = re.search(r'^\s*Model: "(.*?)"', blk, re.M)
+        drv = re.search(r'^\s*Driver: "([^"]+)"', blk, re.M)
+        sz = re.search(r"^\s*Size: (\d+) sectors a (\d+) bytes", blk, re.M)
+        out[dev.group(1)] = {
+            "model": mod.group(1) if mod else None,
+            "controller": drv.group(1) if drv else None,
+            "size_gb": int(sz.group(1)) * int(sz.group(2)) / 1e9 if sz else None}
+    return out
+
+
+def _smartctl(text):
+    out, cur = {}, None
+    for ln in text.splitlines():
+        h = re.match(r"^\S.*?/dev/((?:sd[a-z]+|nvme\d+n\d+|nvme\d+))\b", ln)
+        if h:
+            cur = h.group(1)
+            continue
+        m = re.match(r"^(?:Device Model|Model Number|Product):\s+(.+)$", ln)
+        if m and cur:
+            out.setdefault(cur, {"model": m.group(1).strip(), "controller": None, "size_gb": None})
+    return out
+
+
+def node_disks(post_latest):
+    post_latest = Path(post_latest)
+    srcs = []
+    try:
+        srcs = sorted(p for p in post_latest.glob("alldisks-v*.txt"))
+    except OSError:
+        pass
+    for p in reversed(srcs):
+        if (t := _read(p)) and (d := _alldisks(t)):
+            return d
+    for name, fn in (("hwinfo.txt", _hwinfo), ("smartctl--all.txt", _smartctl)):
+        if (t := _read(post_latest / name)) and (d := fn(t)):
+            return d
+    return {}
+
+
+def _ls(p, counters):
+    try:
+        return sorted(p.iterdir())
+    except OSError:
+        counters["unreadable"] += 1
+        return []
+
+
+def _isdir(p):
+    try:
+        return p.is_dir()
+    except OSError:
+        return False
+
+
+def scan(root):
+    root = Path(root)
+    c = {"unjoined": 0, "dropped_mismatch": 0, "dropped_dup": 0, "unreadable": 0, "samples": 0}
+    best = {}  # (base order, host, dev, job) -> (mtime, sample)
+    for bang in _ls(root, c):
+        for order in _ls(bang / "nodes", c):
+            if order.name.endswith(_SKIP) or not _isdir(order):
+                continue
+            base = (_ORDER.match(order.name) or [None, order.name])[1]
+            hosts = {}
+            for post in _ls(order, c):
+                if post.name.startswith("post-"):
+                    lat = post / "latest"
+                    if (t := _read(lat / "hostname.txt")) and t.strip():
+                        hosts[t.split()[0].strip()] = lat
+            for hostdir in _ls(order / "fio-results", c):
+                disks = None
+                for f in _ls(hostdir, c):
+                    m = _OUT.match(f.name)
+                    if not m:
+                        continue
+                    job, dev = m.groups()
+                    lat = hosts.get(hostdir.name)
+                    if lat is None:
+                        c["unjoined"] += 1
+                        continue
+                    if disks is None:
+                        disks = node_disks(lat)
+                    info = disks.get(dev)
+                    if info is None:
+                        c["dropped_mismatch"] += 1
+                        continue
+                    if not info.get("model"):
+                        c["unjoined"] += 1
+                        continue
+                    try:
+                        mt = f.stat().st_mtime
+                    except OSError:
+                        c["unreadable"] += 1
+                        continue
+                    if (txt := _read(f)) is None:
+                        c["unreadable"] += 1
+                        continue
+                    rd = parse_job(txt)["dirs"].get("read")
+                    if not rd:
+                        c["unjoined"] += 1
+                        continue
+                    s = {"model": normalise_model(info["model"]), "controller": info.get("controller"),
+                         "job": job, "dev": dev, "host": hostdir.name, "order": base,
+                         "date": datetime.date.fromtimestamp(mt).isoformat(), "read": rd}
+                    k = (base, hostdir.name, dev, job)
+                    if k in best:
+                        c["dropped_dup"] += 1
+                        if best[k][0] >= mt:
+                            continue
+                    best[k] = (mt, s)
+    samples = [v[1] for v in best.values()]
+    c["samples"] = len(samples)
+    return samples, c
+
+
+def _groups(samples):
+    g = {}
+    for s in samples:
+        for metric, _good in METRICS[s["job"]]:
+            v = s["read"].get(metric)
+            if v is None:
+                continue
+            for ctrl in {s["controller"], None}:
+                g.setdefault((s["model"], ctrl, s["job"], metric), []).append((v, s["date"]))
+    return g
+
+
+def build(samples, counters=None, source=""):
+    groups = []
+    for (model, ctrl, job, metric), vd in sorted(
+            _groups(samples).items(), key=lambda kv: tuple(str(x) for x in kv[0])):
+        st = sigma_clip([v for v, _ in vd])
+        dates = sorted(d for _, d in vd)
+        groups.append({"model": model, "controller": ctrl, "job": job, "metric": metric,
+                       **st, "from": dates[0], "to": dates[-1]})
+    return {"suite": SUITE, "generated": datetime.date.today().isoformat(), "source": source,
+            "jobs": {j: f"{COMMON} {a}" for j, a in JOBS.items()},
+            "groups": groups, **{k: v for k, v in (counters or {}).items()}}
+
+
+def whatif(samples, baseline):
+    gs = _groups(samples)
+    lines = ["model | controller | job | metric | n | clipped | flagged at %gσ" % FLAG_SIGMA]
+    for g in baseline["groups"]:
+        vals = [v for v, _ in gs.get((g["model"], g["controller"], g["job"], g["metric"]), [])]
+        good = dict(METRICS[g["job"]])[g["metric"]]
+        mean, std = g["mean"], g["std"]
+        lo, hi = mean - CLIP_SIGMA * std, mean + CLIP_SIGMA * std
+        kept = [v for v in vals if std == 0 or lo <= v <= hi]
+        if good == "higher":
+            n = sum(v < mean - FLAG_SIGMA * std for v in kept)
+        else:
+            n = sum(v > mean + FLAG_SIGMA * std for v in kept)
+        lines.append(f"{g['model']} | {g['controller'] or 'any'} | {g['job']} | {g['metric']} | "
+                     f"{g['n']} | {g['clipped']} | {n}")
+    return "\n".join(lines) + "\n"
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--root", required=True)
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--whatif", required=True)
+    a = ap.parse_args(argv)
+    samples, counters = scan(a.root)
+    base = build(samples, counters, source=a.root)
+    Path(a.out).write_text(json.dumps(base, indent=1) + "\n")
+    Path(a.whatif).write_text(whatif(samples, base))
+    print(f"{len(samples)} samples, {len(base['groups'])} groups, counters {counters}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
