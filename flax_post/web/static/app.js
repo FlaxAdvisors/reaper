@@ -164,7 +164,10 @@ function App() {
       // a skipped step fills its segment like a done one: it completes the phase
       return Object.values(s).map((st) => (st === 'done' || st === 'skip') ? 'done' : st === 'cur' ? 'cur' : st === 'fault' ? 'fault' : '');
     },
-    stepEntries(b, phaseName) { const s = (b && b.steps && b.steps[phaseName]) || {}; return Object.keys(s).map((k) => ({ name: k, state: s[k] })); },
+    // flag: a PASSED step with a label (blade record step_flags, e.g. fio drives
+    // outside their range). Its state stays 'done' for every phase / counter /
+    // segment helper; only the step row, the modal and the tile marker read it.
+    stepEntries(b, phaseName) { const s = (b && b.steps && b.steps[phaseName]) || {}; return Object.keys(s).map((k) => ({ name: k, state: s[k], flag: s[k] === 'done' && !!this.stepFlag(b, k) })); },
     phaseDot(b, phaseName) {
       const st = this.phaseState(b, phaseName);
       return st === 'done' ? 'done' : st === 'fault' ? 'fault' : st === 'cur' ? this.phaseKey(b) : 'grey';
@@ -173,6 +176,11 @@ function App() {
       const s = (b && b.steps && b.steps[phaseName]) || {}; const v = Object.values(s);
       if (!v.length) return ''; const done = v.filter((x) => x === 'done' || x === 'skip').length;
       return done === v.length ? '✓' : `${done}/${v.length}`;
+    },
+    stepFlag(b, name) { return (b && b.step_flags && b.step_flags[name]) || ''; },
+    tileFlagTitle(b) {
+      const f = (b && b.step_flags) || {};
+      return Object.keys(f).map((k) => 'flagged (passed): ' + k + ' · ' + f[k]).join('\n');
     },
     stepIcon(st) { return { done: '✓', cur: '◉', fault: '✕', pending: '·', skip: '–', unknown: '?' }[st] || '·'; },
     // the agent's skip reason for a Qualify step ('no storage' for fio on a

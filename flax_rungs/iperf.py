@@ -59,21 +59,27 @@ def _speed(client, ifname, user, pw, runner) -> float | None:
 
 
 def _bps(client, cip, sip, p, reverse, seconds, streams, user, pw, runner):
+    """-> (bits/s or None, error, raw): raw = the `iperf3 -J` JSON text as printed
+    (the client's stdout when it printed no JSON), kept as the rung's artifact."""
     script = (f"iperf3 -c {shlex.quote(sip)} -p {p} -B {shlex.quote(cip)} "
               f"-t {seconds} -P {streams} -J{' -R' if reverse else ''}\n")
     rc, out, err = hostssh.run(client["host_ip"], user, pw, script,
                                timeout=seconds + 30, runner=runner)
+    raw = (out or "").strip()
     try:                    # stdout only; ssh/sudo noise is on stderr
-        j, _ = json.JSONDecoder().raw_decode(out[out.index("{"):])
+        at = out.index("{")
+        j, end = json.JSONDecoder().raw_decode(out[at:])
+        raw = out[at:at + end]
         if j.get("error"):
-            return None, str(j["error"])
-        return float(j["end"]["sum_received"]["bits_per_second"]), ""
+            return None, str(j["error"]), raw
+        return float(j["end"]["sum_received"]["bits_per_second"]), "", raw
     except (ValueError, KeyError, TypeError, AttributeError):
-        return None, f"no iperf result (rc={rc}): {hostssh.tail(out, err, 120)}"
+        return None, f"no iperf result (rc={rc}): {hostssh.tail(out, err, 120)}", raw
 
 
 def _client(client, sports, server, user, pw, seconds, streams, runner):
-    nets, errs, served = {}, [], True
+    """-> (nets, errs, served, raw): raw = {"iperf-<net>-tx|rx": iperf3 -J text}."""
+    nets, errs, served, raw = {}, [], True, {}
     for net, (ifname, cip) in client["ifaces"].items():
         if net not in sports:
             nets[net] = {"tx_bps": None, "rx_bps": None, "speed_bps": None, "ok": False}
@@ -82,8 +88,9 @@ def _client(client, sports, server, user, pw, seconds, streams, runner):
             continue
         sip, p = sports[net]
         speed = _speed(client, ifname, user, pw, runner)
-        tx, e1 = _bps(client, cip, sip, p, False, seconds, streams, user, pw, runner)
-        rx, e2 = _bps(client, cip, sip, p, True, seconds, streams, user, pw, runner)
+        tx, e1, j1 = _bps(client, cip, sip, p, False, seconds, streams, user, pw, runner)
+        rx, e2, j2 = _bps(client, cip, sip, p, True, seconds, streams, user, pw, runner)
+        raw.update({k: j for k, j in ((f"iperf-{net}-tx", j1), (f"iperf-{net}-rx", j2)) if j})
         ok = bool(speed) and tx is not None and rx is not None and \
             tx >= THRESHOLD * speed and rx >= THRESHOLD * speed
         nets[net] = {"tx_bps": tx, "rx_bps": rx, "speed_bps": speed, "ok": ok}
@@ -97,7 +104,7 @@ def _client(client, sports, server, user, pw, seconds, streams, runner):
                         + (f" [{e1 or e2}]" if (e1 or e2) else ""))
     if not nets:
         errs.append("client has no networks")
-    return nets, errs, served
+    return nets, errs, served, raw
 
 
 def mesh(server: dict, clients: list[dict], *, user: str, pw: str, port: int = 11001,
@@ -119,11 +126,13 @@ def mesh(server: dict, clients: list[dict], *, user: str, pw: str, port: int = 1
             return out
         all_served = True
         for c in clients:                       # strictly one at a time
-            nets, errs, served = _client(c, ports, server, user, pw, seconds, streams, runner)
+            nets, errs, served, raw = _client(c, ports, server, user, pw, seconds, streams,
+                                              runner)
             all_served &= served
             good = not errs and all(n["ok"] for n in nets.values())
             out[c["pos"]] = RungResult("pass" if good else "fail",
-                                       {**nets, **({"error": "; ".join(errs)} if errs else {})})
+                                       {**nets, **({"error": "; ".join(errs)} if errs else {})},
+                                       raw)
         if not clients:
             out[server["pos"]] = RungResult("skip", {"served": []})
         else:

@@ -6,6 +6,9 @@
   --text:#c9d1d9; --muted:#8b949e; --dim:#5b636e;
   --accent:#58a6ff; --green:#3fb950; --amber:#d29922; --red:#f85149; --grey:#6e7681;
   --violet:#a371f7;
+  /* a PASSED step carrying a label (fio drive outside its range): NOT --amber,
+     which means "phase in flight" here */
+  --flag:#f0883e;
   --radius:8px;
 }
 *{box-sizing:border-box}
@@ -136,6 +139,7 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .step.done{color:var(--text)} .step.done .si{color:var(--green)}
 .step.cur{color:var(--amber)} .step.cur .si{color:var(--amber)}
 .step.fault{color:var(--red)} .step.fault .si{color:var(--red)}
+.step.flag{color:var(--flag)} .step.flag .si{color:var(--flag)}
 .step.pending .si{color:var(--dim)}
 .alert-grid{display:grid;grid-template-columns:1fr 1fr;gap:.5rem}
 .alert-box{border:1px solid var(--border);border-radius:7px;padding:.45rem .55rem;background:var(--panel2);cursor:pointer}
@@ -203,6 +207,7 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 
 /* ---- SOL console (xterm.js) ---- */
 .m-sol{width:min(1180px,95vw)}
+.m-wide{width:min(1100px,95vw)}  /* a step modal with an evidence table (fio) */
 .sol-controls{display:flex;gap:.6rem;align-items:center;margin-bottom:.5rem}
 .sol-lock,.sol-relaunch{width:auto;padding:.4rem .8rem;border-radius:7px;font-weight:700;cursor:pointer;
   background:var(--panel2);border:1px solid var(--line);color:var(--text)}
@@ -248,3 +253,14 @@ button.mini{font-size:.66rem;padding:.05rem .4rem;margin-left:.5rem;vertical-ali
 
 .inv-tbl tr.blocked td{color:var(--red);font-weight:600;background:rgba(248,81,73,.08)}
 .inv-tbl tr.blocked td:first-child{border-left:3px solid var(--red)}
+
+/* flagged pass (step_flags): tile marker, modal badge, tinted table rows */
+.flagm{color:var(--flag);font-size:.78rem;font-weight:700;line-height:1}
+.pop-badge.st-flag{color:var(--flag);background:rgba(240,136,62,.15)}
+.step-tbl-wrap{overflow-x:auto;margin:.4rem 0 .7rem}
+.step-tbl{border-collapse:collapse;font-size:.74rem;width:100%}
+.step-tbl th{text-align:left;color:var(--dim);font-weight:600;font-size:.64rem;text-transform:uppercase;letter-spacing:.4px;padding:.15rem .5rem .25rem 0;border-bottom:1px solid var(--border);white-space:nowrap}
+.step-tbl td{padding:.18rem .5rem .18rem 0;border-bottom:1px solid #1b212b;white-space:nowrap}
+.step-tbl tr.flag td{background:rgba(240,136,62,.13)}
+.step-tbl tr.flag td:first-child{box-shadow:inset 3px 0 0 var(--flag)}
+.step-tbl td.outside{color:var(--flag);font-weight:700}

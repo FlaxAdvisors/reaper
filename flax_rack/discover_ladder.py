@@ -556,7 +556,7 @@ def _power_on(ctx, env, st, bmc_ip, host_ip, want) -> RungResult:
                 return _already_live(ctx, env, st, bmc_ip, host_ip, bid, up, at, got)
             os_ = _installed_os(ctx, env, host_ip)
             if os_ is not None:
-                return _already_installed(ctx, env, st, bmc_ip, host_ip, bid, up, want, os_)
+                return _already_installed(ctx, env, st, bmc_ip, host_ip, bid, up, want, os_, at)
             probe_note = "the host answers ssh but is not in the live image: it is cycled"
     info = {}
     state = R.power_status(bmc_ip, cr.bmc, info=info, runner=ctx.runner)
@@ -644,7 +644,7 @@ def _os_rows(host_ip, p, want) -> list[list]:
             ["host MAC on a NIC", "yes" if want in p["macs"] else f"no ({_colon(want)})"]]
 
 
-def _already_installed(ctx, env, st, bmc_ip, host_ip, bid, up, want, p) -> RungResult:
+def _already_installed(ctx, env, st, bmc_ip, host_ip, bid, up, want, p, at=None) -> RungResult:
     """No power action, no PXE override: the node runs its installed OS (Deploy got it
     there); pulling it back to the live image would undo nothing Discover needs."""
     rows = _os_rows(host_ip, p, want)
@@ -654,6 +654,7 @@ def _already_installed(ctx, env, st, bmc_ip, host_ip, bid, up, want, p) -> RungR
                   ["an installed OS answers at this device's host IP but none of its NICs "
                    "carries the discovered host MAC: nothing is powered until that is explained"])
     st.installed, st.boot_id = True, bid
+    st.kernel_boot = at - up if up is not None else None
     power = env.R.power_status(bmc_ip, env.cr.bmc, runner=ctx.runner)
     rows = [["chassis power", power or "unreadable"], *rows,
             ["uptime", f"{int(up)} s" if up is not None else None]]
@@ -661,7 +662,8 @@ def _already_installed(ctx, env, st, bmc_ip, host_ip, bid, up, want, p) -> RungR
               ["the node was up on its installed OS (Ubuntu "
                f"{p['version_id']}, / on {p['disk']}) when Discover looked: no power cycle, "
                "no PXE override"],
-              installed_os=True, boot_id=bid, power=power, version_id=p["version_id"])
+              installed_os=True, boot_id=bid, kernel_boot=st.kernel_boot, power=power,
+              version_id=p["version_id"])
 
 
 _MARK_SRC = {"tftp": "dnsmasq log (TFTP sent to the host IP)",
@@ -748,7 +750,7 @@ def _host_pinged(ctx, env, st, host_ip) -> RungResult:
     rows = [["host IP", host_ip], ["seen at", _t(at) if ok else "not yet"],
             ["after power-on", _dur(st.power_at, at) if ok else ""], ["budget", f"{budget} s"]]
     if ok:
-        return ev("pass", f"{host_ip} answers", rows)
+        return ev("pass", f"{host_ip} answers", rows, seen_at=at)
     return ev("fail", f"no ping after {budget}s", rows)
 
 
@@ -795,7 +797,7 @@ def _host_ssh(ctx, env, st, host_ip, want) -> RungResult:
             ["boot_id", got["boot_id"]], ["kernel booted at", _t(kernel)],
             ["budget", f"{budget} s"]]
     extra = {"boot_id": got["boot_id"], "kernel_boot": kernel, "bootif": _colon(bootif),
-             "already_live": st.live}
+             "already_live": st.live, "seen_at": got["at"]}
     if "BOOTIF=" not in got["cmdline"] or "pxeaddr=" not in got["cmdline"]:
         return ev("fail", "not the live image (no BOOTIF/pxeaddr)", rows, notes, **extra)
     if bootif != want:
@@ -850,6 +852,7 @@ def _bmc_ready(ctx, env, st, bmc_ip) -> RungResult:
             d["rows"] = d["rows"][:1] + [["BMC ping", "yes"], ["data read at", _t(at)],
                                          ["after power-on", _dur(st.power_at, at)]] + d["rows"][1:] \
                 + [["retries", f"{n} of {len(BMC_READY_RETRY_BUDGETS_S)}"]]
+            d["seen_at"] = at
             d["notes"].append("the BMC must answer ping AND a real data read (FRU 0); the NIC and "
                               "M.2 FRU devices never count")
             return RungResult("pass", d, r.artifacts)

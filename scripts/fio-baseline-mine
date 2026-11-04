@@ -1,0 +1,400 @@
+#!/usr/bin/env python3.11
+"""Mine the bang archive's fio results into per-model baselines (fio-baselines-v1.json)
+plus a what-if table.  Read-only over --root (e.g. /export/bangs).
+
+Archive: <root>/bang-*/nodes/SESORD-<n>[r2|p2|...]/fio-results/<host>/<job>-test-job-<dev>.out
+joined to  .../SESORD-<n>*/post-*/latest/{hostname.txt, alldisks-v*.txt|hwinfo.txt|smartctl--all.txt}.
+Runs on a bang with flax_rungs/ and flax_post/ copied beside it."""
+import argparse
+import datetime
+import json
+import re
+import statistics
+import sys
+from pathlib import Path
+
+_HERE = Path(__file__).resolve().parent
+for _p in (_HERE.parent, _HERE):
+    if (_p / "flax_rungs").is_dir() and str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
+
+from flax_rungs.fio import parse_job  # noqa: E402
+from flax_post.fio_judge import (  # noqa: E402
+    CLIP_ROUNDS, CLIP_SIGMA, FLAG_SIGMA, METRICS, MIN_SIBLINGS, SIBLING_PCT, SPREAD_CAP, SUITE,
+    normalise_model, sigma_eff, spread, too_wide)
+
+JOBS = {"bw": "--bs=64k --iodepth=64 --rw=read --name=raw-read",
+        "lat": "--bs=4k --iodepth=1 --rw=randread --name=readlatency",
+        "iops": "--bs=4k --iodepth=256 --rw=read --name=iops"}
+COMMON = ("--numjobs=4 --runtime=30 --time_based --direct=1 --ioengine=libaio "
+          "--group_reporting --readonly")
+_OUT = re.compile(r"^(bw|iops|lat)-test-job-(.+)\.out$")
+_ORDER = re.compile(r"^(.*?)(?:r\d+|p\d+)$")
+_SKIP = (".old", ".pre-renetwork")
+
+
+def sigma_clip(values):
+    vals = [float(v) for v in values]
+    clipped = 0
+    for _ in range(CLIP_ROUNDS):
+        if len(vals) < 2:
+            break
+        m, s = statistics.fmean(vals), statistics.pstdev(vals)
+        keep = [v for v in vals if s == 0 or abs(v - m) <= CLIP_SIGMA * s]
+        if len(keep) == len(vals):
+            break
+        clipped += len(vals) - len(keep)
+        vals = keep
+    return {"n": len(vals),
+            "mean": statistics.fmean(vals) if vals else 0.0,
+            "std": statistics.pstdev(vals) if len(vals) > 1 else 0.0,
+            "clipped": clipped,
+            "min": min(vals) if vals else 0.0,
+            "max": max(vals) if vals else 0.0}
+
+
+def _read(p):
+    try:
+        return p.read_text(errors="replace")
+    except OSError:
+        return None
+
+
+def _alldisks(text):
+    out = {}
+    for ln in text.splitlines():
+        f = ln.split()
+        if not f or not f[0].startswith("/dev/"):
+            continue
+        at = next((i for i, x in enumerate(f) if x.endswith("rotational")), None)
+        if at is None or at < 1 or len(f) < 3:
+            continue
+        size = None
+        if at + 1 < len(f) and re.fullmatch(r"[\d.]+", f[at + 1]):
+            size = float(f[at + 1])
+        out[f[0][5:]] = {"model": " ".join(f[at + 4:-1]) if len(f) >= at + 5 else f[-2],
+                         "controller": f[at - 1], "size_gb": size}
+    return out
+
+
+def _hwinfo(text):
+    out = {}
+    for blk in re.split(r"\n(?=\d+: )", text):
+        if "Hardware Class: disk" not in blk:
+            continue
+        dev = re.search(r"Device File: /dev/(\S+)", blk)
+        if not dev:
+            continue
+        mod = re.search(r'^\s*Model: "(.*?)"', blk, re.M)
+        drv = re.search(r'^\s*Driver: "([^"]+)"', blk, re.M)
+        ser = re.search(r'^\s*Serial ID: "(.*?)"', blk, re.M)
+        sz = re.search(r"^\s*Size: (\d+) sectors a (\d+) bytes", blk, re.M)
+        out[dev.group(1)] = {
+            "model": mod.group(1) if mod else None,
+            "controller": drv.group(1) if drv else None,
+            "serial": ser.group(1).strip() if ser else None,
+            "size_gb": int(sz.group(1)) * int(sz.group(2)) / 1e9 if sz else None}
+    return out
+
+
+def _generic(model):
+    """hwinfo names the controller or just the vendor for many drives."""
+    u = (model or "").upper().strip()
+    return not u or "CONTROLLER" in u or u.endswith(" DISK")
+
+
+def _smartctl_blocks(text):
+    """One entry per `smartctl --all` run (each starts at a `smartctl X.Y` banner):
+    {"dev": /dev name if the block names one, "serial", "model"}."""
+    blocks = []
+    for chunk in re.split(r"^(?=smartctl \d)", text, flags=re.M):
+        if not chunk.startswith("smartctl "):
+            continue
+        b = {"dev": None, "serial": None, "model": None}
+        for ln in chunk.splitlines():
+            m = re.match(r"^(Device Model|Model Number|Product):\s+(.+)$", ln)
+            if m and not b["model"]:
+                b["model"] = m.group(2).strip()
+            m = re.match(r"^Serial [Nn]umber:\s+(\S.*)$", ln)
+            if m and not b["serial"]:
+                b["serial"] = m.group(1).strip()
+            m = re.search(r"/dev/((?:sd[a-z]+|nvme\d+n\d+|nvme\d+))\b", ln)
+            if m and not b["dev"]:
+                b["dev"] = re.sub(r"^(nvme\d+)$", r"\1n1", m.group(1))
+        blocks.append(b)
+    return blocks
+
+
+def _smartctl(text):
+    """dev -> model for blocks that name their device."""
+    return {b["dev"]: {"model": b["model"], "controller": None, "size_gb": None}
+            for b in _smartctl_blocks(text) if b["dev"] and b["model"]}
+
+
+def _norm_serial(x):
+    return re.sub(r"\s+", "", x or "").upper() or None
+
+
+_BYID_SKIP = re.compile(r"^(wwn-|nvme-eui\.|nvme-nvme\.)|-part\d+$")
+_BYID_PFX = re.compile(r"^(?:ata|nvme|scsi)-(?:\d?SATA_|1?ATA_)?")
+
+
+def _by_id(text):
+    """ls -lR /dev/disk output -> dev -> {"serial", "model"} from the by-id names
+    (`ata-MODEL_SERIAL`, `nvme-MODEL_SERIAL`, `scsi-SATA_MODEL_SERIAL`)."""
+    out = {}
+    sect = None
+    for ln in text.splitlines():
+        if ln.endswith(":") and ln.startswith("/"):
+            sect = ln[:-1]
+            continue
+        if sect != "/dev/disk/by-id":
+            continue
+        m = re.search(r"\s(\S+) -> \.\./\.\./(\S+)\s*$", ln)
+        if not m or _BYID_SKIP.search(m.group(1)):
+            continue
+        name, dev = m.groups()
+        pm = _BYID_PFX.match(name)
+        rest = name[pm.end():] if pm else ""
+        if not pm or "_" not in rest:
+            continue
+        model, ser = rest.rsplit("_", 1)
+        if dev not in out and model and ser:
+            out[dev] = {"serial": ser, "model": model.replace("_", " ").strip()}
+    return out
+
+
+def _from_smartctl_hwinfo(smart_text, hw, byid=None):
+    """Real drive models: smartctl (block names its dev, else matched by serial via
+    hwinfo / by-id serials) > by-id name model > non-generic hwinfo model; controller/size
+    from hwinfo.  A hwinfo model that only names a controller or vendor is dropped
+    (model None -> counted unjoined), never grouped."""
+    byid = byid or {}
+    blocks = _smartctl_blocks(smart_text or "")
+    by_dev = {b["dev"]: b for b in blocks if b["dev"] and b["model"]}
+    by_ser = {_norm_serial(b["serial"]): b for b in blocks if b["serial"] and b["model"]}
+    out = {}
+    for dev in list(hw) + [d for d in list(byid) + list(by_dev) if d not in hw]:
+        if dev in out:
+            continue
+        h = hw.get(dev) or {"model": None, "controller": None, "size_gb": None}
+        i = byid.get(dev) or {}
+        b = (by_dev.get(dev) or by_ser.get(_norm_serial(h.get("serial")))
+             or by_ser.get(_norm_serial(i.get("serial"))))
+        if b:
+            model = b["model"]
+        elif i.get("model"):
+            model = i["model"]
+        else:
+            model = None if _generic(h.get("model")) else h["model"]
+        out[dev] = {"model": model, "controller": h.get("controller"),
+                    "size_gb": h.get("size_gb")}
+    return out
+
+
+def node_disks(post_latest):
+    """dev -> {model, controller, size_gb}; source order alldisks-v > smartctl (dev name or
+    by-id serial) > by-id model > hwinfo (non-generic)."""
+    post_latest = Path(post_latest)
+    srcs = []
+    try:
+        srcs = sorted(p for p in post_latest.glob("alldisks-v*.txt"))
+    except OSError:
+        pass
+    for p in reversed(srcs):
+        if (t := _read(p)) and (d := _alldisks(t)):
+            return d
+    hw = _hwinfo(t) if (t := _read(post_latest / "hwinfo.txt")) else {}
+    st = _read(post_latest / "smartctl--all.txt")
+    byid = _by_id(t) if (t := _read(post_latest / "ls-lR_dev_disk.txt")) else {}
+    if (d := _from_smartctl_hwinfo(st, hw, byid)):
+        return d
+    return {}
+
+
+def _ls(p, counters):
+    try:
+        return sorted(p.iterdir())
+    except (FileNotFoundError, NotADirectoryError):
+        counters["missing_dir"] += 1
+        return []
+    except OSError:
+        counters["unreadable"] += 1
+        return []
+
+
+def _isdir(p):
+    try:
+        return p.is_dir()
+    except OSError:
+        return False
+
+
+def scan(root):
+    root = Path(root)
+    c = {"unjoined": 0, "dropped_mismatch": 0, "dropped_dup": 0, "missing_dir": 0,
+         "unreadable": 0, "samples": 0}
+    best = {}  # (base order, host, dev, job) -> (mtime, sample)
+    for bang in _ls(root, c):
+        for order in _ls(bang / "nodes", c):
+            if order.name.endswith(_SKIP) or not _isdir(order):
+                continue
+            base = (_ORDER.match(order.name) or [None, order.name])[1]
+            hosts = {}
+            for post in _ls(order, c):
+                if post.name.startswith("post-"):
+                    lat = post / "latest"
+                    if (t := _read(lat / "hostname.txt")) and t.strip():
+                        hosts[t.split()[0].strip()] = lat
+            for hostdir in _ls(order / "fio-results", c):
+                disks = None
+                for f in _ls(hostdir, c):
+                    m = _OUT.match(f.name)
+                    if not m:
+                        continue
+                    job, dev = m.groups()
+                    lat = hosts.get(hostdir.name)
+                    if lat is None:
+                        c["unjoined"] += 1
+                        continue
+                    if disks is None:
+                        disks = node_disks(lat)
+                    info = disks.get(dev)
+                    if info is None:
+                        c["dropped_mismatch"] += 1
+                        continue
+                    if not info.get("model"):
+                        c["unjoined"] += 1
+                        continue
+                    try:
+                        mt = f.stat().st_mtime
+                    except OSError:
+                        c["unreadable"] += 1
+                        continue
+                    if (txt := _read(f)) is None:
+                        c["unreadable"] += 1
+                        continue
+                    rd = parse_job(txt)["dirs"].get("read")
+                    if not rd:
+                        c["unjoined"] += 1
+                        continue
+                    s = {"model": normalise_model(info["model"], dev), "controller": info.get("controller"),
+                         "job": job, "dev": dev, "host": hostdir.name, "order": base,
+                         "date": datetime.date.fromtimestamp(mt).isoformat(), "read": rd}
+                    k = (base, hostdir.name, dev, job)
+                    if k in best:
+                        c["dropped_dup"] += 1
+                        if best[k][0] >= mt:
+                            continue
+                    best[k] = (mt, s)
+    samples = [v[1] for v in best.values()]
+    c["samples"] = len(samples)
+    return samples, c
+
+
+def _groups(samples):
+    g = {}
+    for s in samples:
+        for metric, _good in METRICS[s["job"]]:
+            v = s["read"].get(metric)
+            if v is None:
+                continue
+            for ctrl in {s["controller"], None}:
+                g.setdefault((s["model"], ctrl, s["job"], metric), []).append((v, s["date"]))
+    return g
+
+
+def build(samples, counters=None, source=""):
+    groups = []
+    for (model, ctrl, job, metric), vd in sorted(
+            _groups(samples).items(), key=lambda kv: tuple(str(x) for x in kv[0])):
+        st = sigma_clip([v for v, _ in vd])
+        dates = sorted(d for _, d in vd)
+        groups.append({"model": model, "controller": ctrl, "job": job, "metric": metric,
+                       **st, "from": dates[0], "to": dates[-1]})
+    return {"suite": SUITE, "generated": datetime.date.today().isoformat(), "source": source,
+            "jobs": {j: f"{COMMON} {a}" for j, a in JOBS.items()},
+            "groups": groups, **{k: v for k, v in (counters or {}).items()}}
+
+
+def whatif(samples, baseline):
+    gs = _groups(samples)
+    lines = ["model | controller | job | metric | n | clipped | flagged at %gσ" % FLAG_SIGMA]
+    for g in baseline["groups"]:
+        vals = [v for v, _ in gs.get((g["model"], g["controller"], g["job"], g["metric"]), [])]
+        good = dict(METRICS[g["job"]])[g["metric"]]
+        mean, std = g["mean"], g["std"]
+        lo, hi = mean - CLIP_SIGMA * std, mean + CLIP_SIGMA * std
+        kept = [v for v in vals if std == 0 or lo <= v <= hi]
+        se = sigma_eff(mean, std)  # the judge's flag σ (floored), so the gate matches runtime
+        if good == "higher":
+            n = sum(v < mean - FLAG_SIGMA * se for v in kept)
+        else:
+            n = sum(v > mean + FLAG_SIGMA * se for v in kept)
+        lines.append(f"{g['model']} | {g['controller'] or 'any'} | {g['job']} | {g['metric']} | "
+                     f"{g['n']} | {g['clipped']} | {n}")
+    lines += _spread_section(baseline)
+    lines += _sibling_section(samples)
+    return "\n".join(lines) + "\n"
+
+
+def _spread_section(baseline):
+    """The groups the judge sets aside (std / |mean| > SPREAD_CAP): kept in the baseline
+    file untouched, but never used for the history check."""
+    wide = [g for g in baseline["groups"] if too_wide(g)]
+    out = ["", "set aside by the spread cap (std/mean > %g%%; kept in the file, not judged by): %d"
+           % (SPREAD_CAP * 100, len(wide)),
+           "model | controller | job | metric | n | mean | std | std/mean%"]
+    for g in wide:
+        out.append(f"{g['model']} | {g['controller'] or 'any'} | {g['job']} | {g['metric']} | "
+                   f"{g['n']} | {g['mean']:.4g} | {g['std']:.4g} | {spread(g) * 100:.1f}")
+    return out
+
+
+def _sibling_section(samples):
+    """What the judge's sibling cut-off would flag in history: per node (order, host),
+    same-model devices (>= MIN_SIBLINGS) with a value > SIBLING_PCT % worse than the
+    median of their siblings."""
+    nodes = {}
+    for s in samples:
+        for metric, good in METRICS[s["job"]]:
+            v = s["read"].get(metric)
+            if v is not None:
+                nodes.setdefault((s.get("order"), s.get("host"), s["model"], s["job"], metric, good),
+                                 []).append(v)
+    per = {}  # model -> [comparisons, flags]
+    for (_o, _h, model, _job, _metric, good), vals in nodes.items():
+        if len(vals) < MIN_SIBLINGS:
+            continue
+        row = per.setdefault(model, [0, 0])
+        for i, v in enumerate(vals):
+            med = statistics.median(vals[:i] + vals[i + 1:])
+            if med <= 0:
+                continue
+            worse = (med - v) / med if good == "higher" else (v - med) / med
+            row[0] += 1
+            row[1] += worse * 100 > SIBLING_PCT
+    out = ["", "sibling check at > %g%% worse than the median of >= %d same-model drives in a node"
+           % (SIBLING_PCT, MIN_SIBLINGS), "model | comparisons | flagged"]
+    for m in sorted(per, key=str):
+        out.append(f"{m} | {per[m][0]} | {per[m][1]}")
+    out.append(f"TOTAL | {sum(r[0] for r in per.values())} | {sum(r[1] for r in per.values())}")
+    return out
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--root", required=True)
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--whatif", required=True)
+    a = ap.parse_args(argv)
+    samples, counters = scan(a.root)
+    base = build(samples, counters, source=a.root)
+    Path(a.out).write_text(json.dumps(base, indent=1) + "\n")
+    Path(a.whatif).write_text(whatif(samples, base))
+    print(f"{len(samples)} samples, {len(base['groups'])} groups, counters {counters}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

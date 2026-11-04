@@ -85,6 +85,26 @@ def disks(alldisks: str | None, lsblk: str | None) -> dict[str, str]:
     return out
 
 
+def disk_info(alldisks: str | None) -> dict[str, dict]:
+    """dev -> {"model", "controller", "serial", "size_gb"} from alldisks, the judge's
+    inputs (flax_post.fio_judge): controller = the driver column before `rotational`
+    (mpt3sas / ahci / nvme ...), model = the fields between `<vendor> <rev>` and the serial (a spaced model stays whole), serial = last; the same
+    reading the baseline miner applies to the archive's alldisks."""
+    out = {}
+    for ln in (alldisks or "").splitlines():
+        f = ln.split()
+        if not f or not f[0].startswith("/dev/"):
+            continue
+        at = next((i for i, x in enumerate(f) if x.endswith("rotational")), None)
+        full = at is not None and len(f) >= at + 5
+        size = float(f[at + 1]) if at is not None and at + 1 < len(f) and \
+            re.fullmatch(r"[\d.]+", f[at + 1]) else None
+        out[f[0][5:]] = {"model": " ".join(f[at + 4:-1]) if full else None,
+                         "controller": f[at - 1] if at else None,
+                         "serial": f[-1] if full else None, "size_gb": size}
+    return out
+
+
 def _n(v, unit=""):
     if v is None:
         return "—"
@@ -94,42 +114,86 @@ def _n(v, unit=""):
     return f"{v:.1f}" if v < 100 else f"{v:.0f}"
 
 
+_SHORT = {"mbps": "MB/s", "iops": "IOPS", "lat_us": "lat", "p99_us": "p99"}
+
+
+def spread_text(metrics) -> str:
+    """The check-cell note for a job's metrics the judge set aside (history too spread)."""
+    return " ".join(_SHORT.get(m, m) for m in metrics) + " spread too wide"
+
+
+def natural_dev_key(dev: str) -> tuple:
+    """Sort key: sda < sdb < ... < sdz < sdaa, then nvme0n1 < ... < nvme10n1, others last."""
+    if m := re.fullmatch(r"sd([a-z]+)", dev):
+        return (0, len(m.group(1)), m.group(1))
+    if m := re.fullmatch(r"nvme(\d+)n(\d+)", dev):
+        return (1, int(m.group(1)), int(m.group(2)))
+    return (2, 0, dev)
+
+
 def summarize(fio_text: str | None, devices=None, alldisks=None, lsblk=None,
-              excluded=None) -> dict:
+              excluded=None, judged: dict | None = None) -> dict:
     """Detail additions for the fio rung: {"table": {"cols", "rows"}, "fio": {dev: {job:
     parse_job}}, "fio_headline": str | None, "rows", "notes"}. devices: the agent's list
     (summary.devices), so a device with no output is named. excluded: the agent's
-    summary.smart_excluded ({dev: reasons}), the disks smart-health failed and fio left out."""
+    summary.smart_excluded ({dev: reasons}), the disks smart-health failed and fio left out.
+    judged: flax_post.fio_judge.judge's {dev: {"verdict", "reasons", "expected"}}; given,
+    the table gains `expected` + `check` columns and `row_cls` ("flag" on an outside
+    drive's rows), labels only."""
     secs = sections(fio_text or "")
     got: dict[str, dict] = {}
     for dev, job, out in secs:
         got.setdefault(dev, {})[job] = parse_job(out)
     devs = list(dict.fromkeys([*(devices or []), *got]))
     info = disks(alldisks, lsblk)
-    rows, missing = [], []
-    for dev in devs:
+    missing = []
+    by_job: dict[str, list] = {}      # job -> rows, devices in natural order
+    gone = []                         # one row per device with no fio output at all
+    for dev in sorted(devs, key=natural_dev_key):
         what = info.get(dev) or "—"
         jobs = got.get(dev)
         if not jobs:
-            rows.append([dev, what, "—", "no fio output for this device", "", "", ""])
+            gone.append([dev, what, "—", "no fio output for this device", "", "", ""])
             missing.append(f"{dev}: no output")
             continue
         for job in [*JOBS, *(j for j in jobs if j not in JOBS)]:
+            out = by_job.setdefault(job, [])
             r = jobs.get(job)
             if r is None:
-                rows.append([dev, what, job, "job not in the output", "", "", ""])
+                out.append([dev, what, job, "job not in the output", "", "", ""])
                 missing.append(f"{dev} {job}: not run")
                 continue
             label = job + (f" · {r['rw']} {r['bs']} qd{r['iodepth']}" if r["rw"] else "")
             if not r["dirs"]:
                 why = f"fio err={r['err']}" if r["err"] else "no read/write summary line"
-                rows.append([dev, what, label, f"not parsed: {why}", "", "", ""])
+                out.append([dev, what, label, f"not parsed: {why}", "", "", ""])
                 missing.append(f"{dev} {job}: {why}")
                 continue
             for dname, d in r["dirs"].items():
-                rows.append([dev, what, label + ("" if dname == "read" else f" ({dname})"),
-                             _n(d["iops"], "iops"), _n(d["mbps"]), _n(d["lat_us"]),
-                             _n(d["p99_us"])])
+                out.append([dev, what, label + ("" if dname == "read" else f" ({dname})"),
+                            _n(d["iops"], "iops"), _n(d["mbps"]), _n(d["lat_us"]),
+                            _n(d["p99_us"])])
+    rows = [r for job in [*JOBS, *(j for j in by_job if j not in JOBS)]
+            for r in by_job.get(job, [])] + gone
+    table = {"cols": list(COLS), "rows": rows}
+    if judged is not None:
+        row_cls = []
+        for r in rows:
+            j = (judged.get(r[0]) if r[0] in got else None) or {}
+            job = r[2].split(" ", 1)[0]
+            # check names the job that is out (an outside drive's other jobs read ok);
+            # the tint marks every row of the flagged drive
+            check = j.get("verdict", "")
+            if check == "outside" and not any(x.split(" ", 1)[0] == job
+                                               for x in j.get("reasons") or []):
+                check = "ok"
+            if (wide := (j.get("spread") or {}).get(job)) and r[0] in got:
+                # a capped history metric is a label beside the check, never a flag
+                check = ("no baseline (spread too wide)" if check == "no baseline"
+                         else f"{check} · {spread_text(wide)}" if check else spread_text(wide))
+            r += [(j.get("expected") or {}).get(job, ""), check]
+            row_cls.append("flag" if j.get("verdict") == "outside" else "")
+        table = {"cols": [*COLS, "expected", "check"], "rows": rows, "row_cls": row_cls}
     head = None
     lead = next((d for d in devs if d.startswith("nvme") and d in got), None) or \
         next((d for d in devs if d in got), None)
@@ -147,5 +211,5 @@ def summarize(fio_text: str | None, devices=None, alldisks=None, lsblk=None,
         srows.append(["left out (SMART failed)", "; ".join(
             f"{d}" + (f" ({info[d]})" if info.get(d) else "") + f": {'; '.join(r or [])}"
             for d, r in excluded.items())])
-    return {"table": {"cols": list(COLS), "rows": rows}, "fio_headline": head,
+    return {"table": table, "fio_headline": head,
             "fio": got, "rows": srows, "notes": list(NOTES)}

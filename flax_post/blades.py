@@ -379,6 +379,16 @@ def _step_notes(st) -> dict:
     return notes
 
 
+def _step_flags(st) -> dict:
+    """{step: short text} for a PASSED step that carries a label (spec 2026-11-04 fio
+    baselines): fio with drives outside their model's range. The step state stays
+    `done`, so phases, chips, counters and gating never see it; only the step row, its
+    modal and a tile marker do."""
+    fio = ((st.get("qual") or {}).get("steps") or {}).get("fio") or {}
+    n = len((fio.get("summary") or {}).get("flagged") or [])
+    return {"fio": "%d outside range" % n} if n and fio.get("status") == "pass" else {}
+
+
 def _fault_notes(st) -> dict:
     """{step: reason} for the ladder's fault and its skipped-markers note. The
     tile's step modal shows these; the inline row shows only the red icon."""
@@ -586,6 +596,7 @@ def _record(slot, c, st, settings, live_link, macs):
         "clean": clean,
         "holes": holes,
         "step_notes": _step_notes(st),
+        "step_flags": _step_flags(st),
         "fault_notes": fault_notes,
         "ladder_view": _ladder_view(st),
         "ladder": st.get("ladder") or {},

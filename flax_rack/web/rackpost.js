@@ -93,7 +93,7 @@ function loadAsset(src) {
   });
   return loaded[src];
 }
-const STEP_WORD = { done: 'done', run: 'running…', cur: 'in progress', fault: 'fault', pending: 'not run', skip: 'skipped', held: 'skipped (upstream)', unknown: 'unknown', unmeasured: 'not measured', fwnote: 'to note (report only)' };
+const STEP_WORD = { done: 'done', run: 'running…', cur: 'in progress', fault: 'fault', pending: 'not run', skip: 'skipped', held: 'skipped (upstream)', unknown: 'unknown', unmeasured: 'not measured', fwnote: 'to note (report only)', flag: 'done · flagged' };
 // Firmware is report only (controller ruling 2026-10-30): a finished Firmware row that
 // found something (needs_update, a fault such as an unsupported PSID, a version not read)
 // is an amber note, never a red fault: it never reddens the dot nor counts in ALERTS
@@ -130,6 +130,9 @@ function stepState(run) {
   const st = (run.detail || {}).state;
   if (POST_STATES.includes(st)) return st;
   if (run.verdict === 'skip') return run.skip_reason === 'upstream' ? 'held' : 'skip';
+  // passed, with a drive outside its fio range: amber on the row, its modal and a tile
+  // marker only; every phase / counter / summary reads it as done (entriesOf)
+  if (run.verdict === 'pass' && (run.detail?.flagged || []).length) return 'flag';
   return { pass: 'done', fail: 'fault' }[run.verdict] || 'unknown';
 }
 
@@ -384,8 +387,10 @@ function App() {
     hiddenBad(d, phase) { return this.hiddenEntries(d, phase).filter((x) => ['fault', 'unmeasured', 'unknown'].includes(x.state)); },
     entriesOf(steps, key, phase) {
       const state = (run) => { const st = stepState(run); return phase === 'firmware' && FW_NOTE.includes(st) ? 'fwnote' : st; };
-      return Object.entries(steps).map(([name, run]) => ({
-        name, run, key: `${key}/${name}`, state: state(run), note: stepNote(run, name),
+      // a flagged step is 'done' to every phase / counter / summary helper; `flag` is
+      // read only by the step row, its modal and the tile marker
+      return Object.entries(steps).map(([name, run]) => [name, run, state(run)]).map(([name, run, st]) => ({
+        name, run, key: `${key}/${name}`, state: st === 'flag' ? 'done' : st, flag: st === 'flag', note: stepNote(run, name),
         arts: Object.entries((run && run.artifacts) || {}).map(([n, url]) => ({ name: n, url })),
         ev: run && run.detail && (run.detail.rows || run.detail.notes || run.detail.table) ? run.detail : null,
         title: (run ? `${run.status}${run.verdict ? ' · ' + run.verdict : ''} · ${run.finished_at || run.started_at}` : 'not run')
@@ -405,8 +410,9 @@ function App() {
       if (!st) return;
       const run = st.run, d = (run && run.detail) || {};
       this.stepM = {
-        who: this.whoName(o), phase, name: st.name, state: st.state,
-        word: run && run.verdict && st.state !== 'unmeasured' ? `${STEP_WORD[st.state] || st.state} · ${run.verdict}` : (STEP_WORD[st.state] || st.state),
+        who: this.whoName(o), phase, name: st.name, state: st.flag ? 'flag' : st.state,
+        word: ((w) => (run && run.verdict && st.state !== 'unmeasured' ? `${w} · ${run.verdict}` : w))(
+          STEP_WORD[st.flag ? 'flag' : st.state] || st.state),
         headline: run ? (d.headline || st.note || '') : '', rows: d.rows || [], notes: d.notes || [],
         table: d.table && Array.isArray(d.table.rows) ? d.table : null,
         arts: st.arts || [], ran: !!run,
@@ -662,7 +668,12 @@ function App() {
       return k in this.phOpen ? !this.phOpen[k] : true;
     },
     togglePh(o, p) { if (this.phFinished(o, p)) this.phOpen = { ...this.phOpen, [`${o.pos}/${p}`]: this.phFolded(o, p) }; },
-    stepIcon(st) { return { done: '✓', run: '◌', cur: '◉', fault: '✕', pending: '·', skip: '–', held: '–', unknown: '?', unmeasured: '○', fwnote: '!' }[st] || '·'; },
+    // a device's flagged steps (a pass with a drive outside its fio range): the tile's ⚑
+    flaggedSteps(d) {
+      return !d ? [] : (this.s.phases || []).flatMap((p) => this.stepEntries(d, p).filter((x) => x.flag)
+        .map((x) => `${p} · ${x.name}: ${x.note}`));
+    },
+    stepIcon(st) { return { flag: '⚑', done: '✓', run: '◌', cur: '◉', fault: '✕', pending: '·', skip: '–', held: '–', unknown: '?', unmeasured: '○', fwnote: '!' }[st] || '·'; },
     statusText(d) {
       if (!d) return '';
       for (const p of ['discover', 'firmware', 'qualify', 'deploy', 'done']) {

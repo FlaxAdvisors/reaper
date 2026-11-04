@@ -78,13 +78,13 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
-from flax_post import population, qualify_rules, shipchecks
+from flax_post import fio_judge, population, qualify_rules, shipchecks
 from flax_post.observe import family_map_live, fru
 from flax_rungs import (agent, enclosure, fabric, fio, ha, hostssh, identity, iperf, liveboot,
                         smart, sol)
 from flax_rungs.result import UNMEASURED, RungResult, not_passed
 
-from . import switches
+from . import iperf_mesh_view, switches
 from .addressing import plan_addresses
 from .geometry import HEAD_KINDS, VIA_HEAD, merged_expect
 from .discover_ladder import DISCOVER_STEPS
@@ -871,23 +871,61 @@ def _poll(ctx, R, cr, phase, x):
             _record(ctx, pos, ENCLOSURE, res, STAGE, run_seg)
 
 
-def fio_detail(detail: dict, verdict, fio_text, alldisks, lsblk) -> dict:
+_BASELINE: dict | None = None
+
+
+def _baseline() -> dict:
+    """fio_judge's baseline file, read once per process (a deploy restarts the daemon)."""
+    global _BASELINE
+    if _BASELINE is None:
+        _BASELINE = fio_judge.load_baseline()
+    return _BASELINE
+
+
+def fio_detail(detail: dict, verdict, fio_text, alldisks, lsblk, baseline=None) -> dict:
     """The fio stage's detail with its per-device summary (flax_rungs.fio): the table,
     rows, notes; the headline (IOPS · MB/s · µs of the lead device) only on a pass, so a
-    failure's error stays the headline. Never changes the verdict."""
+    failure's error stays the headline. Each drive is judged (flax_post.fio_judge) against
+    the baseline (None: the deployed file): `judge`, `flagged` and the table's expected /
+    check columns. A drive outside its range is a label (amber in the UI, named in a
+    pass's headline), never a verdict: this never changes the verdict. Unjudged drives
+    are a plain headline fragment (`· N drives no baseline`), never a flag."""
     det = dict(detail or {})
     summ = det.get("summary") or {}
     excluded = summ.get("smart_excluded") or {}
     if not fio_text and not excluded:
         return det
-    sm = fio.summarize(fio_text, summ.get("devices"), alldisks, lsblk, excluded=excluded)
+    parsed: dict[str, dict] = {}
+    for dev, job, out in fio.sections(fio_text or ""):
+        parsed.setdefault(dev, {})[job] = fio.parse_job(out)
+    info = fio.disk_info(alldisks)
+    judged = fio_judge.judge(parsed, info, _baseline() if baseline is None else baseline)
+    flagged = sorted(fio_judge.flagged(judged), key=fio.natural_dev_key)
+    sm = fio.summarize(fio_text, summ.get("devices"), alldisks, lsblk, excluded=excluded,
+                       judged=judged)
     head = sm.pop("fio_headline")
-    det.update(table=sm["table"], fio=sm["fio"],
+    det.update(table=sm["table"], fio=sm["fio"], judge=judged, flagged=flagged,
                rows=[*sm["rows"], *(det.get("rows") or [])],
-               notes=[*(det.get("notes") or []), *sm["notes"]])
+               notes=[*(det.get("notes") or []), *sm["notes"], fio_judge_note()])
+    if flagged:
+        slot = smart.slots(alldisks)
+        who = []
+        for dev in flagged:
+            jobs = list(dict.fromkeys(r.split(" ", 1)[0] for r in judged[dev]["reasons"]))
+            where = slot.get(dev)
+            who.append(f"{(info.get(dev) or {}).get('serial') or dev}"
+                       + (f" ({where})" if where else "") + f" {' '.join(jobs)}")
+        n = len(flagged)
+        head = f"fio pass · {n} drive{'s' if n != 1 else ''} outside range: " + ", ".join(who)
+    if head:
+        head += fio_judge.no_baseline_fragment(judged)  # a label, never amber
     if head and verdict == "pass" and not det.get("headline"):
         det["headline"] = head
     return det
+
+
+def fio_judge_note() -> str:
+    return fio_judge.note()
 
 
 def smart_rung(res: RungResult, alldisks) -> RungResult:
@@ -975,6 +1013,7 @@ def _network(ctx, R, prog, scope, ips, cr, not_ready, guest=None):
 
     # -- wedge LLDP -> HA path -> fabric addressing
     fab_ifaces: dict[str, dict] = {}
+    ha_det: dict[str, dict] = {}            # this pass's ha-path details (the port column)
     cabled = [d for d in up if "ha-path" in device_rungs(d)]
     if cabled:
         lldp, unread, unanswered = {}, [], set()
@@ -1011,7 +1050,7 @@ def _network(ctx, R, prog, scope, ips, cr, not_ready, guest=None):
                 det["error"] = (f"LLDP unreadable on {', '.join(unread)}"
                                 + (f"; {det['error']}" if det.get("error") else ""))
                 res = RungResult("fail", det)
-            _record(ctx, d.pos, "ha-path", res)
+            ha_det[d.pos] = _record(ctx, d.pos, "ha-path", res).detail
             octet = int(ips[d.pos]["host"].rsplit(".", 1)[1])
             links = res.detail.get("links") or []
 
@@ -1065,14 +1104,43 @@ def _network(ctx, R, prog, scope, ips, cr, not_ready, guest=None):
             out = R.mesh(server, clients, user=user, pw=pw, runner=ctx.runner)
         except Exception as e:              # noqa: BLE001
             out = {p: RungResult("fail", {"error": f"{type(e).__name__}: {e}"}) for p in rids}
+    out = _mesh_views(g, srv, meshed, out, ha_det)
     for p, rid in rids.items():
-        ctx.db.finish_run(rid, out.get(p) or RungResult("fail", {"error": "no iperf result"}))
+        _record(ctx, p, "iperf-mesh", out.get(p) or RungResult("fail", {"error": "no iperf result"}),
+                rid=rid)
         prog.done(p)
     if guest is not None and guest in out and any(
             _measured(out.get(d.pos)) for d in meshed if d.pos != guest):
         _record(ctx, guest, "iperf-mesh", out[guest])
     if guest is not None:
         prog.done(guest)
+
+
+def _mesh_views(g, srv, meshed, out: dict, ha_det: dict) -> dict:
+    """out with each client's per-node table and the server's rack view (built from this
+    run's client results only); a view that cannot be built leaves its result as is."""
+    order = [d.pos for d in sorted(g.devices, key=lambda d: (-d.ou, d.col or 0))]
+    ports = {}
+    for d in meshed:
+        try:
+            ports[d.pos] = iperf_mesh_view.ports_of(g, d, ha_det.get(d.pos))
+        except Exception:                   # noqa: BLE001 -- a port column never fails a row
+            ports[d.pos] = {}
+    clients = {d.pos: out[d.pos].detail for d in meshed if d.pos != srv and d.pos in out}
+    new = dict(out)
+    for p, r in out.items():
+        try:
+            if p == srv:
+                if r.detail.get("served"):
+                    new[p] = RungResult(r.verdict, iperf_mesh_view.server_view(
+                        r.detail, {c: clients[c] for c in r.detail["served"] if c in clients},
+                        ports, order), r.artifacts)
+            elif p in clients:
+                new[p] = RungResult(r.verdict, iperf_mesh_view.client_view(
+                    r.detail, ports.get(p) or {}), r.artifacts)
+        except Exception:                   # noqa: BLE001 -- the verdict stands without a view
+            pass
+    return new
 
 
 def _measured(r: RungResult | None) -> bool:

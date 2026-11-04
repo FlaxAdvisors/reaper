@@ -61,6 +61,7 @@ node, off drops it) and identify (answers the identify state a real BMC would re
 in the served fake the BMC poller reads FakeRungs' ping + power_status too, so the
 tiles' power chips follow them.
 """
+import json
 import subprocess
 from pathlib import Path
 
@@ -846,8 +847,12 @@ class FakeRungs:
                                 f"{round(0.8 * speed / 1e6)} (0.8 x {round(speed / 1e6)})")
                 nets[net] = {"tx_bps": bps, "rx_bps": bps, "speed_bps": speed,
                              "ok": self.iperf_fail.get(c["pos"]) != net}
+            raw = {f"iperf-{n}-{d}": json.dumps({"end": {"sum_received": {
+                       "bits_per_second": v["rx_bps" if d == "rx" else "tx_bps"]}}})
+                   for n, v in nets.items() for d in ("tx", "rx")}
             out[c["pos"]] = RungResult("fail" if errs else "pass",
-                                       {**nets, **({"error": "; ".join(errs)} if errs else {})})
+                                       {**nets, **({"error": "; ".join(errs)} if errs else {})},
+                                       raw)
         out[server["pos"]] = RungResult("pass", {"served": [c["pos"] for c in clients]})
         return out
 

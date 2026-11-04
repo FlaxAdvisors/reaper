@@ -84,6 +84,7 @@
           <div class="t-head">
             <span class="t-port">{{cell.port}}</span>
             <span class="watt" :class="wattCls(cell)" v-if="!cell.empty">{{tilePwr(cell)}}</span>
+            <span class="flagm" v-if="!cell.empty && tileFlagTitle(cell)" :title="tileFlagTitle(cell)">⚑</span>
             <span class="dot" :class="dotCls(cell)"></span>
           </div>
           <div v-if="!cell.empty">
@@ -134,8 +135,8 @@
         <div class="phase-h"><span class="dot" :class="phaseDot(sel,p)"></span>{{p}}
           <span class="pct">{{phasePct(sel,p)}}</span></div>
         <div class="steps">
-          <div class="step" v-for="st in stepEntries(sel,p)" :class="st.state" @click="openStep(p,st.name)">
-            <span class="si">{{stepIcon(st.state)}}</span>{{st.name}}<span class="note" v-if="stepNote(sel,st.name)"> · {{stepNote(sel,st.name)}}</span></div>
+          <div class="step" v-for="st in stepEntries(sel,p)" :class="[st.state, {flag: st.flag}]" @click="openStep(p,st.name)">
+            <span class="si">{{st.flag ? '⚑' : stepIcon(st.state)}}</span>{{st.name}}<span class="note" v-if="stepNote(sel,st.name)"> · {{stepNote(sel,st.name)}}</span><span class="note" v-if="st.flag"> · {{stepFlag(sel,st.name)}}</span></div>
         </div>
       </div>
     </div>
@@ -155,7 +156,7 @@
 
   <!-- ================= modal (modal?. — petite-vue evaluates these even as v-if tears down) ================= -->
   <div class="m-scrim" v-if="modal" @click="closeModal()">
-    <div class="m-box" :class="{'m-sol':modal?.kind==='sol'}" @click.stop>
+    <div class="m-box" :class="{'m-sol':modal?.kind==='sol', 'm-wide':modal?.kind==='step' && !!stepInfo?.table}" @click.stop>
       <div class="m-h"><span class="m-title">{{modalTitle()}}</span>
         <select name="post-pop-profile" v-if="modal?.kind==='pop'" v-model="popProfile" @change="loadInv()">
           <option value="">(order: {{population||'—'}})</option>
@@ -322,12 +323,20 @@
         </div>
         <div v-else-if="modal?.kind==='step'">
           <p class="m-sub">{{modal?.phase}} · step <b>{{modal?.step}}</b>
-            <span class="pop-badge" :class="'st-'+(stepInfo?.status||'pending')">{{stepInfo?.status_word || stepWord(stepInfo?.status || (sel?.steps?.[modal?.phase]?.[modal?.step]) || 'pending')}}</span></p>
+            <span class="pop-badge" :class="'st-'+(stepInfo?.flag ? 'flag' : (stepInfo?.status||'pending'))">{{stepInfo?.status_word || stepWord(stepInfo?.status || (sel?.steps?.[modal?.phase]?.[modal?.step]) || 'pending')}}{{stepInfo?.flag ? ' · flagged' : ''}}</span></p>
+          <p class="pending-note" v-if="stepInfo?.flag" style="color:var(--flag)">{{stepInfo?.headline}}</p>
           <p class="pending-note" v-if="stepLoading && !stepInfo">loading…</p>
           <div v-if="stepInfo">
             <p class="pending-note" v-for="n in (stepInfo?.notes || [])" :class="{fault: stepInfo?.status==='fault' && n===(stepInfo?.notes || [])[0]}">{{n}}</p>
             <div class="kv-grid step-kv" v-if="(stepInfo?.rows || []).length">
               <template v-for="r in (stepInfo?.rows || [])"><span class="lbl">{{r[0]}}</span><span class="mono">{{r[1]}}</span></template>
+            </div>
+            <div class="step-tbl-wrap" v-if="stepInfo?.table?.rows?.length">
+              <table class="step-tbl">
+                <thead><tr><th v-for="c in (stepInfo?.table?.cols || [])">{{c}}</th></tr></thead>
+                <tbody><tr v-for="(r, i) in (stepInfo?.table?.rows || [])" :class="(stepInfo?.table?.row_cls || [])[i] || ''">
+                  <td v-for="(v, k) in r" class="mono" :class="{outside: v === 'outside' && k === r.length - 1}">{{v}}</td></tr></tbody>
+              </table>
             </div>
           </div>
           <table class="lad-tbl" v-if="ladderRows(sel, modal?.step).length">
