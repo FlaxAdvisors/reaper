@@ -94,6 +94,15 @@ def _n(v, unit=""):
     return f"{v:.1f}" if v < 100 else f"{v:.0f}"
 
 
+def natural_dev_key(dev: str) -> tuple:
+    """Sort key: sda < sdb < ... < sdz < sdaa, then nvme0n1 < ... < nvme10n1, others last."""
+    if m := re.fullmatch(r"sd([a-z]+)", dev):
+        return (0, len(m.group(1)), m.group(1))
+    if m := re.fullmatch(r"nvme(\d+)n(\d+)", dev):
+        return (1, int(m.group(1)), int(m.group(2)))
+    return (2, 0, dev)
+
+
 def summarize(fio_text: str | None, devices=None, alldisks=None, lsblk=None,
               excluded=None) -> dict:
     """Detail additions for the fio rung: {"table": {"cols", "rows"}, "fio": {dev: {job:
@@ -106,30 +115,35 @@ def summarize(fio_text: str | None, devices=None, alldisks=None, lsblk=None,
         got.setdefault(dev, {})[job] = parse_job(out)
     devs = list(dict.fromkeys([*(devices or []), *got]))
     info = disks(alldisks, lsblk)
-    rows, missing = [], []
-    for dev in devs:
+    missing = []
+    by_job: dict[str, list] = {}      # job -> rows, devices in natural order
+    gone = []                         # one row per device with no fio output at all
+    for dev in sorted(devs, key=natural_dev_key):
         what = info.get(dev) or "—"
         jobs = got.get(dev)
         if not jobs:
-            rows.append([dev, what, "—", "no fio output for this device", "", "", ""])
+            gone.append([dev, what, "—", "no fio output for this device", "", "", ""])
             missing.append(f"{dev}: no output")
             continue
         for job in [*JOBS, *(j for j in jobs if j not in JOBS)]:
+            out = by_job.setdefault(job, [])
             r = jobs.get(job)
             if r is None:
-                rows.append([dev, what, job, "job not in the output", "", "", ""])
+                out.append([dev, what, job, "job not in the output", "", "", ""])
                 missing.append(f"{dev} {job}: not run")
                 continue
             label = job + (f" · {r['rw']} {r['bs']} qd{r['iodepth']}" if r["rw"] else "")
             if not r["dirs"]:
                 why = f"fio err={r['err']}" if r["err"] else "no read/write summary line"
-                rows.append([dev, what, label, f"not parsed: {why}", "", "", ""])
+                out.append([dev, what, label, f"not parsed: {why}", "", "", ""])
                 missing.append(f"{dev} {job}: {why}")
                 continue
             for dname, d in r["dirs"].items():
-                rows.append([dev, what, label + ("" if dname == "read" else f" ({dname})"),
-                             _n(d["iops"], "iops"), _n(d["mbps"]), _n(d["lat_us"]),
-                             _n(d["p99_us"])])
+                out.append([dev, what, label + ("" if dname == "read" else f" ({dname})"),
+                            _n(d["iops"], "iops"), _n(d["mbps"]), _n(d["lat_us"]),
+                            _n(d["p99_us"])])
+    rows = [r for job in [*JOBS, *(j for j in by_job if j not in JOBS)]
+            for r in by_job.get(job, [])] + gone
     head = None
     lead = next((d for d in devs if d.startswith("nvme") and d in got), None) or \
         next((d for d in devs if d in got), None)
