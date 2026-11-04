@@ -43,6 +43,7 @@ INTENT = {
     "FB_2450111034": {"dir": "MT_2450112034", "bin": "fw-ConnectX4Lx-rel-14_32_1912-MCX4411A-ACQ_Ax-UEFI-14.25.17-FlexBoot-3.6.502.bin"},
     "FB_0000000005": {"dir": "MT_2450112034", "bin": "fw-ConnectX4Lx-rel-14_32_1912-MCX4411A-ACQ_Ax-UEFI-14.25.17-FlexBoot-3.6.502.bin"},
     "HP_2420110034": {"dir": "MT_2420110034", "bin": "fw-ConnectX4Lx-rel-14_32_1912-MCX4121A-ACA_Ax-UEFI-14.25.17-FlexBoot-3.6.502.bin"},
+    "DEL2420110034": {"dir": "MT_2420110034", "bin": "fw-ConnectX4Lx-rel-14_32_1912-MCX4121A-ACA_Ax-UEFI-14.25.17-FlexBoot-3.6.502.bin"},
 }
 
 

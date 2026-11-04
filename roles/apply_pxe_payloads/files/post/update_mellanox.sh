@@ -55,6 +55,7 @@ declare -A FWMAP=(
   [FB_2450111034]="MT_2450112034|fw-ConnectX4Lx-rel-${FWREL}-MCX4411A-ACQ_Ax-${FWSFX}"   # -> MCX4411A-ACQ
   [FB_0000000005]="MT_2450112034|fw-ConnectX4Lx-rel-${FWREL}-MCX4411A-ACQ_Ax-${FWSFX}"   # -> MCX4411A-ACQ
   [HP_2420110034]="MT_2420110034|fw-ConnectX4Lx-rel-${FWREL}-MCX4121A-ACA_Ax-${FWSFX}"   # -> MCX4121A-ACA
+  [DEL2420110034]="MT_2420110034|fw-ConnectX4Lx-rel-${FWREL}-MCX4121A-ACA_Ax-${FWSFX}"   # -> MCX4121A-ACA (Dell 020NJD; not locked, no jumper)
 )
 
 devuntouchable="secure-fw"

@@ -497,6 +497,29 @@ function resetlevels()
 # loop's `continue`: a card we have no image for is still a card that has to
 # PXE boot when it goes into service, so it must still reach the UEFI pass.
 # That coupling is exactly what cost et26b3 its UEFI ROM on 2026-09-21.
+# Save the card's current image to $logdir/capture/<psid>-<fw>-<mac>.bin with
+# `mstflint ri`. The station has no writable path back to the bang, so the file
+# stays on the station's disk; copy one per OEM image version to the share by
+# hand, e.g. /export/share/mellanox/MT_2420110034/.dell-14.28.4512.bin.
+function captureimage()
+{
+    local mlxdev=$1 out
+    out="$logdir/capture/${devpsid}-${devfwver}-${devmac}.bin"
+    mkdir -p "$logdir/capture"
+    if [ -s "$out" ]; then
+        echo "$mlxdev: capture already on disk: $out"
+        return 0
+    fi
+    if mstflint -d "$mlxdev" ri "$out.tmp" && [ -s "$out.tmp" ]; then
+        mv -f "$out.tmp" "$out"
+        echo "$mlxdev: captured $devpsid image -> $out ($(sha256sum "$out" | cut -d' ' -f1))"
+        return 0
+    fi
+    rm -f "$out.tmp"
+    echo "$mlxdev: WARNING image capture FAILED for $devpsid fw $devfwver"
+    return 1
+}
+
 function burnpass()
 {
     local mlxdev=$1
@@ -563,6 +586,20 @@ function burnpass()
             return 0
         fi
         echo "$mlxdev: at target FW+PSID but STILL secure-fw -- re-burning to clear the lock."
+    fi
+
+    # A PSID change overwrites the OEM's image for good; neither lane kept a
+    # copy before 2026-11-04. Read it back first so a re-brand can be undone
+    # (Dell 020NJD / DEL2420110034, the first unlocked OEM card we re-brand).
+    # Unlocked card + failed capture = no burn: that image is the only one we
+    # have. A locked card is still burned -- the unlock IS the job there, and
+    # its FB_ image is of no use to us.
+    if [ "$devpsid" != "$binpsid" ] && ! captureimage "$mlxdev"; then
+        if [ "$devsecure" != "secure-fw" ] && [ "$cardlivefish" != "yes" ]; then
+            echo "$mlxdev: could not capture the $devpsid image; refusing an unrecoverable re-brand."
+            cardburned=failed
+            return 0
+        fi
     fi
 
     # A locked card's reset-level baseline, taken while it is still locked and
