@@ -61,6 +61,8 @@ COPY flax_reconcile /app/flax_reconcile
 # flax-post: Eindhoven Post Servers viewer. Container CMD overrides uvicorn ->
 # `uvicorn flax_post.app:app --port 8446`.
 COPY flax_post /app/flax_post
+# flax_rungs: the rung parsers flax_post shares with rackpost (fio's table + judge input).
+COPY flax_rungs /app/flax_rungs
 
 EXPOSE 8000
 

@@ -922,12 +922,7 @@ def fio_detail(detail: dict, verdict, fio_text, alldisks, lsblk, baseline=None) 
 
 
 def fio_judge_note() -> str:
-    return (f"expected / check: each drive against its model's fleet history (mean "
-            f"{fio_judge.FLAG_SIGMA:g}σ on the bad side, n ≥ {fio_judge.MIN_SAMPLES}, history "
-            f"{fio_judge.CLIP_SIGMA:g}σ-clipped) and against same-model siblings in the node "
-            f"(> {fio_judge.SIBLING_PCT}% worse than their median, ≥ {fio_judge.MIN_SIBLINGS} "
-            f"drives); outside = flagged amber, never a failure; no baseline = neither check "
-            f"applied")
+    return fio_judge.note()
 
 
 def smart_rung(res: RungResult, alldisks) -> RungResult:

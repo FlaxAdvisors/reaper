@@ -16,6 +16,7 @@ import time
 from .. import actions
 from .. import blades
 from .. import blocklist  # noqa: F401 -- qualify_rules' judges, kept reachable here
+from .. import fio_judge
 from .. import population  # noqa: F401
 from .. import shipchecks
 from .. import state as _state
@@ -24,6 +25,7 @@ from ..version import __version__
 # rackpost); re-imported here so this module's names are unchanged
 from ..qualify_rules import NO_SHIP_RULE, population_check, qualify_verdict  # noqa: F401
 from ..qualclient import QualClient, QualUnreachable
+from flax_rungs import fio as fio_rung
 
 log = logging.getLogger("flax-post.host_qual")
 
@@ -244,8 +246,49 @@ def build_result(target, live, qual, pop, done, now=time.time, checks=None) -> d
                        "human_power_on": bool(lad.get("human_power_on"))}}
 
 
+_FIO_BASELINE: dict | None = None
+
+
+def _fio_baseline() -> dict:
+    """fio_judge's baseline file, read once per process (a deploy restarts observe)."""
+    global _FIO_BASELINE
+    if _FIO_BASELINE is None:
+        _FIO_BASELINE = fio_judge.load_baseline()
+    return _FIO_BASELINE
+
+
+def _judge_fio(store, target, run_id, steps, live_q, baseline) -> None:
+    """Label each drive of a terminal fio stage against its model's history and its
+    siblings (flax_post.fio_judge): summary.judge {dev: {verdict, reasons, expected,
+    serial}} and summary.flagged [dev] (natural order). Once per run: a later poll of
+    the same run carries the first judgement over. Labels only, never the verdict."""
+    fio = steps.get("fio")
+    if not fio or fio.get("status") not in ("pass", "fail") or not hasattr(store, "get_artifact"):
+        return
+    summ = dict(fio.get("summary") or {})
+    prev = ((live_q.get("steps") or {}).get("fio") or {}).get("summary") or {}
+    if live_q.get("run_id") == run_id and "judge" in prev:
+        summ.update(judge=prev["judge"], flagged=prev.get("flagged") or [])
+        fio["summary"] = summ
+        return
+    text = store.get_artifact(target["bmc_mac"], run_id, "fio", "fio")
+    if not text:
+        return
+    parsed: dict = {}
+    for dev, job, out in fio_rung.sections(text):
+        parsed.setdefault(dev, {})[job] = fio_rung.parse_job(out)
+    info = fio_rung.disk_info(store.get_artifact(target["bmc_mac"], run_id, "inventory", "alldisks"))
+    judged = fio_judge.judge(parsed, info, _fio_baseline() if baseline is None else baseline)
+    for dev, j in judged.items():
+        j["serial"] = (info.get(dev) or {}).get("serial")
+    summ.update(judge=judged,
+                flagged=sorted(fio_judge.flagged(judged), key=fio_rung.natural_dev_key))
+    fio["summary"] = summ
+
+
 def poll_target(target, *, make_client=_default_make_client, store=_state,
-                launch_agent=None, now=time.time, ping=None, console_reader=None) -> dict:
+                launch_agent=None, now=time.time, ping=None, console_reader=None,
+                fio_baseline=None) -> dict:
     """Poll one blade; write vars.qual; capture terminal-stage artifacts once.
 
     Guard order (spec 2026-09-11 post-slot-ladder §10): a row with a verdict is
@@ -326,6 +369,10 @@ def poll_target(target, *, make_client=_default_make_client, store=_state,
                                          order_no=target.get("order_no"), nbytes=art.get("bytes"))
             steps[s["name"]]["summary"] = detail.get("summary", {})
             steps[s["name"]]["artifacts"] = detail.get("artifacts", [])
+    try:
+        _judge_fio(store, target, run_id, steps, live_q, fio_baseline)
+    except Exception:
+        log.exception("fio judge failed for %s", target.get("port"))
     # inventory dump (the macinv digest) -> population-check (engine-owned, design §4)
     dump = store.get_artifact(target["bmc_mac"], run_id, "inventory", "macinv") \
         if hasattr(store, "get_artifact") else None

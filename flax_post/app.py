@@ -169,7 +169,13 @@ def api_step(port: str, phase: str, step: str) -> JSONResponse:
     if record is None:
         return JSONResponse({"ok": False, "reason": "unknown port"}, status_code=404)
     row = state.read_state().get(port) or {}
-    return JSONResponse(stepinfo.detail(record, row, phase, step))
+    run_id = (row.get("qual") or {}).get("run_id") or record.get("run_id")
+
+    def get_artifact(stage, name):
+        if not (record.get("bmc_mac") and run_id):
+            return None
+        return state.get_artifact(record["bmc_mac"], run_id, stage, name)
+    return JSONResponse(stepinfo.detail(record, row, phase, step, get_artifact=get_artifact))
 
 
 @app.post("/api/v1/settings")

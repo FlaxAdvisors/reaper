@@ -7,12 +7,19 @@ agent's per-stage summaries and timings live only there) and returns
     {"phase", "step", "status", "headline", "rows": [[label, value], ...],
      "notes": [text, ...]}
 
+plus, for the fio step, "table" {"cols", "rows", "row_cls"} (the same sorted table
+with expected / check columns as rackpost's fio rung, flax_rungs.fio.summarize) when
+`get_artifact(stage, name)` is given, and "flag": True when a drive is outside its
+range (blades step_flags; the status stays `done`).
+
 rendered generically by rack.html. Rows are short label/value pairs; notes
 are sentences (fault reasons, provenance, what a status means here).
 """
 import time
 
-from . import blades
+from flax_rungs import fio as fio_rung
+
+from . import blades, fio_judge
 
 _STATUS_WORD = {"done": "passed", "cur": "in progress", "pending": "not reached",
                 "fault": "FAILED", "skip": "skipped (not applicable)",
@@ -191,7 +198,37 @@ def _firmware(rec, row, step, status):
     return rows, notes
 
 
-def _qualify(rec, row, step, status):
+# summary keys the fio branch renders itself (table / outside-range rows), not as k=v
+_FIO_OWN = ("judge", "flagged", "devices", "smart_excluded")
+
+
+def _fio(qs, get_artifact):
+    """(table | None, rows, notes, flagged-who) of the fio step: the artifact's per-device
+    table judged with the run's stored summary.judge (host_qual._judge_fio)."""
+    summ = qs.get("summary") or {}
+    judged = summ.get("judge")
+    rows, notes, who = [], [], []
+    for dev in summ.get("flagged") or []:
+        j = (judged or {}).get(dev) or {}
+        name = "%s (%s)" % (j["serial"], dev) if j.get("serial") else dev
+        rows.append(["outside range", "%s: %s" % (name, "; ".join(j.get("reasons") or []))])
+        who.append("%s %s" % (name, " ".join(dict.fromkeys(
+            r.split(" ", 1)[0] for r in j.get("reasons") or []))))
+    table = None
+    text = get_artifact("fio", "fio") if get_artifact else None
+    if text:
+        sm = fio_rung.summarize(text, summ.get("devices"), get_artifact("inventory", "alldisks"),
+                                get_artifact("inventory", "lsblk"),
+                                excluded=summ.get("smart_excluded") or {}, judged=judged)
+        table = sm["table"]
+        rows = sm["rows"] + rows
+        notes += sm["notes"]
+    if judged is not None:
+        notes.append(fio_judge.note())
+    return table, rows, notes, who
+
+
+def _qualify(rec, row, step, status, get_artifact=None):
     q = row.get("qual") or {}
     qs = (q.get("steps") or {}).get(step) or {}
     rows, notes = [], []
@@ -229,7 +266,10 @@ def _qualify(rec, row, step, status):
     if qs.get("started"):
         rows += [["started", _t(qs["started"])], ["ended", _t(qs.get("ended")) or "running"],
                  ["duration", _dur(qs["started"], qs.get("ended"))]]
+    fio_extra = _fio(qs, get_artifact) if step == "fio" and status != "skip" else None
     for k, v in (qs.get("summary") or {}).items():
+        if fio_extra is not None and k in _FIO_OWN:
+            continue
         if isinstance(v, (list, tuple)):
             v = ", ".join(str(x) for x in v) or "none"
         elif isinstance(v, dict):
@@ -242,6 +282,11 @@ def _qualify(rec, row, step, status):
     arts = [a.get("name") for a in (qs.get("artifacts") or []) if a.get("name")]
     if arts:
         rows.append(["artifacts", ", ".join(arts)])
+    if fio_extra is not None:
+        table, frows, fnotes, who = fio_extra
+        rows += frows
+        notes += fnotes
+        return rows, notes, {"table": table, "who": who}
     return rows, notes
 
 
@@ -331,11 +376,19 @@ def _done(rec, row, step, status):
     return rows, notes
 
 
-def detail(rec: dict, row: dict, phase: str, step: str) -> dict:
+def detail(rec: dict, row: dict, phase: str, step: str, get_artifact=None) -> dict:
+    """get_artifact(stage, name) -> text | None: this run's stored artifacts (the fio
+    step's table reads them on click); None = no table."""
     steps = (rec.get("steps") or {}).get(phase) or {}
     status = steps.get(step, "pending")
     fn = {"Discover": _discover, "Firmware": _firmware, "Qualify": _qualify, "Done": _done}.get(phase)
-    rows, notes = fn(rec, row or {}, step, status) if fn else ([], [])
+    extra = {}
+    if phase == "Qualify":
+        out = _qualify(rec, row or {}, step, status, get_artifact)
+        rows, notes = out[0], out[1]
+        extra = out[2] if len(out) > 2 else {}
+    else:
+        rows, notes = fn(rec, row or {}, step, status) if fn else ([], [])
     note = (rec.get("fault_notes") or {}).get(step)
     if note and status == "fault":
         notes.insert(0, note)
@@ -354,6 +407,16 @@ def detail(rec: dict, row: dict, phase: str, step: str) -> dict:
         if fw.get("phase") == "needs_update" and (fw.get("mode") or "detect") != "enforce":
             # nothing is flashing: the update is NEEDED, not in progress
             word = "needed"
-    return {"phase": phase, "step": step, "status": status, "status_word": word,
-            "headline": "%s: %s" % (step, word),
-            "rows": rows, "notes": notes}
+    headline = "%s: %s" % (step, word)
+    flag = (rec.get("step_flags") or {}).get(step)
+    if flag and extra.get("who"):
+        n = len(extra["who"])
+        headline += " · %d drive%s outside range: %s" % (n, "" if n == 1 else "s",
+                                                         ", ".join(extra["who"]))
+    out = {"phase": phase, "step": step, "status": status, "status_word": word,
+           "headline": headline, "rows": rows, "notes": notes}
+    if flag:
+        out["flag"] = True
+    if extra.get("table"):
+        out["table"] = extra["table"]
+    return out

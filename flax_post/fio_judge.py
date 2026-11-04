@@ -136,3 +136,13 @@ def judge(parsed, disks, baseline):
 
 def flagged(results):
     return [d for d, r in results.items() if r.get("verdict") == "outside"]
+
+
+def note() -> str:
+    """The judge's constants as one sentence for a fio step's notes (both UIs)."""
+    return (f"expected / check: each drive against its model's fleet history (mean "
+            f"{FLAG_SIGMA:g}σ on the bad side, n ≥ {MIN_SAMPLES}, history "
+            f"{CLIP_SIGMA:g}σ-clipped) and against same-model siblings in the node "
+            f"(> {SIBLING_PCT}% worse than their median, ≥ {MIN_SIBLINGS} "
+            f"drives); outside = flagged (a label), never a failure; no baseline = neither check "
+            f"applied")
