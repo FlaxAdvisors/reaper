@@ -7,6 +7,9 @@ apply_pxe_payloads_tftp_root: /srv/tftpboot
 # === iPXE NBPs (tag tftp): built from files/ipxe/ on one builder bang (git, gcc,
 # make, binutils), fetched to the controller, installed on every target bang ===
 apply_pxe_payloads_ipxe_builder: bang-gouda
+# false = install the NBPs already in the controller cache (one tested build rolled to
+# every site; the builder need not be in that site's inventory), no rebuild
+apply_pxe_payloads_ipxe_build: true
 apply_pxe_payloads_ipxe_recipe_dir: /var/tmp/flax-ipxe-recipe
 apply_pxe_payloads_ipxe_work_dir: /var/tmp/flax-ipxe-build
 apply_pxe_payloads_ipxe_fetch_dir: "{{ lookup('env', 'HOME') }}/.cache/flax-ipxe"

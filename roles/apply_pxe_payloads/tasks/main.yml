@@ -238,6 +238,7 @@
     mode: preserve
   delegate_to: "{{ apply_pxe_payloads_ipxe_builder }}"
   run_once: true
+  when: apply_pxe_payloads_ipxe_build | bool
   tags: [tftp]
 
 - name: Build ipxe.efi + undionly.kpxe on the builder bang
@@ -248,12 +249,14 @@
   run_once: true
   changed_when: false
   register: _ipxe_build
+  when: apply_pxe_payloads_ipxe_build | bool
   tags: [tftp]
 
 - name: Show the built NBPs' md5s
   ansible.builtin.debug:
     msg: "{{ _ipxe_build.stdout_lines[-2:] }}"
   run_once: true
+  when: apply_pxe_payloads_ipxe_build | bool
   tags: [tftp]
 
 - name: Fetch the built NBPs to the controller (outside any repo)
@@ -266,6 +269,19 @@
     - efi64/ipxe.efi
   delegate_to: "{{ apply_pxe_payloads_ipxe_builder }}"
   run_once: true
+  when: apply_pxe_payloads_ipxe_build | bool
+  tags: [tftp]
+
+- name: The NBPs to install are on the controller (built by this run or an earlier one)
+  ansible.builtin.stat:
+    path: "{{ apply_pxe_payloads_ipxe_fetch_dir }}/{{ item }}"
+  loop:
+    - bios/undionly.kpxe
+    - efi64/ipxe.efi
+  delegate_to: localhost
+  run_once: true
+  register: _ipxe_local
+  failed_when: not _ipxe_local.stat.exists
   tags: [tftp]
 
 - name: Install the TFTP NBPs (custom iPXE with embedded chain to http://bang/menu.ipxe)
