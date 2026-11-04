@@ -15,6 +15,10 @@ table: mgmt switch = FDB MACs per port -> the geometry device cabled there + lin
 (the device's switchportlink read); a wedge = each geometry pcieN lane -> device +
 the LLDP neighbour Qualify read on that interface.
 """
+import time
+from datetime import datetime
+
+from .discover_ladder import LADDER_BUDGET_S
 from .switches import front_panel, link_iface
 
 
@@ -200,3 +204,150 @@ def switch_view(g, s, runs: dict, raw: dict) -> dict:
             "ports": mgmt_ports(g, s, raw) if s.role == "mgmt" else tor_ports(g, s, raw),
             "ports_from": ("FDB (Discover's switch-fdb) + switchportlink" if s.role == "mgmt"
                            else f"geometry lanes + LLDP (Qualify's lldp-{s.id})")}
+
+
+# ---------------------------------------------------------------- Discover timeline
+# Post's step-modal ladder (flax_post app.js ladderRows), built from the device's
+# Discover rows: power-on (or the kernel boot of a node found up), each boot mark with
+# its offset, the skipped / fault rows, and the run's end (Discover is one-shot: its
+# last row is "Discover ended", not Post's live "rung now").
+LADDER_RUNGS = ("power-on", "tftp-seen", "ipxe-seen", "live-iso-seen", "host-leased",
+                "host-pinged", "host-ssh", "bmc-ready")
+_MARKS = (("tftp-seen", "TFTP request seen"), ("ipxe-seen", "iPXE script fetched"),
+          ("live-iso-seen", "live ISO fetched"), ("host-pinged", "host answered ping"),
+          ("host-ssh", "host answered ssh"), ("bmc-ready", "BMC answered a data read"))
+# steps that record the moment they answered as they finish: a row from before they
+# stored seen_at (2026-11-04) shows its finish time, with no offset
+_AT_FINISH = ("host-pinged", "host-ssh", "bmc-ready")
+TIMELINE_COLS = ["time", "since on", "event", ""]
+
+
+def _epoch(iso):
+    try:
+        return datetime.fromisoformat(iso).timestamp() if iso else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _clock(ts):
+    return time.strftime("%H:%M:%S", time.localtime(ts)) if ts else ""
+
+
+def _span(s):
+    s = max(0, int(round(s)))
+    return f"{s // 60}m {s % 60:02d}s" if s >= 60 else f"{s}s"
+
+
+def _num(v):
+    return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+def discover_timeline(runs: dict) -> dict | None:
+    """The device's Discover boot timeline: {anchor, anchor_kind, rows: [[time, since,
+    event, extra]], row_cls, events: {rung: epoch}}. Anchor = power-on, else the kernel
+    boot of a node already up (live image / installed OS), else None (absolute times,
+    blank offsets). None for a ladder with no host (an IOM roll-up) or before Discover."""
+    disc = {k: v for k, v in runs.items() if (v or {}).get("stage") == "discover"}
+    po = disc.get("power-on")
+    if not po or (po.get("verdict") == "skip" and _detail(po).get("na")):
+        return None
+    pd = _detail(po)
+    anchor, kind = _num(pd.get("power_on_at")), "power-on"
+    if anchor is None:
+        anchor, kind = _num(pd.get("kernel_boot")), "kernel boot"
+    if anchor is None:
+        kind = None
+
+    def since(x):           # a mark before a kernel-boot anchor (the live boot) is negative
+        if x is None or anchor is None:
+            return ""
+        return ("-" if x < anchor - 0.5 else "+") + _span(abs(x - anchor))
+
+    head, marks, tail, events = [], [], [], {}
+    if kind == "power-on":
+        head.append(([_clock(anchor), "+0s", "power-on", "by the engine"
+                      + (f" ({pd['power_action']})" if pd.get("power_action") else "")], ""))
+        events["power-on"] = anchor
+    elif kind == "kernel boot":
+        where = "installed OS" if pd.get("installed_os") else "live image"
+        head.append(([_clock(anchor), "+0s", "power-on",
+                      f"already on: kernel booted ({where}), no power action"], ""))
+        events["power-on"] = anchor
+    skipped = None
+    for rung, name in _MARKS:
+        r = disc.get(rung)
+        if not r or r.get("status") != "done":
+            continue
+        d = _detail(r)
+        if r.get("verdict") == "skip" and d.get("na") and rung in ("tftp-seen", "ipxe-seen",
+                                                                   "live-iso-seen"):
+            skipped = skipped or d.get("reason") or d.get("headline")
+            continue
+        if r.get("verdict") != "pass":
+            continue
+        at = _num(d.get("seen_at"))
+        if at is not None:
+            events[rung] = at
+            marks.append((at, [_clock(at), since(at), name, ""]))
+        elif rung in _AT_FINISH and _epoch(r.get("finished_at")):
+            marks.append((_epoch(r["finished_at"]), [_clock(_epoch(r["finished_at"])), "", name,
+                                                      "row finish time"]))
+    marks.sort(key=lambda m: m[0])
+    if skipped:
+        tail.append((["", "", "boot markers not observed", skipped], ""))
+    done = [v for v in disc.values() if v.get("status") == "done"]
+    rung, fault = next(((k, v) for k, v in sorted(disc.items(),
+                                                   key=lambda kv: kv[1].get("id") or 0)
+                        if v.get("verdict") in ("fail", "unmeasured")), (None, None))
+    if fault:
+        at = _epoch(fault.get("finished_at"))
+        fd = _detail(fault)
+        tail.append(([_clock(at), since(at) if at else "", "✕ " + rung,
+                      fd.get("error") or fd.get("headline") or fault.get("verdict")], "fault"))
+    running = [k for k, v in disc.items() if v.get("status") == "running"]
+    if running:
+        at = _epoch(disc[running[0]].get("started_at"))
+        tail.append(([_clock(at), since(at) if at else "", f"rung now: {running[0]}", ""], "now"))
+    elif done:
+        vs = {v.get("verdict") for v in done}
+        verdict = "fail" if "fail" in vs else "unmeasured" if "unmeasured" in vs else "pass"
+        at = max((_epoch(v.get("finished_at")) or 0) for v in done) or None
+        tail.append(([_clock(at), since(at) if at else "",
+                      f"Discover ended: {verdict} at {_clock(at)}", ""], "now"))
+    rows = head + [(m[1], "") for m in marks] + tail
+    return {"anchor": anchor, "anchor_kind": kind, "rows": [r for r, _ in rows],
+            "row_cls": [c for _, c in rows], "events": events}
+
+
+def _set_row(rows, label, value):
+    for r in rows:
+        if r and r[0] == label:
+            r[1] = value
+            return
+    rows.append([label, value])
+
+
+def attach_timeline(runs: dict) -> None:
+    """Every Discover ladder rung of a device gains Post's modal pieces: `after power-on`
+    (after kernel boot for a node found up), `budget`, and the shared timeline table."""
+    tl = discover_timeline(runs)
+    if not tl:
+        return
+    label = "after kernel boot" if tl["anchor_kind"] == "kernel boot" else "after power-on"
+    table = {"cols": TIMELINE_COLS, "rows": tl["rows"], "row_cls": tl["row_cls"],
+             "cls": "timeline"}
+    for rung in LADDER_RUNGS:
+        r = runs.get(rung)
+        d = (r or {}).get("detail")
+        if not r or r.get("stage") != "discover":
+            continue
+        if not isinstance(d, dict):
+            d = r["detail"] = {}
+        rows = d.setdefault("rows", [])
+        at = tl["events"].get(rung)
+        if at is not None and tl["anchor"] is not None:
+            _set_row(rows, label, ("-" if at < tl["anchor"] - 0.5 else "+")
+                     + _span(abs(at - tl["anchor"])))
+        if rung in LADDER_BUDGET_S:
+            _set_row(rows, "budget", f"{LADDER_BUDGET_S[rung]} s")
+        d["table"] = table

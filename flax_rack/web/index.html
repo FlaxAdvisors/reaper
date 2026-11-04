@@ -650,7 +650,7 @@
         <div class="kv-grid step-kv" v-if="(stepM?.rows || []).length">
           <template v-for="r in (stepM?.rows || [])"><span class="lbl">{{r[0]}}</span><span class="mono">{{r[1]}}</span></template>
         </div>
-        <table class="inv-tbl ev-tbl" v-if="(stepM?.table?.rows || []).length">
+        <table class="inv-tbl ev-tbl" :class="stepM?.table?.cls" v-if="(stepM?.table?.rows || []).length">
           <tr><th v-for="c in (stepM?.table?.cols || [])">{{c}}</th></tr>
           <tr v-for="(r, i) in (stepM?.table?.rows || [])" :class="stepM?.table?.row_cls?.[i]"><td v-for="c in r" class="mono">{{c}}</td></tr>
         </table>

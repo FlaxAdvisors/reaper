@@ -532,6 +532,7 @@ def rack_state(r: Rack) -> dict:
         profiles.update(p for p in (default, ovr) if p)
         runs = by_pos.get(d.pos, {})
         _fio_view(r.dir, runs)
+        devview.attach_timeline(runs)       # the Discover ladder rungs' boot timeline
         devices.append({
             "pos": d.pos, "ou": d.ou, "h": d.h, "col": d.col, "kind": d.kind, "part": d.part,
             "absent": d.pos in gone, "drives": list(d.drives), "expect": d.expect,
