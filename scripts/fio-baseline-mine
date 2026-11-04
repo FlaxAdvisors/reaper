@@ -135,25 +135,66 @@ def _norm_serial(x):
     return re.sub(r"\s+", "", x or "").upper() or None
 
 
-def _from_smartctl_hwinfo(smart_text, hw):
-    """Real drive models from smartctl (by dev name, else by serial via hwinfo/alldisks
-    serials); controller/size from hwinfo.  A hwinfo model that only names a controller
-    or vendor is dropped (model None -> counted unjoined), never grouped."""
+_BYID_SKIP = re.compile(r"^(wwn-|nvme-eui\.|nvme-nvme\.)|-part\d+$")
+_BYID_PFX = re.compile(r"^(?:ata|nvme|scsi)-(?:\d?SATA_|1?ATA_)?")
+
+
+def _by_id(text):
+    """ls -lR /dev/disk output -> dev -> {"serial", "model"} from the by-id names
+    (`ata-MODEL_SERIAL`, `nvme-MODEL_SERIAL`, `scsi-SATA_MODEL_SERIAL`)."""
+    out = {}
+    sect = None
+    for ln in text.splitlines():
+        if ln.endswith(":") and ln.startswith("/"):
+            sect = ln[:-1]
+            continue
+        if sect != "/dev/disk/by-id":
+            continue
+        m = re.search(r"\s(\S+) -> \.\./\.\./(\S+)\s*$", ln)
+        if not m or _BYID_SKIP.search(m.group(1)):
+            continue
+        name, dev = m.groups()
+        pm = _BYID_PFX.match(name)
+        rest = name[pm.end():] if pm else ""
+        if not pm or "_" not in rest:
+            continue
+        model, ser = rest.rsplit("_", 1)
+        if dev not in out and model and ser:
+            out[dev] = {"serial": ser, "model": model.replace("_", " ").strip()}
+    return out
+
+
+def _from_smartctl_hwinfo(smart_text, hw, byid=None):
+    """Real drive models: smartctl (block names its dev, else matched by serial via
+    hwinfo / by-id serials) > by-id name model > non-generic hwinfo model; controller/size
+    from hwinfo.  A hwinfo model that only names a controller or vendor is dropped
+    (model None -> counted unjoined), never grouped."""
+    byid = byid or {}
     blocks = _smartctl_blocks(smart_text or "")
     by_dev = {b["dev"]: b for b in blocks if b["dev"] and b["model"]}
     by_ser = {_norm_serial(b["serial"]): b for b in blocks if b["serial"] and b["model"]}
     out = {}
-    for dev in list(hw) + [d for d in by_dev if d not in hw]:
+    for dev in list(hw) + [d for d in list(byid) + list(by_dev) if d not in hw]:
+        if dev in out:
+            continue
         h = hw.get(dev) or {"model": None, "controller": None, "size_gb": None}
-        b = by_dev.get(dev) or by_ser.get(_norm_serial(h.get("serial")))
-        model = b["model"] if b else (None if _generic(h.get("model")) else h["model"])
+        i = byid.get(dev) or {}
+        b = (by_dev.get(dev) or by_ser.get(_norm_serial(h.get("serial")))
+             or by_ser.get(_norm_serial(i.get("serial"))))
+        if b:
+            model = b["model"]
+        elif i.get("model"):
+            model = i["model"]
+        else:
+            model = None if _generic(h.get("model")) else h["model"]
         out[dev] = {"model": model, "controller": h.get("controller"),
                     "size_gb": h.get("size_gb")}
     return out
 
 
 def node_disks(post_latest):
-    """dev -> {model, controller, size_gb}; source order alldisks-v > smartctl > hwinfo."""
+    """dev -> {model, controller, size_gb}; source order alldisks-v > smartctl (dev name or
+    by-id serial) > by-id model > hwinfo (non-generic)."""
     post_latest = Path(post_latest)
     srcs = []
     try:
@@ -165,7 +206,8 @@ def node_disks(post_latest):
             return d
     hw = _hwinfo(t) if (t := _read(post_latest / "hwinfo.txt")) else {}
     st = _read(post_latest / "smartctl--all.txt")
-    if (d := _from_smartctl_hwinfo(st, hw)):
+    byid = _by_id(t) if (t := _read(post_latest / "ls-lR_dev_disk.txt")) else {}
+    if (d := _from_smartctl_hwinfo(st, hw, byid)):
         return d
     return {}
 
@@ -173,6 +215,9 @@ def node_disks(post_latest):
 def _ls(p, counters):
     try:
         return sorted(p.iterdir())
+    except (FileNotFoundError, NotADirectoryError):
+        counters["missing_dir"] += 1
+        return []
     except OSError:
         counters["unreadable"] += 1
         return []
@@ -187,7 +232,8 @@ def _isdir(p):
 
 def scan(root):
     root = Path(root)
-    c = {"unjoined": 0, "dropped_mismatch": 0, "dropped_dup": 0, "unreadable": 0, "samples": 0}
+    c = {"unjoined": 0, "dropped_mismatch": 0, "dropped_dup": 0, "missing_dir": 0,
+         "unreadable": 0, "samples": 0}
     best = {}  # (base order, host, dev, job) -> (mtime, sample)
     for bang in _ls(root, c):
         for order in _ls(bang / "nodes", c):
