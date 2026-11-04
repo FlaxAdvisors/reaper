@@ -29,12 +29,17 @@ METRICS = {
 _UNITS = {"mbps": "MB/s", "iops": "IOPS", "lat_us": "µs", "p99_us": "µs p99"}
 
 
-def normalise_model(s):
+def normalise_model(s, dev=None):
+    """The grouping key for a drive model.  Given `dev`, a non-NVMe disk is keyed on
+    the 16-character sysfs form that runtime `alldisks -v` shows (smartctl gives the
+    full name, e.g. `HGST HUS726060ALE611` vs sysfs `HGST HUS726060AL`)."""
     if s is None:
         return None
     s = re.sub(r"^\s*ATA\s+", "", str(s), flags=re.I)
-    s = re.sub(r"[_\s]+", " ", s)
-    return s.strip().upper()
+    s = re.sub(r"[_\s]+", " ", s).strip().upper()
+    if dev and not str(dev).lower().startswith("nvme"):
+        s = s[:16].strip()
+    return s
 
 
 def load_baseline(path=BASELINE_PATH):
@@ -80,7 +85,7 @@ def judge(parsed, disks, baseline):
     out = {}
     for dev, jobs in parsed.items():
         info = disks.get(dev) or {}
-        model = normalise_model(info.get("model"))
+        model = normalise_model(info.get("model"), dev)
         ctrl = info.get("controller")
         reasons, expected, judged = [], {}, False
         for job, mlist in METRICS.items():
@@ -112,7 +117,7 @@ def judge(parsed, disks, baseline):
                     continue
                 sib = []
                 for d2, j2 in parsed.items():
-                    if d2 == dev or normalise_model((disks.get(d2) or {}).get("model")) != model:
+                    if d2 == dev or normalise_model((disks.get(d2) or {}).get("model"), d2) != model:
                         continue
                     v2 = _get((j2 or {}).get(job), metric)
                     if v2 is not None:

@@ -88,7 +88,7 @@ def disks(alldisks: str | None, lsblk: str | None) -> dict[str, str]:
 def disk_info(alldisks: str | None) -> dict[str, dict]:
     """dev -> {"model", "controller", "serial", "size_gb"} from alldisks, the judge's
     inputs (flax_post.fio_judge): controller = the driver column before `rotational`
-    (mpt3sas / ahci / nvme ...), model = second-to-last field, serial = last; the same
+    (mpt3sas / ahci / nvme ...), model = the fields between `<vendor> <rev>` and the serial (a spaced model stays whole), serial = last; the same
     reading the baseline miner applies to the archive's alldisks."""
     out = {}
     for ln in (alldisks or "").splitlines():
@@ -99,7 +99,7 @@ def disk_info(alldisks: str | None) -> dict[str, dict]:
         full = at is not None and len(f) >= at + 5
         size = float(f[at + 1]) if at is not None and at + 1 < len(f) and \
             re.fullmatch(r"[\d.]+", f[at + 1]) else None
-        out[f[0][5:]] = {"model": f[-2] if full else None,
+        out[f[0][5:]] = {"model": " ".join(f[at + 4:-1]) if full else None,
                          "controller": f[at - 1] if at else None,
                          "serial": f[-1] if full else None, "size_gb": size}
     return out
