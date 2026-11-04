@@ -215,6 +215,7 @@ def _fio(qs, get_artifact):
         who.append("%s %s" % (name, " ".join(dict.fromkeys(
             r.split(" ", 1)[0] for r in j.get("reasons") or []))))
     table = None
+    nb = fio_judge.no_baseline_fragment(judged)
     text = get_artifact("fio", "fio") if get_artifact else None
     if text:
         sm = fio_rung.summarize(text, summ.get("devices"), get_artifact("inventory", "alldisks"),
@@ -225,7 +226,7 @@ def _fio(qs, get_artifact):
         notes += sm["notes"]
     if judged is not None:
         notes.append(fio_judge.note())
-    return table, rows, notes, who
+    return table, rows, notes, who, nb
 
 
 def _qualify(rec, row, step, status, get_artifact=None):
@@ -283,10 +284,10 @@ def _qualify(rec, row, step, status, get_artifact=None):
     if arts:
         rows.append(["artifacts", ", ".join(arts)])
     if fio_extra is not None:
-        table, frows, fnotes, who = fio_extra
+        table, frows, fnotes, who, nb = fio_extra
         rows += frows
         notes += fnotes
-        return rows, notes, {"table": table, "who": who}
+        return rows, notes, {"table": table, "who": who, "no_baseline": nb}
     return rows, notes
 
 
@@ -413,6 +414,8 @@ def detail(rec: dict, row: dict, phase: str, step: str, get_artifact=None) -> di
         n = len(extra["who"])
         headline += " · %d drive%s outside range: %s" % (n, "" if n == 1 else "s",
                                                          ", ".join(extra["who"]))
+    if status == "done" and extra.get("no_baseline"):
+        headline += extra["no_baseline"]  # a label only: no flag, no amber
     out = {"phase": phase, "step": step, "status": status, "status_word": word,
            "headline": headline, "rows": rows, "notes": notes}
     if flag:

@@ -74,6 +74,7 @@ order's event log; it never takes the server down.
 
 The bang host has no FastAPI: stdlib only (http.server, json, threading, sqlite).
 """
+import copy
 import fcntl
 import html
 import json
@@ -81,6 +82,7 @@ import mimetypes
 import os
 import re
 import sqlite3
+import sys
 import threading
 import time
 import urllib.parse
@@ -364,6 +366,26 @@ HIDDEN_RUNGS = {"qualify": ("agent-stages", "console"), "deploy": (INSTALL_CONSO
 
 
 _FIO_SEEN: dict = {}
+_VIEW_ERRS: set = set()
+
+
+def _view_hooks(rack_dir: Path, pos: str, runs: dict) -> None:
+    """The view-time re-renders (fio judge, Discover boot timeline) on a copy of the
+    device's rows: a row that breaks either keeps its stored detail (logged once per
+    device and error), never a 500 for the whole rack page."""
+    work = copy.deepcopy(runs)
+    try:
+        _fio_view(rack_dir, work)
+        devview.attach_timeline(work)   # the Discover ladder rungs' boot timeline
+    except Exception as e:              # noqa: BLE001 -- a view never sinks the page
+        key = (str(rack_dir), pos, type(e).__name__, str(e))
+        if key not in _VIEW_ERRS:
+            _VIEW_ERRS.add(key)
+            print(f"rack_state {pos}: view hook failed, stored detail shown: "
+                  f"{type(e).__name__}: {e}", file=sys.stderr, flush=True)
+        return
+    runs.clear()
+    runs.update(work)
 
 
 def _fio_view(rack_dir: Path, runs: dict) -> None:
@@ -531,8 +553,7 @@ def rack_state(r: Rack) -> dict:
         ovr = x.get("pop_override")
         profiles.update(p for p in (default, ovr) if p)
         runs = by_pos.get(d.pos, {})
-        _fio_view(r.dir, runs)
-        devview.attach_timeline(runs)       # the Discover ladder rungs' boot timeline
+        _view_hooks(r.dir, d.pos, runs)
         devices.append({
             "pos": d.pos, "ou": d.ou, "h": d.h, "col": d.col, "kind": d.kind, "part": d.part,
             "absent": d.pos in gone, "drives": list(d.drives), "expect": d.expect,

@@ -993,7 +993,9 @@ def _iperf_table(res: RungResult, node: dict | None, ports: dict) -> RungResult:
     det = dict(res.detail)
     ifaces = (node or {}).get("ifaces") or {}
     nets = [n for n in _IPERF_ORDER if isinstance(det.get(n), dict)]
-    gb = lambda x: "-" if x is None else f"{x / 1e9:.1f}"          # noqa: E731
+    # two decimals below 10 Gb/s, so a 0.79 Gb/s mgmt path never reads 0.8
+    gb = lambda x: "-" if x is None else (f"{x / 1e9:.2f}" if x < 10e9    # noqa: E731
+                                          else f"{x / 1e9:.1f}")
     rows, cls, head, pcts = [], [], [], []
     for net in nets:
         v = det[net]

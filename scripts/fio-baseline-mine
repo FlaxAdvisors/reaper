@@ -21,7 +21,7 @@ for _p in (_HERE.parent, _HERE):
 from flax_rungs.fio import parse_job  # noqa: E402
 from flax_post.fio_judge import (  # noqa: E402
     CLIP_ROUNDS, CLIP_SIGMA, FLAG_SIGMA, METRICS, MIN_SIBLINGS, SIBLING_PCT, SUITE,
-    normalise_model)
+    normalise_model, sigma_eff)
 
 JOBS = {"bw": "--bs=64k --iodepth=64 --rw=read --name=raw-read",
         "lat": "--bs=4k --iodepth=1 --rw=randread --name=readlatency",
@@ -280,10 +280,11 @@ def whatif(samples, baseline):
         mean, std = g["mean"], g["std"]
         lo, hi = mean - CLIP_SIGMA * std, mean + CLIP_SIGMA * std
         kept = [v for v in vals if std == 0 or lo <= v <= hi]
+        se = sigma_eff(mean, std)  # the judge's flag σ (floored), so the gate matches runtime
         if good == "higher":
-            n = sum(v < mean - FLAG_SIGMA * std for v in kept)
+            n = sum(v < mean - FLAG_SIGMA * se for v in kept)
         else:
-            n = sum(v > mean + FLAG_SIGMA * std for v in kept)
+            n = sum(v > mean + FLAG_SIGMA * se for v in kept)
         lines.append(f"{g['model']} | {g['controller'] or 'any'} | {g['job']} | {g['metric']} | "
                      f"{g['n']} | {g['clipped']} | {n}")
     lines += _sibling_section(samples)

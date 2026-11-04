@@ -888,7 +888,8 @@ def fio_detail(detail: dict, verdict, fio_text, alldisks, lsblk, baseline=None) 
     failure's error stays the headline. Each drive is judged (flax_post.fio_judge) against
     the baseline (None: the deployed file): `judge`, `flagged` and the table's expected /
     check columns. A drive outside its range is a label (amber in the UI, named in a
-    pass's headline), never a verdict: this never changes the verdict."""
+    pass's headline), never a verdict: this never changes the verdict. Unjudged drives
+    are a plain headline fragment (`· N drives no baseline`), never a flag."""
     det = dict(detail or {})
     summ = det.get("summary") or {}
     excluded = summ.get("smart_excluded") or {}
@@ -916,6 +917,8 @@ def fio_detail(detail: dict, verdict, fio_text, alldisks, lsblk, baseline=None) 
                        + (f" ({where})" if where else "") + f" {' '.join(jobs)}")
         n = len(flagged)
         head = f"fio pass · {n} drive{'s' if n != 1 else ''} outside range: " + ", ".join(who)
+    if head:
+        head += fio_judge.no_baseline_fragment(judged)  # a label, never amber
     if head and verdict == "pass" and not det.get("headline"):
         det["headline"] = head
     return det

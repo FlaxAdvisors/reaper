@@ -16,6 +16,7 @@ CLIP_ROUNDS = 5
 MIN_SAMPLES = 5
 SIBLING_PCT = 20
 MIN_SIBLINGS = 3  # the device + at least two others
+SIGMA_FLOOR_FRAC = 0.01  # effective σ = max(std, this × |mean|): a std-0 group never flags on a hair
 
 BASELINE_PATH = Path(__file__).resolve().parent / "fio-baselines-v1.json"
 
@@ -72,6 +73,12 @@ def _group(baseline, model, controller, job, metric):
     return None
 
 
+def sigma_eff(mean, std):
+    """The σ the 2σ history check uses: the group's std, floored at SIGMA_FLOOR_FRAC of
+    |mean| (quantised fio output can clip a uniform group down to std 0)."""
+    return max(std or 0.0, SIGMA_FLOOR_FRAC * abs(mean))
+
+
 def _get(parsed_job, metric):
     try:
         v = ((parsed_job or {}).get("dirs") or {}).get("read", {}).get(metric)
@@ -82,6 +89,8 @@ def _get(parsed_job, metric):
 
 def judge(parsed, disks, baseline):
     baseline = baseline or {}
+    if baseline.get("suite") not in (None, SUITE):
+        baseline = {}  # another fio job definition's numbers never judge this suite
     out = {}
     for dev, jobs in parsed.items():
         info = disks.get(dev) or {}
@@ -99,7 +108,8 @@ def judge(parsed, disks, baseline):
                 g = _group(baseline, model, ctrl, job, metric) if model else None
                 if g:
                     judged = True
-                    mean, std = g["mean"], g.get("std", 0.0)
+                    mean = g["mean"]
+                    std = sigma_eff(mean, g.get("std", 0.0))
                     if good == "higher":
                         lim = mean - FLAG_SIGMA * std
                         bad = val < lim
@@ -143,10 +153,23 @@ def flagged(results):
     return [d for d, r in results.items() if r.get("verdict") == "outside"]
 
 
+def no_baseline_fragment(results):
+    """The headline fragment naming unjudged drives (a label, never a flag): "" when
+    every drive was judged, " · no baseline" when none was, else " · N drive(s) no baseline"."""
+    res = results or {}
+    n = sum(1 for r in res.values() if (r or {}).get("verdict") == "no baseline")
+    if not n:
+        return ""
+    if n == len(res):
+        return " · no baseline"
+    return f" · {n} drive{'s' if n != 1 else ''} no baseline"
+
+
 def note() -> str:
     """The judge's constants as one sentence for a fio step's notes (both UIs)."""
     return (f"expected / check: each drive against its model's fleet history (mean "
-            f"{FLAG_SIGMA:g}σ on the bad side, n ≥ {MIN_SAMPLES}, history "
+            f"{FLAG_SIGMA:g}σ on the bad side, σ ≥ {SIGMA_FLOOR_FRAC * 100:g}% of the mean, "
+            f"n ≥ {MIN_SAMPLES}, history "
             f"{CLIP_SIGMA:g}σ-clipped) and against same-model siblings in the node "
             f"(> {SIBLING_PCT}% worse than their median, ≥ {MIN_SIBLINGS} "
             f"drives); outside = flagged (a label), never a failure; no baseline = neither check "
