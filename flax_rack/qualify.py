@@ -78,7 +78,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
-from flax_post import population, qualify_rules, shipchecks
+from flax_post import fio_judge, population, qualify_rules, shipchecks
 from flax_post.observe import family_map_live, fru
 from flax_rungs import (agent, enclosure, fabric, fio, ha, hostssh, identity, iperf, liveboot,
                         smart, sol)
@@ -871,23 +871,63 @@ def _poll(ctx, R, cr, phase, x):
             _record(ctx, pos, ENCLOSURE, res, STAGE, run_seg)
 
 
-def fio_detail(detail: dict, verdict, fio_text, alldisks, lsblk) -> dict:
+_BASELINE: dict | None = None
+
+
+def _baseline() -> dict:
+    """fio_judge's baseline file, read once per process (a deploy restarts the daemon)."""
+    global _BASELINE
+    if _BASELINE is None:
+        _BASELINE = fio_judge.load_baseline()
+    return _BASELINE
+
+
+def fio_detail(detail: dict, verdict, fio_text, alldisks, lsblk, baseline=None) -> dict:
     """The fio stage's detail with its per-device summary (flax_rungs.fio): the table,
     rows, notes; the headline (IOPS · MB/s · µs of the lead device) only on a pass, so a
-    failure's error stays the headline. Never changes the verdict."""
+    failure's error stays the headline. Each drive is judged (flax_post.fio_judge) against
+    the baseline (None: the deployed file): `judge`, `flagged` and the table's expected /
+    check columns. A drive outside its range is a label (amber in the UI, named in a
+    pass's headline), never a verdict: this never changes the verdict."""
     det = dict(detail or {})
     summ = det.get("summary") or {}
     excluded = summ.get("smart_excluded") or {}
     if not fio_text and not excluded:
         return det
-    sm = fio.summarize(fio_text, summ.get("devices"), alldisks, lsblk, excluded=excluded)
+    parsed: dict[str, dict] = {}
+    for dev, job, out in fio.sections(fio_text or ""):
+        parsed.setdefault(dev, {})[job] = fio.parse_job(out)
+    info = fio.disk_info(alldisks)
+    judged = fio_judge.judge(parsed, info, _baseline() if baseline is None else baseline)
+    flagged = sorted(fio_judge.flagged(judged), key=fio.natural_dev_key)
+    sm = fio.summarize(fio_text, summ.get("devices"), alldisks, lsblk, excluded=excluded,
+                       judged=judged)
     head = sm.pop("fio_headline")
-    det.update(table=sm["table"], fio=sm["fio"],
+    det.update(table=sm["table"], fio=sm["fio"], judge=judged, flagged=flagged,
                rows=[*sm["rows"], *(det.get("rows") or [])],
-               notes=[*(det.get("notes") or []), *sm["notes"]])
+               notes=[*(det.get("notes") or []), *sm["notes"], fio_judge_note()])
+    if flagged:
+        slot = smart.slots(alldisks)
+        who = []
+        for dev in flagged:
+            jobs = list(dict.fromkeys(r.split(" ", 1)[0] for r in judged[dev]["reasons"]))
+            where = slot.get(dev)
+            who.append(f"{(info.get(dev) or {}).get('serial') or dev}"
+                       + (f" ({where})" if where else "") + f" {' '.join(jobs)}")
+        n = len(flagged)
+        head = f"fio pass · {n} drive{'s' if n != 1 else ''} outside range: " + ", ".join(who)
     if head and verdict == "pass" and not det.get("headline"):
         det["headline"] = head
     return det
+
+
+def fio_judge_note() -> str:
+    return (f"expected / check: each drive against its model's fleet history (mean "
+            f"{fio_judge.FLAG_SIGMA:g}σ on the bad side, n ≥ {fio_judge.MIN_SAMPLES}, history "
+            f"{fio_judge.CLIP_SIGMA:g}σ-clipped) and against same-model siblings in the node "
+            f"(> {fio_judge.SIBLING_PCT}% worse than their median, ≥ {fio_judge.MIN_SIBLINGS} "
+            f"drives); outside = flagged amber, never a failure; no baseline = neither check "
+            f"applied")
 
 
 def smart_rung(res: RungResult, alldisks) -> RungResult:

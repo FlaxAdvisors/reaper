@@ -85,6 +85,26 @@ def disks(alldisks: str | None, lsblk: str | None) -> dict[str, str]:
     return out
 
 
+def disk_info(alldisks: str | None) -> dict[str, dict]:
+    """dev -> {"model", "controller", "serial", "size_gb"} from alldisks, the judge's
+    inputs (flax_post.fio_judge): controller = the driver column before `rotational`
+    (mpt3sas / ahci / nvme ...), model = second-to-last field, serial = last; the same
+    reading the baseline miner applies to the archive's alldisks."""
+    out = {}
+    for ln in (alldisks or "").splitlines():
+        f = ln.split()
+        if not f or not f[0].startswith("/dev/"):
+            continue
+        at = next((i for i, x in enumerate(f) if x.endswith("rotational")), None)
+        full = at is not None and len(f) >= at + 5
+        size = float(f[at + 1]) if at is not None and at + 1 < len(f) and \
+            re.fullmatch(r"[\d.]+", f[at + 1]) else None
+        out[f[0][5:]] = {"model": f[-2] if full else None,
+                         "controller": f[at - 1] if at else None,
+                         "serial": f[-1] if full else None, "size_gb": size}
+    return out
+
+
 def _n(v, unit=""):
     if v is None:
         return "—"
@@ -104,11 +124,14 @@ def natural_dev_key(dev: str) -> tuple:
 
 
 def summarize(fio_text: str | None, devices=None, alldisks=None, lsblk=None,
-              excluded=None) -> dict:
+              excluded=None, judged: dict | None = None) -> dict:
     """Detail additions for the fio rung: {"table": {"cols", "rows"}, "fio": {dev: {job:
     parse_job}}, "fio_headline": str | None, "rows", "notes"}. devices: the agent's list
     (summary.devices), so a device with no output is named. excluded: the agent's
-    summary.smart_excluded ({dev: reasons}), the disks smart-health failed and fio left out."""
+    summary.smart_excluded ({dev: reasons}), the disks smart-health failed and fio left out.
+    judged: flax_post.fio_judge.judge's {dev: {"verdict", "reasons", "expected"}}; given,
+    the table gains `expected` + `check` columns and `row_cls` ("flag" on an outside
+    drive's rows), labels only."""
     secs = sections(fio_text or "")
     got: dict[str, dict] = {}
     for dev, job, out in secs:
@@ -144,6 +167,21 @@ def summarize(fio_text: str | None, devices=None, alldisks=None, lsblk=None,
                             _n(d["p99_us"])])
     rows = [r for job in [*JOBS, *(j for j in by_job if j not in JOBS)]
             for r in by_job.get(job, [])] + gone
+    table = {"cols": list(COLS), "rows": rows}
+    if judged is not None:
+        row_cls = []
+        for r in rows:
+            j = (judged.get(r[0]) if r[0] in got else None) or {}
+            job = r[2].split(" ", 1)[0]
+            # check names the job that is out (an outside drive's other jobs read ok);
+            # the tint marks every row of the flagged drive
+            check = j.get("verdict", "")
+            if check == "outside" and not any(x.split(" ", 1)[0] == job
+                                               for x in j.get("reasons") or []):
+                check = "ok"
+            r += [(j.get("expected") or {}).get(job, ""), check]
+            row_cls.append("flag" if j.get("verdict") == "outside" else "")
+        table = {"cols": [*COLS, "expected", "check"], "rows": rows, "row_cls": row_cls}
     head = None
     lead = next((d for d in devs if d.startswith("nvme") and d in got), None) or \
         next((d for d in devs if d in got), None)
@@ -161,5 +199,5 @@ def summarize(fio_text: str | None, devices=None, alldisks=None, lsblk=None,
         srows.append(["left out (SMART failed)", "; ".join(
             f"{d}" + (f" ({info[d]})" if info.get(d) else "") + f": {'; '.join(r or [])}"
             for d, r in excluded.items())])
-    return {"table": {"cols": list(COLS), "rows": rows}, "fio_headline": head,
+    return {"table": table, "fio_headline": head,
             "fio": got, "rows": srows, "notes": list(NOTES)}

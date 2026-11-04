@@ -89,7 +89,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from flax_rungs import sol
+from flax_rungs import fio, sol
 from flax_rungs.bond import clean_ha
 from flax_rungs.pxeboot import PXE_DIR
 
@@ -367,11 +367,13 @@ _FIO_SEEN: dict = {}
 
 
 def _fio_view(rack_dir: Path, runs: dict) -> None:
-    """A fio row written before its summary existed (2026-10-31) gets it here from its
-    saved artifact + the inventory's alldisks/lsblk (once per row, then cached)."""
+    """A fio row written before its summary existed (2026-10-31), or before the drive judge
+    (2026-11-04), gets it here from its saved artifact + the inventory's alldisks/lsblk
+    (once per row, then cached). A row with an older summary is stripped back to the
+    agent's detail first, so nothing shows twice."""
     run = runs.get("fio")
     det = (run or {}).get("detail")
-    if not isinstance(det, dict) or "table" in det or not (run.get("artifacts") or {}).get("fio"):
+    if not isinstance(det, dict) or "judge" in det or not (run.get("artifacts") or {}).get("fio"):
         return
     inv = runs.get("inventory") or {}
     key = (str(rack_dir), run.get("id"), inv.get("id"))
@@ -382,9 +384,26 @@ def _fio_view(rack_dir: Path, runs: dict) -> None:
             except OSError:
                 return None
         ia = inv.get("artifacts") or {}
-        _FIO_SEEN[key] = fio_detail(det, run.get("verdict"), text(run["artifacts"]["fio"]),
-                                    text(ia.get("alldisks")), text(ia.get("lsblk")))
+        fio_text, alldisks, lsblk = (text(run["artifacts"]["fio"]), text(ia.get("alldisks")),
+                                     text(ia.get("lsblk")))
+        if "table" in det:
+            det = _fio_unsummarized(det, fio_text, alldisks, lsblk)
+        _FIO_SEEN[key] = fio_detail(det, run.get("verdict"), fio_text, alldisks, lsblk)
     run["detail"] = _FIO_SEEN[key]
+
+
+def _fio_unsummarized(det: dict, fio_text, alldisks, lsblk) -> dict:
+    """det without what an earlier fio_detail added: table, fio, its summary rows, notes
+    and the lead-device headline."""
+    summ = det.get("summary") or {}
+    sm = fio.summarize(fio_text, summ.get("devices"), alldisks, lsblk,
+                       excluded=summ.get("smart_excluded") or {})
+    out = {k: v for k, v in det.items() if k not in ("table", "fio")}
+    out["rows"] = [r for r in det.get("rows") or [] if r not in sm["rows"]]
+    out["notes"] = [n for n in det.get("notes") or [] if n not in fio.NOTES]
+    if det.get("headline") == sm["fio_headline"]:
+        out.pop("headline", None)
+    return out
 
 
 def _shown(rungs, phase) -> list[str]:

@@ -163,6 +163,7 @@
                 <span class="lk dev" v-if="!cell.empty && cell.dev?.deviation" :title="cell.dev.deviation">≠</span>
                 <span class="lk" v-if="!cell.empty && cell.dev?.absent" title="no hardware placed in this BOM slot yet">absent</span>
                 <span class="idm" v-if="!cell.empty && !cell.iom && identOn(cell.dev)" :title="identTitle(cell.dev)">ID</span>
+                <span class="flagm" v-if="!cell.empty && flaggedSteps(cellObj(cell)).length" :title="'flagged (passed): ' + flaggedSteps(cellObj(cell)).join(' · ')">⚑</span>
                 <span class="watt" v-if="!cell.empty && power(cell)" :class="power(cell).cls" :title="power(cell).title">{{power(cell).t}}</span>
                 <span class="dot" :class="cell.empty ? 'grey' : dotCls(cellObj(cell))"></span>
               </div>
@@ -401,16 +402,16 @@
           <span class="pct">{{phasePct(selObj,p)}}</span><span class="caret" v-if="phFinished(selObj,p)">{{phFolded(selObj,p) ? '▸' : '▾'}}</span></div>
         <div class="steps" v-if="phFolded(selObj,p)"></div>
         <div class="steps" v-else-if="stepEntries(selObj,p).length">
-          <div class="step evable" v-for="st in stepEntries(selObj,p)" :class="st.state" :title="st.title" @click="openStep(selObj, p, st)">
-            <span class="si">{{stepIcon(st.state)}}</span>{{st.name}}<span class="note" v-if="st.note"> · {{st.note}}</span>
+          <div class="step evable" v-for="st in stepEntries(selObj,p)" :class="[st.state, {flag: st.flag}]" :title="st.title" @click="openStep(selObj, p, st)">
+            <span class="si">{{stepIcon(st.flag ? 'flag' : st.state)}}</span>{{st.name}}<span class="note" v-if="st.note"> · {{st.note}}</span>
             <span class="art" v-for="a in st.arts" :title="a.url" @click.stop="openStepArt(selObj, p, st, a)">{{a.name}}</span></div>
         </div>
         <div class="steps" v-else><div class="step pending"><span class="si">·</span>{{selKind==='dev' ? 'none for this device' : 'none for this endpoint'}}</div></div>
         <div v-if="p==='firmware' && selKind==='dev' && !phFolded(selObj,p)"><div class="ep-fw" v-for="x in endpointFw(selDev)">
           <div class="ep-h clk" @click="select(selDev?.pos + '.' + x.ep)">{{x.ep.toUpperCase()}} ›</div>
           <div class="steps">
-            <div class="step evable" v-for="st in x.entries" :class="st.state" :title="st.title" @click="openStep(selDev, 'firmware ' + x.ep.toUpperCase(), st)">
-              <span class="si">{{stepIcon(st.state)}}</span>{{st.name}}<span class="note" v-if="st.note"> · {{st.note}}</span>
+            <div class="step evable" v-for="st in x.entries" :class="[st.state, {flag: st.flag}]" :title="st.title" @click="openStep(selDev, 'firmware ' + x.ep.toUpperCase(), st)">
+              <span class="si">{{stepIcon(st.flag ? 'flag' : st.state)}}</span>{{st.name}}<span class="note" v-if="st.note"> · {{st.note}}</span>
               <span class="art" v-for="a in st.arts" :title="a.url" @click.stop="openStepArt(selDev, 'firmware ' + x.ep.toUpperCase(), st, a)">{{a.name}}</span></div>
           </div>
         </div></div>
@@ -651,7 +652,7 @@
         </div>
         <table class="inv-tbl ev-tbl" v-if="(stepM?.table?.rows || []).length">
           <tr><th v-for="c in (stepM?.table?.cols || [])">{{c}}</th></tr>
-          <tr v-for="r in (stepM?.table?.rows || [])"><td v-for="c in r" class="mono">{{c}}</td></tr>
+          <tr v-for="(r, i) in (stepM?.table?.rows || [])" :class="stepM?.table?.row_cls?.[i]"><td v-for="c in r" class="mono">{{c}}</td></tr>
         </table>
         <p class="pending-note" v-for="n in (stepM?.notes || [])">{{n}}</p>
         <div class="arts-line" v-if="(stepM?.arts || []).length"><span class="lbl">artifacts</span>
