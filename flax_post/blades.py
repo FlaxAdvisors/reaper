@@ -36,7 +36,7 @@ _BOOT_MARK_KEY = {"tftp-seen": "tftp", "ipxe-seen": "ipxe", "live-iso-seen": "is
 # observe/ladder.py) so the tile can show "budget N s" without importing the
 # machine, which imports this module. Env: FLAX_POST_LADDER_<RUNG>_S.
 LADDER_BUDGET_S = {
-    "power-on": 60, "tftp-seen": 600, "ipxe-seen": 120, "host-leased": 120,
+    "power-on": 60, "tftp-seen": 600, "ipxe-seen": 300, "host-leased": 120,
     "live-iso-seen": 300, "host-pinged": 600, "host-ssh": 120,
     # bmc-ready (ruling 2026-09-12): after the chassis power-on the AMI-style
     # BMCs go dark for 60-100 s and come back in stages (ping before IPMI

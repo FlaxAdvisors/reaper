@@ -88,7 +88,7 @@ HOST_STEPS = ("power-on", "tftp-seen", "ipxe-seen", "host-mac-seen", "host-reser
 OLD_DISCOVER_RUNGS = ("slot-match", "reserve", "bmc-reach")
 # = the Discover entries of flax_post.blades.LADDER_BUDGET_S (+ its power-unreadable)
 LADDER_BUDGET_S = {
-    "power-on": 60, "tftp-seen": 600, "ipxe-seen": 120, "host-leased": 120,
+    "power-on": 60, "tftp-seen": 600, "ipxe-seen": 300, "host-leased": 120,
     "live-iso-seen": 300, "host-pinged": 600, "host-ssh": 120, "bmc-ready": 600,
     "power-unreadable": 600,
 }
