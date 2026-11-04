@@ -20,8 +20,8 @@ for _p in (_HERE.parent, _HERE):
 
 from flax_rungs.fio import parse_job  # noqa: E402
 from flax_post.fio_judge import (  # noqa: E402
-    CLIP_ROUNDS, CLIP_SIGMA, FLAG_SIGMA, METRICS, MIN_SIBLINGS, SIBLING_PCT, SUITE,
-    normalise_model, sigma_eff)
+    CLIP_ROUNDS, CLIP_SIGMA, FLAG_SIGMA, METRICS, MIN_SIBLINGS, SIBLING_PCT, SPREAD_CAP, SUITE,
+    normalise_model, sigma_eff, spread, too_wide)
 
 JOBS = {"bw": "--bs=64k --iodepth=64 --rw=read --name=raw-read",
         "lat": "--bs=4k --iodepth=1 --rw=randread --name=readlatency",
@@ -333,8 +333,22 @@ def whatif(samples, baseline):
             n = sum(v > mean + FLAG_SIGMA * se for v in kept)
         lines.append(f"{g['model']} | {g['controller'] or 'any'} | {g['job']} | {g['metric']} | "
                      f"{g['n']} | {g['clipped']} | {n}")
+    lines += _spread_section(baseline)
     lines += _sibling_section(samples)
     return "\n".join(lines) + "\n"
+
+
+def _spread_section(baseline):
+    """The groups the judge sets aside (std / |mean| > SPREAD_CAP): kept in the baseline
+    file untouched, but never used for the history check."""
+    wide = [g for g in baseline["groups"] if too_wide(g)]
+    out = ["", "set aside by the spread cap (std/mean > %g%%; kept in the file, not judged by): %d"
+           % (SPREAD_CAP * 100, len(wide)),
+           "model | controller | job | metric | n | mean | std | std/mean%"]
+    for g in wide:
+        out.append(f"{g['model']} | {g['controller'] or 'any'} | {g['job']} | {g['metric']} | "
+                   f"{g['n']} | {g['mean']:.4g} | {g['std']:.4g} | {spread(g) * 100:.1f}")
+    return out
 
 
 def _sibling_section(samples):

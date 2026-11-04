@@ -17,6 +17,7 @@ MIN_SAMPLES = 5
 SIBLING_PCT = 20
 MIN_SIBLINGS = 3  # the device + at least two others
 SIGMA_FLOOR_FRAC = 0.01  # effective σ = max(std, this × |mean|): a std-0 group never flags on a hair
+SPREAD_CAP = 0.15  # a history group with std / |mean| above this is too wide to judge by (kept in the file)
 
 BASELINE_PATH = Path(__file__).resolve().parent / "fio-baselines-v1.json"
 
@@ -28,6 +29,7 @@ METRICS = {
 }
 
 _UNITS = {"mbps": "MB/s", "iops": "IOPS", "lat_us": "µs", "p99_us": "µs p99"}
+SPREAD_LABEL = "no baseline (spread too wide)"
 
 
 def normalise_model(s, dev=None):
@@ -73,6 +75,18 @@ def _group(baseline, model, controller, job, metric):
     return None
 
 
+def spread(g):
+    """A history group's std / |mean| (inf for a zero mean with any std)."""
+    mean, std = abs(g.get("mean") or 0.0), g.get("std") or 0.0
+    if mean == 0:
+        return 0.0 if std == 0 else float("inf")
+    return std / mean
+
+
+def too_wide(g):
+    return spread(g) > SPREAD_CAP
+
+
 def sigma_eff(mean, std):
     """The σ the 2σ history check uses: the group's std, floored at SIGMA_FLOOR_FRAC of
     |mean| (quantised fio output can clip a uniform group down to std 0)."""
@@ -96,7 +110,7 @@ def judge(parsed, disks, baseline):
         info = disks.get(dev) or {}
         model = normalise_model(info.get("model"), dev)
         ctrl = info.get("controller")
-        reasons, expected, judged = [], {}, False
+        reasons, expected, judged, wide = [], {}, False, {}
         for job, mlist in METRICS.items():
             pj = (jobs or {}).get(job)
             if not pj:
@@ -106,6 +120,12 @@ def judge(parsed, disks, baseline):
                 if val is None:
                     continue
                 g = _group(baseline, model, ctrl, job, metric) if model else None
+                if g and too_wide(g):
+                    # history too spread to judge by: a label, the sibling check still runs
+                    wide.setdefault(job, []).append(metric)
+                    if metric == mlist[0][0]:
+                        expected[job] = SPREAD_LABEL
+                    g = None
                 if g:
                     judged = True
                     mean = g["mean"]
@@ -145,6 +165,7 @@ def judge(parsed, disks, baseline):
             "verdict": ("outside" if reasons else "ok") if judged else "no baseline",
             "reasons": reasons,
             "expected": expected,
+            "spread": wide,  # job -> metrics whose history group was set aside (SPREAD_CAP)
         }
     return out
 
@@ -170,7 +191,8 @@ def note() -> str:
     return (f"expected / check: each drive against its model's fleet history (mean "
             f"{FLAG_SIGMA:g}σ on the bad side, σ ≥ {SIGMA_FLOOR_FRAC * 100:g}% of the mean, "
             f"n ≥ {MIN_SAMPLES}, history "
-            f"{CLIP_SIGMA:g}σ-clipped) and against same-model siblings in the node "
+            f"{CLIP_SIGMA:g}σ-clipped; a history spread σ/mean > {SPREAD_CAP * 100:g}% is "
+            f"not used: no baseline (spread too wide)) and against same-model siblings in the node "
             f"(> {SIBLING_PCT}% worse than their median, ≥ {MIN_SIBLINGS} "
             f"drives); outside = flagged (a label), never a failure; no baseline = neither check "
             f"applied")

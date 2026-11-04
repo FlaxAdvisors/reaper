@@ -114,6 +114,14 @@ def _n(v, unit=""):
     return f"{v:.1f}" if v < 100 else f"{v:.0f}"
 
 
+_SHORT = {"mbps": "MB/s", "iops": "IOPS", "lat_us": "lat", "p99_us": "p99"}
+
+
+def spread_text(metrics) -> str:
+    """The check-cell note for a job's metrics the judge set aside (history too spread)."""
+    return " ".join(_SHORT.get(m, m) for m in metrics) + " spread too wide"
+
+
 def natural_dev_key(dev: str) -> tuple:
     """Sort key: sda < sdb < ... < sdz < sdaa, then nvme0n1 < ... < nvme10n1, others last."""
     if m := re.fullmatch(r"sd([a-z]+)", dev):
@@ -179,6 +187,10 @@ def summarize(fio_text: str | None, devices=None, alldisks=None, lsblk=None,
             if check == "outside" and not any(x.split(" ", 1)[0] == job
                                                for x in j.get("reasons") or []):
                 check = "ok"
+            if (wide := (j.get("spread") or {}).get(job)) and r[0] in got:
+                # a capped history metric is a label beside the check, never a flag
+                check = ("no baseline (spread too wide)" if check == "no baseline"
+                         else f"{check} · {spread_text(wide)}" if check else spread_text(wide))
             r += [(j.get("expected") or {}).get(job, ""), check]
             row_cls.append("flag" if j.get("verdict") == "outside" else "")
         table = {"cols": [*COLS, "expected", "check"], "rows": rows, "row_cls": row_cls}
