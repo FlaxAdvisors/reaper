@@ -36,6 +36,8 @@ apply_rackpost_post_modules:
   - qualify_rules.py
   - shipchecks.py
   - blocklist.py
+  - fio_judge.py
+  - fio-baselines-v1.json
   - observe/__init__.py
   - observe/fru.py
   - observe/family_map.py
