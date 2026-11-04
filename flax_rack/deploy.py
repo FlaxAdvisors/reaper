@@ -965,21 +965,61 @@ def _iperf_node(ctx, R, cr, lr, d, host_ip) -> tuple[dict | None, RungResult | N
     return {"pos": d.pos, "host_ip": host_ip, "ifaces": ifaces}, None
 
 
-def _iperf_rows(res: RungResult, node: dict | None) -> RungResult:
-    """res with a row per network (the client's interface, tx / rx against 0.8 x link)."""
+# deploy-iperf's own table (not shared with Qualify's iperf-mesh view)
+IPERF_COLS = ["network", "interface", "port", "link", "TX Gb/s", "RX Gb/s", "% of line", "judge"]
+_IPERF_ORDER = ("bond", "mgmt")
+
+
+def _iperf_ports(g, d) -> dict[str, str]:
+    """{"A": "Ethernet5", "B": "Ethernet5", "mgmt": ...}: the switch port of each of the
+    device's cabled links (the pcieN links to wedge A / B, the link to the mgmt switch)."""
+    sws = {s.id: s for s in g.switches}
+    out = {}
+    for name, l in sorted(d.links.items()):
+        sw = sws.get(l.switch)
+        if sw is None:
+            continue
+        key = l.switch if name.startswith("pcie") and l.switch in ("A", "B") else \
+            ("mgmt" if sw.role == "mgmt" else None)
+        if key:
+            out.setdefault(key, f"{l.switch} {switches.link_iface(sw, l.port, l.lane)}")
+    return out
+
+
+def _iperf_table(res: RungResult, node: dict | None, ports: dict) -> RungResult:
+    """res with a table, one row per network measured (bond0's row lists both the A and B
+    ports): TX / RX Gb/s, % of line (the lower of the two against the NIC's speed) and a
+    judge, ok when both reach iperf.THRESHOLD x the link speed. Artifacts are kept."""
     det = dict(res.detail)
-    rows = list(det.get("rows") or [])
-    for net, v in det.items():
-        if net in iperf.NETS and isinstance(v, dict):
-            ifn = ((node or {}).get("ifaces") or {}).get(net, ("?",))[0]
-            sp = v.get("speed_bps")
-            rows.append([f"{net} ({ifn})", f"tx {hatest._gbit(v.get('tx_bps'))} / rx "
-                                           f"{hatest._gbit(v.get('rx_bps'))} Gbit/s, need ≥ "
-                         + (f"{iperf.THRESHOLD * sp / 1e9:.1f} (0.8 x {sp / 1e9:g})"
-                            if sp else "? (no link speed)")])
+    ifaces = (node or {}).get("ifaces") or {}
+    nets = [n for n in _IPERF_ORDER if isinstance(det.get(n), dict)]
+    gb = lambda x: "-" if x is None else f"{x / 1e9:.1f}"          # noqa: E731
+    rows, cls, head, pcts = [], [], [], []
+    for net in nets:
+        v = det[net]
+        tx, rx, sp = v.get("tx_bps"), v.get("rx_bps"), v.get("speed_bps")
+        pct = 100 * min(tx, rx) / sp if tx is not None and rx is not None and sp else None
+        if tx is None or rx is None:
+            judge = "no result"
+        elif not sp:
+            judge = "no link speed"
+        else:
+            judge = "ok" if v.get("ok") else f"below {iperf.THRESHOLD * 100:.0f}%"
+        port = " + ".join(ports[k] for k in ("A", "B") if ports.get(k)) if net == "bond" \
+            else ports.get(net)
+        rows.append([net, ifaces.get(net, ("?",))[0], port or "-", f"{sp / 1e9:g}G" if sp else "?",
+                     gb(tx), gb(rx), "-" if pct is None else f"{pct:.0f}%", judge])
+        cls.append("" if judge == "ok" else "bad")
+        head.append(f"{net} {gb(tx)}/{gb(rx)}" if tx is not None and rx is not None
+                    else f"{net} no result")
+        if pct is not None:
+            pcts.append(pct)
+    if nets:
+        det["table"] = {"cols": list(IPERF_COLS), "rows": rows, "row_cls": cls}
+        det["headline"] = " · ".join(head) + " Gb/s" + (
+            f" · {min(pcts):.0f}% of line" if pcts else "")
     if det.get("served") is not None:
-        rows.append(["served", ", ".join(det["served"]) or "none"])
-    det["rows"] = rows
+        det["rows"] = list(det.get("rows") or []) + [["served", ", ".join(det["served"]) or "none"]]
     return RungResult(res.verdict, det, res.artifacts)
 
 
@@ -1037,10 +1077,13 @@ def _iperf(ctx, R, cr, prog, ips, xs, all_xs):
     res = {}
     for p, rid in rids.items():
         r = out.get(p) or RungResult("fail", {"error": "no iperf result"})
-        res[p] = _finish(ctx, rid, p, "deploy-iperf", _iperf_rows(r, nodes.get(p)))
+        pd = next(x.d for x in xs if x.pos == p)
+        res[p] = _finish(ctx, rid, p, "deploy-iperf",
+                         _iperf_table(r, nodes.get(p), _iperf_ports(g, pd)))
         prog.done(p)
     if guest is not None and guest in out and any(_measured(out.get(x.pos)) for x in clients):
-        _record(ctx, guest, "deploy-iperf", _iperf_rows(out[guest], nodes.get(guest)))
+        _record(ctx, guest, "deploy-iperf",
+                _iperf_table(out[guest], nodes.get(guest), _iperf_ports(g, srv_dev)))
     for x in xs:
         _out(x, "iperf", res[x.pos])
 
