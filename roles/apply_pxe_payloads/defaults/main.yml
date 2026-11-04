@@ -4,6 +4,13 @@
 apply_pxe_payloads_pxe_root: /srv/pxe
 apply_pxe_payloads_tftp_root: /srv/tftpboot
 
+# === iPXE NBPs (tag tftp): built from files/ipxe/ on one builder bang (git, gcc,
+# make, binutils), fetched to the controller, installed on every target bang ===
+apply_pxe_payloads_ipxe_builder: bang-gouda
+apply_pxe_payloads_ipxe_recipe_dir: /var/tmp/flax-ipxe-recipe
+apply_pxe_payloads_ipxe_work_dir: /var/tmp/flax-ipxe-build
+apply_pxe_payloads_ipxe_fetch_dir: "{{ lookup('env', 'HOME') }}/.cache/flax-ipxe"
+
 # === post.tgz build (assembled at deploy from text source + /opt/flax/bin binaries) ===
 # The node payload tarball is BUILT here (was a committed binary blob); text source
 # lives in files/post/, secrets are vault-templated, binaries are pulled from the bang.

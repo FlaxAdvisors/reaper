@@ -1,0 +1,78 @@
+#!ipxe
+
+# this script is lifted and altered from the original here:
+# 
+# https://gist.github.com/robinsmidsrod/bbbd31b4af8a673dbbaf2f2f75fa224b
+#
+set timeout 3000
+
+prompt --key 0x02 --timeout 2000 Press Ctrl-B for the iPXE command line... && shell ||
+
+:menu
+menu iPXE by ${next-server} for ${netX/ip} ${netX/mac} ${platform} ${buildarch}
+item --key a default Try to boot (a)ll network adapters in turn
+item
+item --gap -- --- Detected network adapters ---
+set i:int8 0
+:loop
+isset ${net${i}/mac} && item --key ${i} net${i} net(${i}): ${net${i}/mac} - ${net${i}/bustype} ${net${i}/busloc:busdevfn} ${pci/${net${i}/busloc}.0.2}:${pci/${net${i}/busloc}.2.2} ${net${i}/chip} ||
+inc i
+iseq ${i} 10 || goto loop
+item
+item --gap -- --- Alternatives ---
+item --key c config Open (c)onfiguration
+item --key r reboot (R)eboot computer
+item --key s shell Drop to iPXE (s)hell
+item --key x exit  E(x)it and continue BIOS boot order
+choose --timeout ${timeout} selected && goto select || goto default
+goto menu
+
+:select
+isset ${${selected}/mac} && goto nic || goto label
+
+:nic
+ifconf -c dhcp ${selected} && chain --replace --autofree http://bang/menu.ipxe && goto exit ||
+ifclose ${selected}
+echo Booting '${selected}' failed, exiting iPXE...
+goto exit
+
+:label
+goto ${selected} || 
+echo The label '${selected}' could not be found, returning to menu...
+sleep 2
+goto restart
+
+:default
+set a:int8 0
+:defloop
+# flax: skip USB netdevs (the BMC USB network gadget never links: ~15-30 s lost)
+iseq ${net${a}/bustype} USB && goto defnext ||
+ifconf -c dhcp net${a} && chain --replace --autofree http://bang/menu.ipxe && goto exit ||
+ifclose net${a}
+:defnext
+inc a
+iseq ${a} 10 || goto defloop
+echo DHCP for all NICs failed, exiting iPXE...
+ifstat
+sleep 2
+goto exit
+
+:config
+config
+goto restart
+
+:shell
+shell
+goto restart
+
+:restart
+set timeout 0
+goto menu
+
+:reboot
+reboot
+
+:exit
+echo Continuing BIOS boot order...
+sleep 1
+exit 1

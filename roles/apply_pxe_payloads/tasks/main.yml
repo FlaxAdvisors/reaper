@@ -6,8 +6,9 @@
 #
 # Source of truth lives in roles/apply_pxe_payloads/files/. To update,
 # scp the new content from a known-good bang (typically bang-fiesta
-# during dev cycles) into roles/apply_pxe_payloads/files/{v,tftpboot}
-# and commit. Earlier apply_bang_services commits 4558af1 + e56e19f
+# during dev cycles) into roles/apply_pxe_payloads/files/v and commit.
+# The TFTP NBPs are not files here: they are built from files/ipxe/
+# (see ipxe.conf) at deploy time. Earlier apply_bang_services commits 4558af1 + e56e19f
 # explicitly stopped clobbering operator-built NBPs from that role —
 # this role is the legitimate place for that content to flow.
 
@@ -227,14 +228,55 @@
   loop: "{{ apply_pxe_payloads_vids }}"
   tags: [post_tgz, pxe_files]
 
-- name: Stage operator-built TFTP NBPs (custom iPXE with embedded chain to http://bang/menu.ipxe)
+# --- TFTP NBPs: BUILT from files/ipxe/ (pinned iPXE commit + patches + embedded chain
+# script) on ONE builder bang, fetched to the controller, installed on every target.
+# No binary is committed (operator 2026-11-04). The previous file is kept by `backup`.
+- name: Copy the iPXE build recipe to the builder bang
+  ansible.builtin.copy:
+    src: ipxe/
+    dest: "{{ apply_pxe_payloads_ipxe_recipe_dir }}/"
+    mode: preserve
+  delegate_to: "{{ apply_pxe_payloads_ipxe_builder }}"
+  run_once: true
+  tags: [tftp]
+
+- name: Build ipxe.efi + undionly.kpxe on the builder bang
+  ansible.builtin.command:
+    argv: [sh, "{{ apply_pxe_payloads_ipxe_recipe_dir }}/build-ipxe.sh",
+           "{{ apply_pxe_payloads_ipxe_work_dir }}"]
+  delegate_to: "{{ apply_pxe_payloads_ipxe_builder }}"
+  run_once: true
+  changed_when: false
+  register: _ipxe_build
+  tags: [tftp]
+
+- name: Show the built NBPs' md5s
+  ansible.builtin.debug:
+    msg: "{{ _ipxe_build.stdout_lines[-2:] }}"
+  run_once: true
+  tags: [tftp]
+
+- name: Fetch the built NBPs to the controller (outside any repo)
+  ansible.builtin.fetch:
+    src: "{{ apply_pxe_payloads_ipxe_work_dir }}/out/{{ item }}"
+    dest: "{{ apply_pxe_payloads_ipxe_fetch_dir }}/{{ item }}"
+    flat: true
+  loop:
+    - bios/undionly.kpxe
+    - efi64/ipxe.efi
+  delegate_to: "{{ apply_pxe_payloads_ipxe_builder }}"
+  run_once: true
+  tags: [tftp]
+
+- name: Install the TFTP NBPs (custom iPXE with embedded chain to http://bang/menu.ipxe)
   become: true
   ansible.builtin.copy:
-    src: "tftpboot/{{ item }}"
+    src: "{{ apply_pxe_payloads_ipxe_fetch_dir }}/{{ item }}"
     dest: "{{ apply_pxe_payloads_tftp_root }}/{{ item }}"
     owner: dnsmasq
     group: dnsmasq
     mode: "0644"
+    backup: true
   loop:
     - bios/undionly.kpxe
     - efi64/ipxe.efi

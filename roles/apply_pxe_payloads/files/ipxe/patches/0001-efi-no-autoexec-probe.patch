@@ -1,0 +1,16 @@
+diff --git a/src/interface/efi/efiprefix.c b/src/interface/efi/efiprefix.c
+index 8f5bf9d0a..7c9ae7907 100644
+--- a/src/interface/efi/efiprefix.c
++++ b/src/interface/efi/efiprefix.c
+@@ -123,8 +123,9 @@ struct init_fn efi_init_application_fn __init_fn ( INIT_NORMAL ) = {
+  */
+ static int efi_probe ( struct root_device *rootdev __unused ) {
+ 
+-	/* Try loading autoexec script */
+-	efi_autoexec_load();
++	/* flax: no autoexec.ipxe probe. Our script is EMBEDded, and on these
++	 * boards the probe (2 x 30 s over the firmware MNP) never reaches the
++	 * server: ~60 s lost per boot. */
+ 
+ 	/* Remove any vetoed drivers */
+ 	efi_veto();
