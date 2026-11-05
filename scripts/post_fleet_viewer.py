@@ -694,9 +694,9 @@ def fetch_archive_device(order, rack, pos):
     key = f"order_id='{o}' AND rack='{r}' AND pos='{p}'"
     dev = _psql_rows(
         "SELECT customer,site,order_id,rack,pos,ou,kind,part,hostname,chassis_serial,final_verdict,"
-        f"ha_mode,closed_at,order_dir FROM rackpost.order_device WHERE {key}",
+        f"ha_mode,closed_at,order_dir,identity FROM rackpost.order_device WHERE {key}",
         ["customer", "site", "order_id", "rack", "pos", "ou", "kind", "part", "hostname",
-         "chassis_serial", "final_verdict", "ha_mode", "closed_at", "order_dir"])
+         "chassis_serial", "final_verdict", "ha_mode", "closed_at", "order_dir", "identity"])
     if not dev:
         return None
     return {
@@ -780,6 +780,29 @@ def render_archive_page(customer="", q=""):
                           f"<th>devices</th><th>last closed</th></tr></thead><tbody>{trs}</tbody></table>")
 
 
+def _archive_identity(raw):
+    """The archived identity block (rackpost.order_device.identity, jsonb text) as the
+    rackpost drawer shows it: `identity · <serial field>`, its rows, the raw artifact
+    paths. '' when the device has none."""
+    try:
+        ident = json.loads(raw or "null")
+    except ValueError:
+        return ""
+    if not isinstance(ident, dict):
+        return ""
+    rows = [r for r in ident.get("rows") or [] if isinstance(r, list) and len(r) == 2]
+    raw_arts = ident.get("raw") if isinstance(ident.get("raw"), dict) else {}
+    if not rows and not raw_arts:
+        return ""
+    out = (f"<h3>identity &middot; {_esc(ident.get('title') or 'serial')}</h3>"
+           f"<div class=\"kv-grid\">{''.join(_kv(str(k), v) for k, v in rows)}</div>")
+    if raw_arts:
+        out += ("<p><span class='lbl'>raw (paths in the order dir)</span><br>" + "<br>".join(
+            f"{_esc(name)} <span class='mono dim'>{_esc(path)}</span>"
+            for name, path in raw_arts.items()) + "</p>")
+    return out
+
+
 def render_archive_device_page(order, rack, pos):
     d = fetch_archive_device(order, rack, pos)
     if not d:
@@ -808,6 +831,7 @@ def render_archive_device_page(order, rack, pos):
     back = ("<p><a href=\"/archive?customer=" + _esc(urllib.parse.quote(dev["customer"]))
             + "\">&larr; " + _esc(dev["customer"]) + "</a></p>")
     body = (back + f"<h2>{_esc(dev.get('hostname') or dev.get('pos'))}</h2><div class=\"kv-grid\">{ident}</div>"
+            + _archive_identity(dev.get("identity")) +
             "<h3>MACs</h3><table><thead><tr><th>role</th><th>mac</th></tr></thead>"
             f"<tbody>{macs or none(2)}</tbody></table>"
             "<h3>components</h3><table><thead><tr><th>kind</th><th>model</th><th>serial</th><th>slot</th></tr></thead>"
