@@ -97,5 +97,6 @@ def payload(g, db, order_dir, *, closed_at: str | None = None) -> dict:
               "artifacts": sorted(r["artifacts"].values())}
              for r in db.latest_stage_runs()]
     return {"order_id": g.order, "rack": g.rack, "customer": g.customer, "site": g.site,
+            "sales": g.sales or None,
             "closed_at": closed_at or now(), "order_dir": str(order_dir),
             "devices": devices, "macs": macs, "components": comps, "rungs": rungs}

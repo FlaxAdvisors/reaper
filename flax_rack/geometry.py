@@ -120,6 +120,10 @@ class Geometry:
     # iperf mesh) -- default: on for an order, off for a lab rack
     lab: bool = False
     integration_tests: bool = True
+    # the business system's sales order number (e.g. BC "S-ORD101031"): a label carried
+    # beside the order id (header, process report, archive); never a key -- the order
+    # id stays the Kea source, the URL prefix and the archive key
+    sales: str = ""
 
     def device(self, pos: str) -> Device:
         for d in self.devices:
@@ -306,13 +310,16 @@ def parse_geometry(data: dict) -> Geometry:
                                     f"(got {kinds.get(e) or 'no such device'})")
     if not isinstance(lab, bool) or not isinstance(integ, bool):
         raise GeometryError("lab / integration_tests must be true or false")
+    sales = data.get("sales", "")
+    if not isinstance(sales, str) or not re.fullmatch(r"[A-Za-z0-9._-]{0,64}", sales):
+        raise GeometryError(f"bad sales order {sales!r} (want [A-Za-z0-9._-], up to 64)")
 
     return Geometry(
         order=order, customer=_req(data, "customer", "geometry"),
         site=_req(data, "site", "geometry"), rack=rack, prefix=prefix,
         vid=int(_req(net, "vid", "network")), cidr=_req(net, "cidr", "network"),
         iperf_server=data.get("iperf_server"), switches=switches, devices=devices,
-        lab=lab, integration_tests=integ)
+        lab=lab, integration_tests=integ, sales=sales)
 
 
 # the hardware family (BMC FRU, flax_post family-map) each slot kind is built from;

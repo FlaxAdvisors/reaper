@@ -614,7 +614,7 @@ def rack_state(r: Rack) -> dict:
         ha["at"] = (db.ha_mode() or {}).get("at")
     # rows written before 2026-10-30 carry the old HA wording: served in today's
     return clean_ha({
-        "order": g.order, "customer": g.customer, "vid": g.vid, "site": g.site, "rack": g.rack,
+        "order": g.order, "sales": g.sales, "customer": g.customer, "vid": g.vid, "site": g.site, "rack": g.rack,
         "prefix": g.url_prefix, "version": __version__, "build": BUILD, "closed_at": db.closed_at(),
         "lab": g.lab, "integration_tests": g.integration_tests,
         "present": len(g.devices) - len(gone), "total": len(g.devices),

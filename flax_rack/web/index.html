@@ -60,6 +60,7 @@
       <div class="tr"><div class="ctx">
         <label>Customer <span class="ro">{{s.customer || '—'}}</span></label>
         <label>Order <span class="ro">{{s.order || '—'}}</span></label>
+        <label v-if="s.sales">Sales <span class="ro">{{s.sales}}</span></label>
         <label>vid <span class="ro">{{s.vid || '—'}}</span></label>
         <span class="csv-links" v-if="csvAt" :title="'customer CSVs written by Done ' + csvAt">CSV
           <a v-for="c in csvLinks()" :href="'api/report/' + c.k + '.csv'" :download="c.name" :title="c.name + ' · ' + c.what">{{c.k}}</a></span>

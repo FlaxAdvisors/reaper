@@ -9,6 +9,7 @@ then in ONE transaction deletes every row of that (order_id, rack) from the four
 tables and inserts the payload's rows: a re-close of the same rack replaces, never
 duplicates, and a sibling rack (another `rack` letter) is never touched.
 Verdicts and artifact paths only; no log text is stored (spec §8.2). A device's
+`sales` (039) is the order's business sales order number (a label, never a key).
 `identity` (038) is its rendered identity read: {title, serial, rows: [[label,
 value]], raw: {name: artifact path}}, or null.
 """
@@ -21,6 +22,7 @@ from .order_reservations import BadMac, _mac_hex
 
 ORDER_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 RACK_RE = re.compile(r"[a-z]?")
+SALES_RE = re.compile(r"[A-Za-z0-9._-]{0,64}")
 MAC_ROLES = ("host", "bmc", "iom1", "iom2", "fabric_a", "fabric_b", "switch")
 TABLES = ("order_device", "order_mac", "order_component", "order_rung")
 
@@ -96,6 +98,9 @@ def _rows(payload: dict) -> tuple[dict, dict[str, list[tuple]]]:
     key = {"order_id": oid, "rack": rack}
     customer = _str(payload.get("customer"), "customer", empty=False)
     site = _str(payload.get("site"), "site", null=True)
+    sales = _str(payload.get("sales"), "sales", null=True)
+    if sales is not None and not SALES_RE.fullmatch(sales):
+        raise BadValue(f"bad sales: {sales!r}")
     closed_at = _ts(payload.get("closed_at"), "closed_at")
     order_dir = _str(payload.get("order_dir"), "order_dir", null=True)
 
@@ -109,7 +114,7 @@ def _rows(payload: dict) -> tuple[dict, dict[str, list[tuple]]]:
                         *(_str(d.get(c), f"{pos} {c}", null=True) for c in
                           ("kind", "part", "hostname", "chassis_serial", "final_verdict",
                            "ha_mode")),
-                        closed_at, order_dir, _identity(d.get("identity"), pos)))
+                        closed_at, order_dir, _identity(d.get("identity"), pos), sales or None))
     macs = []
     for m in _list(payload, "macs"):
         pos = _str(m.get("pos"), "mac pos", empty=False)
@@ -145,8 +150,8 @@ def _rows(payload: dict) -> tuple[dict, dict[str, list[tuple]]]:
 _INSERT = {
     "order_device": "INSERT INTO rackpost.order_device (order_id, rack, customer, site, "
                     "pos, ou, kind, part, hostname, chassis_serial, final_verdict, ha_mode, "
-                    "closed_at, order_dir, identity) VALUES "
-                    "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)",
+                    "closed_at, order_dir, identity, sales) VALUES "
+                    "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)",
     "order_mac": "INSERT INTO rackpost.order_mac (order_id, rack, pos, role, mac) "
                  "VALUES (%s, %s, %s, %s, %s)",
     "order_component": "INSERT INTO rackpost.order_component (order_id, rack, pos, kind, "
