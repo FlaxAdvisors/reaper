@@ -638,9 +638,9 @@ def render_node_page(bmc_mac):
 # ---- order archive (rackpost.*, written by flax-control on Close; read-only here) ----
 
 _DEV_COLS = ["customer", "order_id", "rack", "pos", "kind", "hostname", "chassis_serial",
-             "final_verdict", "closed_at"]
+             "final_verdict", "closed_at", "sales"]
 _DEV_SELECT = ("SELECT d.customer,d.order_id,d.rack,d.pos,d.kind,d.hostname,d.chassis_serial,"
-               "d.final_verdict,d.closed_at FROM rackpost.order_device d ")
+               "d.final_verdict,d.closed_at,d.sales FROM rackpost.order_device d ")
 _HEX_ONLY_RE = re.compile(r"[^0-9a-f]")
 
 
@@ -669,14 +669,14 @@ def fetch_archive_devices(customer):
 
 
 def fetch_archive_search(term):
-    """Devices whose chassis/component serial, hostname or order id contains the
+    """Devices whose chassis/component serial, hostname, order id or sales order contains the
     term, or one of whose MACs equals it (any separator form)."""
     t = _sql_lit(term)
     conds = []
     if t:
         like = f"'%{t}%'"
         conds += [f"d.chassis_serial ILIKE {like}", f"d.hostname ILIKE {like}",
-                  f"d.order_id ILIKE {like}",
+                  f"d.order_id ILIKE {like}", f"d.sales ILIKE {like}",
                   "EXISTS (SELECT 1 FROM rackpost.order_component c WHERE c.order_id=d.order_id "
                   f"AND c.rack=d.rack AND c.pos=d.pos AND c.serial ILIKE {like})"]
     mac = _search_mac(term)
@@ -694,9 +694,10 @@ def fetch_archive_device(order, rack, pos):
     key = f"order_id='{o}' AND rack='{r}' AND pos='{p}'"
     dev = _psql_rows(
         "SELECT customer,site,order_id,rack,pos,ou,kind,part,hostname,chassis_serial,final_verdict,"
-        f"ha_mode,closed_at,order_dir,identity FROM rackpost.order_device WHERE {key}",
+        f"ha_mode,closed_at,order_dir,identity,sales FROM rackpost.order_device WHERE {key}",
         ["customer", "site", "order_id", "rack", "pos", "ou", "kind", "part", "hostname",
-         "chassis_serial", "final_verdict", "ha_mode", "closed_at", "order_dir", "identity"])
+         "chassis_serial", "final_verdict", "ha_mode", "closed_at", "order_dir", "identity",
+         "sales"])
     if not dev:
         return None
     return {
@@ -722,7 +723,7 @@ def _verdict_span(v):
 
 def _archive_search_form(q=""):
     return ('<form method="get" action="/archive"><input type="search" name="q" size="40" '
-            'placeholder="chassis/component serial, MAC, hostname, order id" '
+            'placeholder="chassis/component serial, MAC, hostname, order id, sales order" '
             f'value="{_esc(q)}"> <button>Search</button></form>')
 
 
@@ -737,7 +738,9 @@ def _device_table(rows, with_order=False):
     body = "".join(
         "<tr>"
         + (f"<td><a href=\"/archive?customer={_esc(urllib.parse.quote(r['customer']))}\">"
-           f"{_esc(r['customer'])}</a></td><td>{_esc(r['order_id'])}</td><td>{_esc(r['rack'])}</td>"
+           f"{_esc(r['customer'])}</a></td><td>{_esc(r['order_id'])}"
+           + (f" <span class='dim'>({_esc(r['sales'])})</span>" if r.get("sales") else "")
+           + f"</td><td>{_esc(r['rack'])}</td>"
            if with_order else "")
         + f"<td>{_device_link(r, r['pos'])}</td><td>{_esc(r['kind'])}</td><td>{_esc(r['hostname'])}</td>"
         f"<td class='mono'>{_esc(r['chassis_serial'])}</td><td>{_verdict_span(r['final_verdict'])}</td>"
@@ -765,7 +768,10 @@ def render_archive_page(customer="", q=""):
             groups.setdefault((r["order_id"], r["rack"]), []).append(r)
         parts = [f"<h3>{_esc(customer)}</h3>"]
         for (order, rack), devs in groups.items():
-            parts.append(f"<h4>order {_esc(order)} &middot; rack {_esc(rack or '-')} &middot; "
+            sales = devs[0].get("sales")
+            parts.append(f"<h4>order {_esc(order)}"
+                         + (f" &middot; sales order {_esc(sales)}" if sales else "")
+                         + f" &middot; rack {_esc(rack or '-')} &middot; "
                          f"{len(devs)} device(s) &middot; closed {_esc(devs[0]['closed_at'])}</h4>"
                          + _device_table(devs))
         return SUBPAGE.format(title=f"archive {_esc(customer)}", body=nav + "".join(parts))
@@ -809,7 +815,7 @@ def render_archive_device_page(order, rack, pos):
         return SUBPAGE.format(title="archive device", body="<p>no such archived device</p>")
     dev = d["dev"]
     ident = "".join(_kv(k, dev.get(k)) for k in
-                    ("customer", "order_id", "rack", "pos", "ou", "kind", "part", "hostname",
+                    ("customer", "order_id", "sales", "rack", "pos", "ou", "kind", "part", "hostname",
                      "chassis_serial", "final_verdict", "ha_mode", "closed_at", "order_dir"))
     macs = "".join(f"<tr><td>{_esc(m['role'])}</td><td class='mono'>{_esc(m['mac'])}</td></tr>"
                    for m in d["macs"])

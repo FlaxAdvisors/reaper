@@ -171,7 +171,8 @@ def build(order_dir, g, db) -> dict:
     pl = db.placements() if g.lab else {}
     deviations = [{"pos": d.pos, "text": t} for d in g.devices
                   if (t := deviation(d, pl.get(d.pos)))]
-    return {"order": g.order, "customer": g.customer, "rack": g.rack, "prefix": g.url_prefix,
+    return {"order": g.order, "sales": g.sales, "customer": g.customer, "rack": g.rack,
+            "prefix": g.url_prefix,
             "lab": g.lab, "deviations": deviations,
             "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "closed_at": db.closed_at(), "passes": out,
@@ -283,7 +284,8 @@ def render(data: dict) -> str:
          f"<title>{_e(data['prefix'])} process report</title><style>{_CSS}</style></head><body>",
          f"<header><b>Process report · {_e(data['order'])}"
          f"{' rack ' + _e(data['rack']) if data['rack'] else ''}</b>"
-         f"<span>{_e(data['customer'])}</span><span>internal: not for the customer</span>"
+         + (f"<span>sales order {_e(data['sales'])}</span>" if data.get("sales") else "")
+         + f"<span>{_e(data['customer'])}</span><span>internal: not for the customer</span>"
          f"<span>generated {_e(data['generated_at'])}</span>"
          + (f"<span>closed {_e(data['closed_at'])}</span>" if data["closed_at"] else "")
          + "</header><main>"]
