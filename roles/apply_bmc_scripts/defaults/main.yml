@@ -42,3 +42,7 @@ apply_bmc_scripts_plain:
   # SFDP table (MX25L25635F vs the 4-byte-only MX25L25735F). It rides here
   # because post.sh rsyncs the bang's /opt/flax/bin onto every DUT.
   - { src: spichip.sh, dest: spichip }
+  # Runs on a booted DUT (post.sh, ghost donum 61, the qual agent via post.tgz):
+  # per-DIMM EDAC CE/UE by BIOS silkscreen + serial. Moved from ghost's
+  # utils/files/bin 2026-11-05 with the sb_edac Ha# (Broadwell Leopard) mapping fix.
+  - { src: dimmerr.sh, dest: dimmerr }
