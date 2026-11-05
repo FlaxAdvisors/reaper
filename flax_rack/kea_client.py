@@ -25,7 +25,7 @@ class KeaClient:
         self._open = opener
 
     def _call(self, method: str, query=None, body: dict | None = None,
-              path: str = "/api/v1/order-reservations") -> dict:
+              path: str = "/api/v1/order-reservations", timeout: float = 15) -> dict:
         url = self.base + path
         if query:
             url += "?" + urllib.parse.urlencode(query)
@@ -33,7 +33,7 @@ class KeaClient:
         req = urllib.request.Request(url, data=data, method=method,
                                      headers={"Content-Type": "application/json"})
         try:
-            with self._open(req, timeout=15) as r:
+            with self._open(req, timeout=timeout) as r:
                 return json.loads(r.read() or b"{}")
         except urllib.error.HTTPError as e:
             try:
@@ -58,7 +58,8 @@ class KeaClient:
     def archive(self, payload: dict) -> dict:
         """Close's archive write: flax-control replaces this (order, rack)'s rackpost.*
         rows (POST /api/v1/order-archive) -> {devices, components, macs, rungs}."""
-        return self._call("POST", body=payload, path="/api/v1/order-archive")
+        # the payload carries the archived files (gzip'd): give the write time
+        return self._call("POST", body=payload, path="/api/v1/order-archive", timeout=120)
 
     def leases(self, macs) -> dict[str, dict]:
         """Read-only: {mac12hex: {ip, expire, state, subnet_id, hostname}} for

@@ -112,7 +112,8 @@ def _retract(ctx, p) -> str:
     """Undo a first close's archive write (the same route, no rows: flax-control deletes
     this (order, rack)'s rows and inserts none). -> the event's clause."""
     try:
-        ctx.kea.archive({**p, "devices": [], "macs": [], "components": [], "rungs": []})
+        ctx.kea.archive({**p, "devices": [], "macs": [], "components": [], "rungs": [],
+                         "artifacts": []})
         return "archive withdrawn"
     except Exception as e:                     # noqa: BLE001 -- reported, the order stays open
         return (f"archive NOT withdrawn ({type(e).__name__}: {e}): the archive lists the "

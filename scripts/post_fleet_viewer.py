@@ -25,6 +25,7 @@ Usage:
     python3 scripts/post_fleet_viewer.py --host bang-gouda [--port 8799]
 """
 import argparse
+import gzip
 import html
 import json
 import re
@@ -183,6 +184,12 @@ def _sql_lit(s):
     """MAC / run ids only: restrict to the safe character set instead of quoting,
     since the query travels through a shell -c string into psql."""
     return re.sub(r"[^0-9a-zA-Z:._-]", "", str(s or ""))
+
+
+def _path_lit(s):
+    """An archived file path: _sql_lit's set plus '/', '@', '+', '=', ','. Nothing that
+    quotes or expands in the shell -c string or the SQL literal."""
+    return re.sub(r"[^0-9a-zA-Z:._/@+=,-]", "", str(s or ""))
 
 
 def fetch_node(bmc_mac):
@@ -713,6 +720,46 @@ def fetch_archive_device(order, rack, pos):
     }
 
 
+def fetch_archive_files(order, rack, docs_only=False):
+    """{path: {status, size}} of an archived (order, rack)'s files (rackpost.order_artifact,
+    migration 040); docs_only: the order's documents (no '/' in the path)."""
+    o, r = _sql_lit(order), _sql_lit(rack)
+    where = f"order_id='{o}' AND rack='{r}'" + (" AND position('/' in path)=0" if docs_only else "")
+    rows = _psql_rows(f"SELECT path,status,size FROM rackpost.order_artifact WHERE {where} ORDER BY path",
+                      ["path", "status", "size"])
+    return {x["path"]: x for x in rows}
+
+
+def fetch_archive_file(order, rack, path):
+    """(content_type, raw bytes) of one stored archived file, or None."""
+    o, r, pth = _sql_lit(order), _sql_lit(rack), _path_lit(path)
+    if pth != path or ".." in path.split("/"):     # altered -> not a path we serve
+        return None
+    rows = _psql_rows(
+        "SELECT content_type,encode(content,'hex') FROM rackpost.order_artifact "
+        f"WHERE order_id='{o}' AND rack='{r}' AND path='{pth}' AND status='stored'",
+        ["content_type", "hex"])
+    if not rows:
+        return None
+    return rows[0]["content_type"], gzip.decompress(bytes.fromhex(rows[0]["hex"]))
+
+
+def _file_href(order, rack, path):
+    return ("/archive/file?order=" + urllib.parse.quote(order) + "&rack=" + urllib.parse.quote(rack)
+            + "&path=" + urllib.parse.quote(path))
+
+
+def _file_link(order, rack, path, files, text=None):
+    """An archived file as a link when its bytes are stored; else its path and why not."""
+    f = files.get(path)
+    label = _esc(text or path)
+    if f and f["status"] == "stored":
+        return f'<a class="mono" href="{_esc(_file_href(order, rack, path))}">{label}</a>'
+    why = {"too_large": "too large to archive", "missing": "missing at close"}.get(
+        (f or {}).get("status"), "not archived")
+    return f"<span class='mono'>{label}</span> <span class='dim'>({why})</span>"
+
+
 def _verdict_span(v):
     v = v or ""
     low = v.lower()
@@ -769,10 +816,13 @@ def render_archive_page(customer="", q=""):
         parts = [f"<h3>{_esc(customer)}</h3>"]
         for (order, rack), devs in groups.items():
             sales = devs[0].get("sales")
+            docs = fetch_archive_files(order, rack, docs_only=True)
+            doc_links = " &middot; ".join(_file_link(order, rack, d, docs) for d in docs)
             parts.append(f"<h4>order {_esc(order)}"
                          + (f" &middot; sales order {_esc(sales)}" if sales else "")
                          + f" &middot; rack {_esc(rack or '-')} &middot; "
                          f"{len(devs)} device(s) &middot; closed {_esc(devs[0]['closed_at'])}</h4>"
+                         + (f"<p><span class='lbl'>documents</span> {doc_links}</p>" if docs else "")
                          + _device_table(devs))
         return SUBPAGE.format(title=f"archive {_esc(customer)}", body=nav + "".join(parts))
     custs = fetch_archive_customers()
@@ -786,7 +836,7 @@ def render_archive_page(customer="", q=""):
                           f"<th>devices</th><th>last closed</th></tr></thead><tbody>{trs}</tbody></table>")
 
 
-def _archive_identity(raw):
+def _archive_identity(raw, link=None):
     """The archived identity block (rackpost.order_device.identity, jsonb text) as the
     rackpost drawer shows it: `identity · <serial field>`, its rows, the raw artifact
     paths. '' when the device has none."""
@@ -803,8 +853,8 @@ def _archive_identity(raw):
     out = (f"<h3>identity &middot; {_esc(ident.get('title') or 'serial')}</h3>"
            f"<div class=\"kv-grid\">{''.join(_kv(str(k), v) for k, v in rows)}</div>")
     if raw_arts:
-        out += ("<p><span class='lbl'>raw (paths in the order dir)</span><br>" + "<br>".join(
-            f"{_esc(name)} <span class='mono dim'>{_esc(path)}</span>"
+        out += ("<p><span class='lbl'>raw</span><br>" + "<br>".join(
+            (f"{_esc(name)} " + (link(path) if link else f"<span class='mono dim'>{_esc(path)}</span>"))
             for name, path in raw_arts.items()) + "</p>")
     return out
 
@@ -823,12 +873,15 @@ def render_archive_device_page(order, rack, pos):
         f"<tr><td>{_esc(c['kind'])}</td><td>{_esc(c['model'])}</td><td class='mono'>{_esc(c['serial'])}</td>"
         f"<td>{_esc(c['slot'])}</td></tr>" for c in d["components"])
 
+    files = fetch_archive_files(dev["order_id"], dev["rack"])
+    link = lambda path: _file_link(dev["order_id"], dev["rack"], path, files)  # noqa: E731
+
     def arts(raw):
         try:
             lst = json.loads(raw or "[]")
         except ValueError:
             lst = []
-        return "<br>".join(f"<span class='mono'>{_esc(a)}</span>" for a in lst) if isinstance(lst, list) else ""
+        return "<br>".join(link(a) for a in lst if isinstance(a, str)) if isinstance(lst, list) else ""
 
     rungs = "".join(
         f"<tr><td>{_esc(r['stage'])}</td><td>{_esc(r['rung'])}</td><td>{_verdict_span(r['verdict'])}</td>"
@@ -837,13 +890,13 @@ def render_archive_device_page(order, rack, pos):
     back = ("<p><a href=\"/archive?customer=" + _esc(urllib.parse.quote(dev["customer"]))
             + "\">&larr; " + _esc(dev["customer"]) + "</a></p>")
     body = (back + f"<h2>{_esc(dev.get('hostname') or dev.get('pos'))}</h2><div class=\"kv-grid\">{ident}</div>"
-            + _archive_identity(dev.get("identity")) +
+            + _archive_identity(dev.get("identity"), link) +
             "<h3>MACs</h3><table><thead><tr><th>role</th><th>mac</th></tr></thead>"
             f"<tbody>{macs or none(2)}</tbody></table>"
             "<h3>components</h3><table><thead><tr><th>kind</th><th>model</th><th>serial</th><th>slot</th></tr></thead>"
             f"<tbody>{comps or none(4)}</tbody></table>"
             "<h3>rungs</h3><table><thead><tr><th>stage</th><th>rung</th><th>verdict</th><th>finished</th>"
-            f"<th>artifacts (paths in the order dir)</th></tr></thead><tbody>{rungs or none(5)}</tbody></table>")
+            f"<th>artifacts</th></tr></thead><tbody>{rungs or none(5)}</tbody></table>")
     return SUBPAGE.format(title=f"archive {_esc(dev.get('hostname') or pos)}", body=body)
 
 
@@ -1071,6 +1124,40 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass  # quiet -- avoid noisy stderr for a local dev tool
 
+    def _send_archive_file(self, qs):
+        """One archived file's bytes: text inline, HTML sandboxed (no script, no same
+        origin), CSV / binary as a download."""
+        order, rack, path = (qs.get(k, [""])[0] for k in ("order", "rack", "path"))
+        try:
+            got = fetch_archive_file(order, rack, path)
+        except Exception as exc:  # noqa: BLE001
+            got, err = None, str(exc)
+        else:
+            err = "no such archived file"
+        if not got:
+            body = err.encode()
+            self.send_response(404)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        ctype, data = got
+        name = path.rsplit("/", 1)[-1].replace('"', "")
+        self.send_response(200)
+        if ctype == "text/html":
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Security-Policy", "sandbox")
+        elif ctype in ("text/plain", "application/json"):
+            self.send_header("Content-Type", f"{ctype}; charset=utf-8")
+        else:
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         qs = urllib.parse.parse_qs(parsed.query)
@@ -1087,6 +1174,9 @@ class Handler(BaseHTTPRequestHandler):
         art = qs.get("art", [""])[0] == "1"
         ids = qs.get("ids", [""])[0] == "1"
 
+        if parsed.path == "/archive/file":
+            self._send_archive_file(qs)
+            return
         if parsed.path in ("/node", "/artifact", "/archive", "/archive/device"):
             try:
                 if parsed.path == "/node":

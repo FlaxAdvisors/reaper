@@ -1,4 +1,4 @@
-"""rackpost order archive: the rackpost.* tables (migrations 037, 038), written on Close.
+"""rackpost order archive: the rackpost.* tables (migrations 037-040), written on Close.
 
 rackpost (flax_rack, on the bang) never writes Postgres itself; Close sends one
 payload to POST /api/v1/order-archive, which lands here. flax_control is the
@@ -8,13 +8,21 @@ replace() validates the whole payload before any DB access (BadValue -> 400),
 then in ONE transaction deletes every row of that (order_id, rack) from the four
 tables and inserts the payload's rows: a re-close of the same rack replaces, never
 duplicates, and a sibling rack (another `rack` letter) is never touched.
-Verdicts and artifact paths only; no log text is stored (spec §8.2). A device's
+Since 040 the archived FILES are stored too (order_artifact: the gzip'd bytes of every
+artifact the rungs reference plus the order's documents), so the archive needs
+neither the order dir nor the bang that ran the order; each blob is decompressed and
+checked against its size and sha256 before any DB access. A device's
 `sales` (039) is the order's business sales order number (a label, never a key).
 `identity` (038) is its rendered identity read: {title, serial, rows: [[label,
 value]], raw: {name: artifact path}}, or null.
 """
+import base64
+import binascii
+import gzip
+import hashlib
 import json
 import re
+import zlib
 from datetime import datetime
 
 from .db import get_pool
@@ -24,7 +32,11 @@ ORDER_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 RACK_RE = re.compile(r"[a-z]?")
 SALES_RE = re.compile(r"[A-Za-z0-9._-]{0,64}")
 MAC_ROLES = ("host", "bmc", "iom1", "iom2", "fabric_a", "fabric_b", "switch")
-TABLES = ("order_device", "order_mac", "order_component", "order_rung")
+TABLES = ("order_device", "order_mac", "order_component", "order_rung", "order_artifact")
+ARTIFACT_STATUS = ("stored", "too_large", "missing")
+MAX_FILE = 5 * 1024 * 1024           # raw bytes, as rackpost's archive.MAX_FILE
+# no quote, space, $ or backslash: the viewer passes the path through sh -c into psql
+_PATH_RE = re.compile(r"[A-Za-z0-9._@+=:,-][A-Za-z0-9._@+=:,/-]{0,511}")
 
 
 class BadValue(ValueError):
@@ -78,6 +90,33 @@ def _identity(v, pos) -> str | None:
             isinstance(k, str) and isinstance(p, str) for k, p in raw.items()):
         raise BadValue(f"{what} raw must map names to artifact paths")
     return json.dumps({"title": title, "serial": serial, "rows": rows, "raw": raw})
+
+
+def _artifact(a: dict) -> tuple:
+    """One archived file -> (path, status, size, sha256, content_type, gzip bytes|None).
+    A stored file's bytes must gunzip to its size and sha256."""
+    path = a.get("path")
+    if (not isinstance(path, str) or not _PATH_RE.fullmatch(path)
+            or ".." in path.split("/") or "//" in path):
+        raise BadValue(f"bad artifact path: {path!r}")
+    status = a.get("status")
+    if status not in ARTIFACT_STATUS:
+        raise BadValue(f"{path}: bad artifact status {status!r}")
+    size = _int(a.get("size"), f"{path} size")
+    if status != "stored":
+        return (path, status, size, None, None, None)
+    sha = a.get("sha256")
+    ctype = _str(a.get("content_type"), f"{path} content_type", empty=False)
+    try:
+        blob = base64.b64decode(a.get("gzip_b64") or "", validate=True)
+        raw = gzip.decompress(blob)
+    except (binascii.Error, OSError, EOFError, zlib.error, TypeError, ValueError):
+        raise BadValue(f"{path}: content is not base64 gzip") from None
+    if len(raw) > MAX_FILE:
+        raise BadValue(f"{path}: {len(raw)} bytes is over the {MAX_FILE} cap")
+    if size != len(raw) or sha != hashlib.sha256(raw).hexdigest():
+        raise BadValue(f"{path}: content does not match its size / sha256")
+    return (path, status, size, sha, ctype, blob)
 
 
 def _list(payload, key) -> list[dict]:
@@ -143,8 +182,15 @@ def _rows(payload: dict) -> tuple[dict, dict[str, list[tuple]]]:
                       _str(r.get("verdict"), f"{pos} verdict", null=True),
                       _ts(r.get("finished_at"), f"{pos} finished_at", null=True),
                       json.dumps(arts)))
+    arts, seen_paths = [], set()
+    for a in _list(payload, "artifacts"):
+        row = _artifact(a)
+        if row[0] in seen_paths:
+            raise BadValue(f"artifact {row[0]} listed twice")
+        seen_paths.add(row[0])
+        arts.append((oid, rack, *row))
     return key, {"order_device": devices, "order_mac": macs,
-                 "order_component": comps, "order_rung": rungs}
+                 "order_component": comps, "order_rung": rungs, "order_artifact": arts}
 
 
 _INSERT = {
@@ -158,12 +204,16 @@ _INSERT = {
                        "model, serial, slot) VALUES (%s, %s, %s, %s, %s, %s, %s)",
     "order_rung": "INSERT INTO rackpost.order_rung (order_id, rack, pos, stage, rung, "
                   "verdict, finished_at, artifacts) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+    "order_artifact": "INSERT INTO rackpost.order_artifact (order_id, rack, path, status, "
+                      "size, sha256, content_type, content) "
+                      "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
 }
 
 
 def replace(payload: dict) -> dict:
     """Replace (order_id, rack)'s archive rows with the payload's, in one transaction.
-    -> {"devices": n, "components": n, "macs": n, "rungs": n}. BadValue before any DB
+    -> {"devices": n, "components": n, "macs": n, "rungs": n, "artifacts": n stored,
+    "artifacts_not_stored": n}. BadValue before any DB
     access."""
     key, rows = _rows(payload)
     with get_pool().connection() as conn, conn.transaction():
@@ -175,4 +225,6 @@ def replace(payload: dict) -> dict:
                 if rows[t]:
                     cur.executemany(_INSERT[t], rows[t])
     return {"devices": len(rows["order_device"]), "components": len(rows["order_component"]),
-            "macs": len(rows["order_mac"]), "rungs": len(rows["order_rung"])}
+            "macs": len(rows["order_mac"]), "rungs": len(rows["order_rung"]),
+            "artifacts": sum(1 for r in rows["order_artifact"] if r[3] == "stored"),
+            "artifacts_not_stored": sum(1 for r in rows["order_artifact"] if r[3] != "stored")}
