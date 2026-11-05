@@ -432,3 +432,10 @@ apply_flax_tls_ca_key: "{{ vault_flax_tls_ca_key }}"
 # files/configs/eindhoven/services/node_config/). Seed only -- the UI owns the
 # file once it exists.
 apply_triage_compose_node_config: ovh-bare-tp
+
+# Post fleet viewer (view.<host>.flaxadvisors.cloud) on BOTH bangs (operator
+# 2026-11-05): the order archive's files live in Postgres since migration 040, so
+# edam's viewer reads the whole archive from its streaming replica (read-only,
+# docker exec psql on the local postgres) and survives a failover. Rackpost itself
+# stays gouda-only (role default): order dirs are not synced.
+apply_post_fleet_viewer_hosts: ["bang-gouda", "bang-edam"]
