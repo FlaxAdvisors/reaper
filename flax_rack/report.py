@@ -93,17 +93,21 @@ _BUS_RE = re.compile(r"^(?:Handler:\s*\d+,\s*)?BusID:\s*(?P<bus>[^,\s]+)")
 _NIC_SN_RE = re.compile(r"^BusID:\s*(?P<bus>[^,\s]+),\s*\[SN\] Serial number:\s*(?P<sn>.*)$")
 
 
-def csv_names(g) -> dict[str, str]:
-    """{kind: "<customer>-<order>[-<rack>]-<kind>.csv"}, filename-safe (the rack tag keeps
-    two racks of one order apart)."""
-    tag = f"{g.customer or 'customer'}-{g.order}" + (f"-{g.rack}" if g.rack else "")
+def csv_names(g, *, sales: bool = True) -> dict[str, str]:
+    """{kind: "<customer>-<order>[-<sales>][-<rack>]-<kind>.csv"}, filename-safe (the
+    sales order rides beside the order id wherever it names the order; the rack tag
+    keeps two racks of one order apart). sales=False: the name before geometry had one."""
+    tag = (f"{g.customer or 'customer'}-{g.order}" + (f"-{g.sales}" if sales and g.sales else "")
+           + (f"-{g.rack}" if g.rack else ""))
     tag = re.sub(r"[^A-Za-z0-9._-]+", "_", tag).strip("_")
     return {k: f"{tag}-{k}.csv" for k in CSV_KINDS}
 
 
 def csv_path(order_dir, g, kind) -> Path | None:
-    """The CSV of `kind` Done last wrote in order_dir (the old name as a fallback), or None."""
-    for name in (csv_names(g)[kind], LEGACY_CSV[kind]):
+    """The CSV of `kind` Done last wrote in order_dir (older names as a fallback: the
+    name without the sales order, then the legacy one), or None."""
+    for name in dict.fromkeys((csv_names(g)[kind], csv_names(g, sales=False)[kind],
+                               LEGACY_CSV[kind])):
         p = Path(order_dir) / name
         if p.is_file():
             return p
