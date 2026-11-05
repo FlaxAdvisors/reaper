@@ -1,4 +1,4 @@
-"""rackpost order archive: the rackpost.* tables (migration 037), written on Close.
+"""rackpost order archive: the rackpost.* tables (migrations 037, 038), written on Close.
 
 rackpost (flax_rack, on the bang) never writes Postgres itself; Close sends one
 payload to POST /api/v1/order-archive, which lands here. flax_control is the
@@ -8,7 +8,9 @@ replace() validates the whole payload before any DB access (BadValue -> 400),
 then in ONE transaction deletes every row of that (order_id, rack) from the four
 tables and inserts the payload's rows: a re-close of the same rack replaces, never
 duplicates, and a sibling rack (another `rack` letter) is never touched.
-Verdicts and artifact paths only; no log text is stored (spec §8.2).
+Verdicts and artifact paths only; no log text is stored (spec §8.2). A device's
+`identity` (038) is its rendered identity read: {title, serial, rows: [[label,
+value]], raw: {name: artifact path}}, or null.
 """
 import json
 import re
@@ -55,6 +57,27 @@ def _int(v, what) -> int | None:
     return v
 
 
+def _identity(v, pos) -> str | None:
+    """A device's identity block -> its JSON text (jsonb), None when absent."""
+    if v is None:
+        return None
+    what = f"{pos} identity"
+    if not isinstance(v, dict) or set(v) - {"title", "serial", "rows", "raw"}:
+        raise BadValue(f"bad {what}")
+    title = _str(v.get("title"), f"{what} title", null=True)
+    serial = _str(v.get("serial"), f"{what} serial", null=True)
+    rows = v.get("rows") or []
+    if not isinstance(rows, list) or not all(
+            isinstance(r, list) and len(r) == 2 and all(isinstance(x, str) for x in r)
+            for r in rows):
+        raise BadValue(f"{what} rows must be [label, value] string pairs")
+    raw = v.get("raw") or {}
+    if not isinstance(raw, dict) or not all(
+            isinstance(k, str) and isinstance(p, str) for k, p in raw.items()):
+        raise BadValue(f"{what} raw must map names to artifact paths")
+    return json.dumps({"title": title, "serial": serial, "rows": rows, "raw": raw})
+
+
 def _list(payload, key) -> list[dict]:
     v = payload.get(key, [])
     if not isinstance(v, list) or not all(isinstance(x, dict) for x in v):
@@ -86,7 +109,7 @@ def _rows(payload: dict) -> tuple[dict, dict[str, list[tuple]]]:
                         *(_str(d.get(c), f"{pos} {c}", null=True) for c in
                           ("kind", "part", "hostname", "chassis_serial", "final_verdict",
                            "ha_mode")),
-                        closed_at, order_dir))
+                        closed_at, order_dir, _identity(d.get("identity"), pos)))
     macs = []
     for m in _list(payload, "macs"):
         pos = _str(m.get("pos"), "mac pos", empty=False)
@@ -122,8 +145,8 @@ def _rows(payload: dict) -> tuple[dict, dict[str, list[tuple]]]:
 _INSERT = {
     "order_device": "INSERT INTO rackpost.order_device (order_id, rack, customer, site, "
                     "pos, ou, kind, part, hostname, chassis_serial, final_verdict, ha_mode, "
-                    "closed_at, order_dir) VALUES "
-                    "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    "closed_at, order_dir, identity) VALUES "
+                    "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)",
     "order_mac": "INSERT INTO rackpost.order_mac (order_id, rack, pos, role, mac) "
                  "VALUES (%s, %s, %s, %s, %s)",
     "order_component": "INSERT INTO rackpost.order_component (order_id, rack, pos, kind, "
