@@ -36,8 +36,9 @@ def decide(*, latched_mac, chassis_sn, new_mac, hold_age, seen_elsewhere,
     blade is the committed link-down's job (_forget_identity), or a complete
     new MAC pair with the old pair gone: `latched_gone` (neither the latched
     BMC nor its NIC is on the port) and `new_pair_complete` (macmath offset
-    classified the new MAC as BMC with a host partner) -> SWAPPED, before any
-    serial read (2026-11-06: a swap that slipped past the debounce)."""
+    classified the new MAC as BMC with a host partner) -> SWAPPED when no
+    serial could be read; a readable serial still decides FLIPPED/SWAPPED, so a
+    moved mezz card on the same chassis keeps its identity (2026-11-06)."""
     if not latched_mac or not chassis_sn:
         return LIVE
     if new_mac == latched_mac:
@@ -45,10 +46,12 @@ def decide(*, latched_mac, chassis_sn, new_mac, hold_age, seen_elsewhere,
     in_window = hold_age < hold_secs
     if not new_mac or seen_elsewhere:
         return HELD if in_window else EXPIRED
-    if latched_gone and new_pair_complete:
-        return SWAPPED
     if serial_of_new:
         return FLIPPED if serial_of_new.strip() == chassis_sn.strip() else SWAPPED
+    # No serial readable (e.g. an AMI BMC without IPv4 yet): a complete new
+    # pair with the old pair gone is a different blade.
+    if latched_gone and new_pair_complete:
+        return SWAPPED
     if not new_is_bmc:
         return HELD
     return HELD if in_window else SWAPPED
