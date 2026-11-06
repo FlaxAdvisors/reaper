@@ -43,22 +43,23 @@ def is_done(run) -> bool:
 def members(runs):
     """(members, left_out, no_serial) for one order (operator 2026-11-06).
 
-    members: every node (serial) with at least one Done run stamped with the order,
-    however long ago; each archives its most recent Done run under the order.
-    left_out: nodes with runs under the order but none Done (never archived).
-    no_serial: runs whose serial is unusable as identity (never archived)."""
-    done, other, no_serial = {}, {}, []
+    Per node (serial), its LATEST run under the order decides: Done (pass) ->
+    member, archived with that run; anything else (failed, unfinished) ->
+    left_out, never archived, even if an earlier run under the order passed --
+    the archive must be the node's current state. Nodes Done long ago (and
+    gone from the rack) are members. no_serial: unusable serials, never archived."""
+    latest, no_serial = {}, []
     for r in runs:
         sn = r.get("serial")
         if records.serial_fault(sn):
             no_serial.append(r)
             continue
-        bucket = done if is_done(r) else other
-        cur = bucket.get(sn)
+        cur = latest.get(sn)
         if cur is None or (r.get("finished_at") or 0) > (cur.get("finished_at") or 0):
-            bucket[sn] = r
-    left = [dict(r, why=(r.get("verdict") or "not done")) for sn, r in other.items() if sn not in done]
-    return (sorted(done.values(), key=lambda r: r["serial"]),
+            latest[sn] = r
+    mems = [r for r in latest.values() if is_done(r)]
+    left = [dict(r, why=(r.get("verdict") or "not done")) for r in latest.values() if not is_done(r)]
+    return (sorted(mems, key=lambda r: r["serial"]),
             sorted(left, key=lambda r: r["serial"]), no_serial)
 
 
