@@ -10,6 +10,7 @@ def slice_by_port(
     vlans: dict[str, dict],
     macs: list[tuple[int, str, str]],
     lldp: dict[str, list[dict]],
+    admin_down=frozenset(),
 ) -> dict[str, dict]:
     """Combine link/vlan/mac/lldp tables into {port_name: {...}}.
 
@@ -37,6 +38,10 @@ def slice_by_port(
             # checks.
             if not v["trunk"] and v.get("access_vid") is not None:
                 out[port]["access_vid"] = v["access_vid"]
+
+    for port in admin_down:
+        if port in out:
+            out[port]["admin"] = "down"
 
     for _vlan, mac, port in macs:
         out[port]["macs"].append(mac)

@@ -38,6 +38,26 @@ class _LegacyCipherAdapter(HTTPAdapter):
         return super().init_poolmanager(*args, **kwargs)
 
 
+def parse_switchports(result: dict) -> dict[str, dict]:
+    """`show interfaces switchport` eAPI result -> {port: {access_vid, trunk}}.
+    A row that is not an enabled switchport, or whose mode is neither access
+    nor trunk (dot1qTunnel, tap, tool, ...), is omitted: no mask, so observe
+    never enrolls it and reconcile never steers it."""
+    out: dict[str, dict] = {}
+    for port, row in (result or {}).get("switchports", {}).items():
+        info = (row or {}).get("switchportInfo")
+        if not info or row.get("enabled") is False:
+            continue
+        mode = info.get("mode")
+        if mode == "access":
+            vid = info.get("accessVlanId")
+            out[port] = {"access_vid": int(vid) if vid is not None else None,
+                         "trunk": False}
+        elif mode == "trunk":
+            out[port] = {"access_vid": None, "trunk": True}
+    return out
+
+
 class EosDriver:
     def __init__(self, host: str, user: str, password: str, *,
                  verify_ssl: bool = False, timeout: float = 15.0):
@@ -57,6 +77,9 @@ class EosDriver:
         self._session.verify = self._verify
         # Legacy-cipher adapter for all https:// requests this Session makes.
         self._session.mount("https://", _LegacyCipherAdapter())
+        # Ports whose last interfaces_status() read was linkStatus "disabled"
+        # (admin-down). Empty until the first read of a poll.
+        self._admin_down: set[str] = set()
 
     def _post(self, commands: list[str], fmt: str = "json") -> list[dict]:
         """Issue an eAPI runCmds with the given list of CLI commands.
@@ -88,6 +111,8 @@ class EosDriver:
         out: dict[str, str] = {}
         result = self._post(["show interfaces status"])
         statuses = result[0].get("interfaceStatuses", {})
+        self._admin_down = {p for p, i in statuses.items()
+                            if (i.get("linkStatus") or "").lower() == "disabled"}
         for port, info in statuses.items():
             link = info.get("linkStatus", "").lower()
             if link == "connected":
@@ -98,24 +123,20 @@ class EosDriver:
                 out[port] = "unknown"
         return out
 
+    def admin_down_ports(self) -> set[str]:
+        """Ports the last interfaces_status() read reported as admin-disabled.
+        interfaces_status() itself still reports them 'nolink' (its contract);
+        this is the separate signal reconcile's self-heal needs to tell an
+        operator-shut port from an empty one."""
+        return set(self._admin_down)
+
     def vlans(self) -> dict[str, dict]:
-        """Return {port_name: {access_vid: int | None, trunk: bool}} for every port
-        that appears in the VLAN table. Caller fills in defaults for ports not
-        listed (treated as untagged on vid 1)."""
-        out: dict[str, dict] = {}
-        result = self._post(["show vlan"])
-        vlans = result[0].get("vlans", {})
-        for vid_str, entry in vlans.items():
-            vid = int(vid_str)
-            for port in entry.get("interfaces", {}).keys():
-                slot = out.setdefault(port, {"access_vid": None, "trunk": False})
-                # Arista lists every VLAN a port can carry; access ports
-                # appear under exactly one VLAN, trunks appear under many.
-                if slot["access_vid"] is None:
-                    slot["access_vid"] = vid
-                else:
-                    slot["trunk"] = True
-        return out
+        """Return {port_name: {access_vid: int | None, trunk: bool}} from the
+        CONFIGURED switchport mode (`show interfaces switchport`). Unlike
+        `show vlan`, which lists only active (link-up) members, this keeps a
+        link-down port's access VLAN, so an empty slot stays 'access' and
+        observe keeps watching it through the pull."""
+        return parse_switchports(self._post(["show interfaces switchport"])[0])
 
     def mac_address_table(self) -> list[tuple[int, str, str]]:
         """Return [(vlan, mac, port_name)] for every DYNAMIC unicast entry.
