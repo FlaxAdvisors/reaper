@@ -73,29 +73,28 @@ def upsert_node(bmc_mac, *, serial=None, host_mac=None, order_no=None,
 
 
 def read_settings() -> dict:
-    """The singleton operator context {order_no, population, customer}."""
+    """The singleton operator context {order_no, population, customer, sales}."""
     with get_pool().connection() as conn:
         row = conn.execute(
-            "SELECT order_no, population, customer, updated_at FROM post_settings WHERE id = 1"
+            "SELECT order_no, population, customer, sales, updated_at FROM post_settings WHERE id = 1"
         ).fetchall()
     if not row:
-        return {"order_no": None, "population": None, "customer": None, "updated_at": None}
-    order_no, population, customer, updated_at = (tuple(row[0]) + (None,))[:4]
+        return {"order_no": None, "population": None, "customer": None, "sales": None,
+                "updated_at": None}
+    order_no, population, customer, sales, updated_at = (tuple(row[0]) + (None,) * 5)[:5]
     if updated_at is not None and not isinstance(updated_at, str):
         updated_at = updated_at.isoformat()
     return {"order_no": order_no, "population": population, "customer": customer,
-            "updated_at": updated_at}
+            "sales": sales, "updated_at": updated_at}
 
 
-def write_settings(*, order_no=..., population=..., customer=...) -> None:
+def write_settings(*, order_no=..., population=..., customer=..., sales=...) -> None:
     """Update only the provided keys of the singleton (Ellipsis = leave unchanged)."""
     sets, params = [], []
-    if order_no is not ...:
-        sets.append("order_no = %s"); params.append(order_no)
-    if population is not ...:
-        sets.append("population = %s"); params.append(population)
-    if customer is not ...:
-        sets.append("customer = %s"); params.append(customer)
+    for col, val in (("order_no", order_no), ("population", population),
+                     ("customer", customer), ("sales", sales)):
+        if val is not ...:
+            sets.append(col + " = %s"); params.append(val)
     if not sets:
         return
     with get_pool().connection() as conn:
@@ -103,6 +102,79 @@ def write_settings(*, order_no=..., population=..., customer=...) -> None:
             "UPDATE post_settings SET " + ", ".join(sets) + ", updated_at = NOW() WHERE id = 1",
             tuple(params),
         )
+
+
+_NODE_COLS = ("bmc_mac", "serial", "host_mac", "order_no", "assigned_order_no",
+              "assigned_sales", "assigned_customer", "assigned_population",
+              "assigned_serial", "assigned_at")
+
+
+def read_nodes(bmc_macs=None) -> dict:
+    """{bmc_mac: {bmc_mac, serial, host_mac, order_no, assigned_*}} (no vars)."""
+    sql = "SELECT " + ", ".join(c + ("::text" if c == "bmc_mac" else "") for c in _NODE_COLS) \
+        + " FROM post_node"
+    params = ()
+    if bmc_macs is not None:
+        if not bmc_macs:
+            return {}
+        sql += " WHERE bmc_mac::text = ANY(%s)"
+        params = (list(bmc_macs),)
+    with get_pool().connection() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    out = {}
+    for r in rows:
+        d = dict(zip(_NODE_COLS, r))
+        if d["assigned_at"] is not None and not isinstance(d["assigned_at"], str):
+            d["assigned_at"] = d["assigned_at"].isoformat()
+        out[d["bmc_mac"]] = d
+    return out
+
+
+def touch_order(conn, order_no, *, sales=None, customer=None) -> None:
+    """Open (or reopen) an order in post_order; non-null sales/customer win."""
+    if not order_no:
+        return
+    conn.execute(
+        "INSERT INTO post_order (order_no, sales, customer) VALUES (%s, %s, %s) "
+        "ON CONFLICT (order_no) DO UPDATE SET finished_at = NULL, "
+        "sales = COALESCE(EXCLUDED.sales, post_order.sales), "
+        "customer = COALESCE(EXCLUDED.customer, post_order.customer)",
+        (order_no, sales, customer))
+
+
+def open_orders(conn) -> set:
+    return {r[0] for r in conn.execute(
+        "SELECT order_no FROM post_order WHERE finished_at IS NULL").fetchall()}
+
+
+def list_orders(*, include_finished: bool = False) -> list:
+    sql = "SELECT order_no, sales, customer, opened_at, finished_at FROM post_order"
+    if not include_finished:
+        sql += " WHERE finished_at IS NULL"
+    sql += " ORDER BY opened_at DESC"
+    with get_pool().connection() as conn:
+        rows = conn.execute(sql).fetchall()
+    iso = lambda v: v.isoformat() if v is not None and not isinstance(v, str) else v
+    return [{"order_no": o, "sales": s, "customer": c, "opened_at": iso(a), "finished_at": iso(f)}
+            for o, s, c, a, f in rows]
+
+
+def write_run(bmc_mac, result: dict, *, serial=None, order_no=None) -> None:
+    """Upsert the full per-run result into post_run; no run_id -> nothing."""
+    run_id = (result or {}).get("run_id")
+    if not run_id:
+        return
+    fin = result.get("finished_at")
+    with get_pool().connection() as conn:
+        conn.execute(
+            "INSERT INTO post_run (bmc_mac, run_id, serial, order_no, verdict, finished_at, result) "
+            "VALUES (%s, %s, %s, %s, %s, to_timestamp(%s), %s) "
+            "ON CONFLICT (bmc_mac, run_id) DO UPDATE SET serial = EXCLUDED.serial, "
+            "order_no = EXCLUDED.order_no, verdict = EXCLUDED.verdict, "
+            "finished_at = EXCLUDED.finished_at, result = EXCLUDED.result",
+            (bmc_mac, run_id, serial or result.get("serial"), order_no or result.get("order_no"),
+             result.get("verdict"), fin if isinstance(fin, (int, float)) else None,
+             json.dumps(result)))
 
 
 def write_artifact(bmc_mac, run_id, stage, name, kind, content, *,
@@ -202,6 +274,7 @@ def update_result(bmc_mac, result: dict) -> None:
     """Refresh vars.result in place for the SAME run (the battery finished
     after a fail verdict): no history entry is appended."""
     upsert_node(bmc_mac, result=result)
+    write_run(bmc_mac, result)
 
 
 def record_result(bmc_mac, result: dict, *, serial=None, order_no=None, last_port=None) -> None:
@@ -213,3 +286,4 @@ def record_result(bmc_mac, result: dict, *, serial=None, order_no=None, last_por
     runs.append({k: result.get(k) for k in ("run_id", "verdict", "finished_at", "order_no", "port")})
     upsert_node(bmc_mac, serial=serial, order_no=order_no, last_port=last_port,
                 result=result, runs=runs)
+    write_run(bmc_mac, result, serial=serial, order_no=order_no)
