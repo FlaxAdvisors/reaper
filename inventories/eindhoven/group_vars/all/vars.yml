@@ -137,6 +137,10 @@ arista_ztp_url: "http://192.168.88.10/arista-ztp.conf"
 # discovery. See docs/superpowers/specs/2026-05-12-reservation-only-lab-data-design.md
 # Lavergne and braintree keep the pool form until their own cutover specs.
 reservation_only_dhcp: true
+# 2026-11-06: BMC_UDHCP-only pool on the reservation-only post VLANs (24/25/28/29/30),
+# so an AMI/IPMI-only BMC (Leopard) gets IPv4 to be probed; hosts + BMC_FB_DHCLIENT stay
+# reservation-only. Departs from the 2026-09-27 "no pool IP for BMCs" ruling for post only.
+apply_kea_res_only_bmc_pool: true
 
 # Per-vlan L3 SVI hostname → IP suffix map. Consumed by lab-hosts.j2 to
 # render switch SVI A records (172.<vid>.0.<suffix>) for every vlan in
