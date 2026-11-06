@@ -87,6 +87,14 @@ def index(request: Request):
         _ctx(switch=switch, phases=list(blades.PHASES), settings=settings))
 
 
+@app.get("/api/v1/orders")
+def api_orders() -> JSONResponse:
+    """Open post orders (post_order registry, newest first) + the header order:
+    the Order field's datalist and the Finish dialog's choices."""
+    return JSONResponse({"orders": state.list_orders(),
+                         "header": state.read_settings().get("order_no")})
+
+
 @app.get("/api/v1/blades")
 def api_blades() -> JSONResponse:
     geo = geometry.load_geometry()
