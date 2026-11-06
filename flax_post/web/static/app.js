@@ -508,13 +508,14 @@ function App() {
     },
     async doFinish() {
       this.fin.busy = true;
-      const pend = (this.fin.preview?.pending || []).length > 0;
       const r = await postFinish({ order_no: this.fin.order, customer: this.fin.customer,
-                                   sales: this.fin.sales, confirm: pend });
+                                   sales: this.fin.sales });
       this.fin.busy = false;
       this.fin.msg = r.ok ? `archived ${(r.archived || {}).devices || 0} node(s)` : (r.reason || ('error ' + r.status));
+      if (r.ok) this.openOrders = (await fetchOrders()).orders || [];
       if (r.ok) { this.finishedOrder = this.fin.order; this.refresh(); }
     },
+    finWhen(t) { if (!t) return ''; const d = new Date(t * 1000); return isNaN(d) ? '' : d.toISOString().slice(0, 16).replace('T', ' '); },
     async saveSales() { await saveSettings({ sales: this.sales || null }); this.refresh(); },
     // ---- per-node order assignment (drawer) ----
     prefillAsg(b) {

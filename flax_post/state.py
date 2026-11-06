@@ -148,10 +148,15 @@ def open_orders(conn) -> set:
 
 
 def list_orders(*, include_finished: bool = False) -> list:
-    sql = "SELECT order_no, sales, customer, opened_at, finished_at FROM post_order"
-    if not include_finished:
-        sql += " WHERE finished_at IS NULL"
-    sql += " ORDER BY opened_at DESC"
+    """Registered orders (post_order) plus any order that has finished runs but no
+    registry row (e.g. RRORD-100's runs from before migration 042), newest first."""
+    sql = ("SELECT order_no, sales, customer, opened_at, finished_at FROM post_order"
+           + ("" if include_finished else " WHERE finished_at IS NULL")
+           + " UNION ALL SELECT r.order_no, NULL, NULL, min(r.finished_at), NULL FROM post_run r "
+           "WHERE r.order_no IS NOT NULL AND r.order_no <> '' "
+           "AND NOT EXISTS (SELECT 1 FROM post_order o WHERE o.order_no = r.order_no) "
+           "GROUP BY r.order_no")
+    sql = "SELECT * FROM (" + sql + ") x ORDER BY opened_at DESC NULLS LAST"
     with get_pool().connection() as conn:
         rows = conn.execute(sql).fetchall()
     iso = lambda v: v.isoformat() if v is not None and not isinstance(v, str) else v

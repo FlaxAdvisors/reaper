@@ -96,10 +96,12 @@ def api_orders() -> JSONResponse:
 
 
 def _finish_context(order_no):
+    """Members = every node Done under the order, ever (operator 2026-11-06);
+    not-Done nodes are listed but never archived."""
     runs = state.runs_under(order_no)
-    mems, no_serial = finish.members(runs)
+    mems, left, no_serial = finish.members(runs)
     slots = [s for s in _blade_slots() if not s.get("empty")]
-    pend = finish.pending(order_no, slots, mems)
+    left = left + finish.running(order_no, slots, {m["serial"] for m in mems} | {l["serial"] for l in left})
     row = state.order_row(order_no)
     hdr = state.read_settings()
     res = [m.get("result") or {} for m in mems]
@@ -107,25 +109,29 @@ def _finish_context(order_no):
         or (hdr.get("customer") if hdr.get("order_no") == order_no else None)
     sales = row.get("sales") or next((r.get("sales") for r in res if r.get("sales")), None) \
         or (hdr.get("sales") if hdr.get("order_no") == order_no else None)
-    return mems, no_serial, pend, customer, sales
+    return mems, left, no_serial, customer, sales
+
+
+def _brief(m):
+    return {"serial": m.get("serial"), "port": m.get("port"), "bmc_mac": m.get("bmc_mac"),
+            "run_id": m.get("run_id"), "verdict": m.get("verdict"),
+            "finished_at": m.get("finished_at"), "why": m.get("why")}
 
 
 @app.get("/api/v1/orders/finish-preview")
 def api_finish_preview(order: str) -> JSONResponse:
-    mems, no_serial, pend, customer, sales = _finish_context(order)
-    keep = ("serial", "bmc_mac", "run_id", "verdict", "finished_at", "compact")
+    mems, left, no_serial, customer, sales = _finish_context(order)
     return JSONResponse({"order_no": order, "customer": customer, "sales": sales,
-                         "members": [{k: m.get(k) for k in keep} for m in mems],
-                         "no_serial": [{"bmc_mac": m.get("bmc_mac"), "run_id": m.get("run_id")}
-                                       for m in no_serial],
-                         "pending": pend})
+                         "members": [_brief(m) for m in mems],
+                         "left_out": [_brief(m) for m in left],
+                         "no_serial": [_brief(m) for m in no_serial]})
 
 
 @app.post("/api/v1/orders/finish")
 async def api_finish(request: Request) -> JSONResponse:
-    """Archive one whole post order (spec 2026-11-06): each node's latest run under
-    it, through flax-control. 409 lists pending nodes until confirm: true; the
-    order is marked finished only after flax-control accepted the archive."""
+    """Archive one post order: every node Done under it (its most recent Done run),
+    through flax-control. Not-Done nodes are never archived. The order is marked
+    finished only after flax-control accepted the archive."""
     body = await request.json()
     order_no = (body.get("order_no") or "").strip()
     customer = (body.get("customer") or "").strip()
@@ -134,12 +140,10 @@ async def api_finish(request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "reason": "no order"}, status_code=400)
     if not customer:
         return JSONResponse({"ok": False, "reason": "customer required"}, status_code=400)
-    mems, no_serial, pend, _c, _s = await run_in_threadpool(_finish_context, order_no)
+    mems, left, _ns, _c, _s = await run_in_threadpool(_finish_context, order_no)
     if not mems:
-        return JSONResponse({"ok": False, "reason": "no finished runs under this order"},
+        return JSONResponse({"ok": False, "reason": "no Done nodes under this order"},
                             status_code=400)
-    if pend and body.get("confirm") is not True:
-        return JSONResponse({"ok": False, "confirm": pend}, status_code=409)
     payload = await run_in_threadpool(finish.build_payload, order_no, mems, customer=customer,
                                       sales=sales, site=_site(), get_artifacts=state.artifacts_for)
     try:
@@ -147,7 +151,7 @@ async def api_finish(request: Request) -> JSONResponse:
     except finish.FinishError as e:
         return JSONResponse({"ok": False, "reason": e.message}, status_code=e.status)
     state.mark_finished(order_no, sales=sales, customer=customer, counts=counts)
-    return JSONResponse({"ok": True, "archived": counts})
+    return JSONResponse({"ok": True, "archived": counts, "left_out": len(left)})
 
 
 @app.get("/api/v1/blades")

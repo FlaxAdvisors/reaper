@@ -190,10 +190,12 @@
             <input name="finish-customer" v-model="fin.customer" placeholder="customer (required)">
             <input name="finish-sales" v-model="fin.sales" placeholder="sales">
           </div>
-          <p class="m-sub">members <b>{{(fin.preview?.members || []).length}}</b> · no serial <b>{{(fin.preview?.no_serial || []).length}}</b></p>
-          <div class="mv-row" v-for="p in (fin.preview?.pending || [])">{{p.port || '—'}} · {{p.serial}} · {{p.why}}</div>
+          <p class="m-sub">archived: every node Done under <b>{{fin.order || '—'}}</b> ({{(fin.preview?.members || []).length}})</p>
+          <div class="mv-row" v-for="m in (fin.preview?.members || [])">{{m.serial}} · {{m.port || '—'}} · Done {{finWhen(m.finished_at)}}</div>
+          <p class="m-sub" v-if="(fin.preview?.left_out || []).length">not included (not Done) ({{fin.preview.left_out.length}})</p>
+          <div class="mv-row dim" v-for="m in (fin.preview?.left_out || [])">{{m.serial}} · {{m.port || '—'}} · {{m.why}}</div>
           <div class="m-actions">
-            <button :disabled="fin.busy || !fin.customer || !(fin.preview?.members || []).length" @click="doFinish()">{{(fin.preview?.pending || []).length ? 'Finish anyway' : 'Finish order'}}</button>
+            <button :disabled="fin.busy || !fin.customer || !(fin.preview?.members || []).length" @click="doFinish()">Finish {{fin.order}} — archive {{(fin.preview?.members || []).length}} node(s)</button>
             <span class="asg-msg" v-if="fin.msg">{{fin.msg}}</span></div>
         </div>
         <div v-else-if="modal?.kind==='move'">
