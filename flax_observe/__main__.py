@@ -25,7 +25,7 @@ from .healthz import WorkerStatus, build_handler
 from .persistence import read_active_sentinels
 # Imported at module top (not inside main) so a test can monkeypatch
 # flax_observe.__main__.write_ack to capture the supervisor ledger write.
-from .persistence import read_prior_observe_state
+from .persistence import read_prior_observe_state, read_observe_state_row
 from .persistence import write_ack
 from .port_worker import PortWorker, make_env, _internal_to_arista
 from .switch_facts import SwitchFactsCache, SwitchFactsListener
@@ -61,6 +61,22 @@ def _ack_observe_failed(pool, generation, exc) -> None:
     truncated to 200 chars; observe's exceptions carry no credentials."""
     write_ack(pool, "flax-observe", "switch_facts", generation, "failed",
               detail=str(exc)[:200])
+
+
+def prior_for(key, boot_rows, read_one):
+    """Hydration row for a worker being created for `key` = (switch, port).
+
+    The boot snapshot is used once (popped, so a later re-creation never sees
+    it); after that the port's CURRENT row is read via read_one(key). A read
+    failure starts the worker cold (None) rather than from stale state."""
+    if key in boot_rows:
+        return boot_rows.pop(key)
+    try:
+        return read_one(key)
+    except Exception as e:
+        log.warning("hydration read for %s/%s failed (%s); starting cold",
+                    key[0], key[1], e)
+        return None
 
 
 def reconcile_workers(desired, running, static_keys, make, statuses):
@@ -342,7 +358,8 @@ def main(argv: list[str] | None = None) -> int:
             cache=cache, env=env, statuses=statuses,
             refresh_sentinels=_refresh_sentinels,
             cycle_secs=args.cycle_secs,
-            prior=prior_rows.get((entry["switch"], entry["port"])),
+            prior=prior_for((entry["switch"], entry["port"]), prior_rows,
+                            lambda k: read_observe_state_row(_get_pool(), *k)),
         )
 
     running: dict[tuple[str, str], PortWorker] = {}
