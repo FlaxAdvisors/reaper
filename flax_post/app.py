@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
-from . import actions, blades, blocklist, consume, db, geometry, inventory, population, queries, state, stepinfo
+from . import actions, assign, blades, finish, blocklist, consume, db, geometry, inventory, population, queries, records, state, stepinfo
 from .observe import host_qual
 from .qualclient import QualClient, QualUnreachable
 from .version import __version__
@@ -75,7 +75,7 @@ def _blade_slots() -> list[dict]:
     facts = consume.switch_ports(switch)
     consumed = consume.consumed_by_port(devices, facts, switch)
     return blades.build_slots(geo["slots"], consumed, state.read_state(),
-                              state.read_settings(), facts)
+                              state.read_settings(), facts, nodes=state.read_nodes())
 
 
 @app.get("/")
@@ -85,6 +85,69 @@ def index(request: Request):
     return rack_templates.TemplateResponse(
         request, "rack.html",
         _ctx(switch=switch, phases=list(blades.PHASES), settings=settings))
+
+
+@app.get("/api/v1/orders")
+def api_orders() -> JSONResponse:
+    """Open post orders (post_order registry, newest first) + the header order:
+    the Order field's datalist and the Finish dialog's choices."""
+    return JSONResponse({"orders": state.list_orders(),
+                         "header": state.read_settings().get("order_no")})
+
+
+def _finish_context(order_no):
+    runs = state.runs_under(order_no)
+    mems, no_serial = finish.members(runs)
+    slots = [s for s in _blade_slots() if not s.get("empty")]
+    pend = finish.pending(order_no, slots, mems)
+    row = state.order_row(order_no)
+    hdr = state.read_settings()
+    res = [m.get("result") or {} for m in mems]
+    customer = row.get("customer") or next((r.get("customer") for r in res if r.get("customer")), None) \
+        or (hdr.get("customer") if hdr.get("order_no") == order_no else None)
+    sales = row.get("sales") or next((r.get("sales") for r in res if r.get("sales")), None) \
+        or (hdr.get("sales") if hdr.get("order_no") == order_no else None)
+    return mems, no_serial, pend, customer, sales
+
+
+@app.get("/api/v1/orders/finish-preview")
+def api_finish_preview(order: str) -> JSONResponse:
+    mems, no_serial, pend, customer, sales = _finish_context(order)
+    keep = ("serial", "bmc_mac", "run_id", "verdict", "finished_at", "compact")
+    return JSONResponse({"order_no": order, "customer": customer, "sales": sales,
+                         "members": [{k: m.get(k) for k in keep} for m in mems],
+                         "no_serial": [{"bmc_mac": m.get("bmc_mac"), "run_id": m.get("run_id")}
+                                       for m in no_serial],
+                         "pending": pend})
+
+
+@app.post("/api/v1/orders/finish")
+async def api_finish(request: Request) -> JSONResponse:
+    """Archive one whole post order (spec 2026-11-06): each node's latest run under
+    it, through flax-control. 409 lists pending nodes until confirm: true; the
+    order is marked finished only after flax-control accepted the archive."""
+    body = await request.json()
+    order_no = (body.get("order_no") or "").strip()
+    customer = (body.get("customer") or "").strip()
+    sales = (body.get("sales") or "").strip() or None
+    if not order_no:
+        return JSONResponse({"ok": False, "reason": "no order"}, status_code=400)
+    if not customer:
+        return JSONResponse({"ok": False, "reason": "customer required"}, status_code=400)
+    mems, no_serial, pend, _c, _s = await run_in_threadpool(_finish_context, order_no)
+    if not mems:
+        return JSONResponse({"ok": False, "reason": "no finished runs under this order"},
+                            status_code=400)
+    if pend and body.get("confirm") is not True:
+        return JSONResponse({"ok": False, "confirm": pend}, status_code=409)
+    payload = await run_in_threadpool(finish.build_payload, order_no, mems, customer=customer,
+                                      sales=sales, site=_site(), get_artifacts=state.artifacts_for)
+    try:
+        counts = await run_in_threadpool(finish.send, payload)
+    except finish.FinishError as e:
+        return JSONResponse({"ok": False, "reason": e.message}, status_code=e.status)
+    state.mark_finished(order_no, sales=sales, customer=customer, counts=counts)
+    return JSONResponse({"ok": True, "archived": counts})
 
 
 @app.get("/api/v1/blades")
@@ -180,10 +243,59 @@ def api_step(port: str, phase: str, step: str) -> JSONResponse:
 
 @app.post("/api/v1/settings")
 async def api_settings(request: Request) -> JSONResponse:
+    """Header context. An ORDER change moves every present, unassigned node's
+    open-order entries with it (one open order per node), so it is confirmed
+    first: 409 lists the movers until the body carries confirm: true."""
     body = await request.json()
-    kw = {k: body[k] for k in ("order_no", "population", "customer") if k in body}
+    kw = {k: body[k] for k in ("order_no", "population", "customer", "sales") if k in body}
+    current = state.read_settings()
+    new_order = kw.get("order_no", current.get("order_no"))
+    if "order_no" in kw and (kw["order_no"] or None) != (current.get("order_no") or None):
+        followers = assign.header_followers(state.read_state(), state.read_nodes(), current)
+        if followers and body.get("confirm") is not True:
+            return JSONResponse({"ok": False, "confirm": [
+                {"port": f["port"], "serial": f["serial"],
+                 "from": f.get("order_no") or current.get("order_no"), "to": kw["order_no"]}
+                for f in followers]}, status_code=409)
+        moved = state.apply_header_order(kw.pop("order_no") or None, followers,
+                                         **{k: kw.pop(k) for k in ("sales", "customer") if k in kw})
+        if kw:
+            state.write_settings(**kw)
+        return JSONResponse({"ok": True, "moved": moved, "settings": state.read_settings()})
     state.write_settings(**kw)
+    if "sales" in kw or "customer" in kw:
+        try:
+            state.touch_header_labels(new_order, sales=kw.get("sales"), customer=kw.get("customer"))
+        except Exception:
+            logging.getLogger("flax-post").exception("post_order label update failed")
     return JSONResponse({"ok": True, "settings": state.read_settings()})
+
+
+@app.post("/api/v1/assign")
+async def api_assign(request: Request) -> JSONResponse:
+    """A tile's own order/sales/customer/population ({port, order_no, ...}) or
+    {port, clear: true} to follow the header again. Moves the node's open-order
+    entries to its new effective order in the same transaction."""
+    body = await request.json()
+    port = body.get("port")
+    record = next((s for s in _blade_slots() if s.get("port") == port), None)
+    if record is None:
+        return JSONResponse({"ok": False, "reason": "unknown port"}, status_code=404)
+    serial, bmc = record.get("serial"), record.get("bmc_mac")
+    if records.serial_fault(serial) or not bmc:
+        return JSONResponse({"ok": False, "reason": "no serial"}, status_code=400)
+    if body.get("clear") is True:
+        assignment = None
+    else:
+        order_no = (body.get("order_no") or "").strip()
+        if not order_no:
+            return JSONResponse({"ok": False, "reason": "no order"}, status_code=400)
+        assignment = {"order_no": order_no}
+        for k in ("sales", "customer", "population"):
+            v = (body.get(k) or "").strip()
+            assignment[k] = v or None
+    out = state.assign_node(bmc, serial, assignment, state.read_settings())
+    return JSONResponse({"ok": True, "effective": out["effective"], "moved": out["moved"]})
 
 
 @app.post("/api/v1/power")
@@ -227,7 +339,8 @@ def _target_for(port: str) -> "dict | None":
         return None
     return {"port": port, "host_ip": rec.get("host_ip"), "bmc_ip": rec.get("bmc_ip"),
             "bmc_mac": rec.get("bmc_mac"), "serial": rec.get("serial"),
-            "order_no": rec.get("order_no"),
+            "order_no": rec.get("order_no"), "sales": rec.get("sales"),
+            "customer": rec.get("customer"), "population": rec.get("population"),
             "run_id": rec.get("run_id")}
 
 

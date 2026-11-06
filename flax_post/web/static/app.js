@@ -2,7 +2,8 @@
 // Renders the prototype layout (docs/post-ui-prototype.html) from the real
 // /api/v1/blades feed. Discover = violet; grey = empty/unknown.
 import { fetchBlades, fetchProfiles, saveSettings, postPower, postIdentify, fetchInventory,
-         fetchArtifacts, fetchArtifact, fetchStep } from '/web-static/api.js';
+         fetchArtifacts, fetchArtifact, fetchStep, postAssign, fetchOrders,
+         fetchFinishPreview, postFinish } from '/web-static/api.js';
 
 // firmware phases (post_state fw_bmc/fw_bios/fw_nic 'phase') during which a
 // power-off must be blocked -- mirrors flax_post/actions.py FW_ACTIVE.
@@ -56,6 +57,11 @@ function App() {
     order_no: boot.order_no || '',
     population: boot.population || '',
     customer: boot.customer || '',
+    sales: boot.sales || '',
+    openOrders: [],
+    // the drawer's per-node order assignment form (prefilled on open)
+    asg: { order: '', sales: '', customer: '', population: '' }, asgMsg: null,
+    fin: { order: '', customer: '', sales: '', preview: null, msg: null, busy: false }, finishedOrder: null,
     settingsAt: boot.settings_at || null,
     // header connection dot: did the LAST poll of the server answer (null =
     // none has finished yet: grey, never a red flash on page load). The build
@@ -87,6 +93,7 @@ function App() {
         this.slots = d.slots || []; this.racks = d.racks || {};
         if (this.sel) this.sel = this.slots.find((s) => s.port === this.sel.port) || null;
         if (d.settings) this.applySettings(d.settings);
+        try { this.openOrders = (await fetchOrders()).orders || []; } catch (e) { /* keep last */ }
         this.live = true;
         this.checkVersion(d.version);
       } catch (e) { this.live = false; console.error(e); }
@@ -115,6 +122,7 @@ function App() {
       if (active !== 'post-order') this.order_no = s.order_no || '';
       if (active !== 'post-population') this.population = s.population || '';
       if (active !== 'post-customer') this.customer = s.customer || '';
+      if (active !== 'post-sales') this.sales = s.sales || '';
       this.settingsAt = s.updated_at || null;
     },
     settingsAtText() {
@@ -259,6 +267,7 @@ function App() {
       this.inv = null; this.invPort = null; this.invProfile = ''; this.popProfile = ''; this.actionMsg = null;
       if (closing) { this.sel = null; return; }
       this.sel = b;
+      this.prefillAsg(b);
       this.loadInv();
     },
     statusText(s) { if (!s) return ''; return this.faulted(s) ? `fault · ${s.step || ''}` : `${s.phase}${s.step ? ' · ' + s.step : ''}`; },
@@ -462,13 +471,80 @@ function App() {
     stepWord(st) { return { done: 'passed', cur: 'in progress', pending: 'not reached', fault: 'failed', skip: 'skipped', unknown: 'no evidence' }[st] || st; },
     modalTitle() {
       const m = this.modal; if (!m) return ''; const id = this.sel ? (this.sel.serial || this.sel.port) : '';
+      if (m.kind === 'finish') return `Finish order ${this.fin.order || ''}`;
+      if (m.kind === 'move') return `Move ${m.movers.length} node(s) to ${m.to || 'no order'}`;
       const names = { pwr: 'Power', sol: 'SOL console', inv: 'Inventory', pop: 'Population', idnt: 'Identify', sdr: 'SDR sensors', sel: 'SEL events', step: `${m.phase} · ${m.step}` };
       return `${names[m.kind] || m.kind} — ${id}`;
     },
 
     // ---- settings (order + population + customer) ----
-    async saveOrder() { await saveSettings({ order_no: this.order_no || null }); this.refresh(); },
-    async clearOrder() { this.order_no = ''; await saveSettings({ order_no: null }); this.refresh(); },
+    // A header ORDER change moves every present, unassigned node's open-order
+    // entries with it; the server answers 409 with the movers until confirmed.
+    async saveOrder() { await this.postOrder(this.order_no || null); },
+    async clearOrder() { this.order_no = ''; await this.postOrder(null); },
+    async postOrder(order_no, confirm) {
+      const r = await saveSettings(confirm ? { order_no, confirm: true } : { order_no });
+      if (r.status === 409 && r.confirm) {
+        if (window.SolConsole) window.SolConsole.close();
+        this.modal = { kind: 'move', movers: r.confirm, to: order_no };
+        return;
+      }
+      this.refresh();
+    },
+    async confirmMove() { const to = this.modal?.to; this.modal = null; await this.postOrder(to, true); },
+    cancelMove() { this.modal = null; this.refresh(); },
+    // ---- Finish order (archive one whole post order) ----
+    async openFinish() {
+      if (window.SolConsole) window.SolConsole.close();
+      this.fin = { order: this.order_no || ((this.openOrders[0] || {}).order_no || ''), customer: '', sales: '',
+                   preview: null, msg: null, busy: false };
+      this.modal = { kind: 'finish' };
+      await this.loadFinish();
+    },
+    async loadFinish() {
+      if (!this.fin.order) return;
+      const p = await fetchFinishPreview(this.fin.order);
+      this.fin.preview = p; this.fin.customer = p.customer || ''; this.fin.sales = p.sales || '';
+    },
+    async doFinish() {
+      this.fin.busy = true;
+      const pend = (this.fin.preview?.pending || []).length > 0;
+      const r = await postFinish({ order_no: this.fin.order, customer: this.fin.customer,
+                                   sales: this.fin.sales, confirm: pend });
+      this.fin.busy = false;
+      this.fin.msg = r.ok ? `archived ${(r.archived || {}).devices || 0} node(s)` : (r.reason || ('error ' + r.status));
+      if (r.ok) { this.finishedOrder = this.fin.order; this.refresh(); }
+    },
+    async saveSales() { await saveSettings({ sales: this.sales || null }); this.refresh(); },
+    // ---- per-node order assignment (drawer) ----
+    prefillAsg(b) {
+      const own = b && b.order_source === 'node';
+      this.asg = { order: own ? (b.order_no || '') : '', sales: own ? (b.sales || '') : '',
+                   customer: own ? (b.customer || '') : '', population: own ? (b.population || '') : '' };
+      this.asgMsg = null;
+    },
+    asgStatus(b) {
+      if (!b) return '';
+      return b.order_source === 'node' ? 'node' : (b.order_stale ? 'header (stale)' : 'header');
+    },
+    ordTitle(b) {
+      if (b.order_stale) return 'assignment ignored: serial changed; following header';
+      if (b.order_source === 'node') return `assigned ${b.assigned_at || ''}; header ${b.header_order_no || '—'}`;
+      return `header order ${b.header_order_no || '—'}`;
+    },
+    async assignOrder() {
+      if (!this.sel) return;
+      const r = await postAssign({ port: this.sel.port, order_no: this.asg.order, sales: this.asg.sales,
+                                   customer: this.asg.customer, population: this.asg.population });
+      this.asgMsg = r.ok ? 'assigned' : (r.reason || ('error ' + r.status));
+      this.refresh();
+    },
+    async useHeader() {
+      if (!this.sel) return;
+      const r = await postAssign({ port: this.sel.port, clear: true });
+      this.asgMsg = r.ok ? 'header' : (r.reason || ('error ' + r.status));
+      this.refresh();
+    },
     async savePopulation() { await saveSettings({ population: this.population || null }); this.refresh(); },
     async saveCustomer() { await saveSettings({ customer: this.customer || null }); this.refresh(); },
     async clearCustomer() { this.customer = ''; await saveSettings({ customer: null }); this.refresh(); },

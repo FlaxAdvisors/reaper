@@ -14,7 +14,7 @@ import time
 
 from . import role_registry
 from .cycle import run_one_cycle
-from .db import (build_pool, db_now, read_observe_rows, read_post_order,
+from .db import (build_pool, db_now, read_observe_rows, read_post_order, read_post_assignments,
                  read_switch_facts)
 from .desired_port import write_ack
 from .kea_hosts import read_kea_actuals
@@ -199,7 +199,8 @@ def run_post_lane(pool, geometry_path, cycle_secs, role_defs=None,
         facts = read_switch_facts(pool)
         observed = observed_by_port(read_observe_rows(pool))
         summary = run_post_reservations(pool, order_no=order, racks=racks,
-                                        facts=facts, observed=observed, slots=slots)
+                                        facts=facts, observed=observed, slots=slots,
+                                        node_orders=read_post_assignments(pool))
         if summary["written"] or summary["purged"]:
             log.info("post-reserve written=%d purged=%d",
                      summary["written"], summary["purged"])

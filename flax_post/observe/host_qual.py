@@ -114,6 +114,8 @@ def _read_profile_for(target, store) -> "str | None":
     override = live.get("pop_override")
     if override:
         return override
+    if target.get("population"):        # the node's effective population (assignment/header)
+        return target["population"]
     return store.read_settings().get("population") if hasattr(store, "read_settings") else None
 
 
@@ -236,6 +238,7 @@ def build_result(target, live, qual, pop, done, now=time.time, checks=None) -> d
     return {"run_id": (qual or {}).get("run_id"), "verdict": (done or {}).get("verdict"),
             "clean": clean, "holes": holes,
             "finished_at": int(now()), "order_no": target.get("order_no"),
+            "sales": target.get("sales"), "customer": target.get("customer"),
             "port": target.get("port"), "serial": target.get("serial"),
             "fw": {"bmc": live.get("fw_bmc") or {}, "bios": live.get("fw_bios") or {},
                    "nic": live.get("fw_nic") or {}},

@@ -791,6 +791,8 @@ def api_order_archive(body=Body(...)):
         return JSONResponse(order_archive.replace(body))
     except order_archive.BadValue as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
+    except order_archive.CrossTool as exc:
+        return JSONResponse({"error": str(exc)}, status_code=409)
 
 
 from . import order_leases  # noqa: E402

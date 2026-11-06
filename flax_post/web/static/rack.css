@@ -264,3 +264,11 @@ button.mini{font-size:.66rem;padding:.05rem .4rem;margin-left:.5rem;vertical-ali
 .step-tbl tr.flag td{background:rgba(240,136,62,.13)}
 .step-tbl tr.flag td:first-child{box-shadow:inset 3px 0 0 var(--flag)}
 .step-tbl td.outside{color:var(--flag);font-weight:700}
+
+/* per-node order (2026-11-06): tile ORD row + drawer assignment */
+.t-row.ovr .v{color:var(--violet)}
+.t-row.stale .v{text-decoration:line-through;opacity:.6}
+.asg{display:flex;flex-wrap:wrap;gap:.3rem;margin:.2rem 0 .5rem}
+.asg input,.asg select{width:7.5rem}
+.asg-msg{font-size:.79rem;color:var(--muted);align-self:center}
+.mv-row{font-family:ui-monospace,monospace;font-size:.85rem;margin:.15rem 0}

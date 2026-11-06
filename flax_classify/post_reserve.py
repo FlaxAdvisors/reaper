@@ -262,7 +262,7 @@ def observed_by_port(observe_rows):
 
 
 def run_post_reservations(pool, *, order_no, racks, facts, observed=None,
-                          slots=None) -> dict:
+                          slots=None, node_orders=None) -> dict:
     """Continuous post reservation lane. For each (switch, rack_tag) in `racks`,
     derive bmc/host targets from `facts` for observe comms-confirmed BMC ports only, name
     them with the order prefix (+rack tag), and upsert desired_reservations
@@ -296,13 +296,16 @@ def run_post_reservations(pool, *, order_no, racks, facts, observed=None,
     keep-set pass re-upserts its desired row from that stale kea row in the
     same run_post_lane pass, undoing the purge forever.
     """
-    if not order_no:
+    node_orders = node_orders or {}
+    if not order_no and not node_orders:
         return {"written": 0, "purged": 0}
     written = purged = 0
     derived_macs = set()
     purged_macs = set()
     for switch, rack_tag in racks:
-        prefix = order_prefix(order_no) + rack_tag
+        # Per port: the BMC's own assigned order (post_node_assignment), else
+        # the header. A port with neither writes nothing (per-node kill switch).
+        by_port = {}
         # Shared-switch scoping: when post-geometry slots are known, restrict this
         # switch's post derivation to its declared slot tokens (excludes triage /
         # other-role ports co-located on the same switch, e.g. braintree rabbit-lorax).
@@ -310,7 +313,16 @@ def run_post_reservations(pool, *, order_no, racks, facts, observed=None,
         allow_tokens = slots.get(switch) if slots else None
         targets = derive_post_targets(facts, switch, require_confirmed_bmc=True,
                                       observed=observed, allow_tokens=allow_tokens)
-        for r in resolve(targets, prefix):
+        for t_ in targets:
+            by_port.setdefault(t_["port_token"], []).append(t_)
+        resolved = []
+        for _tok, group in by_port.items():
+            bmc_t = next((x for x in group if x["kind"] == "bmc"), None)
+            order = (node_orders.get(_lldp_mac_norm(bmc_t["mac"])) if bmc_t else None) or order_no
+            if not order:
+                continue
+            resolved.extend(resolve(group, order_prefix(order) + rack_tag))
+        for r in resolved:
             # desired_reservations write: this claim's mac/kind/vid/switch/
             # port/hostname/ipv4/ipv6, owner_role="post". Guarded per-call-
             # site so a write failure (incl UndefinedTable pre-migration)
