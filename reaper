@@ -102,6 +102,19 @@ print(val or '')
 "
 }
 
+# Check-mode run of apply_config.yml whose critical-change analysis reflects THIS
+# run only. critical_ports (localhost play) reads every <device>/.check_result.json
+# in the site dir, and the wrapper reads .critical_changes.json afterwards, so stale
+# files from an older run are removed first; a device limit gets localhost added,
+# otherwise --limit skips the analysis play and the old file would be read.
+_reaper_check_switches() {
+  local site="$1" extra_flag="$2" limit="${3:-}"
+  local site_dir="${REAPER_ROOT}/files/configs/${site}"
+  rm -f "${site_dir}/.critical_changes.json" "${site_dir}"/*/.check_result.json
+  [[ -n "$limit" ]] && limit="${limit}:localhost"
+  _reaper_run_playbook "$site" "apply_config.yml" "$extra_flag" "$limit"
+}
+
 _reaper_staged_push() {
   local site="$1" limit="${2:-}"
   local site_dir="${REAPER_ROOT}/files/configs/${site}"
@@ -117,7 +130,7 @@ _reaper_staged_push() {
 
   # ── Check mode pass ─────────────────────────────────────────────────────────
   printf '==> Running check mode to detect critical changes...\n'
-  _reaper_run_playbook "$site" "apply_config.yml" "--check" "$limit"
+  _reaper_check_switches "$site" "--check" "$limit"
 
   if [[ ! -f "$changes_file" ]]; then
     printf 'ERROR: .critical_changes.json not written by apply_config.yml.\n' >&2
@@ -409,7 +422,7 @@ case "$subcmd" in
     _plan_site() {
       local s="$1"
       if [[ ${#devices[@]} -eq 0 || -n "$sw_limit" ]]; then
-        _reaper_run_playbook "$s" "apply_config.yml" "--check --diff" "$sw_limit"
+        _reaper_check_switches "$s" "--check --diff" "$sw_limit"
       fi
       if [[ ${#devices[@]} -eq 0 || -n "$jh_limit" ]]; then
         _reaper_run_playbook "$s" "apply_jumphost_config.yml" "--check --diff" "$jh_limit"
