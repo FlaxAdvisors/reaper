@@ -69,7 +69,8 @@ _CPU_RE = re.compile(
     r"^Processor Version:\s*(?P<model>[^,]+?)\s*(?:,\s*Serial:\s*(?P<serial>.*))?$"
 )
 _MEM_RE = re.compile(
-    r"^Memory:\s*(?P<size>[^,]+),\s*(?P<slot>DIMM\s*\S+),\s*[^,]+,\s*"
+    # slot: 'DIMM A0' (TiogaPass) or bare 'A0' (Quanta Leopard, 2026-11-06)
+    r"^Memory:\s*(?P<size>[^,]+),\s*(?P<slot>(?:DIMM\s*)?[^,\s]+),\s*[^,]+,\s*"
     r"(?P<speed>[^,]+),\s*(?P<mfg>[^,]+),\s*(?P<serial>[^,]+),\s*(?P<part>.+)$"
 )
 _NIC_RE = re.compile(

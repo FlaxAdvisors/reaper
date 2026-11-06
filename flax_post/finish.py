@@ -175,7 +175,8 @@ def build_payload(order_no, mems, *, customer, sales, site, get_artifacts, close
                                    if d.get("current")}))
         bmc_ver = (fw.get("bmc") or {}).get("current")
         if not bmc_ver or bmc_ver == "report-only":
-            bmc_ver = (parsed.get("bmc") or {}).get("version") or bmc_ver
+            bmc_ver = ((parsed.get("bmc") or {}).get("version") or "").split()[:1] or [bmc_ver]
+            bmc_ver = bmc_ver[0]
         dev_rows.append({"pos": port or sn, "kind": "server",
                          "part": (parsed.get("fru") or {}).get("board_product"), "serial": sn,
                          "bmc_mac": m.get("bmc_mac"), "host_mac": m.get("host_mac")})
