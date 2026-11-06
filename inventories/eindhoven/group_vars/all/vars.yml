@@ -141,6 +141,9 @@ reservation_only_dhcp: true
 # so an AMI/IPMI-only BMC (Leopard) gets IPv4 to be probed; hosts + BMC_FB_DHCLIENT stay
 # reservation-only. Departs from the 2026-09-27 "no pool IP for BMCs" ruling for post only.
 apply_kea_res_only_bmc_pool: true
+# ...and reconcile kicks a post BMC off that pool onto its post reservation (only while on
+# a pool lease). Keep equal to apply_kea_res_only_bmc_pool: the pool and its escape move together.
+flax_role_post_reconcile_pool_bmc: true
 
 # Per-vlan L3 SVI hostname → IP suffix map. Consumed by lab-hosts.j2 to
 # render switch SVI A records (172.<vid>.0.<suffix>) for every vlan in

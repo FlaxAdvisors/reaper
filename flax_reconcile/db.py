@@ -144,6 +144,37 @@ def read_reservations(pool: ConnectionPool, eligible_sources=None) -> list[dict]
         return [{"mac": m, "ip": ip} for m, ip in conn.execute(sql).fetchall()]
 
 
+def read_pool_bmc_reservations(pool: ConnectionPool, sources: frozenset, *,
+                               pool_start: int, pool_end: int) -> list[dict]:
+    """[{mac, ip}] of BMC reservations (user_context.classify.kind = 'bmc') of
+    the given sources whose MAC holds an active lease (state 0) on a POOL
+    address -- x.y.0.<pool_start..pool_end> -- other than its reservation.
+
+    The one place reconcile acts on a reconcile_switch=false role (post): a
+    BMC that took the BMC-only pool on a reservation-only VLAN is kicked onto
+    the reservation post wrote for it. Hosts, and BMCs already on their
+    reservation or on any non-pool address, are never returned (spec
+    2026-11-06; flax-state-delta 6)."""
+    if not sources:
+        return []
+    sql = (
+        "SELECT " + (_MAC_SQL % "h.dhcp_identifier") + " AS mac, "
+        "host(('0.0.0.0'::inet) + h.ipv4_address) AS ip "
+        "FROM kea.hosts h JOIN kea.lease4 l "
+        "  ON l.hwaddr = h.dhcp_identifier AND l.state = 0 "
+        "WHERE h.dhcp_identifier_type = 0 AND h.ipv4_address IS NOT NULL "
+        "AND h.ipv4_address <> 0 "
+        "AND COALESCE((h.user_context::jsonb) ->> 'source', '') = ANY(%(sources)s) "
+        "AND (h.user_context::jsonb) -> 'classify' ->> 'kind' = 'bmc' "
+        "AND l.address <> h.ipv4_address "
+        "AND (l.address %% 65536) BETWEEN %(lo)s AND %(hi)s"
+    )
+    with pool.connection() as conn:
+        rows = conn.execute(sql, {"sources": list(sources), "lo": pool_start,
+                                  "hi": pool_end}).fetchall()
+    return [{"mac": m, "ip": ip} for m, ip in rows]
+
+
 def resolve_location(pool: ConnectionPool, mac: str) -> dict:
     """Look up {switch, port, kind} for a mac from the devices table; {} if absent.
 

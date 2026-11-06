@@ -194,6 +194,9 @@ def main(argv=None):
     # `source <> 'post'` literal (deploy-order safety; role_caps already
     # logged the warning).
     eligible_sources = _load_eligible_sources(pool)
+    # Roles whose BMCs are kicked off the BMC-only pool (reconcile_pool_bmc).
+    pool_bmc_sources = role_caps.read_pool_bmc_sources(pool)
+    log.info("reconcile_pool_bmc roles: %s", sorted(pool_bmc_sources) or "none")
 
     recon = Reconciler(
         switches=switches,
@@ -205,6 +208,7 @@ def main(argv=None):
         vlan_parents=vlan_parents,
         redfish_creds=redfish_creds,
         eligible_sources=eligible_sources,
+        pool_bmc_sources=pool_bmc_sources,
     )
 
     # Monotonic per-process cycle counter used as the consumer_acks generation.

@@ -23,6 +23,8 @@ DEFAULTS = {
     "reclaim_stale_claim_secs": 180,   # crash-stranded 'claimed' row reclaim age
     "boot_grace_secs": 600,            # after a marked BMC reboot: bmc_ll only, no flap
     "manual_claim_max_age_secs": 180,  # fw-bin heartbeat claim (touched every 60 s)
+    "pool_bmc_start": 50,              # BMC-only pool host octet range (x.y.0.<start..end>)
+    "pool_bmc_end": 200,               #   = apply_kea_pool_start..end
 }
 
 

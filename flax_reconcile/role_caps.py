@@ -72,3 +72,29 @@ def read_reconcile_eligible_sources(pool: ConnectionPool):
         log.warning(_EMPTY_WARNING)
         return None
     return _eligible_from_rows(rows)
+
+
+def _pool_bmc_from_rows(rows) -> frozenset:
+    """Pure: roles whose definition["capabilities"]["reconcile_pool_bmc"] is
+    truthy (opt-in). Such a role's BMC reservations are reconciled ONLY while
+    the BMC sits on a pool lease (db.read_pool_bmc_reservations): the escape
+    for the BMC-only pool on reservation-only VLANs (spec 2026-11-06)."""
+    out = set()
+    for role, definition in rows:
+        caps = (definition or {}).get("capabilities") or {}
+        if caps.get("reconcile_pool_bmc"):
+            out.add(role)
+    return frozenset(out)
+
+
+def read_pool_bmc_sources(pool: ConnectionPool) -> frozenset:
+    """SELECT role, definition FROM roles -> roles opted into
+    reconcile_pool_bmc. Empty or unreadable registry -> frozenset() (no role
+    is pool-reconciled: today's behaviour)."""
+    try:
+        with pool.connection() as conn:
+            rows = conn.execute("SELECT role, definition FROM roles").fetchall()
+    except Exception:
+        log.exception("roles registry unreadable - no reconcile_pool_bmc roles")
+        return frozenset()
+    return _pool_bmc_from_rows(rows or [])
