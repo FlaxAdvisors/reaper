@@ -188,7 +188,8 @@ def read_switch_facts_ports(pool: ConnectionPool) -> dict:
             for port, fact in (ports or {}).items():
                 out[(switch, port)] = {"mask": fact.get("mask"),
                                        "access_vid": fact.get("access_vid"),
-                                       "link": fact.get("link")}
+                                       "link": fact.get("link"),
+                                       "admin": fact.get("admin")}
     return out
 
 
@@ -469,28 +470,44 @@ def read_flap_pending(pool: ConnectionPool) -> list[dict]:
 
 
 def port_admin_down(fact: dict | None) -> bool:
-    """Best-effort: True iff the switch_facts port fact shows link='nolink'.
-
-    'nolink' is the value slice.py records for an admin-down/link-down port, so
-    this returns True ONLY for that explicit state. A port whose link reads
-    'unknown' or None (never polled / stale switch_facts) is NOT treated as
-    admin-down: returning True there would let the fallback self-heal scan
-    `no shutdown` a port an operator intentionally disabled, or an un-polled
-    port whose true state we don't know.
-
-    NOTE: the persisted switch_facts.ports[*].link field collapses Arista
-    'disabled' (admin-down) into 'nolink' together with a genuinely absent
-    device ('notconnect'/'down'). So this still CANNOT distinguish a reconcile-
-    stranded admin-down port from an empty (but polled) port on its own -- the
-    flap-pending marker is the precise signal. This predicate is only used as the
-    conservative fallback scan (re-issuing a harmless `no shutdown` on a managed
-    access DUT port that reads 'nolink'; a no-op on a port that is already up or
-    genuinely empty). A trunk/uplink or non-managed port is excluded by the
-    caller.
-    """
+    """True iff switch-sense reported the port admin-disabled (`admin: "down"`,
+    EOS linkStatus 'disabled'). An empty port (link 'nolink' with no admin
+    key), an unknown/unpolled one, or a driver that cannot tell (IOS/Cumulus/
+    SONiC publish no admin key) is NOT admin-down. Whether reconcile itself
+    shut it is a separate question (recent_unfinished_flap_ports)."""
     if fact is None:
         return False
-    return fact.get("link") == "nolink"
+    return fact.get("admin") == "down"
+
+
+def recent_unfinished_flap_ports(pool: ConnectionPool, *,
+                                 within_secs: int = 3600) -> set:
+    """{(switch, port)} that reconcile shut in a flap that did not finish
+    within the last `within_secs`: the newest event for the port in the window
+    -- among reconcile_actions set_vlan/switch_flap success|failure rows and
+    audit.events flax-reconcile port_recovered rows -- is a failure.
+    `deferred` refusals never count (they never touched the port)."""
+    sql = """
+        SELECT switch, port FROM (
+          SELECT DISTINCT ON (switch, port) switch, port, failed
+          FROM (
+            SELECT ts, switch, port, (outcome = 'failure') AS failed
+            FROM reconcile_actions
+            WHERE ts > NOW() - make_interval(secs => %(w)s)
+              AND action IN ('set_vlan', 'switch_flap')
+              AND outcome IN ('success', 'failure')
+            UNION ALL
+            SELECT ts, switch, port, false AS failed
+            FROM audit.events
+            WHERE ts > NOW() - make_interval(secs => %(w)s)
+              AND service = 'flax-reconcile' AND kind = 'port_recovered'
+          ) ev
+          ORDER BY switch, port, ts DESC
+        ) latest
+        WHERE failed
+    """
+    with pool.connection() as conn:
+        return {(s, p) for s, p in conn.execute(sql, {"w": within_secs}).fetchall()}
 
 
 def port_link_up(fact: dict | None) -> bool:
