@@ -396,7 +396,8 @@ class RealDeps:
             steps["Firmware"] = lad["fw_steps"]     # frozen when fw-gates passed
         target = {"port": rec["port"], "host_ip": rec.get("host_ip"), "bmc_ip": rec.get("bmc_ip"),
                   "bmc_mac": rec.get("bmc_mac"), "serial": rec.get("serial"),
-                  "order_no": rec.get("order_no"),
+                  "order_no": rec.get("order_no"), "sales": rec.get("sales"),
+                  "customer": rec.get("customer"), "population": rec.get("population"),
                   "phase": "Qualify" if (rec.get("fw_gates") or past_gates) else rec.get("phase"),
                   # the record's step maps: the verdict freezes Discover/Firmware
                   # from these (blades.latch_snapshot) before the Done tail powers off

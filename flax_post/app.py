@@ -75,7 +75,7 @@ def _blade_slots() -> list[dict]:
     facts = consume.switch_ports(switch)
     consumed = consume.consumed_by_port(devices, facts, switch)
     return blades.build_slots(geo["slots"], consumed, state.read_state(),
-                              state.read_settings(), facts)
+                              state.read_settings(), facts, nodes=state.read_nodes())
 
 
 @app.get("/")
@@ -276,7 +276,8 @@ def _target_for(port: str) -> "dict | None":
         return None
     return {"port": port, "host_ip": rec.get("host_ip"), "bmc_ip": rec.get("bmc_ip"),
             "bmc_mac": rec.get("bmc_mac"), "serial": rec.get("serial"),
-            "order_no": rec.get("order_no"),
+            "order_no": rec.get("order_no"), "sales": rec.get("sales"),
+            "customer": rec.get("customer"), "population": rec.get("population"),
             "run_id": rec.get("run_id")}
 
 

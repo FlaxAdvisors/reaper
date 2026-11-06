@@ -16,7 +16,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from .. import queries, records, state
+from .. import assign, queries, records, state
 from ..fwd import creds as _creds
 from . import family_map_live as _fm_live
 from . import fru as _fru
@@ -476,7 +476,7 @@ def probe_power(ip, creds, ipmi_runner, redfish_client=None):
     return None
 
 
-def _process_blade(d, hosts, creds, ipmi_runner, ping, set_state, upsert_node, order_no,
+def _process_blade(d, hosts, creds, ipmi_runner, ping, set_state, upsert_node, effective_for,
                    keys=None, record_observation=None, switch=SWITCH, make_redfish=None,
                    observed=None):
     """Heavy pass for one BMC: serial(FRU) · watts · SDR · SEL + host liveness.
@@ -536,6 +536,16 @@ def _process_blade(d, hosts, creds, ipmi_runner, ping, set_state, upsert_node, o
         live_fields["watts"] = fields["watts"]
     if fields["sdr"]:
         live_fields["sdr"] = fields["sdr"]
+    # The node's EFFECTIVE order (spec 2026-11-06 per-node order): its own
+    # assignment while the serial matches, else the header. An unvouched pass
+    # stamps no order (COALESCE keeps the slot's last one).
+    if callable(effective_for):
+        eff = effective_for(d.get("mac"), fields["serial"]) if vouched else {}
+    else:                                   # legacy: a plain order string
+        eff = {"order_no": effective_for} if vouched else {}
+    order_no = eff.get("order_no")
+    if vouched and eff:
+        keys = records.role_keys(eff)
     try:
         set_state(port, switch=switch, bmc_mac=d.get("mac"), order_no=order_no,
                   host_pinged=host_pinged, **live_fields)
@@ -750,7 +760,7 @@ def _process_blade_power(d, creds, ipmi_runner, ping, set_state, switch=SWITCH, 
 def run_once(devices=None, creds=None, ipmi_runner=None, ping=None,
              set_state=None, upsert_node=None, settings=None, workers=None,
              record_observation=None, switch=None, make_redfish=None,
-             prior=None, run_owner=None, observed=None) -> None:
+             prior=None, run_owner=None, observed=None, nodes=None) -> None:
     """One pass over the post BMCs, FANNED OUT across a worker pool.
 
     Each BMC is an independent IPMI session, so probing 48 blades sequentially
@@ -803,8 +813,15 @@ def run_once(devices=None, creds=None, ipmi_runner=None, ping=None,
         except Exception:
             log.exception("ipmi: could not read observe identity; "
                           "this pass will write no identity")
-    order_no = settings.get("order_no")
+    if nodes is None and _production:
+        try:
+            nodes = state.read_nodes()
+        except Exception:
+            log.exception("ipmi: could not read post_node assignments; header order this pass")
     keys = records.role_keys(settings)      # {"order":…, "customer":…}, nulls omitted
+
+    def effective_for(mac, serial):
+        return assign.effective((nodes or {}).get(mac), settings, serial)
     hosts = {d["port"]: d for d in devices
              if d.get("kind") == "host" and d.get("switch") == switch}
     bmcs = [d for d in devices
@@ -813,7 +830,7 @@ def run_once(devices=None, creds=None, ipmi_runner=None, ping=None,
         return
 
     def work(d):
-        return _process_blade(d, hosts, creds, ipmi_runner, ping, set_state, upsert_node, order_no,
+        return _process_blade(d, hosts, creds, ipmi_runner, ping, set_state, upsert_node, effective_for,
                               keys=keys, record_observation=record_observation, switch=switch,
                               make_redfish=make_redfish, observed=observed)
 
