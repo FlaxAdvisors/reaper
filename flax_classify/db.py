@@ -5,7 +5,11 @@ The writer concern (publishing classified hosts) lives in
 flax_classify.kea_hosts as of Plan 5; this module no longer touches
 classify_proposals (dropped by migration 009).
 """
+import logging
+
 from psycopg_pool import ConnectionPool
+
+log = logging.getLogger(__name__)
 
 
 def build_pool(conninfo: str, min_size: int = 1, max_size: int = 5) -> ConnectionPool:
@@ -60,6 +64,20 @@ def read_post_order(pool):
         row = conn.execute(
             "SELECT order_no FROM post_settings WHERE id = 1").fetchone()
     return row[0] if row and row[0] else None
+
+
+def read_post_assignments(pool) -> dict:
+    """{12-hex bmc mac: order_no} from post's narrowed post_node_assignment view
+    (migration 042; flax-storage-delta §14): each node's own assigned order,
+    serial-matched by post. Any error (incl. a pre-042 DB) -> {} = header only."""
+    try:
+        with pool.connection() as conn:
+            rows = conn.execute("SELECT bmc_mac::text, order_no FROM post_node_assignment").fetchall()
+    except Exception:
+        log.exception("post_node_assignment unreadable; post hostnames use the header order")
+        return {}
+    return {(m or "").replace(":", "").replace("-", "").replace(".", "").lower(): o
+            for m, o in rows if m and o}
 
 
 def read_devices(pool: ConnectionPool) -> list[dict]:
