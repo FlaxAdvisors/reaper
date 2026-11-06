@@ -73,7 +73,11 @@ def _probe_host(deps, registry, dev) -> dict | None:
             return {"port": port, "skipped": "flashing"}
         rc, dmi = deps.run(ip, DMI_SCRIPT)
         if rc != 0:
-            return deps.set_row(port, phase="unreachable", current=None, target=None, fault_reason="")
+            # entry=None too: set_row merges, and a departed blade's manifest
+            # entry must never ride on the next occupant's row (2026-11-06:
+            # two Leopards carried the TiogaPass TPO_P26F entry).
+            return deps.set_row(port, phase="unreachable", current=None, target=None,
+                                fault_reason="", entry=None)
         entry = deps.matcher.match(dmi)
         if entry is None:
             # No expected string to compare against is a FAILED check. Still
@@ -187,6 +191,10 @@ def enforce_once(deps, registry, mode, allowlist):
             row = deps.last_row(port) or {}
             entry = row.get("entry")
             if entry is None:
+                continue
+            # Report-only platform (Leopard, triage parity): read + compared,
+            # never flashed by biosd (post qual's update_quanta_leopard owns it).
+            if entry.get("updatable") is False:
                 continue
             # ssh_ok reflects whether the LAST probe pass actually reached this
             # host: a probe phase of unreachable/unknown means the SSH check
