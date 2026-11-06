@@ -645,9 +645,9 @@ def render_node_page(bmc_mac):
 # ---- order archive (rackpost.*, written by flax-control on Close; read-only here) ----
 
 _DEV_COLS = ["customer", "order_id", "rack", "pos", "kind", "hostname", "chassis_serial",
-             "final_verdict", "closed_at", "sales"]
+             "final_verdict", "closed_at", "sales", "closed_by"]
 _DEV_SELECT = ("SELECT d.customer,d.order_id,d.rack,d.pos,d.kind,d.hostname,d.chassis_serial,"
-               "d.final_verdict,d.closed_at,d.sales FROM rackpost.order_device d ")
+               "d.final_verdict,d.closed_at,d.sales,d.closed_by FROM rackpost.order_device d ")
 _HEX_ONLY_RE = re.compile(r"[^0-9a-f]")
 
 
@@ -701,10 +701,10 @@ def fetch_archive_device(order, rack, pos):
     key = f"order_id='{o}' AND rack='{r}' AND pos='{p}'"
     dev = _psql_rows(
         "SELECT customer,site,order_id,rack,pos,ou,kind,part,hostname,chassis_serial,final_verdict,"
-        f"ha_mode,closed_at,order_dir,identity,sales FROM rackpost.order_device WHERE {key}",
+        f"ha_mode,closed_at,order_dir,identity,sales,closed_by FROM rackpost.order_device WHERE {key}",
         ["customer", "site", "order_id", "rack", "pos", "ou", "kind", "part", "hostname",
          "chassis_serial", "final_verdict", "ha_mode", "closed_at", "order_dir", "identity",
-         "sales"])
+         "sales", "closed_by"])
     if not dev:
         return None
     return {
@@ -791,10 +791,10 @@ def _device_table(rows, with_order=False):
            if with_order else "")
         + f"<td>{_device_link(r, r['pos'])}</td><td>{_esc(r['kind'])}</td><td>{_esc(r['hostname'])}</td>"
         f"<td class='mono'>{_esc(r['chassis_serial'])}</td><td>{_verdict_span(r['final_verdict'])}</td>"
-        f"<td>{_esc(r['closed_at'])}</td></tr>"
+        f"<td>{_esc(r['closed_at'])}</td><td>{_esc(r.get('closed_by') or 'rackpost')}</td></tr>"
         for r in rows)
     return (f"<table><thead><tr>{head}<th>pos</th><th>kind</th><th>hostname</th><th>chassis serial</th>"
-            f"<th>final verdict</th><th>closed</th></tr></thead><tbody>{body}</tbody></table>")
+            f"<th>final verdict</th><th>closed</th><th>tool</th></tr></thead><tbody>{body}</tbody></table>")
 
 
 def render_archive_page(customer="", q=""):
@@ -821,7 +821,9 @@ def render_archive_page(customer="", q=""):
             parts.append(f"<h4>order {_esc(order)}"
                          + (f" &middot; sales order {_esc(sales)}" if sales else "")
                          + f" &middot; rack {_esc(rack or '-')} &middot; "
-                         f"{len(devs)} device(s) &middot; closed {_esc(devs[0]['closed_at'])}</h4>"
+                         f"{len(devs)} device(s) &middot; closed {_esc(devs[0]['closed_at'])}"
+                         + (" &middot; closed by post" if devs[0].get("closed_by") == "post" else "")
+                         + "</h4>"
                          + (f"<p><span class='lbl'>documents</span> {doc_links}</p>" if docs else "")
                          + _device_table(devs))
         return SUBPAGE.format(title=f"archive {_esc(customer)}", body=nav + "".join(parts))
@@ -864,9 +866,11 @@ def render_archive_device_page(order, rack, pos):
     if not d:
         return SUBPAGE.format(title="archive device", body="<p>no such archived device</p>")
     dev = d["dev"]
-    ident = "".join(_kv(k, dev.get(k)) for k in
+    post = dev.get("closed_by") == "post"
+    ident = "".join(_kv("serial (pos)" if (k == "pos" and post) else k, dev.get(k)) for k in
                     ("customer", "order_id", "sales", "rack", "pos", "ou", "kind", "part", "hostname",
-                     "chassis_serial", "final_verdict", "ha_mode", "closed_at", "order_dir"))
+                     "chassis_serial", "final_verdict", "ha_mode", "closed_at", "order_dir",
+                     "closed_by"))
     macs = "".join(f"<tr><td>{_esc(m['role'])}</td><td class='mono'>{_esc(m['mac'])}</td></tr>"
                    for m in d["macs"])
     comps = "".join(
