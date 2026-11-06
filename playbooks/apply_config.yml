@@ -8,10 +8,29 @@
 - name: Apply Arista config
   hosts: arista
   gather_facts: false
+  vars:
+    # Ports flax-reconcile steers (filter_plugins/steered_ports.py): their access
+    # VLAN is reconcile's, so the push leaves the live value alone.
+    steered: "{{ (config_output_dir ~ '/' ~ site_name ~ '/services') | steered_ports(inventory_hostname) }}"
+    push_src: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/.push-config.txt"
   tasks:
+    - name: Write running-config minus reconcile-steered access VLANs
+      # Placeholders ({{ vault_cfg_* }}) are copied as text; eos_config's src
+      # templating rehydrates them, as it did from running-config.txt.
+      delegate_to: localhost
+      check_mode: false
+      ansible.builtin.copy:
+        content: >-
+          {{ lookup('ansible.builtin.file',
+                    config_output_dir ~ '/' ~ site_name ~ '/' ~ inventory_hostname ~ '/config/running-config.txt',
+                    rstrip=False) | eos_without_steered_vlans(steered) }}
+        dest: "{{ push_src }}"
+        mode: "0644"
+      changed_when: false
+
     - name: Apply running-config
       arista.eos.eos_config:
-        src: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/config/running-config.txt"
+        src: "{{ push_src }}"
         replace: line
         save_when: modified
       register: arista_apply_result
@@ -31,7 +50,19 @@
 - name: Apply Cisco IOS config
   hosts: cisco
   gather_facts: false
+  vars:
+    # Ports flax-reconcile steers (filter_plugins/steered_ports.py): their access
+    # VLAN is reconcile's, so the push leaves the live value alone.
+    steered: "{{ (config_output_dir ~ '/' ~ site_name ~ '/services') | steered_ports(inventory_hostname) }}"
   tasks:
+    - name: Refuse a push that would revert reconcile-steered ports
+      ansible.builtin.assert:
+        that: steered | length == 0
+        fail_msg: >-
+          {{ inventory_hostname }} has flax-reconcile steered ports ({{ steered | join(', ') }})
+          and this push path cannot keep their live access VLAN; add that before pushing.
+        quiet: true
+
     - name: Apply running-config
       cisco.ios.ios_config:
         src: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/config/running-config.txt"
@@ -59,6 +90,10 @@
 - name: Apply Cumulus config
   hosts: cumulus
   gather_facts: false
+  vars:
+    # Ports flax-reconcile steers (filter_plugins/steered_ports.py): their access
+    # VLAN is reconcile's, so the push leaves the live value alone.
+    steered: "{{ (config_output_dir ~ '/' ~ site_name ~ '/services') | steered_ports(inventory_hostname) }}"
   tasks:
     - name: Fetch live /etc/network/interfaces
       ansible.builtin.raw: cat /etc/network/interfaces
@@ -73,11 +108,22 @@
       register: desired_interfaces
       check_mode: false
 
+    - name: Normalise the live file (raw output is CRLF)
+      ansible.builtin.set_fact:
+        # In Python (filter_plugins/steered_ports.py): Jinja cannot express '\r'.
+        cumulus_live: "{{ live_interfaces.stdout | crlf_to_lf }}"
+
+    - name: Keep the live bridge-access of reconcile-steered ports
+      ansible.builtin.set_fact:
+        cumulus_desired: >-
+          {{ desired_interfaces.content | b64decode
+             | cumulus_keep_steered_vlans(cumulus_live, steered) }}
+
     - name: Decode interfaces.txt to temp file
       # Decode without become so the complex printf|base64 command is sent
       # raw over SSH — no sudo sh -c quoting to corrupt line endings.
       ansible.builtin.raw: >-
-        printf '%s' '{{ desired_interfaces.content }}' | base64 -d > /tmp/.reaper_interfaces
+        printf '%s' '{{ cumulus_desired | b64encode }}' | base64 -d > /tmp/.reaper_interfaces
       when: not ansible_check_mode
       changed_when: false
 
@@ -87,7 +133,7 @@
       when: not ansible_check_mode
       become: true
       changed_when: >-
-        (live_interfaces.stdout | replace('\r', '') | trim) != (desired_interfaces.content | b64decode | trim)
+        (cumulus_live | trim) != (cumulus_desired | trim)
       register: install_interfaces
 
     - name: Read desired frr.conf
@@ -130,9 +176,9 @@
       ansible.builtin.copy:
         content: >-
           {{ {'device_type': 'cumulus',
-              'changed': (live_interfaces.stdout | replace('\r', '') | trim) != (desired_interfaces.content | b64decode | trim),
-              'live_content': live_interfaces.stdout | replace('\r', ''),
-              'desired_content': desired_interfaces.content | b64decode} | to_nice_json }}
+              'changed': (cumulus_live | trim) != (cumulus_desired | trim),
+              'live_content': cumulus_live,
+              'desired_content': cumulus_desired} | to_nice_json }}
         dest: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/.check_result.json"
         mode: "0644"
 
@@ -162,7 +208,16 @@
   vars:
     sonic_src: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/config/config_db.json"
     sonic_stage: /tmp/.reaper_config_db.json
+    steered: "{{ (config_output_dir ~ '/' ~ site_name ~ '/services') | steered_ports(inventory_hostname) }}"
   tasks:
+    - name: Refuse a push that would revert reconcile-steered ports
+      ansible.builtin.assert:
+        that: steered | length == 0
+        fail_msg: >-
+          {{ inventory_hostname }} has flax-reconcile steered ports ({{ steered | join(', ') }})
+          and this push path cannot keep their live access VLAN; add that before pushing.
+        quiet: true
+
     - name: Read desired config_db.json
       delegate_to: localhost
       ansible.builtin.slurp:
