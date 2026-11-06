@@ -79,7 +79,7 @@ fi
 # kea.hosts). Each unit's ExecStartPre VIP-gate passes now that this host
 # holds the VIP; reset-failed first clears any boot-time gate failure (the VIP
 # wasn't yet held when systemd autostarted them at cold boot).
-for u in flax-switch-sense flax-observe flax-classify flax-discover flax-reconcile flax-post flax-post-observe flax-post-fwd flax-post-biosd flax-post-nicd flax-post-sol flax-post-nginx; do
+for u in flax-switch-sense flax-observe flax-classify flax-discover flax-reconcile flax-post flax-post-observe flax-post-fwd flax-post-biosd flax-post-nicd flax-post-sol flax-post-nginx flax-post-deployd; do
   restart_unit "$u"
 done
 

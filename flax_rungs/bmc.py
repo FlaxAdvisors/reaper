@@ -151,15 +151,21 @@ def identify(ip: str, creds: list[tuple[str, str]], arg: str, *, info: dict | No
             "error": None}
 
 
+def _bootdev_opts(persistent: bool) -> str:
+    # Quanta Leopard (BMC 14.00): the BIOS honours an efiboot override for the next
+    # boot only; with persistent it ignores it (braintree leopard8b4, 2026-11-06)
+    return "options=efiboot,persistent" if persistent else "options=efiboot"
+
+
 def bootdev_pxe(ip: str, creds: list[tuple[str, str]], *, info: dict | None = None,
-                runner=subprocess.run) -> bool:
-    return _write(ip, creds, ["chassis", "bootdev", "pxe", "options=efiboot,persistent"],
+                runner=subprocess.run, persistent: bool = True) -> bool:
+    return _write(ip, creds, ["chassis", "bootdev", "pxe", _bootdev_opts(persistent)],
                   info=info, runner=runner)
 
 
 def bootdev_disk(ip: str, creds: list[tuple[str, str]], *, info: dict | None = None,
-                 runner=subprocess.run) -> bool:
-    return _write(ip, creds, ["chassis", "bootdev", "disk", "options=efiboot,persistent"],
+                 runner=subprocess.run, persistent: bool = True) -> bool:
+    return _write(ip, creds, ["chassis", "bootdev", "disk", _bootdev_opts(persistent)],
                   info=info, runner=runner)
 
 

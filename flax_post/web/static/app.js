@@ -3,7 +3,7 @@
 // /api/v1/blades feed. Discover = violet; grey = empty/unknown.
 import { fetchBlades, fetchProfiles, saveSettings, postPower, postIdentify, fetchInventory,
          fetchArtifacts, fetchArtifact, fetchStep, postAssign, fetchOrders,
-         fetchFinishPreview, postFinish } from '/web-static/api.js';
+         fetchFinishPreview, postFinish, postDeployRetry } from '/web-static/api.js';
 
 // firmware phases (post_state fw_bmc/fw_bios/fw_nic 'phase') during which a
 // power-off must be blocked -- mirrors flax_post/actions.py FW_ACTIVE.
@@ -458,6 +458,22 @@ function App() {
       this.artifacts = null; this.stepInfo = null;
       this.loadStep(phaseName, stepName);
       if (phaseName === 'Qualify') this.loadArtifacts([stepName]);
+      if (phaseName === 'Deploy') this.loadArtifacts([stepName.startsWith('deploy-') ? stepName : 'deploy-' + stepName]);
+    },
+    deployFailed() {
+      const s = this.sel && this.sel.steps && this.sel.steps.Deploy;
+      return !!(this.sel && this.sel.phase === 'Deploy' && s && Object.values(s).includes('fault'));
+    },
+    async doDeployRetry(mode) {
+      if (!this.sel) return;
+      try {
+        const res = await postDeployRetry(this.sel.port, mode);
+        this.actionMsg = res.ok ? `deploy ${mode} requested` : (res.reason || `deploy ${mode} failed`);
+      } catch (e) {
+        console.error(e);
+        this.actionMsg = 'deploy retry request failed';
+      }
+      await this.refresh();
     },
     async loadStep(phaseName, stepName) {
       const port = this.sel && this.sel.port; if (!port) return;

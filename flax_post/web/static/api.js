@@ -54,6 +54,13 @@ export async function postIdentify(port, mode) {
   });
   return { status: r.status, ...(await r.json()) };
 }
+export async function postDeployRetry(port, mode) {
+  const r = await fetch('/api/v1/deploy/retry', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ port, mode }),
+  });
+  return { status: r.status, ...(await r.json()) };
+}
 export async function fetchInventory(port, profile) {
   const q = profile ? ('?profile=' + encodeURIComponent(profile)) : '';
   const r = await fetch('/api/v1/inventory/' + encodeURIComponent(port) + q, { cache: 'no-store' });

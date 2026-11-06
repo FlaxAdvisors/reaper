@@ -59,3 +59,16 @@ apply_flax_post_power_hold_dir: /etc/flax/post-power-hold
 apply_flax_post_sol_capture_dir: /var/lib/flax/post-sol
 apply_flax_post_claim_dir: /run/flax/bmc-fw-active
 apply_flax_post_dnsmasq_log_dir: /var/log/dnsmasq
+
+# Loose Post Deploy (spec 2026-11-06 loose-post-deploy-stage). Off = a Qualify pass
+# goes straight to the Done tail, as before. On = flax-post-deployd (host-side,
+# VIP-gated) installs Ubuntu 24.04 + flax_user, runs iperf + stress, then the tail.
+apply_flax_post_deploy_enabled: false
+apply_flax_post_deployd_dir: /opt/flax/post-deployd
+# family (post's family map) = iPXE templates/<part>.part; the part's node-setting
+# picks the autoinstall under /export/install/canonical/ubuntu/24.04/
+apply_flax_post_deploy_platforms: "tiogapass=wiwynn-tp-hmc,leopard=leopard"
+apply_flax_post_deploy_max_parallel: 8
+# psycopg for the host python3.11 (= requirements.txt's pin), vendored like rackpost's pips
+apply_flax_post_deployd_pips:
+  - psycopg[binary,pool]==3.2.3

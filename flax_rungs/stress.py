@@ -25,6 +25,7 @@ did not answer ssh before anything ran, or a SEL read failed (SEL not read is no
 clean) and nothing else was wrong; else `pass`. Nothing here power-controls the node or
 clears its SEL. The artifacts are stress-ng's output, the dmesg delta and the SDR/SEL
 before and after."""
+import datetime
 import re
 import subprocess
 import threading
@@ -40,6 +41,16 @@ VM_WORKERS = 4
 DEADLINE_S = 1200
 POLL_S = 15
 DMESG_BAD = ("mce:", "Hardware Error", "EDAC", "temperature above threshold", "Machine check")
+# Hardware errors (operator 2026-11-06, final): fail on ANY uncorrectable one and on ANY correctable
+# one (CE_FAIL_AT = 1, kept as a knob); rasdaemon records each event decoded
+# (bank/status/address, AER device) so a failure names what it was.
+CE_FAIL_AT = 1
+_UNCORR = re.compile(r"uncorrect|fatal|Machine Check Exception|\bUE\b|panic", re.I)
+_THERMAL = "temperature above threshold"
+# one per hardware-error EVENT in dmesg (an APEI/AER report spans ~20 lines)
+_EVENT = re.compile(r"Machine check events logged|Hardware error from APEI|"
+                    r"EDAC \S+: \d+ (?:CE|UE)|AER: (?:Corrected|Uncorrected)", re.I)
+_RAS_EVENT = re.compile(r"^\s*\d+\s+(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d [+-]\d{4})\s+(.*\S)")
 _OUT, _RC = "/run/flax-deploy-stress.out", "/run/flax-deploy-stress.rc"
 _MARK = "===flax-stress-"
 
@@ -53,6 +64,11 @@ _PREP = (f"rm -f {_OUT} {_RC}\n"
          "command -v stress-ng >/dev/null || DEBIAN_FRONTEND=noninteractive "
          "apt-get -o DPkg::Lock::Timeout=120 install -y -q stress-ng >/dev/null 2>&1\n"
          "command -v stress-ng >/dev/null && echo HAVE || echo NOSTRESS\n"
+         "command -v ras-mc-ctl >/dev/null || DEBIAN_FRONTEND=noninteractive "
+         "apt-get -o DPkg::Lock::Timeout=120 install -y -q rasdaemon >/dev/null 2>&1\n"
+         "systemctl enable --now rasdaemon >/dev/null 2>&1; sleep 2\n"
+         "systemctl is-active --quiet rasdaemon && echo RAS yes || echo RAS no\n"
+         "echo T0W $(date +%s)\n"
          "echo T0 $(cut -d' ' -f1 /proc/uptime)\n")
 
 
@@ -64,7 +80,8 @@ def _launch(cmd: str) -> str:
 _DONE = f"test -s {_RC} && echo DONE || echo RUNNING\n"
 _COLLECT = (f"echo '{_MARK}out==='\ncat {_OUT} 2>/dev/null\n"
             f"echo '{_MARK}rc==='\ncat {_RC} 2>/dev/null\n"
-            f"echo '{_MARK}dmesg==='\ndmesg 2>&1\n")
+            f"echo '{_MARK}dmesg==='\ndmesg 2>&1\n"
+            f"echo '{_MARK}ras==='\nras-mc-ctl --errors 2>&1\n")
 _KILL = "pkill -f '^stress-ng' >/dev/null 2>&1; echo KILLED\n"
 _TS = re.compile(r"^\[\s*(\d+\.\d+)\]")
 # stress-ng --metrics-brief: "stress-ng: metrc: [pid] cpu  123456  600.01  ...  bogo/s"
@@ -87,6 +104,34 @@ def dmesg_delta(text: str, t0: float) -> list[str]:
 
 def dmesg_bad(lines: list[str]) -> list[str]:
     return [ln for ln in lines if any(p in ln for p in DMESG_BAD)]
+
+
+def hw_events(dmesg_lines: list[str], ras_text: "str | None", since_epoch: "float | None") -> dict:
+    """Hardware-error events during the run: {"corrected": n, "uncorrected": [..],
+    "thermal": [..], "source": "rasdaemon" | "dmesg"}. rasdaemon's decoded events (at or
+    after since_epoch) count when it ran; else the kernel log's event lines do."""
+    thermal = [ln for ln in dmesg_lines if _THERMAL in ln]
+    unc = [ln.strip() for ln in dmesg_lines if _EVENT.search(ln) and _UNCORR.search(ln)]
+    ras = []
+    for ln in (ras_text or "").splitlines():
+        m = _RAS_EVENT.match(ln)
+        if not m:
+            continue
+        try:
+            at = datetime.datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S %z").timestamp()
+        except ValueError:
+            continue
+        if since_epoch is None or at >= since_epoch - 1:
+            ras.append(m.group(2))
+    if ras_text is not None and since_epoch is not None:
+        unc += [e for e in ras if _UNCORR.search(e)]
+        corr = sum(1 for e in ras if not _UNCORR.search(e))
+        src = "rasdaemon"
+    else:
+        corr = sum(1 for ln in dmesg_lines if _EVENT.search(ln) and not _UNCORR.search(ln))
+        src = "dmesg"
+    return {"corrected": corr, "uncorrected": unc, "thermal": thermal, "source": src,
+            "ras_events": ras}
 
 
 def new_sel(before: str, after: str) -> str:
@@ -129,6 +174,8 @@ class _Node:
         self.rows: list[list[str]] = []
         self.arts: dict[str, str] = {}
         self.t0: float | None = None
+        self.t0w: float | None = None
+        self.ras = False
         self.started: float | None = None
         self.rc: int | None = None
         self.sel: dict[str, str | None] = {"before": None, "after": None}
@@ -174,6 +221,9 @@ class _Run:
             return
         m = re.search(r"^T0 ([\d.]+)", out, re.M)
         x.t0 = float(m.group(1)) if m else None
+        w = re.search(r"^T0W (\d+)", out, re.M)
+        x.t0w = float(w.group(1)) if w else None
+        x.ras = "RAS yes" in out
 
     def launch(self, xs):
         barrier = threading.Barrier(len(xs))
@@ -235,12 +285,26 @@ class _Run:
         delta = dmesg_delta(secs.get("dmesg", ""), x.t0 or 0.0)
         bad = dmesg_bad(delta)
         x.arts["dmesg-delta.txt"] = "".join(ln + "\n" for ln in delta)
-        x.detail["dmesg_bad"] = bad
+        ras = secs.get("ras") if x.ras else None
+        if ras:
+            x.arts["ras-mc-ctl-errors.txt"] = ras
+        ev = hw_events(delta, ras, x.t0w)
+        x.detail.update(dmesg_bad=bad, hw_corrected=ev["corrected"],
+                        hw_uncorrected=ev["uncorrected"], hw_source=ev["source"])
         x.rows.append(["dmesg during stress", f"{len(delta)} line(s), {len(bad)} MCE/EDAC/"
                                               "thermal"])
+        x.rows.append(["hardware errors", f"{len(ev['uncorrected'])} uncorrectable, "
+                       f"{ev['corrected']} correctable (fail at {CE_FAIL_AT}) from {ev['source']}"
+                       + ("" if x.ras else "; rasdaemon not running")])
+        x.rows += [["rasdaemon", e[:200]] for e in ev["ras_events"][:10]]
         x.rows += [["dmesg", ln] for ln in bad[:10]]
-        if bad:
-            x.problems.append(f"dmesg: {bad[0].strip()}")
+        if ev["uncorrected"]:
+            x.problems.append(f"uncorrectable hardware error: {ev['uncorrected'][0][:200]}")
+        if ev["corrected"] >= CE_FAIL_AT:
+            x.problems.append(f"{ev['corrected']} correctable hardware errors during stress "
+                              f"(fail at {CE_FAIL_AT})")
+        if ev["thermal"]:
+            x.problems.append(f"dmesg: {ev['thermal'][0].strip()}")
         x.rows += metrics(sout)
 
     def judge_sel(self, x):
@@ -266,9 +330,10 @@ class _Run:
                          + ("" if x.rc is None else f" -> rc {x.rc}")]] + x.rows,
                "notes": [f"stress-ng launched on every node within {spread:.1f} s"
                          if spread is not None else "stress-ng not launched",
-                         "fail: stress-ng rc != 0, a dmesg MCE/EDAC/thermal line, no ssh "
-                         "after, or a new non-benign SEL entry (60 s threshold transients "
-                         "are benign)"]}
+                         "fail: stress-ng rc != 0, any uncorrectable hardware error, "
+                         f"{CE_FAIL_AT}+ correctable ones (rasdaemon, else dmesg), a thermal "
+                         "throttle line, no ssh after, or a new non-benign SEL entry (60 s "
+                         "threshold transients are benign)"]}
         if x.problems:
             why = "; ".join(x.problems)
             return RungResult("fail", {**det, "headline": x.problems[0], "error": why},
@@ -277,8 +342,10 @@ class _Run:
             why = "; ".join(x.unanswered)
             return RungResult(UNMEASURED, {**det, "headline": x.unanswered[0], "reason": why,
                                            "error": why}, x.arts)
+        ce = x.detail.get("hw_corrected") or 0
         return RungResult("pass", {**det, "headline": f"stress-ng {self.seconds} s rc 0 · SEL "
-                                   f"{x.detail.get('sel_new', 0)} new, clean · dmesg clean"},
+                                   f"{x.detail.get('sel_new', 0)} new, clean · "
+                                   + (f"{ce} correctable hw error(s)" if ce else "dmesg clean")},
                           x.arts)
 
 

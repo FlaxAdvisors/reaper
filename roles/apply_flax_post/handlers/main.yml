@@ -74,3 +74,12 @@
   ansible.builtin.command:
     cmd: firewall-cmd --reload
   changed_when: true
+
+- name: Restart flax-post-deployd
+  # VIP-gated like the other post writers; never restart on the standby.
+  when: (apply_flax_stack_is_primary | default(true) | bool) and (apply_flax_post_deploy_enabled | bool)
+  become: true
+  ansible.builtin.systemd:
+    name: flax-post-deployd.service
+    state: restarted
+    daemon_reload: true

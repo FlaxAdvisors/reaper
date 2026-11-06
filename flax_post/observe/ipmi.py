@@ -715,6 +715,10 @@ def clear_fields_for(prior_row, mac, power, now=None) -> dict:
     lad = prior_row.get("ladder") or {}
     if lad.get("power_on_pending"):
         return {}
+    # Loose Post Deploy powers the node off (the autoinstall's shutdown) and on
+    # (first boot) itself: never a human restart of the blade's story
+    if (prior_row.get("deploy") or {}).get("state") == "running":
+        return {}
     last_attempt = lad.get("last_power_attempt")
     if last_attempt is not None and abs(now - last_attempt) <= ENGINE_POWER_WINDOW_S:
         return {}

@@ -246,3 +246,79 @@
     # VIP-exclusive — tracks the viewer it fronts (master-only).
     enabled: false
     daemon_reload: true
+
+# ---- flax-post-deployd: Loose Post Deploy, host-side (spec 2026-11-06) ----
+- name: Create the deployd code + work dirs
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ apply_flax_post_deployd_dir }}"
+    - "{{ apply_flax_post_deployd_dir }}/vendor"
+    - /var/lib/flax-post-deployd
+
+- name: Deploy flax_post + flax_rungs for deployd
+  become: true
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../{{ item }}/"
+    dest: "{{ apply_flax_post_deployd_dir }}/{{ item }}/"
+    owner: root
+    group: root
+    mode: preserve
+  loop:
+    - flax_post
+    - flax_rungs
+  notify: Restart flax-post-deployd
+
+- name: Deploy dimmerr.sh for deployd (piped to the installed OS over ssh)
+  become: true
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../scripts/dimmerr.sh"
+    dest: "{{ apply_flax_post_deployd_dir }}/dimmerr.sh"
+    owner: root
+    group: root
+    mode: "0644"
+
+# pip --target always reports changed: the pinned dist-info dir is the marker
+- name: Check the vendored psycopg pin
+  ansible.builtin.stat:
+    path: "{{ apply_flax_post_deployd_dir }}/vendor/psycopg-3.2.3.dist-info"
+  register: apply_flax_post_deployd_pip_marker
+
+- name: Vendor psycopg for the host python3.11
+  become: true
+  ansible.builtin.pip:
+    name: "{{ apply_flax_post_deployd_pips }}"
+    executable: pip3.11
+    extra_args: "--upgrade --target {{ apply_flax_post_deployd_dir }}/vendor"
+  when: not apply_flax_post_deployd_pip_marker.stat.exists
+  notify: Restart flax-post-deployd
+
+- name: Deploy flax-post-deployd.service unit
+  become: true
+  ansible.builtin.template:
+    src: flax-post-deployd.service.j2
+    dest: /etc/systemd/system/flax-post-deployd.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-post-deployd
+
+- name: Register flax-post-deployd (VIP-gated; started by the handler / notify_master)
+  become: true
+  ansible.builtin.systemd:
+    name: flax-post-deployd.service
+    enabled: false
+    daemon_reload: true
+
+- name: Stop flax-post-deployd while Deploy is off
+  become: true
+  ansible.builtin.systemd:
+    name: flax-post-deployd.service
+    state: stopped
+  when: not (apply_flax_post_deploy_enabled | bool)
+  failed_when: false

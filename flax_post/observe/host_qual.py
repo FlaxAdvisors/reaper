@@ -16,6 +16,7 @@ import time
 from .. import actions
 from .. import blades
 from .. import blocklist  # noqa: F401 -- qualify_rules' judges, kept reachable here
+from .. import deploy as _deploy
 from .. import fio_judge
 from .. import population  # noqa: F401
 from .. import shipchecks
@@ -429,7 +430,12 @@ def poll_target(target, *, make_client=_default_make_client, store=_state,
                     except Exception:
                         log.exception("update_result failed for %s", target.get("port"))
         else:
-            done = run_done(target, verdict)
+            if verdict == "pass" and _deploy.enabled():
+                # Loose Post Deploy (spec 2026-11-06): the node stays up for
+                # flax-post-deployd, which runs the Done tail after Deploy
+                done = {"verdict": "pass", "deploy": "pending"}
+            else:
+                done = run_done(target, verdict)
             # Freeze the run's Discover + Firmware results with the verdict
             # (ruling 2026-09-12): the worker passes the blade record's step
             # maps in target["steps"]; after the power-off below the live

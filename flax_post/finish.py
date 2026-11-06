@@ -63,8 +63,16 @@ class FinishError(Exception):
 
 def is_done(run) -> bool:
     """A run that reached Done: a pass verdict (the Done tail identifies + powers off
-    only on pass). Failed, unfinished or verdict-less runs are not Done."""
-    return (run or {}).get("verdict") == "pass"
+    only on pass). Failed, unfinished or verdict-less runs are not Done. A run that
+    waits for Deploy (done.deploy pending) is Done only once Deploy passed or skipped
+    (no system storage): a Deploy fail is a function failure."""
+    run = run or {}
+    if run.get("verdict") != "pass":
+        return False
+    res = run.get("result") or {}
+    if (res.get("done") or {}).get("deploy") == "pending":
+        return (res.get("deploy") or {}).get("verdict") in ("pass", "skip")
+    return True
 
 
 def members(runs):
@@ -184,12 +192,20 @@ def build_payload(order_no, mems, *, customer, sales, site, get_artifacts, close
                         "bios_version": (fw.get("bios") or {}).get("current")
                         or (parsed.get("bios") or {}).get("version"),
                         "bmc_version": bmc_ver, "nic_firmware": nic_fw or None,
-                        "qualify": verdict, "done": fin})
+                        "qualify": verdict, "deploy": (result.get("deploy") or {}).get("verdict"),
+                        "done": fin})
         steps = ((result.get("qual") or {}).get("steps") or {})
-        for name in sorted(set(steps) | set(stage_paths)):
+        for name in sorted((set(steps) | set(stage_paths)) - {n for n in stage_paths
+                                                             if n.startswith("deploy-")}):
             rungs.append({"pos": sn, "stage": "Qualify", "rung": name,
                           "verdict": (steps.get(name) or {}).get("status"),
                           "finished_at": fin, "artifacts": sorted(stage_paths.get(name, []))})
+        dsteps = (result.get("deploy") or {}).get("steps") or {}
+        for name, st in dsteps.items():
+            rungs.append({"pos": sn, "stage": "Deploy", "rung": name,
+                          "verdict": (st or {}).get("status"), "finished_at": fin,
+                          "artifacts": sorted(stage_paths.get(name if name.startswith("deploy-")
+                                                             else "deploy-" + name, []))})
         rungs.append({"pos": sn, "stage": "Done", "rung": "done",
                       "verdict": (result.get("done") or {}).get("verdict") or m.get("verdict"),
                       "finished_at": fin, "artifacts": []})

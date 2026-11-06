@@ -15,7 +15,7 @@ from .nicd.classify import aggregate as _nic_aggregate
 from .shipchecks import SHIP_CHECKS
 
 SWITCH = "rabbit-edam"
-PHASES = ("Discover", "Firmware", "Qualify", "Done")
+PHASES = ("Discover", "Firmware", "Qualify", "Deploy", "Done")
 
 
 def post_switch(geo) -> str:
@@ -104,6 +104,8 @@ PHASE_STEPS = {
                 "inventory", "smart-health", "fio", "population-check", "smbios-serial", "tpm-state",
                 "iperf", "mem-pre",
                 "cpu-mem-stress", "mem-post", "sdr-post", "sel-post", "console"),
+    # = flax_post.deploy.PHASES (pinned by test; not imported: deploy pulls flax_rungs)
+    "Deploy": ("install", "firstboot", "flax-user", "deploy-iperf", "deploy-stress"),
     "Done": ("identify", "power-off", "done"),
 }
 _COL_ORDER = {"L": 0, "C": 1, "R": 2, "A": 0, "B": 1, "D": 3, "full": 0}
@@ -514,6 +516,54 @@ def chip_phase(phase: str, steps: dict, holes: dict) -> str:
     return phase
 
 
+_DEPLOY_MAP = {"pass": "done", "running": "cur", "pending": "pending", "fail": "fault",
+               "unmeasured": "fault", "skip": "skip"}
+
+
+def deploy_slice(st) -> "dict | None":
+    """This run's Deploy slice when the run waits for Deploy (done.deploy pending), {}
+    when it waits but Deploy has not started; None when the run has no Deploy (Deploy
+    off, a Qualify fail, a run from before Deploy)."""
+    done = st.get("done") or {}
+    if done.get("verdict") != "pass" or done.get("deploy") != "pending":
+        return None
+    dep = st.get("deploy") or {}
+    return dep if dep.get("run_id") == (st.get("qual") or {}).get("run_id") else {}
+
+
+def deploy_finished(dep) -> bool:
+    return dep is None or dep.get("verdict") in ("pass", "skip")
+
+
+def _deploy_steps(st) -> dict:
+    dep = deploy_slice(st)
+    names = PHASE_STEPS["Deploy"]
+    if dep is None:
+        return {n: "skip" for n in names}
+    steps = dep.get("steps") or {}
+    out = {n: _DEPLOY_MAP.get((steps.get(n) or {}).get("status"), "pending") for n in names}
+    if dep.get("verdict") == "skip":
+        out = {n: "skip" for n in names}
+    return out
+
+
+def _deploy_notes(st) -> "tuple[dict, dict]":
+    """({step: note} for skips / kept installs, {step: reason} for failures)."""
+    dep = deploy_slice(st) or {}
+    notes, faults = {}, {}
+    for n, rec in (dep.get("steps") or {}).items():
+        rec = rec or {}
+        if rec.get("status") == "skip" and rec.get("reason"):
+            notes[n] = rec["reason"]
+        elif rec.get("status") in ("fail", "unmeasured") and rec.get("reason"):
+            faults[n] = rec["reason"]
+    if dep.get("verdict") == "skip" and dep.get("reason"):
+        notes["install"] = dep["reason"]
+    elif dep.get("verdict") in ("fail", "interrupted") and dep.get("reason") and not faults:
+        faults[dep.get("phase") or "install"] = dep["reason"]
+    return notes, faults
+
+
 def _done_steps(st, holes=None):
     """identify -> power-off -> done, from post_state.vars.done. No verdict -> all
     pending; a fail verdict leaves them pending (node stays powered). A tail step
@@ -527,6 +577,12 @@ def _done_steps(st, holes=None):
     done = st.get("done") or {}
     if done.get("verdict") != "pass":
         return {s: "pending" for s in PHASE_STEPS["Done"]}
+    dep = deploy_slice(st)
+    if dep is not None:
+        # Deploy ran the tail (flax-post-deployd), only after it passed or skipped
+        if not deploy_finished(dep):
+            return {s: "pending" for s in PHASE_STEPS["Done"]}
+        done = dict(done, **(dep.get("tail") or {}))
 
     def _m(v):
         return "done" if v == "done" else ("fault" if v == "fault" else "cur")
@@ -552,7 +608,7 @@ def _record(slot, c, st, settings, live_link, macs, node=None):
     discover_steps = _discover_steps(c, st, live_link)
     discover_done = phase_advances(discover_steps)
     steps = {"Discover": discover_steps, "Firmware": _firmware_steps(st),
-             "Qualify": _qualify_steps(st)}
+             "Qualify": _qualify_steps(st), "Deploy": _deploy_steps(st)}
     fw_gates = fw_gates_passed(st)
     qualify_done = phase_done(steps["Qualify"])
     # Completion latch (spec 2026-09-11): once the Done tail has recorded a
@@ -568,12 +624,15 @@ def _record(slot, c, st, settings, live_link, macs, node=None):
     # not what the live signals say after power-off.
     holes = run_holes(steps) if verdict is not None else {}
     steps["Done"] = _done_steps(st, holes if verdict == "pass" else None)
-    clean = verdict == "pass" and not holes
+    dep_done = deploy_finished(deploy_slice(st))
+    clean = verdict == "pass" and not holes and dep_done
     fault_notes = _fault_notes(st)
+    dnotes, dfaults = _deploy_notes(st)
+    fault_notes.update(dfaults)
     if verdict == "pass" and holes:
         fault_notes["done"] = "run not clean: " + holes_text(holes)
     if verdict == "pass":
-        phase = "Done"
+        phase = "Done" if dep_done else "Deploy"
     elif verdict == "fail":
         phase = "Qualify"       # latched red: the failed step stays visible
     elif not discover_done:
@@ -599,12 +658,14 @@ def _record(slot, c, st, settings, live_link, macs, node=None):
         "bmc_pinged": bool(st.get("bmc_pinged")),
         "phase": phase,
         "chip_phase": chip_phase(phase, steps, holes),
-        "step": ("not clean" if holes else None) if verdict == "pass" else next(
+        "step": (next((n for n, v in steps["Deploy"].items() if v in ("cur", "fault")), "deploy")
+                 if phase == "Deploy" else
+                 ("not clean" if holes else None)) if verdict == "pass" else next(
             (n for n, s in discover_steps.items() if s not in _ADVANCES), None),
         "steps": steps,
         "clean": clean,
         "holes": holes,
-        "step_notes": _step_notes(st),
+        "step_notes": {**_step_notes(st), **dnotes},
         "step_flags": _step_flags(st),
         "fault_notes": fault_notes,
         "ladder_view": _ladder_view(st),

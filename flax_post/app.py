@@ -1,4 +1,5 @@
 """flax-post — Eindhoven Post Servers viewer (read-only, source='post' devices)."""
+import time
 import logging
 import os
 from datetime import timezone
@@ -381,6 +382,27 @@ async def api_qual_restart(request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "reason": "unknown port or no host_ip"}, status_code=400)
     result = await run_in_threadpool(host_qual.restart_target, t)
     return JSONResponse(result)
+
+
+@app.post("/api/v1/deploy/retry")
+async def api_deploy_retry(request: Request) -> JSONResponse:
+    """RETRY a failed Deploy (spec 2026-11-06 loose-post-deploy-stage): mode `rerun`
+    (keep the disk: first boot, then the phases that did not pass) or `reinstall`
+    (wipe + install, then the rest). Writes vars.deploy_request only;
+    flax-post-deployd owns vars.deploy and picks the request up."""
+    body = await request.json()
+    port, mode = body.get("port"), body.get("mode")
+    if mode not in ("rerun", "reinstall"):
+        return JSONResponse({"ok": False, "reason": "mode must be rerun or reinstall"}, status_code=400)
+    row = state.read_state().get(port)
+    if row is None:
+        return JSONResponse({"ok": False, "reason": "unknown port"}, status_code=404)
+    dep = row.get("deploy") or {}
+    if dep.get("state") not in ("fail", "interrupted") or \
+            dep.get("run_id") != (row.get("qual") or {}).get("run_id"):
+        return JSONResponse({"ok": False, "reason": "no failed Deploy on this run"}, status_code=409)
+    state.set_state(port, deploy_request={"mode": mode, "at": time.time()})
+    return JSONResponse({"ok": True, "mode": mode})
 
 
 @app.get("/api/v1/healthz")

@@ -52,7 +52,7 @@ _NGINX = {      # mark -> request path (status 200/206 only: a 404 is not a fetc
     "initrd": r"/install/+canonical/ubuntu/24\.04/ga/casper/initrd",
     "kernel": r"/install/+canonical/ubuntu/24\.04/ga/casper/vmlinuz",
     "iso": r"/isos/+canonical/ubuntu/24\.04/[^ \"]+\.iso",
-    "user-data": r"/install/+canonical/ubuntu/24\.04/wiwynn-tp/user-data",
+    "user-data": r"/install/+canonical/ubuntu/24\.04/[\w.-]+/user-data",
 }
 _LABELS = (("tftp", "tftp (iPXE binary)"), ("boot.ipxe", "boot.ipxe fetched"),
            ("hostname.ipxe", "hostname file fetched"), ("initrd", "installer initrd"),
@@ -60,9 +60,9 @@ _LABELS = (("tftp", "tftp (iPXE binary)"), ("boot.ipxe", "boot.ipxe fetched"),
            ("user-data", "autoinstall user-data"))
 
 
-def preflight(install_root: str = INSTALL_ROOT) -> str | None:
+def preflight(install_root: str = INSTALL_ROOT, autoinstall: str = AUTOINSTALL) -> str | None:
     """None when the installer and autoinstall are served, else what is missing."""
-    for rel in (*INSTALLER, AUTOINSTALL):
+    for rel in (*INSTALLER, autoinstall):
         p = Path(install_root) / rel
         if not p.is_file():
             hint = " (ISO not mounted? run mountisos)" if rel in INSTALLER else ""
@@ -112,10 +112,14 @@ def install(bmc_ip: str, host_ip: str, hostname: str, creds, *, sol_path=None,
             deadline_s: int = 3600, poll_s: int = 30, pxe_dir: str = pxeboot.PXE_DIR,
             install_root: str = INSTALL_ROOT, dnsmasq: str | None = None,
             nginx: str | None = None, runner=subprocess.run, sleep=time.sleep,
-            clock=time.monotonic, wall=time.time) -> RungResult:
+            clock=time.monotonic, wall=time.time, platform: str = pxeboot.PLATFORM,
+            autoinstall: str = AUTOINSTALL, bootdev_persistent: bool = True) -> RungResult:
+    """platform: the iPXE templates/<platform>.part (its node-setting picks the
+    autoinstall dir); autoinstall: that dir's user-data, checked by preflight. The
+    defaults are rackpost's Tioga Pass pair."""
     detail = {"override": None, "power_action": None, "file": None, "file_removed": None,
-              "off_after_s": None, "marks": {}, "cipher": None}
-    missing = preflight(install_root)
+              "off_after_s": None, "marks": {}, "cipher": None, "platform": platform}
+    missing = preflight(install_root, autoinstall)
     if missing:
         return _done(detail, "fail", f"installer not served: {missing}", [], [])
     info: dict = {}
@@ -124,7 +128,7 @@ def install(bmc_ip: str, host_ip: str, hostname: str, creds, *, sol_path=None,
     if state is None:
         why = "power state unknown (no IPMI answer on any credential/cipher); not acting"
         return _done(detail, UNMEASURED, why, [], [])
-    w = pxeboot.write(hostname, pxe_dir=pxe_dir)
+    w = pxeboot.write(hostname, platform=platform, pxe_dir=pxe_dir)
     if w.verdict != "pass":
         return _done(detail, "fail", f"hostname iPXE file: {w.detail.get('error')}", [], [])
     detail["file"] = w.detail["path"]
@@ -133,6 +137,7 @@ def install(bmc_ip: str, host_ip: str, hostname: str, creds, *, sol_path=None,
     t0w = wall()
     try:
         res = _install_wait(detail, marks, bmc_ip, host_ip, hostname, creds, state,
+                            persistent=bootdev_persistent,
                             deadline_s=deadline_s, poll_s=poll_s, pxe_dir=pxe_dir,
                             dnsmasq=dnsmasq, nginx=nginx, runner=runner, sleep=sleep,
                             clock=clock, wall=wall)
@@ -170,9 +175,10 @@ def _done(detail, verdict, why, rows, notes, arts=None) -> RungResult:
 
 
 def _install_wait(detail, marks, bmc_ip, host_ip, hostname, creds, state, *, deadline_s,
-                  poll_s, pxe_dir, dnsmasq, nginx, runner, sleep, clock, wall):
+                  poll_s, pxe_dir, dnsmasq, nginx, runner, sleep, clock, wall, persistent=True):
     """(verdict, headline) of steps 3-4; fills detail/marks as it goes."""
-    ov = redfish.set_boot_pxe(bmc_ip, creds.redfish, ipmi_creds=creds.bmc, runner=runner)
+    ov = redfish.set_boot_pxe(bmc_ip, creds.redfish, ipmi_creds=creds.bmc, runner=runner,
+                              persistent=persistent)
     if ov.verdict != "pass":
         return "fail", f"boot override: {ov.detail.get('error')}"
     detail["override"] = f"Pxe ({ov.detail.get('method')})"
@@ -277,7 +283,7 @@ def root_disk(p: dict) -> tuple[str | None, str | None]:
 def firstboot(bmc_ip: str, host_ip: str, hostname: str, creds, *,
               expect_mac: str | None = None, sol_path=None, deadline_s: int = 1200,
               poll_s: int = 15, pxe_dir: str = pxeboot.PXE_DIR, runner=subprocess.run,
-              sleep=time.sleep, clock=time.monotonic) -> RungResult:
+              sleep=time.sleep, clock=time.monotonic, bootdev_persistent: bool = True) -> RungResult:
     detail = {"override": None, "power_action": None, "ssh_user": None, "ssh_after_s": None,
               "old_boot_id": None, "boot_id": None, "uptime_s": None, "version_id": None,
               "root": None, "disk": None, "hostname": None, "cipher": None}
@@ -295,7 +301,8 @@ def firstboot(bmc_ip: str, host_ip: str, hostname: str, creds, *,
     if state is None:
         why = "power state unknown (no IPMI answer on any credential/cipher); not acting"
         return _done(detail, UNMEASURED, why, [], [])
-    ov = redfish.set_boot_disk(bmc_ip, creds.redfish, ipmi_creds=creds.bmc, runner=runner)
+    ov = redfish.set_boot_disk(bmc_ip, creds.redfish, ipmi_creds=creds.bmc, runner=runner,
+                               persistent=bootdev_persistent)
     if ov.verdict != "pass":
         return _done(detail, "fail", f"Hdd boot override: {ov.detail.get('error')}", [], [])
     detail["override"] = f"Hdd ({ov.detail.get('method')})"

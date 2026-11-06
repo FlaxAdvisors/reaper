@@ -38,7 +38,8 @@ def _patch(ip: str, user: str, pw: str, body: str, runner):
 
 def set_boot_pxe(bmc_ip: str, creds: list[tuple[str, str]], *, enable: bool = True,
                  ipmi_creds: list[tuple[str, str]] | None = None,
-                 runner=subprocess.run) -> RungResult:
+                 runner=subprocess.run, persistent: bool = True) -> RungResult:
+    """persistent: the ipmitool fallback's options (False = next boot only)."""
     body = _body(enable)
     last = ""
     for user, pw in creds:
@@ -49,7 +50,7 @@ def set_boot_pxe(bmc_ip: str, creds: list[tuple[str, str]], *, enable: bool = Tr
         last = f"http {code}" if code else "no reply"
     info = {}
     if enable and bmc.bootdev_pxe(bmc_ip, ipmi_creds if ipmi_creds is not None else creds,
-                                  info=info, runner=runner):
+                                  info=info, runner=runner, persistent=persistent):
         return RungResult("pass", {"method": "ipmitool", "enable": True, "redfish": last,
                                    "cipher": info.get("cipher")})
     return RungResult("fail", {"error": last or "no Redfish credentials", "enable": enable})
@@ -57,7 +58,7 @@ def set_boot_pxe(bmc_ip: str, creds: list[tuple[str, str]], *, enable: bool = Tr
 
 def set_boot_disk(bmc_ip: str, creds: list[tuple[str, str]], *,
                   ipmi_creds: list[tuple[str, str]] | None = None,
-                  runner=subprocess.run) -> RungResult:
+                  runner=subprocess.run, persistent: bool = True) -> RungResult:
     """Hdd/Continuous/UEFI (ghost setbootdisk's body): the node boots its installed OS
     whatever the post-install UEFI order says. ipmitool `bootdev disk` is the fallback."""
     body = _body(True, "Hdd")
@@ -70,7 +71,7 @@ def set_boot_disk(bmc_ip: str, creds: list[tuple[str, str]], *,
         last = f"http {code}" if code else "no reply"
     info = {}
     if bmc.bootdev_disk(bmc_ip, ipmi_creds if ipmi_creds is not None else creds,
-                        info=info, runner=runner):
+                        info=info, runner=runner, persistent=persistent):
         return RungResult("pass", {"method": "ipmitool", "target": "Hdd", "redfish": last,
                                    "cipher": info.get("cipher")})
     return RungResult("fail", {"error": last or "no Redfish credentials", "target": "Hdd"})

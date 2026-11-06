@@ -362,6 +362,10 @@
           </div>
         </div>
         <div v-else-if="modal?.kind==='step'">
+          <div class="m-actions" v-if="modal?.phase==='Deploy' && deployFailed()">
+            <button title="keep the installed disk: first boot, then the phases that did not pass" @click="doDeployRetry('rerun')">Re-run</button>
+            <button title="wipe the system disk and install Ubuntu again, then the rest" @click="doDeployRetry('reinstall')">Reinstall</button>
+            <span class="asg-msg" v-if="actionMsg">{{actionMsg}}</span></div>
           <p class="m-sub">{{modal?.phase}} · step <b>{{modal?.step}}</b>
             <span class="pop-badge" :class="'st-'+(stepInfo?.flag ? 'flag' : (stepInfo?.status||'pending'))">{{stepInfo?.status_word || stepWord(stepInfo?.status || (sel?.steps?.[modal?.phase]?.[modal?.step]) || 'pending')}}{{stepInfo?.flag ? ' · flagged' : ''}}</span></p>
           <p class="pending-note" v-if="stepInfo?.flag" style="color:var(--flag)">{{stepInfo?.headline}}</p>
@@ -383,7 +387,7 @@
             <thead><tr><th>time</th><th>since on</th><th>event</th><th></th></tr></thead>
             <tbody><tr v-for="r in ladderRows(sel, modal?.step)" :class="r.cls||''"><td class="mono">{{r.t}}</td><td class="mono">{{r.since}}</td><td>{{r.event}}</td><td class="dim">{{r.extra}}</td></tr></tbody>
           </table>
-          <div v-if="modal?.phase==='Qualify'">
+          <div v-if="modal?.phase==='Qualify' || modal?.phase==='Deploy'">
             <p class="pending-note" v-if="artLoading">loading artifacts…</p>
             <p class="pending-note" v-else-if="!artifacts || !artifacts.length">no artifact for this step</p>
             <div v-else>

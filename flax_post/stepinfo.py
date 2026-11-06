@@ -15,6 +15,7 @@ range (blades step_flags; the status stays `done`).
 rendered generically by rack.html. Rows are short label/value pairs; notes
 are sentences (fault reasons, provenance, what a status means here).
 """
+import datetime
 import time
 
 from flax_rungs import fio as fio_rung
@@ -343,8 +344,38 @@ _QUAL_HINTS = {
 }
 
 
+_DEPLOY_DESC = {
+    "install": "wipe the system disk and install Ubuntu 24.04 by PXE (the family's autoinstall); "
+               "kept when post installed this blade before (same BMC MAC + serial)",
+    "firstboot": "boot from disk and prove the installed OS as flax (24.04, not PXE, not USB, host MAC)",
+    "flax-user": "flax_user.yml against the installed OS",
+    "deploy-iperf": "the installed OS against the site's post iperf server, both directions, each >= 0.8 x link speed",
+    "deploy-stress": "stress-ng on the installed OS; fails on a new non-benign SEL entry, an irregular SDR sensor, "
+                     "any DIMM ce/ue increase (dimmerr), an MCE/EDAC/thermal dmesg line, or stress-ng rc != 0",
+}
+
+
+def _deploy(rec, row, step, status):
+    dep = row.get("deploy") or {}
+    s = (dep.get("steps") or {}).get(step) or {}
+    rows = [list(r) for r in (s.get("rows") or []) if isinstance(r, (list, tuple)) and len(r) == 2]
+    head = [["mode", dep.get("mode") or "—"], ["platform", dep.get("platform") or "—"],
+            ["disk", dep.get("storage") or dep.get("disk") or "—"]] if step == "install" else []
+    for k in ("started", "ended"):
+        if s.get(k):
+            head.append([k, datetime.datetime.fromtimestamp(s[k], datetime.timezone.utc)
+                         .strftime("%Y-%m-%d %H:%M:%S UTC")])
+    notes = [_DEPLOY_DESC.get(step, "")]
+    if s.get("reason") and status not in ("fault",):
+        notes.insert(0, s["reason"])
+    return head + rows, [n for n in notes if n]
+
+
 def _done(rec, row, step, status):
     d = row.get("done") or {}
+    if (d.get("deploy") == "pending" and (row.get("deploy") or {}).get("run_id")
+            == (row.get("qual") or {}).get("run_id")):
+        d = dict(d, **((row.get("deploy") or {}).get("tail") or {}))
     rows, notes = [], []
     if step == "identify":
         rows = [["result", d.get("identify") or "not run"]]
@@ -382,7 +413,8 @@ def detail(rec: dict, row: dict, phase: str, step: str, get_artifact=None) -> di
     step's table reads them on click); None = no table."""
     steps = (rec.get("steps") or {}).get(phase) or {}
     status = steps.get(step, "pending")
-    fn = {"Discover": _discover, "Firmware": _firmware, "Qualify": _qualify, "Done": _done}.get(phase)
+    fn = {"Discover": _discover, "Firmware": _firmware, "Qualify": _qualify, "Deploy": _deploy,
+          "Done": _done}.get(phase)
     extra = {}
     if phase == "Qualify":
         out = _qualify(rec, row or {}, step, status, get_artifact)
