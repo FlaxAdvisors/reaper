@@ -13,6 +13,9 @@ artifact the rungs reference plus the order's documents), so the archive needs
 neither the order dir nor the bang that ran the order; each blob is decompressed and
 checked against its size and sha256 before any DB access. A device's
 `sales` (039) is the order's business sales order number (a label, never a key).
+`closed_by` (041) names the tool that closed the order ('rackpost' default, or
+'post' for the Post UI's Finish); a replace whose existing rows were closed by the
+other tool is refused (CrossTool -> 409) before anything is deleted.
 `identity` (038) is its rendered identity read: {title, serial, rows: [[label,
 value]], raw: {name: artifact path}}, or null.
 """
@@ -32,11 +35,16 @@ ORDER_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 RACK_RE = re.compile(r"[a-z]?")
 SALES_RE = re.compile(r"[A-Za-z0-9._-]{0,64}")
 MAC_ROLES = ("host", "bmc", "iom1", "iom2", "fabric_a", "fabric_b", "switch")
+CLOSED_BY = ("rackpost", "post")
 TABLES = ("order_device", "order_mac", "order_component", "order_rung", "order_artifact")
 ARTIFACT_STATUS = ("stored", "too_large", "missing")
 MAX_FILE = 5 * 1024 * 1024           # raw bytes, as rackpost's archive.MAX_FILE
 # no quote, space, $ or backslash: the viewer passes the path through sh -c into psql
 _PATH_RE = re.compile(r"[A-Za-z0-9._@+=:,-][A-Za-z0-9._@+=:,/-]{0,511}")
+
+
+class CrossTool(Exception):
+    """The (order_id, rack) archive was closed by the other tool; nothing written."""
 
 
 class BadValue(ValueError):
@@ -140,6 +148,10 @@ def _rows(payload: dict) -> tuple[dict, dict[str, list[tuple]]]:
     sales = _str(payload.get("sales"), "sales", null=True)
     if sales is not None and not SALES_RE.fullmatch(sales):
         raise BadValue(f"bad sales: {sales!r}")
+    closed_by = payload.get("closed_by", "rackpost")
+    if closed_by not in CLOSED_BY:
+        raise BadValue(f"bad closed_by: {closed_by!r}")
+    key["closed_by"] = closed_by
     closed_at = _ts(payload.get("closed_at"), "closed_at")
     order_dir = _str(payload.get("order_dir"), "order_dir", null=True)
 
@@ -153,7 +165,8 @@ def _rows(payload: dict) -> tuple[dict, dict[str, list[tuple]]]:
                         *(_str(d.get(c), f"{pos} {c}", null=True) for c in
                           ("kind", "part", "hostname", "chassis_serial", "final_verdict",
                            "ha_mode")),
-                        closed_at, order_dir, _identity(d.get("identity"), pos), sales or None))
+                        closed_at, order_dir, _identity(d.get("identity"), pos), sales or None,
+                        closed_by))
     macs = []
     for m in _list(payload, "macs"):
         pos = _str(m.get("pos"), "mac pos", empty=False)
@@ -196,8 +209,8 @@ def _rows(payload: dict) -> tuple[dict, dict[str, list[tuple]]]:
 _INSERT = {
     "order_device": "INSERT INTO rackpost.order_device (order_id, rack, customer, site, "
                     "pos, ou, kind, part, hostname, chassis_serial, final_verdict, ha_mode, "
-                    "closed_at, order_dir, identity, sales) VALUES "
-                    "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)",
+                    "closed_at, order_dir, identity, sales, closed_by) VALUES "
+                    "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)",
     "order_mac": "INSERT INTO rackpost.order_mac (order_id, rack, pos, role, mac) "
                  "VALUES (%s, %s, %s, %s, %s)",
     "order_component": "INSERT INTO rackpost.order_component (order_id, rack, pos, kind, "
@@ -217,6 +230,13 @@ def replace(payload: dict) -> dict:
     access."""
     key, rows = _rows(payload)
     with get_pool().connection() as conn, conn.transaction():
+        prior = {r[0] for r in conn.execute(
+            "SELECT DISTINCT closed_by FROM rackpost.order_device "
+            "WHERE order_id = %(order_id)s AND rack = %(rack)s", key).fetchall()}
+        other = prior - {key["closed_by"]}
+        if other:
+            raise CrossTool(f"order {key['order_id']} rack {key['rack']!r} was closed by "
+                            f"{sorted(other)[0]}; refusing a {key['closed_by']} replace")
         for t in TABLES:
             conn.execute(f"DELETE FROM rackpost.{t} WHERE order_id = %(order_id)s "
                          "AND rack = %(rack)s", key)
