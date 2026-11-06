@@ -107,6 +107,8 @@
     - Restart flax-post-fwd
     - Restart flax-post-biosd
     - Restart flax-post-nicd
+    # deployd reads this env too (FLAX_POST_DEPLOY, PG*): an on/off flip lands here
+    - Restart flax-post-deployd
     # NOT flax-post-sol: it has no EnvironmentFile and doesn't read flax-post.env.
     # Restarting it on unrelated env changes would drop all live/retained SOL
     # session buffers. Its own template task (below) notifies Restart flax-post-sol
@@ -314,6 +316,15 @@
     name: flax-post-deployd.service
     enabled: false
     daemon_reload: true
+
+# A handler fires only on a change; a bang whose deployd files were already in place
+# (shipped off, then switched on) must still get it running on the VIP holder.
+- name: Start flax-post-deployd on the VIP holder while Deploy is on
+  become: true
+  ansible.builtin.systemd:
+    name: flax-post-deployd.service
+    state: started
+  when: (apply_flax_post_deploy_enabled | bool) and (apply_flax_stack_is_primary | default(true) | bool)
 
 - name: Stop flax-post-deployd while Deploy is off
   become: true
