@@ -7,10 +7,13 @@ reinstall is a later plan). Each read is one tagged shell script over the host s
                   nvidia-driver-580-server + cuda-toolkit-12-9 installed and held (Volta
                   left -open and CUDA 13), `nvidia-smi -L` = the Big Basin's expect.gpu,
                   BIOS MMIO High Size 1024G (a V100-32G BAR1 is 32 GiB; read from a fresh
-                  SCELNX_64 /o dump -- a read, no reboot)
+                  SCELNX_64 /o dump -- a read, no reboot; the tool is fetched per run from
+                  the share's AMI tpm_enabler bundle, as post's tpm_sce.py does -- an
+                  installed OS has no /opt/flax/bin/SCELNX_64)
   lightning-head  NO pci= args (hpbussize=0x40 starves the PM8536's 16 ports and the mezz
                   NIC of buses: howlin 2026-10-28)
   others          nothing to check ("no kind setup")"""
+import os
 import re
 
 from .result import RungResult
@@ -18,13 +21,17 @@ from .result import RungResult
 BB_PCI_ARGS = "pci=assign-busses,realloc,hpbussize=0x40,hpmmioprefsize=256G"
 BB_PKGS = ("nvidia-driver-580-server", "cuda-toolkit-12-9")
 MMIO_WANT = "1024G"
-SCELNX = "/opt/flax/bin/SCELNX_64"
+# Same bundle + URL as roles/apply_pxe_payloads/files/post/tpm_sce.py (SHARE_TGZ).
+SCE_TGZ_URL = os.environ.get(
+    "KIND_SCE_TGZ_URL",
+    "http://bang/share/SXC-Lab_OCP-Updates/Linux_Flash_Utilities/tpm_enabler.v4.tgz")
 _CMD = {
     "cmdline": "cat /proc/cmdline # cmdline",
     "pkgs": "dpkg -l " + " ".join(BB_PKGS) + " 2>/dev/null | grep -E '^(ii|hi) ' # pkgs",
     "gpus": "nvidia-smi -L 2>/dev/null # gpus",
-    "mmio": (f"f=$(mktemp) && {SCELNX} /o /s \"$f\" >/dev/null 2>&1 && "
-             "grep -A8 'MMIO High Size' \"$f\"; rm -f \"$f\" # mmio"),
+    "mmio": (f"d=$(mktemp -d) && curl -fsSL '{SCE_TGZ_URL}' | tar -xz -C \"$d\" SCELNX_64 && "
+             "\"$d/SCELNX_64\" /o /s \"$d/sce.txt\" >/dev/null 2>&1 && "
+             "grep -A8 'MMIO High Size' \"$d/sce.txt\"; rc=$?; rm -rf \"$d\"; exit $rc # mmio"),
 }
 
 

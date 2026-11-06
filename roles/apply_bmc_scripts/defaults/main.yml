@@ -26,6 +26,9 @@ apply_bmc_scripts_files:
   # Baseboard FRU EEPROM read / write / rescan for the triage fru_fw agent
   # (2026-10-05). Vault-templated: carries the BMC root shell credential.
   - { src: bmc-fru-eeprom.sh.j2,          dest: bmc-fru-eeprom }
+  # BMC eth0 MAC factory reset (odd pin -> native), with the fw lock + Redfish
+  # job interlock. Moved from ghost's utils/files/bin 2026-11-06; vaulted root cred.
+  - { src: bmc-mac-factoryreset.sh.j2,    dest: bmc-mac-factoryreset }
 
 # Plain (non-templated) operator scripts -- no vault variables, so these
 # must NOT go through the vault-templated apply_bmc_scripts_files loop
