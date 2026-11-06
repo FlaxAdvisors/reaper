@@ -8,7 +8,9 @@ X. Inventory comes only from that run's macinv-v, and only when its FRU serial a
 BMC MAC match the node (blank beats stale). flax-control stays the single writer.
 """
 import base64
+import csv
 import datetime
+import io
 import gzip
 import hashlib
 import json
@@ -25,6 +27,31 @@ SAFE_PATH = re.compile(r"[A-Za-z0-9._@+=:,-][A-Za-z0-9._@+=:,/-]{0,511}")
 MAX_FILE = 5 * 1024 * 1024
 MAX_ORDER = 200 * 1024 * 1024
 DEFAULT_URL = "http://127.0.0.1:8000"
+
+
+# rackpost's customer CSVs (flax_rack/report.py), minus `rack` (a post order has none)
+DEVICE_COLUMNS = ("pos", "ou", "kind", "part", "serial", "bmc_mac", "host_mac",
+                  "fabric_a_mac", "fabric_b_mac", "mgmt_port", "fabric_a_port", "fabric_b_port")
+FIRMWARE_COLUMNS = ("pos", "ou", "kind", "serial", "bios_version", "bmc_version",
+                    "bmc_rom_version", "nic_firmware", "qualify", "deploy", "ha_mode", "done")
+COMPONENT_COLUMNS = ("pos", "kind", "model", "serial", "slot")
+CSV_KINDS = ("devices", "firmware", "inventory")
+
+
+def csv_names(customer, order_no, sales) -> dict:
+    """{kind: '<customer>-<order>[-<sales>]-<kind>.csv'}, filename-safe: rackpost's names."""
+    tag = f"{customer or 'customer'}-{order_no}" + (f"-{sales}" if sales else "")
+    tag = re.sub(r"[^A-Za-z0-9._-]+", "_", tag).strip("_")
+    return {k: f"{tag}-{k}.csv" for k in CSV_KINDS}
+
+
+def _csv_text(columns, rows) -> str:
+    buf = io.StringIO()
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow(columns)
+    for row in rows:
+        w.writerow(["" if row.get(c) is None else row.get(c) for c in columns])
+    return buf.getvalue()
 
 
 class FinishError(Exception):
@@ -90,6 +117,7 @@ def _blob(content):
 
 def build_payload(order_no, mems, *, customer, sales, site, get_artifacts, closed_at=None) -> dict:
     devices, macs, comps, rungs, arts = [], [], [], [], []
+    dev_rows, fw_rows, inv_rows = [], [], []
     total = 0
     for m in mems:
         sn, run_id, port = m["serial"], m["run_id"], m.get("port")
@@ -138,9 +166,24 @@ def build_payload(order_no, mems, *, customer, sales, site, get_artifacts, close
         if fru.get("serial") == sn and _norm((parsed.get("bmc") or {}).get("mac")) == _norm(m["bmc_mac"]):
             for kind in ("cpu", "memory", "nic", "storage", "gpu"):
                 for c in parsed.get(kind) or []:
-                    comps.append({"pos": sn, "kind": kind,
-                                  "model": c.get("model") or c.get("part") or c.get("size"),
-                                  "serial": c.get("serial"), "slot": c.get("slot")})
+                    comp = {"kind": kind, "model": c.get("model") or c.get("part") or c.get("size"),
+                            "serial": c.get("serial"), "slot": c.get("slot")}
+                    comps.append(dict(comp, pos=sn))
+                    inv_rows.append(dict(comp, pos=port or sn))
+        fw = result.get("fw") or {}
+        nic_fw = "; ".join(sorted({d.get("current") for d in (fw.get("nic") or {}).get("devices") or []
+                                   if d.get("current")}))
+        bmc_ver = (fw.get("bmc") or {}).get("current")
+        if not bmc_ver or bmc_ver == "report-only":
+            bmc_ver = (parsed.get("bmc") or {}).get("version") or bmc_ver
+        dev_rows.append({"pos": port or sn, "kind": "server",
+                         "part": (parsed.get("fru") or {}).get("board_product"), "serial": sn,
+                         "bmc_mac": m.get("bmc_mac"), "host_mac": m.get("host_mac")})
+        fw_rows.append({"pos": port or sn, "kind": "server", "serial": sn,
+                        "bios_version": (fw.get("bios") or {}).get("current")
+                        or (parsed.get("bios") or {}).get("version"),
+                        "bmc_version": bmc_ver, "nic_firmware": nic_fw or None,
+                        "qualify": verdict, "done": fin})
         steps = ((result.get("qual") or {}).get("steps") or {})
         for name in sorted(set(steps) | set(stage_paths)):
             rungs.append({"pos": sn, "stage": "Qualify", "rung": name,
@@ -149,6 +192,13 @@ def build_payload(order_no, mems, *, customer, sales, site, get_artifacts, close
         rungs.append({"pos": sn, "stage": "Done", "rung": "done",
                       "verdict": (result.get("done") or {}).get("verdict") or m.get("verdict"),
                       "finished_at": fin, "artifacts": []})
+    names = csv_names(customer, order_no, sales)
+    for kind, cols, rows_ in (("devices", DEVICE_COLUMNS, dev_rows),
+                              ("firmware", FIRMWARE_COLUMNS, fw_rows),
+                              ("inventory", COMPONENT_COLUMNS, inv_rows)):
+        _data, meta = _blob(_csv_text(cols, rows_))
+        meta["content_type"] = "text/csv"
+        arts.append(dict(path=names[kind], status="stored", **meta))
     return {"order_id": order_no, "rack": "", "customer": customer, "site": site,
             "sales": sales or None,
             "closed_at": closed_at or datetime.datetime.now(datetime.timezone.utc).isoformat(),
