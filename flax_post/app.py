@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
-from . import actions, assign, blades, blocklist, consume, db, geometry, inventory, population, queries, records, state, stepinfo
+from . import actions, assign, blades, finish, blocklist, consume, db, geometry, inventory, population, queries, records, state, stepinfo
 from .observe import host_qual
 from .qualclient import QualClient, QualUnreachable
 from .version import __version__
@@ -93,6 +93,61 @@ def api_orders() -> JSONResponse:
     the Order field's datalist and the Finish dialog's choices."""
     return JSONResponse({"orders": state.list_orders(),
                          "header": state.read_settings().get("order_no")})
+
+
+def _finish_context(order_no):
+    runs = state.runs_under(order_no)
+    mems, no_serial = finish.members(runs)
+    slots = [s for s in _blade_slots() if not s.get("empty")]
+    pend = finish.pending(order_no, slots, mems)
+    row = state.order_row(order_no)
+    hdr = state.read_settings()
+    res = [m.get("result") or {} for m in mems]
+    customer = row.get("customer") or next((r.get("customer") for r in res if r.get("customer")), None) \
+        or (hdr.get("customer") if hdr.get("order_no") == order_no else None)
+    sales = row.get("sales") or next((r.get("sales") for r in res if r.get("sales")), None) \
+        or (hdr.get("sales") if hdr.get("order_no") == order_no else None)
+    return mems, no_serial, pend, customer, sales
+
+
+@app.get("/api/v1/orders/finish-preview")
+def api_finish_preview(order: str) -> JSONResponse:
+    mems, no_serial, pend, customer, sales = _finish_context(order)
+    keep = ("serial", "bmc_mac", "run_id", "verdict", "finished_at", "compact")
+    return JSONResponse({"order_no": order, "customer": customer, "sales": sales,
+                         "members": [{k: m.get(k) for k in keep} for m in mems],
+                         "no_serial": [{"bmc_mac": m.get("bmc_mac"), "run_id": m.get("run_id")}
+                                       for m in no_serial],
+                         "pending": pend})
+
+
+@app.post("/api/v1/orders/finish")
+async def api_finish(request: Request) -> JSONResponse:
+    """Archive one whole post order (spec 2026-11-06): each node's latest run under
+    it, through flax-control. 409 lists pending nodes until confirm: true; the
+    order is marked finished only after flax-control accepted the archive."""
+    body = await request.json()
+    order_no = (body.get("order_no") or "").strip()
+    customer = (body.get("customer") or "").strip()
+    sales = (body.get("sales") or "").strip() or None
+    if not order_no:
+        return JSONResponse({"ok": False, "reason": "no order"}, status_code=400)
+    if not customer:
+        return JSONResponse({"ok": False, "reason": "customer required"}, status_code=400)
+    mems, no_serial, pend, _c, _s = await run_in_threadpool(_finish_context, order_no)
+    if not mems:
+        return JSONResponse({"ok": False, "reason": "no finished runs under this order"},
+                            status_code=400)
+    if pend and body.get("confirm") is not True:
+        return JSONResponse({"ok": False, "confirm": pend}, status_code=409)
+    payload = await run_in_threadpool(finish.build_payload, order_no, mems, customer=customer,
+                                      sales=sales, site=_site(), get_artifacts=state.artifacts_for)
+    try:
+        counts = await run_in_threadpool(finish.send, payload)
+    except finish.FinishError as e:
+        return JSONResponse({"ok": False, "reason": e.message}, status_code=e.status)
+    state.mark_finished(order_no, sales=sales, customer=customer, counts=counts)
+    return JSONResponse({"ok": True, "archived": counts})
 
 
 @app.get("/api/v1/blades")

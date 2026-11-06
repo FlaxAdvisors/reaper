@@ -25,6 +25,17 @@ export async function postAssign(body) {
   });
   return { status: r.status, ...(await r.json()) };
 }
+export async function fetchFinishPreview(order) {
+  const r = await fetch('/api/v1/orders/finish-preview?order=' + encodeURIComponent(order), { cache: 'no-store' });
+  return r.ok ? r.json() : { members: [], pending: [], no_serial: [] };
+}
+export async function postFinish(body) {
+  const r = await fetch('/api/v1/orders/finish', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return { status: r.status, ...(await r.json()) };
+}
 export async function fetchOrders() {
   const r = await fetch('/api/v1/orders', { cache: 'no-store' });
   return r.ok ? r.json() : { orders: [], header: null };

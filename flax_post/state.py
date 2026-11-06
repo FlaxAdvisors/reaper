@@ -252,6 +252,66 @@ def touch_header_labels(order_no, *, sales=None, customer=None) -> None:
         touch_order(conn, order_no, sales=sales, customer=customer)
 
 
+def runs_under(order_no) -> list:
+    """Every finished run under `order_no`: post_run rows (full result) plus compact
+    vars.runs entries with no post_run row (serial from their artifacts)."""
+    out = []
+    with get_pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT r.bmc_mac, r.serial, r.run_id, r.verdict, "
+            "extract(epoch from r.finished_at)::bigint, r.result, n.host_mac "
+            "FROM post_run r LEFT JOIN post_node n ON n.bmc_mac = r.bmc_mac "
+            "WHERE r.order_no = %s", (order_no,)).fetchall()
+        have = set()
+        for bmc, sn, rid, verdict, fin, result, host in rows:
+            have.add((bmc, rid))
+            out.append({"bmc_mac": bmc, "serial": sn, "run_id": rid, "verdict": verdict,
+                        "finished_at": fin, "port": (result or {}).get("port"),
+                        "result": result, "compact": False, "host_mac": host})
+        nodes = conn.execute("SELECT bmc_mac, host_mac, vars->'runs' FROM post_node "
+                             "WHERE vars->'runs' IS NOT NULL").fetchall()
+        for bmc, host, runs in nodes:
+            for r in runs or []:
+                if not isinstance(r, dict) or r.get("order_no") != order_no:
+                    continue
+                if (bmc, r.get("run_id")) in have or not r.get("run_id"):
+                    continue
+                own = conn.execute("SELECT serial FROM post_artifact WHERE bmc_mac = %s AND "
+                                   "run_id = %s AND serial IS NOT NULL LIMIT 1",
+                                   (bmc, r["run_id"])).fetchone()
+                out.append({"bmc_mac": bmc, "serial": own[0] if own else None,
+                            "run_id": r["run_id"], "verdict": r.get("verdict"),
+                            "finished_at": r.get("finished_at"), "port": r.get("port"),
+                            "result": None, "compact": True, "host_mac": host})
+    return out
+
+
+def artifacts_for(bmc_mac, run_id) -> list:
+    with get_pool().connection() as conn:
+        rows = conn.execute("SELECT stage, name, kind, content, bytes FROM post_artifact "
+                            "WHERE bmc_mac = %s AND run_id = %s ORDER BY stage, name",
+                            (bmc_mac, run_id)).fetchall()
+    return [{"stage": s, "name": n, "kind": k, "content": c, "bytes": b} for s, n, k, c, b in rows]
+
+
+def mark_finished(order_no, *, sales, customer, counts) -> None:
+    with get_pool().connection() as conn:
+        conn.execute(
+            "INSERT INTO post_order (order_no, sales, customer, finished_at, finished_counts) "
+            "VALUES (%s, %s, %s, NOW(), %s) ON CONFLICT (order_no) DO UPDATE SET "
+            "finished_at = NOW(), finished_counts = EXCLUDED.finished_counts, "
+            "sales = COALESCE(EXCLUDED.sales, post_order.sales), "
+            "customer = COALESCE(EXCLUDED.customer, post_order.customer)",
+            (order_no, sales, customer, json.dumps(counts)))
+
+
+def order_row(order_no) -> dict:
+    with get_pool().connection() as conn:
+        r = conn.execute("SELECT sales, customer, finished_at FROM post_order WHERE order_no = %s",
+                         (order_no,)).fetchone()
+    return {"sales": r[0], "customer": r[1], "finished_at": r[2]} if r else {}
+
+
 def write_run(bmc_mac, result: dict, *, serial=None, order_no=None) -> None:
     """Upsert the full per-run result into post_run; no run_id -> nothing."""
     run_id = (result or {}).get("run_id")

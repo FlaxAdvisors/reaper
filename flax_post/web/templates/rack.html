@@ -62,6 +62,8 @@
         <label>Order <input name="post-order" autocomplete="off" list="post-open-orders" v-model="order_no" @change="saveOrder" placeholder="RRORD-003">
           <span class="clr" title="clear" @click="clearOrder">✕</span></label>
         <datalist id="post-open-orders"><option v-for="o in openOrders" :value="o.order_no"></option></datalist>
+        <button class="fin-btn" @click="openFinish()" :title="finishedOrder && finishedOrder===order_no ? 'finished; finish again to re-archive' : 'archive one whole order'">Finish…</button>
+        <span class="chip" v-if="finishedOrder && finishedOrder===order_no" title="finish again to re-archive">finished</span>
         <label>Sales <input name="post-sales" autocomplete="off" v-model="sales" @change="saveSales" placeholder="S-ORD…"></label>
         <label>Population
           <select name="post-population" v-model="population" @change="savePopulation">
@@ -181,7 +183,20 @@
           <option v-for="p in profiles" :value="p">{{p}}</option></select>
         <span class="x" @click="closeModal()">✕</span></div>
       <div class="m-b">
-        <div v-if="modal?.kind==='move'">
+        <div v-if="modal?.kind==='finish'">
+          <div class="asg">
+            <select name="finish-order" v-model="fin.order" @change="loadFinish()">
+              <option v-for="o in openOrders" :value="o.order_no">{{o.order_no}}</option></select>
+            <input name="finish-customer" v-model="fin.customer" placeholder="customer (required)">
+            <input name="finish-sales" v-model="fin.sales" placeholder="sales">
+          </div>
+          <p class="m-sub">members <b>{{(fin.preview?.members || []).length}}</b> · no serial <b>{{(fin.preview?.no_serial || []).length}}</b></p>
+          <div class="mv-row" v-for="p in (fin.preview?.pending || [])">{{p.port || '—'}} · {{p.serial}} · {{p.why}}</div>
+          <div class="m-actions">
+            <button :disabled="fin.busy || !fin.customer || !(fin.preview?.members || []).length" @click="doFinish()">{{(fin.preview?.pending || []).length ? 'Finish anyway' : 'Finish order'}}</button>
+            <span class="asg-msg" v-if="fin.msg">{{fin.msg}}</span></div>
+        </div>
+        <div v-else-if="modal?.kind==='move'">
           <p class="m-sub">these nodes follow the header; their open-order runs move to <b>{{modal?.to || '—'}}</b></p>
           <div class="mv-row" v-for="m in (modal?.movers || [])">{{m.port}} · {{m.serial}} · {{m.from || '—'}} → {{m.to || '—'}}</div>
           <div class="m-actions"><button @click="confirmMove()">Confirm</button> <button @click="cancelMove()">Cancel</button></div>

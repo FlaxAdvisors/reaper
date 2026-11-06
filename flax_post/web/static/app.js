@@ -2,7 +2,8 @@
 // Renders the prototype layout (docs/post-ui-prototype.html) from the real
 // /api/v1/blades feed. Discover = violet; grey = empty/unknown.
 import { fetchBlades, fetchProfiles, saveSettings, postPower, postIdentify, fetchInventory,
-         fetchArtifacts, fetchArtifact, fetchStep, postAssign, fetchOrders } from '/web-static/api.js';
+         fetchArtifacts, fetchArtifact, fetchStep, postAssign, fetchOrders,
+         fetchFinishPreview, postFinish } from '/web-static/api.js';
 
 // firmware phases (post_state fw_bmc/fw_bios/fw_nic 'phase') during which a
 // power-off must be blocked -- mirrors flax_post/actions.py FW_ACTIVE.
@@ -60,6 +61,7 @@ function App() {
     openOrders: [],
     // the drawer's per-node order assignment form (prefilled on open)
     asg: { order: '', sales: '', customer: '', population: '' }, asgMsg: null,
+    fin: { order: '', customer: '', sales: '', preview: null, msg: null, busy: false }, finishedOrder: null,
     settingsAt: boot.settings_at || null,
     // header connection dot: did the LAST poll of the server answer (null =
     // none has finished yet: grey, never a red flash on page load). The build
@@ -469,6 +471,7 @@ function App() {
     stepWord(st) { return { done: 'passed', cur: 'in progress', pending: 'not reached', fault: 'failed', skip: 'skipped', unknown: 'no evidence' }[st] || st; },
     modalTitle() {
       const m = this.modal; if (!m) return ''; const id = this.sel ? (this.sel.serial || this.sel.port) : '';
+      if (m.kind === 'finish') return `Finish order ${this.fin.order || ''}`;
       if (m.kind === 'move') return `Move ${m.movers.length} node(s) to ${m.to || 'no order'}`;
       const names = { pwr: 'Power', sol: 'SOL console', inv: 'Inventory', pop: 'Population', idnt: 'Identify', sdr: 'SDR sensors', sel: 'SEL events', step: `${m.phase} · ${m.step}` };
       return `${names[m.kind] || m.kind} — ${id}`;
@@ -490,6 +493,28 @@ function App() {
     },
     async confirmMove() { const to = this.modal?.to; this.modal = null; await this.postOrder(to, true); },
     cancelMove() { this.modal = null; this.refresh(); },
+    // ---- Finish order (archive one whole post order) ----
+    async openFinish() {
+      if (window.SolConsole) window.SolConsole.close();
+      this.fin = { order: this.order_no || ((this.openOrders[0] || {}).order_no || ''), customer: '', sales: '',
+                   preview: null, msg: null, busy: false };
+      this.modal = { kind: 'finish' };
+      await this.loadFinish();
+    },
+    async loadFinish() {
+      if (!this.fin.order) return;
+      const p = await fetchFinishPreview(this.fin.order);
+      this.fin.preview = p; this.fin.customer = p.customer || ''; this.fin.sales = p.sales || '';
+    },
+    async doFinish() {
+      this.fin.busy = true;
+      const pend = (this.fin.preview?.pending || []).length > 0;
+      const r = await postFinish({ order_no: this.fin.order, customer: this.fin.customer,
+                                   sales: this.fin.sales, confirm: pend });
+      this.fin.busy = false;
+      this.fin.msg = r.ok ? `archived ${(r.archived || {}).devices || 0} node(s)` : (r.reason || ('error ' + r.status));
+      if (r.ok) { this.finishedOrder = this.fin.order; this.refresh(); }
+    },
     async saveSales() { await saveSettings({ sales: this.sales || null }); this.refresh(); },
     // ---- per-node order assignment (drawer) ----
     prefillAsg(b) {
