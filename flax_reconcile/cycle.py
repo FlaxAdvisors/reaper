@@ -45,7 +45,8 @@ def _release_before_flap(reason):
 class Reconciler:
     def __init__(self, *, switches, config, obmc_user, obmc_pass, host_creds,
                  no_steer=None, ladder=None, vlan_parents=None,
-                 redfish_creds=None, bmc_reset_fn=None, eligible_sources=None):
+                 redfish_creds=None, bmc_reset_fn=None, eligible_sources=None,
+                 pool_bmc_sources=frozenset()):
         self.switches = switches
         # Overlay the caller's config over DEFAULTS so the circuit-breaker knobs
         # (flap_circuit_*) always resolve even for callers/tests that pass a
@@ -74,6 +75,9 @@ class Reconciler:
         # test/caller that predates this) preserves the exact pre-registry
         # `source <> 'post'` filter in db.read_reservations.
         self.eligible_sources = eligible_sources
+        # Roles opted into reconcile_pool_bmc (role_caps.read_pool_bmc_sources):
+        # their BMCs are kicked off a BMC-only pool lease onto their reservation.
+        self.pool_bmc_sources = frozenset(pool_bmc_sources or ())
 
     def run_one_cycle(self, pool) -> dict:
         # ---- PASS 1: VLAN steer (precedence; a steer subsumes the kick) ----
@@ -103,9 +107,13 @@ class Reconciler:
         # back to 'pending' so they re-process this cycle.
         reclaimed = queue.reclaim_stale_claims(
             pool, older_than_secs=self.cfg["reclaim_stale_claim_secs"])
+        reservations = db.read_reservations(pool, eligible_sources=self.eligible_sources)
+        if self.pool_bmc_sources:
+            reservations = reservations + db.read_pool_bmc_reservations(
+                pool, self.pool_bmc_sources,
+                pool_start=self.cfg["pool_bmc_start"], pool_end=self.cfg["pool_bmc_end"])
         mismatches = mismatch.compute_mismatches(
-            db.read_active_leases(pool),
-            db.read_reservations(pool, eligible_sources=self.eligible_sources))
+            db.read_active_leases(pool), reservations)
         # Convergence circuit-breaker (per-MAC). A reserved device that has
         # converged onto its IP simply stops being flapped, so its last_flap_at
         # ages out -- GC the row time-based (NOT by mismatch-membership). The

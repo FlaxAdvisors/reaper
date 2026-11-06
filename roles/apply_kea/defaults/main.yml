@@ -15,6 +15,12 @@ apply_kea_lab_domain: "{{ bang_lab_domain }}"
 # triage v6-LL reachability path is verified (see the design doc).
 apply_kea_reservation_only_phases: ['post']
 
+# BMC-only pool (class POOL_BMC_UDHCP = BMC_UDHCP clients) on those
+# reservation-only VLANs, in the same .0.<start>-.0.<end> range. An IPMI-only
+# AMI BMC (Leopard, udhcp 1.13.2) needs IPv4 before observe can probe it; the
+# post reservation stays talk-first. Spec 2026-11-06; delta flax-state-delta 6.
+apply_kea_res_only_bmc_pool: false
+
 # mgmt subnet (192.168.88.0/24)
 apply_kea_mgmt_subnet_id: 4
 apply_kea_mgmt_cidr: "192.168.88.0/24"

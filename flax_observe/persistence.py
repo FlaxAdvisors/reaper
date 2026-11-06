@@ -75,6 +75,25 @@ def read_prior_observe_state(pool) -> dict:
     return out
 
 
+def read_observe_state_row(pool, switch: str, port: str) -> dict | None:
+    """One port's current observe_state row, same {"vars", "resolved"} shape as
+    read_prior_observe_state's values, or None when the port has no row.
+
+    Used to hydrate a worker the supervisor (re)creates AFTER boot: a port that
+    left the enrolled set and came back must start from its latest persisted
+    state, never from the boot snapshot (2026-11-06: rabbit-edam et7b1 came back
+    with the 10-31 boot copy of a departed blade's identity)."""
+    sql = "SELECT vars, resolved FROM observe_state WHERE switch = %s AND port = %s"
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (switch, port))
+            row = cur.fetchone()
+    if not row:
+        return None
+    vars_, resolved = row
+    return {"vars": vars_, "resolved": resolved or {}}
+
+
 def read_active_sentinels(pool, *, grace_secs: int) -> set:
     """Return {(switch, port)} for intentional_flap rows still inside their
     freeze window: NOW() <= set_at + hold_seconds + grace. flax_observe holds

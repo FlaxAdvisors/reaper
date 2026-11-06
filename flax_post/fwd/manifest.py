@@ -91,6 +91,25 @@ class PostMatcher:
         return _match_oem(self._data, self._oem_compiled, product_name)
 
 
+def family_for_vid(vid, config_dir="/etc/flax"):
+    """Family of a lab VLAN from vlans.json ([{vid, family, ...}]), else None.
+
+    A post BMC's reservation subnet IS its family's VLAN (classify steers by
+    family), so this names a Leopard (vid 24) without asking its BMC anything
+    -- an AMI Leopard answers no Redfish at all."""
+    if vid is None:
+        return None
+    try:
+        with open(os.path.join(config_dir, "vlans.json")) as f:
+            rows = json.load(f)
+    except (OSError, ValueError):
+        return None
+    for r in rows if isinstance(rows, list) else []:
+        if isinstance(r, dict) and r.get("vid") == vid:
+            return r.get("family")
+    return None
+
+
 def load_manifest(config_dir="/etc/flax") -> dict:
     """Read bmc-firmware-versions.json; {} on missing/malformed."""
     try:

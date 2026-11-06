@@ -59,6 +59,8 @@ def _overlay_live_target(store: dict) -> dict:
     for row in store.values():
         if not isinstance(row, dict) or "target_version" not in row:
             continue
+        if row.get("phase") == "oem":
+            continue    # report-only/OEM rows carry their own entry's target
         row["target_version"] = live_target
         if row.get("phase") in _VERDICT_PHASES and row.get("current_version"):
             row["phase"] = ("up_to_date"

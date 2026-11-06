@@ -80,7 +80,11 @@ class SwitchFetcher(threading.Thread):
         vlans = self.driver.vlans()
         macs = self.driver.mac_address_table()
         lldp = self.driver.lldp_neighbors_detail()
-        per_port = slice_by_port(link, vlans, macs, lldp)
+        # Admin-disabled ports, where the driver can tell (EOS); others publish
+        # no "admin" key and keep today's behaviour.
+        ad = getattr(self.driver, "admin_down_ports", None)
+        per_port = slice_by_port(link, vlans, macs, lldp,
+                                 admin_down=ad() if ad else frozenset())
         row = build_switch_facts_row(
             self.switch_name, driver_name(self.driver),
             per_port, reachable=True,

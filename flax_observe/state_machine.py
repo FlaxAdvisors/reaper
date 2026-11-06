@@ -1009,13 +1009,20 @@ def port_worker_one_iter(port_state, switch_facts, emit_event, env):
         serial_of_new = _idh.memo_serial(port_state, new_mac, _reader,
                                          now_iso=_ts_now(),
                                          secs_since=_secs_since)
+    _port_macs = {str(m).lower() for m in (fact.get("macs") or [])}
+    _latched_gone = (prior_latched not in _port_macs
+                     and (port_state.get("nic_mac") or None) not in _port_macs)
+    _new_pair_complete = (classified.classification_source == "macmath_offset"
+                          and bool(classified.nics) and classified.bmc == new_mac)
     outcome = _idh.decide(
         latched_mac=prior_latched, chassis_sn=prior_sn, new_mac=new_mac,
         hold_age=hold_age, seen_elsewhere=seen_elsewhere,
         serial_of_new=serial_of_new,
         new_is_bmc=bool(new_mac) and (bmc_probe_by_mac.get(new_mac) or {}).get(
             "kind") in CONFIRMED_BMC_KINDS,
-        hold_secs=getattr(env, "identity_hold_secs", _idh.HOLD_SECS))
+        hold_secs=getattr(env, "identity_hold_secs", _idh.HOLD_SECS),
+        latched_gone=_latched_gone,
+        new_pair_complete=_new_pair_complete)
     held = outcome == _idh.HELD
 
     if outcome == _idh.SWAPPED:

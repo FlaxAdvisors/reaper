@@ -22,7 +22,8 @@ SWAPPED = "swapped"    # different blade (or an unreadable BMC at expiry): forge
 
 
 def decide(*, latched_mac, chassis_sn, new_mac, hold_age, seen_elsewhere,
-           serial_of_new, new_is_bmc=False, hold_secs=HOLD_SECS):
+           serial_of_new, new_is_bmc=False, hold_secs=HOLD_SECS,
+           latched_gone=False, new_pair_complete=False):
     """Outcome for one cycle. `latched_mac` is the BMC mac the latched
     chassis_sn belongs to; `new_mac` is this cycle's confirm_roles bmc_mac;
     `hold_age` seconds since the hold began (0 when it starts now);
@@ -32,7 +33,12 @@ def decide(*, latched_mac, chassis_sn, new_mac, hold_age, seen_elsewhere,
     lone host NIC the single-MAC path labels "BMC" while the real BMC is
     quiet, and adopting it hands the host the BMC's reservation (lavergne
     2026-10-28: Leopard BMCs mute for a whole inventory pass). A different
-    blade is the committed link-down's job (_forget_identity)."""
+    blade is the committed link-down's job (_forget_identity), or a complete
+    new MAC pair with the old pair gone: `latched_gone` (neither the latched
+    BMC nor its NIC is on the port) and `new_pair_complete` (macmath offset
+    classified the new MAC as BMC with a host partner) -> SWAPPED when no
+    serial could be read; a readable serial still decides FLIPPED/SWAPPED, so a
+    moved mezz card on the same chassis keeps its identity (2026-11-06)."""
     if not latched_mac or not chassis_sn:
         return LIVE
     if new_mac == latched_mac:
@@ -42,6 +48,10 @@ def decide(*, latched_mac, chassis_sn, new_mac, hold_age, seen_elsewhere,
         return HELD if in_window else EXPIRED
     if serial_of_new:
         return FLIPPED if serial_of_new.strip() == chassis_sn.strip() else SWAPPED
+    # No serial readable (e.g. an AMI BMC without IPv4 yet): a complete new
+    # pair with the old pair gone is a different blade.
+    if latched_gone and new_pair_complete:
+        return SWAPPED
     if not new_is_bmc:
         return HELD
     return HELD if in_window else SWAPPED

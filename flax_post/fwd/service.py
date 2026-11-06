@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-from . import enforce, flasher
+from . import config, enforce, flasher, manifest
 
 log = logging.getLogger("flax-post.fwd.service")
 
@@ -56,6 +56,11 @@ class FlashRegistry:
             return port in self._active
 
 
+def _family(dev):
+    """The BMC's family from its reservation VLAN (vlans.json); None if unknown."""
+    return manifest.family_for_vid(dev.get("vid"), config.CONFIG_DIR)
+
+
 def probe_once(deps, registry=None, workers=None) -> None:
     """One probe pass over every post BMC: classify current-vs-target into the store.
 
@@ -84,7 +89,8 @@ def probe_once(deps, registry=None, workers=None) -> None:
     def work(dev):
         client = deps.client_for(dev["reservation_ip"])
         set_row = lambda port, _ip=dev["reservation_ip"], **f: deps.set_row(port, bmc_ip=_ip, **f)
-        flasher.probe_one(dev["port"], client, deps.matcher, set_row)
+        flasher.probe_one(dev["port"], client, deps.matcher, set_row,
+                          family=_family(dev))
 
     n = DEFAULT_PROBE_WORKERS if workers is None else workers
     n = max(1, min(n, len(bmcs)))
@@ -113,6 +119,12 @@ def enforce_once(deps, registry, executor, *, mode, allowlist, run_node=enforce.
     for dev in deps.post_bmcs():
         port = dev["port"]
         if not enforce.gate_allows(port, mode, allowlist):
+            continue
+        # A report-only family (Leopard) never enters the gauntlet: its AMI BMC
+        # has no Redfish power/PXE, and it is never flashed.
+        if flasher.report_only(
+                lambda p, _ip=dev["reservation_ip"], **f: deps.set_row(p, bmc_ip=_ip, **f),
+                port, deps.matcher, _family(dev)) is not None:
             continue
         if not registry.claim(port):
             continue                        # already in flight (this scan or a prior one)
@@ -165,7 +177,8 @@ def build_app(deps, *, registry=None) -> FastAPI:
             return JSONResponse({"ok": True, "port": port, "skipped": "flashing"})
         client = deps.client_for(dev["reservation_ip"])
         set_row = lambda p, _ip=dev["reservation_ip"], **f: deps.set_row(p, bmc_ip=_ip, **f)
-        phase = flasher.probe_one(port, client, deps.matcher, set_row)
+        phase = flasher.probe_one(port, client, deps.matcher, set_row,
+                                  family=_family(dev))
         return JSONResponse({"ok": True, "port": port, "phase": phase})
 
     return app

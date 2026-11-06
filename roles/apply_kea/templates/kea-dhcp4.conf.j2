@@ -50,6 +50,13 @@
         "test": "option[55].hex == 0x011c02030f060c2c2f2a and not option[60].exists and not option[93].exists and not option[77].exists and not option[175].exists" },
       { "name": "POOL_HOSTS",
         "test": "not member('BMC_UDHCP') and not member('BMC_NETWORKD') and not member('BMC_FB_DHCLIENT')" }
+{% if apply_kea_res_only_bmc_pool | default(false) %}
+{#  BMC-only pool on reservation-only VLANs: an IPMI-only (AMI/udhcp) BMC needs IPv4 before observe
+    can probe it (spec 2026-11-06); post's talk-first reservation lane is unchanged and moves it to
+    its reservation. BMC_FB_DHCLIENT stays reservation-only; hosts never match. Delta: flax-state-delta 6. #}
+      ,{ "name": "POOL_BMC_UDHCP",
+        "test": "member('BMC_UDHCP')" }
+{% endif %}
     ],
     "subnet4": [
 {% for v in vlans %}
@@ -61,7 +68,11 @@
         "interface": "{{ v.parent }}.{{ v.vid }}",
         "next-server": "{{ v.gateway_vip }}",
 {% if res_only %}
+{% if apply_kea_res_only_bmc_pool | default(false) %}
+        "pools": [{ "pool": "{{ o[0] }}.{{ o[1] }}.0.{{ apply_kea_pool_start }} - {{ o[0] }}.{{ o[1] }}.0.{{ apply_kea_pool_end }}", "client-class": "POOL_BMC_UDHCP" }],
+{% else %}
         "pools": [],
+{% endif %}
         "authoritative": true,
 {% else %}
 {#  pool_guard (spec 2026-09-27 §7): BMCs (BMC_UDHCP/BMC_NETWORKD) get no POOL address on this vid; reservations are still served. Kea 2.6: singular "client-class". #}

@@ -37,6 +37,11 @@ def compute_steers(desired_ports: list[dict], sf_ports: dict,
     for d in desired_ports:
         key = (d["switch"], d["port"])
         sf = sf_ports.get(key, {})
+        # An empty (or unknown-link) slot is never steered or refused: it keeps
+        # its last VLAN until the next blade is identified (operator
+        # 2026-11-06). The next occupant is steered once it has link.
+        if sf.get("link") != "link":
+            continue
         current = sf.get("access_vid")
         if d["desired_vid"] == current:
             continue
