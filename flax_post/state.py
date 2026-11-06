@@ -159,6 +159,99 @@ def list_orders(*, include_finished: bool = False) -> list:
             for o, s, c, a, f in rows]
 
 
+def reassign_entries(conn, bmc_mac, serial, new_order) -> dict:
+    """Move this node's entries that sit under an OPEN order to `new_order`
+    (one node in at most one open order; spec 2026-11-06). Runs under a
+    finished, unregistered or NULL order are never rewritten, and only runs of
+    THIS serial move (a moved mezz card's other-blade runs stay). Runs inside
+    the caller's transaction."""
+    counts = {"node": 0, "runs": 0, "run_rows": 0, "artifacts": 0}
+    if not new_order:
+        return counts
+    opened = list(open_orders(conn))
+    mine = {r[0] for r in conn.execute(
+        "SELECT run_id FROM post_run WHERE bmc_mac = %s AND serial = %s "
+        "UNION SELECT run_id FROM post_artifact WHERE bmc_mac = %s AND serial = %s",
+        (bmc_mac, serial, bmc_mac, serial)).fetchall()}
+    counts["node"] = conn.execute("UPDATE post_node SET order_no = %s WHERE bmc_mac = %s",
+                                  (new_order, bmc_mac)).rowcount
+    row = conn.execute("SELECT vars FROM post_node WHERE bmc_mac = %s FOR UPDATE",
+                       (bmc_mac,)).fetchone()
+    vars_ = (row[0] if row else None) or {}
+    changed = False
+    for r in [x for x in (vars_.get("runs") or []) if isinstance(x, dict)] + \
+            ([vars_["result"]] if isinstance(vars_.get("result"), dict) else []):
+        if r.get("order_no") in opened and r.get("run_id") in mine and r["order_no"] != new_order:
+            r["order_no"] = new_order
+            counts["runs"] += 1
+            changed = True
+    if changed:
+        conn.execute("UPDATE post_node SET vars = %s, generation = generation + 1 WHERE bmc_mac = %s",
+                     (json.dumps(vars_), bmc_mac))
+    for table, key in (("post_run", "run_rows"), ("post_artifact", "artifacts")):
+        counts[key] = conn.execute(
+            "UPDATE " + table + " SET order_no = %s WHERE bmc_mac = %s AND serial = %s "
+            "AND order_no = ANY(%s) AND order_no <> %s",
+            (new_order, bmc_mac, serial, opened, new_order)).rowcount
+    return counts
+
+
+def assign_node(bmc_mac, serial, assignment, settings) -> dict:
+    """Write (or clear, assignment=None) a tile's own order and move its
+    open-order entries to the resulting effective order, in ONE transaction."""
+    from . import assign
+    a = assignment or {}
+    vals = (a.get("order_no"), a.get("sales"), a.get("customer"), a.get("population"),
+            serial if assignment else None)
+    with get_pool().connection() as conn, conn.transaction():
+        n = conn.execute(
+            "UPDATE post_node SET assigned_order_no = %s, assigned_sales = %s, "
+            "assigned_customer = %s, assigned_population = %s, assigned_serial = %s, "
+            "assigned_at = " + ("NOW()" if assignment else "NULL") + " WHERE bmc_mac = %s",
+            vals + (bmc_mac,)).rowcount
+        if not n:
+            conn.execute(
+                "INSERT INTO post_node (bmc_mac, serial, assigned_order_no, assigned_sales, "
+                "assigned_customer, assigned_population, assigned_serial, assigned_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, " + ("NOW()" if assignment else "NULL") + ")",
+                (bmc_mac, serial) + vals)
+        node = {"serial": serial, "assigned_order_no": vals[0], "assigned_sales": vals[1],
+                "assigned_customer": vals[2], "assigned_population": vals[3],
+                "assigned_serial": vals[4]}
+        eff = assign.effective(node, settings, serial)
+        touch_order(conn, eff["order_no"], sales=a.get("sales"), customer=a.get("customer"))
+        moved = reassign_entries(conn, bmc_mac, serial, eff["order_no"])
+    return {"order_no": eff["order_no"], "effective": eff, "moved": moved}
+
+
+def apply_header_order(order_no, followers, *, sales=..., customer=...) -> list:
+    """New header order + move every follower's open-order entries, in ONE
+    transaction. Followers = assign.header_followers (present, unassigned)."""
+    sets, params = ["order_no = %s"], [order_no]
+    if sales is not ...:
+        sets.append("sales = %s"); params.append(sales)
+    if customer is not ...:
+        sets.append("customer = %s"); params.append(customer)
+    out = []
+    with get_pool().connection() as conn, conn.transaction():
+        conn.execute("UPDATE post_settings SET " + ", ".join(sets) +
+                     ", updated_at = NOW() WHERE id = 1", tuple(params))
+        touch_order(conn, order_no, sales=None if sales is ... else sales,
+                    customer=None if customer is ... else customer)
+        for f in followers:
+            c = reassign_entries(conn, f["bmc_mac"], f["serial"], order_no)
+            out.append(dict(port=f["port"], serial=f["serial"], **c))
+    return out
+
+
+def touch_header_labels(order_no, *, sales=None, customer=None) -> None:
+    """Carry a header sales/customer edit onto the open order's registry row."""
+    if not order_no:
+        return
+    with get_pool().connection() as conn:
+        touch_order(conn, order_no, sales=sales, customer=customer)
+
+
 def write_run(bmc_mac, result: dict, *, serial=None, order_no=None) -> None:
     """Upsert the full per-run result into post_run; no run_id -> nothing."""
     run_id = (result or {}).get("run_id")

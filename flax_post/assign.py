@@ -43,3 +43,18 @@ def hostname(order_no, port):
     """'<prefix>-<port>' or None when the order gives no prefix."""
     p = order_prefix(order_no)
     return f"{p}-{port}" if p else None
+
+
+def header_followers(state_rows, nodes, settings) -> list:
+    """Current slot occupants whose effective order is the header's: the nodes a
+    header order change moves. A departed node (no post_state row) is not one,
+    so its runs stay in their order until that order is Finished."""
+    out = []
+    for port, row in sorted((state_rows or {}).items()):
+        bmc, sn = row.get("bmc_mac"), row.get("serial")
+        if not bmc or not sn:
+            continue
+        if effective((nodes or {}).get(bmc), settings, sn)["source"] == "header":
+            out.append({"port": port, "bmc_mac": bmc, "serial": sn,
+                        "order_no": row.get("order_no")})
+    return out

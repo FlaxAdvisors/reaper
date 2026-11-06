@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
-from . import actions, blades, blocklist, consume, db, geometry, inventory, population, queries, state, stepinfo
+from . import actions, assign, blades, blocklist, consume, db, geometry, inventory, population, queries, records, state, stepinfo
 from .observe import host_qual
 from .qualclient import QualClient, QualUnreachable
 from .version import __version__
@@ -180,10 +180,59 @@ def api_step(port: str, phase: str, step: str) -> JSONResponse:
 
 @app.post("/api/v1/settings")
 async def api_settings(request: Request) -> JSONResponse:
+    """Header context. An ORDER change moves every present, unassigned node's
+    open-order entries with it (one open order per node), so it is confirmed
+    first: 409 lists the movers until the body carries confirm: true."""
     body = await request.json()
-    kw = {k: body[k] for k in ("order_no", "population", "customer") if k in body}
+    kw = {k: body[k] for k in ("order_no", "population", "customer", "sales") if k in body}
+    current = state.read_settings()
+    new_order = kw.get("order_no", current.get("order_no"))
+    if "order_no" in kw and (kw["order_no"] or None) != (current.get("order_no") or None):
+        followers = assign.header_followers(state.read_state(), state.read_nodes(), current)
+        if followers and body.get("confirm") is not True:
+            return JSONResponse({"ok": False, "confirm": [
+                {"port": f["port"], "serial": f["serial"],
+                 "from": f.get("order_no") or current.get("order_no"), "to": kw["order_no"]}
+                for f in followers]}, status_code=409)
+        moved = state.apply_header_order(kw.pop("order_no") or None, followers,
+                                         **{k: kw.pop(k) for k in ("sales", "customer") if k in kw})
+        if kw:
+            state.write_settings(**kw)
+        return JSONResponse({"ok": True, "moved": moved, "settings": state.read_settings()})
     state.write_settings(**kw)
+    if "sales" in kw or "customer" in kw:
+        try:
+            state.touch_header_labels(new_order, sales=kw.get("sales"), customer=kw.get("customer"))
+        except Exception:
+            logging.getLogger("flax-post").exception("post_order label update failed")
     return JSONResponse({"ok": True, "settings": state.read_settings()})
+
+
+@app.post("/api/v1/assign")
+async def api_assign(request: Request) -> JSONResponse:
+    """A tile's own order/sales/customer/population ({port, order_no, ...}) or
+    {port, clear: true} to follow the header again. Moves the node's open-order
+    entries to its new effective order in the same transaction."""
+    body = await request.json()
+    port = body.get("port")
+    record = next((s for s in _blade_slots() if s.get("port") == port), None)
+    if record is None:
+        return JSONResponse({"ok": False, "reason": "unknown port"}, status_code=404)
+    serial, bmc = record.get("serial"), record.get("bmc_mac")
+    if records.serial_fault(serial) or not bmc:
+        return JSONResponse({"ok": False, "reason": "no serial"}, status_code=400)
+    if body.get("clear") is True:
+        assignment = None
+    else:
+        order_no = (body.get("order_no") or "").strip()
+        if not order_no:
+            return JSONResponse({"ok": False, "reason": "no order"}, status_code=400)
+        assignment = {"order_no": order_no}
+        for k in ("sales", "customer", "population"):
+            v = (body.get(k) or "").strip()
+            assignment[k] = v or None
+    out = state.assign_node(bmc, serial, assignment, state.read_settings())
+    return JSONResponse({"ok": True, "effective": out["effective"], "moved": out["moved"]})
 
 
 @app.post("/api/v1/power")
