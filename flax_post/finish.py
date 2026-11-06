@@ -34,33 +34,40 @@ class FinishError(Exception):
         self.message = message
 
 
+def is_done(run) -> bool:
+    """A run that reached Done: a pass verdict (the Done tail identifies + powers off
+    only on pass). Failed, unfinished or verdict-less runs are not Done."""
+    return (run or {}).get("verdict") == "pass"
+
+
 def members(runs):
-    """(members, no_serial): the latest run per serial; unusable serials apart."""
-    latest, no_serial = {}, []
+    """(members, left_out, no_serial) for one order (operator 2026-11-06).
+
+    members: every node (serial) with at least one Done run stamped with the order,
+    however long ago; each archives its most recent Done run under the order.
+    left_out: nodes with runs under the order but none Done (never archived).
+    no_serial: runs whose serial is unusable as identity (never archived)."""
+    done, other, no_serial = {}, {}, []
     for r in runs:
         sn = r.get("serial")
         if records.serial_fault(sn):
             no_serial.append(r)
             continue
-        cur = latest.get(sn)
+        bucket = done if is_done(r) else other
+        cur = bucket.get(sn)
         if cur is None or (r.get("finished_at") or 0) > (cur.get("finished_at") or 0):
-            latest[sn] = r
-    return sorted(latest.values(), key=lambda r: r["serial"]), no_serial
+            bucket[sn] = r
+    left = [dict(r, why=(r.get("verdict") or "not done")) for sn, r in other.items() if sn not in done]
+    return (sorted(done.values(), key=lambda r: r["serial"]),
+            sorted(left, key=lambda r: r["serial"]), no_serial)
 
 
-def pending(order_no, slots, mems):
-    """Nodes the operator should know about before finishing: still running under
-    X, failed, or archived from a compact (pre-042) run entry."""
-    out = []
-    for s in slots or []:
-        if s.get("order_no") == order_no and s.get("serial") and s.get("phase") != "Done":
-            out.append({"port": s.get("port"), "serial": s.get("serial"), "why": "mid-run"})
-    for m in mems:
-        if m.get("verdict") == "fail":
-            out.append({"port": m.get("port"), "serial": m["serial"], "why": "fail"})
-        if m.get("compact"):
-            out.append({"port": m.get("port"), "serial": m["serial"], "why": "no full record"})
-    return out
+def running(order_no, slots, member_serials):
+    """Nodes in the rack under this order that are not Done yet (not archived)."""
+    return [{"port": s.get("port"), "serial": s.get("serial"), "why": "running"}
+            for s in slots or []
+            if s.get("order_no") == order_no and s.get("serial")
+            and s.get("phase") != "Done" and s.get("serial") not in member_serials]
 
 
 def _iso(epoch):
