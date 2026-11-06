@@ -46,6 +46,21 @@ def _oem(set_row, port, version):
     return "oem"
 
 
+def report_only(set_row, port, matcher, family):
+    """A BMC whose FAMILY matches an updatable:false manifest entry (Leopard ->
+    leopard-ami, target 14.00) is report-only: write the oem row with that
+    entry's target and return "oem" without touching the BMC. Else None.
+    Triage parity: Leopards are report-only there too (eindhoven vars)."""
+    if not family:
+        return None
+    hit = matcher.match_oem(family)
+    if hit is None:
+        return None
+    set_row(port, phase="oem", current_version="report-only",
+            target_version=hit[1].get("target_version", ""), fault_reason="", percent=0)
+    return "oem"
+
+
 def _oem_version(client, matcher):
     """If the (dark-to-onetree) board is a reachable Redfish service root matching an
     updatable:false OEM manifest entry, return its Redfish version (or 'unknown').
@@ -78,8 +93,11 @@ def _stock_firmware(client) -> bool:
     return bool(is_bmc and product and product.strip().lower() == "ami redfish server")
 
 
-def probe_one(port, client, matcher, set_row) -> str:
+def probe_one(port, client, matcher, set_row, *, family=None) -> str:
     """Read product+version, classify against the manifest, write the row. No flash."""
+    ro = report_only(set_row, port, matcher, family)
+    if ro is not None:
+        return ro
     product, _ = client.get_product_name()
     hit = matcher.match(product)
     if hit is None:
@@ -113,8 +131,11 @@ def probe_one(port, client, matcher, set_row) -> str:
 
 def flash_one(port, client, matcher, fetch, set_row, share_base,
               *, sleep=time.sleep, max_wait_s=1200, poll_s=20,
-              clear_entity_cache=entity_cache.clear_entity_cache) -> str:
+              clear_entity_cache=entity_cache.clear_entity_cache, family=None) -> str:
     """Run the gate-only flash for one node. Returns the terminal phase."""
+    ro = report_only(set_row, port, matcher, family)
+    if ro is not None:
+        return ro
     # 1. checking
     product, _ = client.get_product_name()
     hit = matcher.match(product)
