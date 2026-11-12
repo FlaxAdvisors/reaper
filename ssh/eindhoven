@@ -1,0 +1,17 @@
+# One-time setup: add to ~/.ssh/config (./setup does this): Include ~/git/reaper/ssh/eindhoven
+
+# Cisco IOS 15.x SSH compat — modern OpenSSH defaults reject SHA1 KEX/host-keys.
+# (Ansible reaches this switch with paramiko instead: inventories/eindhoven/group_vars/cisco.)
+Host turtle-gouda
+  HostName 192.168.88.33
+  User admin
+  KexAlgorithms +diffie-hellman-group14-sha1,diffie-hellman-group-exchange-sha1
+  HostKeyAlgorithms +ssh-rsa
+  PubkeyAcceptedAlgorithms +ssh-rsa
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+
+# Off site, hop through bang-gouda. Decided by hostname, not address: every site's
+# bangs are 192.168.88.21/.22, so an address test would match lavergne/braintree too.
+Match originalhost turtle-gouda !exec "hostname -s | grep -qxE 'bang-(gouda|edam)'"
+  ProxyJump bang-gouda

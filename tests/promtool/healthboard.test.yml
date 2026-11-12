@@ -1,0 +1,94 @@
+# promtool tests for the GENERATED eindhoven health-board rules (run.sh generates them):
+# plan 2026-11-09-site-health-board Task 6, its Review Focus cases.
+rule_files: [healthboard-eindhoven.yml]
+evaluation_interval: 1m
+tests:
+  # 1+3: VIP flip moves kea's expectation; a primary-only component is absent on the standby;
+  # a switch with no data reads -1 and never alerts.
+  - interval: 1m
+    input_series:
+      - series: 'reaper_expected{job="node",site="eindhoven",bang="bang-gouda",component="kea",kind="unit",name="kea-dhcp4.service",vip_gated="1",optional="0"}'
+        values: '1x30'
+      - series: 'reaper_expected{job="node",site="eindhoven",bang="bang-edam",component="kea",kind="unit",name="kea-dhcp4.service",vip_gated="1",optional="0"}'
+        values: '1x30'
+      - series: 'reaper_expected{job="node",site="eindhoven",bang="bang-gouda",component="rackpost",kind="unit",name="flax-rackpost.service",vip_gated="0",optional="0"}'
+        values: '1x30'
+      - series: 'node_systemd_unit_state{job="node",site="eindhoven",bang="bang-gouda",name="flax-rackpost.service",state="active"}'
+        values: '1x30'
+      - series: 'vrrp_state{site="eindhoven",bang="bang-gouda",instance="bang-gouda",state="MASTER"}'
+        values: '1x14 0x15'
+      - series: 'vrrp_state{site="eindhoven",bang="bang-edam",instance="bang-edam",state="BACKUP"}'
+        values: '0x14 1x15'
+      - series: 'node_systemd_unit_state{job="node",site="eindhoven",bang="bang-gouda",name="kea-dhcp4.service",state="active"}'
+        values: '1x14 0x15'
+      - series: 'node_systemd_unit_state{job="node",site="eindhoven",bang="bang-edam",name="kea-dhcp4.service",state="active"}'
+        values: '0x14 1x15'
+    promql_expr_test:
+      - expr: reaper:item_state{site="eindhoven",component="kea"}
+        eval_time: 10m
+        exp_samples:
+          - labels: 'reaper:item_state{site="eindhoven",bang="bang-gouda",component="kea",kind="unit",name="kea-dhcp4.service",vip_gated="1",optional="0"}'
+            value: 0
+          - labels: 'reaper:item_state{site="eindhoven",bang="bang-edam",component="kea",kind="unit",name="kea-dhcp4.service",vip_gated="1",optional="0"}'
+            value: 2
+      - expr: reaper:item_state{site="eindhoven",component="kea"}
+        eval_time: 25m
+        exp_samples:
+          - labels: 'reaper:item_state{site="eindhoven",bang="bang-gouda",component="kea",kind="unit",name="kea-dhcp4.service",vip_gated="1",optional="0"}'
+            value: 2
+          - labels: 'reaper:item_state{site="eindhoven",bang="bang-edam",component="kea",kind="unit",name="kea-dhcp4.service",vip_gated="1",optional="0"}'
+            value: 0
+      - expr: reaper:service_state{site="eindhoven",bang="bang-edam",component="rackpost"}
+        eval_time: 10m
+        exp_samples: []
+      - expr: reaper:device_health{site="eindhoven",device="rabbit-edam"}
+        eval_time: 10m
+        exp_samples:
+          - labels: 'reaper:device_health{site="eindhoven",device="rabbit-edam",kind="switch",vendor="arista",state="live",live="1",mgmt_ip="192.168.88.32",bmc_ip="",note="Wedge100S · post DUT switch"}'
+            value: -1
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: DeviceDown
+        exp_alerts: []
+
+  # 4: SEL fully acknowledged, then cleared: never "new"
+  - interval: 1m
+    input_series:
+      - series: 'reaper_sel_entries{job="node",site="eindhoven",bang="bang-gouda"}'
+        values: '909x10 0x10'
+      - series: 'reaper_sel_acked_entries{job="node",site="eindhoven",bang="bang-gouda"}'
+        values: '909x20'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: SelNewEntries
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: SelNewEntries
+        exp_alerts: []
+
+  # 5: an expect-down link that comes up never alerts; an expect-up link that goes down does
+  - interval: 1m
+    input_series:
+      - series: 'ifOperStatus{job="snmp_switches",site="eindhoven",switch="rabbit-gouda",ifName="Ethernet2/1"}'
+        values: '1x10'
+      - series: 'ifOperStatus{job="snmp_switches",site="eindhoven",switch="rabbit-edam",ifName="Ethernet2/1"}'
+        values: '1x10'
+      - series: 'ifOperStatus{job="snmp_switches",site="eindhoven",switch="rabbit-gouda",ifName="Ethernet1/1"}'
+        values: '2x10'
+      - series: 'ifOperStatus{job="snmp_switches",site="eindhoven",switch="rabbit-edam",ifName="Ethernet1/1"}'
+        values: '1x10'
+    promql_expr_test:
+      - expr: reaper:link_state{site="eindhoven",id="L6"}
+        eval_time: 5m
+        exp_samples:
+          - labels: 'reaper:link_state{site="eindhoven",id="L6",a="rabbit-gouda:Et2/1",b="rabbit-edam:Et2/1",speed="100G",expect="down",live="1",note="vid 1, unconfigured, STP-blocked (edam side)"}'
+            value: 1
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: LinkDown
+        exp_alerts:
+          - exp_labels: {severity: critical, site: eindhoven, id: L5, a: "rabbit-gouda:Et1/1", b: "rabbit-edam:Et1/1", speed: 100G, expect: up, live: "1", note: "tagged 16-31"}
+            exp_annotations: {summary: "link rabbit-gouda:Et1/1 <-> rabbit-edam:Et1/1 (100G) down at eindhoven"}

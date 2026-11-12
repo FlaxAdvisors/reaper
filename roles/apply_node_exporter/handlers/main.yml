@@ -1,0 +1,13 @@
+---
+- name: Restart node_exporter
+  become: true
+  ansible.builtin.systemd:
+    name: prometheus-node_exporter
+    state: restarted
+    daemon_reload: true
+
+- name: Reload firewalld
+  become: true
+  ansible.builtin.command:
+    cmd: firewall-cmd --reload
+  changed_when: true

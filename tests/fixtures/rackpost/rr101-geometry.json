@@ -1,0 +1,120 @@
+{
+  "order": "RRORD-101",
+  "rack": "",
+  "customer": "F4",
+  "site": "eindhoven",
+  "network": {
+    "vid": 32,
+    "cidr": "172.32.0.0/16",
+    "prefix": "rr101-"
+  },
+  "iperf_server": "L05",
+  "switches": [
+    {
+      "id": "C",
+      "role": "mgmt",
+      "ou": 41,
+      "model": "dell-n3248te",
+      "nos": "sonic",
+      "mgmt_ip": "172.26.0.55",
+      "uplink_ports": [
+        1
+      ]
+    },
+    {
+      "id": "B",
+      "role": "tor",
+      "ou": 40,
+      "model": "wedge100s",
+      "nos": "sonic"
+    },
+    {
+      "id": "A",
+      "role": "tor",
+      "ou": 39,
+      "model": "wedge100s",
+      "nos": "sonic"
+    }
+  ],
+  "devices": [
+    {
+      "pos": "L37",
+      "ou": 37,
+      "h": 2,
+      "col": "L",
+      "kind": "compute-tp",
+      "part": "801-0023",
+      "links": {
+        "mezz0": "C:7",
+        "pcie0": "A:8/4",
+        "pcie1": "B:8/4"
+      }
+    },
+    {
+      "pos": "C37",
+      "ou": 37,
+      "h": 2,
+      "col": "C",
+      "kind": "compute-tp",
+      "part": "801-0023",
+      "links": {
+        "mezz0": "C:8",
+        "pcie0": "A:8/4",
+        "pcie1": "B:8/4"
+      }
+    },
+    {
+      "pos": "R37",
+      "ou": 37,
+      "h": 2,
+      "col": "R",
+      "kind": "compute-tp",
+      "part": "801-0023",
+      "links": {
+        "mezz0": "C:41",
+        "pcie0": "A:8/4",
+        "pcie1": "B:8/4"
+      }
+    },
+    {
+      "pos": "L05",
+      "ou": 5,
+      "h": 2,
+      "col": "L",
+      "kind": "bc-head-tp",
+      "part": "801-0025",
+      "links": {
+        "mezz0": "C:5",
+        "pcie0": "A:28/1",
+        "pcie1": "B:28/1"
+      },
+      "pop": "f4-bc-head-25g"
+    },
+    {
+      "pos": "R05",
+      "ou": 5,
+      "h": 2,
+      "col": "R",
+      "kind": "bc-head-tp",
+      "part": "801-0025",
+      "links": {
+        "mezz0": "C:43",
+        "pcie0": "A:28/2",
+        "pcie1": "B:28/2"
+      },
+      "pop": "f4-bc-head-25g"
+    },
+    {
+      "pos": "JBOD01",
+      "ou": 1,
+      "h": 4,
+      "col": null,
+      "kind": "bc-jbod",
+      "part": "802-0010",
+      "links": {
+        "iom1": "C:13",
+        "iom2": "C:14"
+      }
+    }
+  ]
+}

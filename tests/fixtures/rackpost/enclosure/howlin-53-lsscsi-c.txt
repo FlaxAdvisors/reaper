@@ -1,0 +1,4 @@
+Attached devices: 
+Host: scsi4 Channel: 00 Target: 00 Lun: 00
+  Vendor: ATA      Model: SAMSUNG MZNTY128 Rev: 106Q
+  Type:   Direct-Access                    ANSI SCSI revision: 05

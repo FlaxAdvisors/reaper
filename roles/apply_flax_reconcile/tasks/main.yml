@@ -1,0 +1,88 @@
+---
+# Fail-fast on missing vault wiring.
+- name: Assert flax-reconcile password is wired
+  ansible.builtin.assert:
+    that:
+      - apply_flax_reconcile_db_password | length > 0
+    fail_msg: |
+      apply_flax_reconcile_db_password is empty. Check both:
+        (1) inventories/<site>/group_vars/all/vault.yml has vault_flax_reconcile_db_password
+        (2) inventories/<site>/group_vars/all/vars.yml wires it to apply_flax_reconcile_db_password
+  no_log: true
+
+- name: Create /etc/flax/flax-reconcile
+  become: true
+  ansible.builtin.file:
+    path: /etc/flax/flax-reconcile
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy flax-reconcile.env
+  become: true
+  ansible.builtin.template:
+    src: flax-reconcile.env.j2
+    dest: /etc/flax/flax-reconcile/flax-reconcile.env
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart flax-reconcile
+
+- name: Deploy reconcile.json
+  become: true
+  ansible.builtin.template:
+    src: reconcile.json.j2
+    dest: /etc/flax/reconcile.json
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-reconcile
+
+- name: Deploy flax-reconcile.service
+  become: true
+  ansible.builtin.template:
+    src: flax-reconcile.service.j2
+    dest: /etc/systemd/system/flax-reconcile.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart flax-reconcile
+
+# bang-fiesta hosts: external zone allow rule for the healthz port
+# (matches the precedent set by apply_flax_observe + apply_flax_discover — see project memory
+# "bang-* host-mode docker services need explicit firewalld port").
+# Use firewall-cmd directly: bang hosts don't have the python firewall
+# library that ansible.posix.firewalld requires.
+- name: Check if flax-reconcile /healthz port is already open in zone external (permanent)
+  become: true
+  ansible.builtin.command:
+    cmd: "firewall-cmd --permanent --zone=external --query-port={{ apply_flax_reconcile_healthz_port }}/tcp"
+  register: apply_flax_reconcile_port_query
+  changed_when: false
+  failed_when: false
+
+- name: Open flax-reconcile /healthz port in zone external (permanent)
+  become: true
+  ansible.builtin.command:
+    cmd: "firewall-cmd --permanent --zone=external --add-port={{ apply_flax_reconcile_healthz_port }}/tcp"
+  when: apply_flax_reconcile_port_query.rc != 0
+  changed_when: true
+  notify: Reload firewalld
+
+- name: Open flax-reconcile /healthz port in zone external (runtime)
+  become: true
+  ansible.builtin.command:
+    cmd: "firewall-cmd --zone=external --add-port={{ apply_flax_reconcile_healthz_port }}/tcp"
+  when: apply_flax_reconcile_port_query.rc != 0
+  changed_when: true
+
+- name: Enable flax-reconcile (start happens via VIP-gate handler)
+  become: true
+  ansible.builtin.systemd:
+    name: flax-reconcile.service
+    enabled: false      # VIP-exclusive — see project_keepalived_failback_trap
+    daemon_reload: true

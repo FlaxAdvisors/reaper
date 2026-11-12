@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""ovhbom - extract the OVH bill-of-materials (SN + Mellanox MACs) from a
+macinv4sims.csv inventory dump.
+
+The macinv4sims.csv format lists every FRU of every chassis, one per line,
+fields quoted with single quotes and comma-separated, e.g.:
+
+    '003', '<chassis sn>', 'Wistron', 'Tioga Pass Single Side', '<model>', '<sn>'
+    '003', '<chassis sn>', 'Mellanox Technologies', 'ConnectX-4 Lx EN OCP 1x25Gb', ..., '<p0 mac>'
+    '003', '<chassis sn>', 'Mellanox Technologies', 'ConnectX-4 Lx EN 25GbE dual-port ...', 'Mellanox Stand-up', '<p1 mac>'
+    '003', '<chassis sn>', 'Mellanox Technologies', 'ConnectX-4 Lx EN 25GbE dual-port ...', 'Mellanox Stand-up', '<p2 mac>'
+
+Rows are grouped by chassis serial (field 2). For each chassis we take:
+
+  * sn       - the 'sn' (last) field of the 'Tioga Pass Single Side' line;
+               this is the serial we use for the device.
+  * p0 mac   - the MAC of the OCP 1x25Gb Mellanox NIC (the first Mellanox MAC).
+  * bmc mac  - the ME/BMC MAC, which is p0 mac + 2.
+  * p1 mac   - the first  Mellanox 'Stand-up' dual-port MAC (file order).
+  * p2 mac   - the second Mellanox 'Stand-up' dual-port MAC (file order).
+
+Output columns: sn, p0 mac, bmc mac, p1 mac, p2 mac
+"""
+import argparse
+import csv
+import re
+import sys
+
+MAC_RE = re.compile(r"^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$")
+
+# Field indices in the input CSV.
+F_CHASSIS = 1
+F_PRODUCT = 3
+F_MODEL = 4
+F_SN = 5
+
+
+def mac_plus(mac, delta):
+    """Return `mac` incremented by `delta`, preserving colon-hex formatting."""
+    value = int(mac.replace(":", ""), 16) + delta
+    hexs = "{:012x}".format(value & 0xFFFFFFFFFFFF)
+    return ":".join(hexs[i:i + 2] for i in range(0, 12, 2))
+
+
+def parse(path):
+    """Yield (chassis_sn, [row, ...]) groups in first-seen order."""
+    groups = {}
+    order = []
+    with open(path, newline="") as fh:
+        reader = csv.reader(fh, delimiter=",", quotechar="'", skipinitialspace=True)
+        for row in reader:
+            if len(row) <= F_SN:
+                continue
+            chassis = row[F_CHASSIS].strip()
+            if chassis in ("chassis sn", ""):  # header / blank
+                continue
+            if chassis not in groups:
+                groups[chassis] = []
+                order.append(chassis)
+            groups[chassis].append(row)
+    return [(c, groups[c]) for c in order]
+
+
+def extract(rows):
+    """Return an ovhbom record dict for one chassis, or None if incomplete."""
+    sn = None
+    p0 = None
+    standups = []
+    for row in rows:
+        product = row[F_PRODUCT].strip()
+        model = row[F_MODEL].strip()
+        last = row[F_SN].strip()
+        if product == "Tioga Pass Single Side":
+            sn = last
+        elif "OCP 1x25Gb" in product and MAC_RE.match(last):
+            p0 = last.lower()
+        elif model == "Mellanox Stand-up" and MAC_RE.match(last):
+            standups.append(last.lower())
+    if not (sn and p0 and len(standups) >= 2):
+        return None
+    return {
+        "sn": sn,
+        "p0 mac": p0,
+        "bmc mac": mac_plus(p0, 2),
+        "p1 mac": standups[0],
+        "p2 mac": standups[1],
+    }
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("-i", "--input", default="./macinv4sims.csv",
+                    help="input inventory CSV (default: ./macinv4sims.csv)")
+    ap.add_argument("-o", "--output", default="./ovhbom.csv",
+                    help="output BOM CSV (default: ./ovhbom.csv)")
+    args = ap.parse_args()
+
+    cols = ["sn", "p0 mac", "bmc mac", "p1 mac", "p2 mac"]
+    records = []
+    skipped = 0
+    for chassis, rows in parse(args.input):
+        rec = extract(rows)
+        if rec is None:
+            skipped += 1
+            continue
+        records.append(rec)
+
+    with open(args.output, "w", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=cols)
+        writer.writeheader()
+        writer.writerows(records)
+
+    print("ovhbom: wrote {} device(s) to {}".format(len(records), args.output),
+          file=sys.stderr)
+    if skipped:
+        print("ovhbom: skipped {} chassis group(s) missing SN/MACs".format(skipped),
+              file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

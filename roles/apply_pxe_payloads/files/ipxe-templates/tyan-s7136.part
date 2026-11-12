@@ -1,0 +1,4 @@
+# apply the tyan-s7136 settings
+set node-setting tyan-s7136
+set com-default com1f
+set com-setting ${ttys0f}

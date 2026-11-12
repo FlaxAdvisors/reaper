@@ -1,0 +1,163 @@
+---
+- name: Ensure /opt/flax/sbin/health_hooks exists
+  become: true
+  ansible.builtin.file:
+    path: "{{ apply_health_metrics_hooks_install_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy hook scripts
+  become: true
+  ansible.builtin.copy:
+    src: "health_hooks/{{ item }}.sh"
+    dest: "{{ apply_health_metrics_hooks_install_dir }}/{{ item }}.sh"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - vrrp_state
+    - bang_hw
+    - services
+    - chk_services_metric
+    - coredump_count
+    - firewalld_zones
+
+- name: Stop and disable the retired hooks' timers
+  become: true
+  ansible.builtin.shell: |
+    t="health-hook@{{ item }}.timer"
+    if systemctl is-enabled --quiet "$t" 2>/dev/null || systemctl is-active --quiet "$t"; then
+      systemctl disable --now "$t" && echo stopped
+    fi
+  loop: "{{ apply_health_metrics_hooks_retired }}"
+  register: apply_health_metrics_hooks_retired_timers
+  changed_when: "'stopped' in apply_health_metrics_hooks_retired_timers.stdout"
+
+- name: Remove the retired hooks' scripts and timer drop-ins
+  become: true
+  ansible.builtin.file:
+    path: "{{ _p }}"
+    state: absent
+  loop: "{{ apply_health_metrics_hooks_retired | product(['script', 'dropin']) | list }}"
+  vars:
+    _p: "{{ apply_health_metrics_hooks_install_dir ~ '/' ~ item.0 ~ '.sh' if item.1 == 'script'
+            else '/etc/systemd/system/health-hook@' ~ item.0 ~ '.timer.d' }}"
+  loop_control:
+    label: "{{ _p }}"
+
+- name: Remove the retired hooks' textfiles (a stale one alerts TextfileCollectorStale)
+  become: true
+  ansible.builtin.shell: |
+    cd {{ apply_health_metrics_hooks_textfile_dir }} || exit 0
+    for f in dnsmasq_leases*.prom reaper_leased*.prom switchportrecon*.prom; do
+      [ -e "$f" ] && rm -f "$f" && echo "removed $f"
+    done; true
+  register: apply_health_metrics_hooks_retired_prom
+  changed_when: "'removed' in apply_health_metrics_hooks_retired_prom.stdout"
+
+- name: Ensure /var/lib/reaper exists (bang_hw reads the SEL acknowledgement there)
+  become: true
+  ansible.builtin.file:
+    path: /var/lib/reaper
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Generate the site health board (controller; devices.yml + components.yml)
+  delegate_to: localhost
+  run_once: true
+  become: false
+  ansible.builtin.command: >-
+    {{ ansible_playbook_python }} {{ playbook_dir }}/../scripts/health_board.py
+    --site {{ site_name }} --out {{ apply_health_board_out }} --domain {{ bang_domain }}
+  changed_when: false
+  check_mode: false      # read-only on the bangs; writes only the controller temp dir
+
+- name: Ship this bang's expected services (reaper_expected, for the site health board)
+  become: true
+  ansible.builtin.copy:
+    src: "{{ apply_health_board_out }}/expected/{{ inventory_hostname }}.prom"
+    dest: "{{ apply_health_metrics_hooks_textfile_dir }}/expected.prom"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Ensure /etc/systemd/coredump.conf.d exists
+  become: true
+  ansible.builtin.file:
+    path: /etc/systemd/coredump.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy coredump sane-limits drop-in
+  become: true
+  ansible.builtin.copy:
+    src: coredump.conf.d/99-sane-limits.conf
+    dest: /etc/systemd/coredump.conf.d/99-sane-limits.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Deploy health-hook templated service unit
+  become: true
+  ansible.builtin.copy:
+    src: systemd/health-hook@.service
+    dest: /etc/systemd/system/health-hook@.service
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Deploy health-hook templated timer unit
+  become: true
+  ansible.builtin.copy:
+    src: systemd/health-hook@.timer
+    dest: /etc/systemd/system/health-hook@.timer
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Ensure per-timer drop-in dirs exist
+  become: true
+  ansible.builtin.file:
+    path: "/etc/systemd/system/health-hook@{{ item.name }}.timer.d"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ apply_health_metrics_hooks_timers }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Drop in per-instance timer interval
+  become: true
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/health-hook@{{ item.name }}.timer.d/interval.conf"
+    content: |
+      [Timer]
+      OnUnitActiveSec={{ item.interval }}
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ apply_health_metrics_hooks_timers }}"
+  loop_control:
+    label: "{{ item.name }} -> {{ item.interval }}"
+
+- name: Reload systemd
+  become: true
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Enable + start each hook timer
+  become: true
+  ansible.builtin.systemd:
+    name: "health-hook@{{ item.name }}.timer"
+    enabled: true
+    state: started
+  loop: "{{ apply_health_metrics_hooks_timers }}"
+  loop_control:
+    label: "{{ item.name }}"

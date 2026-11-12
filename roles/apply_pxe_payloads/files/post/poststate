@@ -1,0 +1,7 @@
+#!/bin/bash
+# poststate -- the post SOL banner for a LOGGED-IN operator. agetty only
+# repaints a waiting login prompt, so a shell on SOL sees no updates; this
+# renders the same banner from /run/flax/post-status.json.
+#   poststate      print it once
+#   poststate -w   redraw every 5s (Ctrl-C to stop)
+exec python3 "$(dirname "$(readlink -f "$0")")/post_status.py" show "$@"

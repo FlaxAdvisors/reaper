@@ -1,0 +1,10 @@
+#!ipxe
+echo
+echo Next Device in BOOT ORDER
+
+# reduce the pause to 1s (instead of default 10s)
+set menu-timeout 1000
+
+set menu-default exit
+set submenu-default exit
+chain --replace --autofree ${boot-url}

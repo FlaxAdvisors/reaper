@@ -1,0 +1,9 @@
+  No.    Vlan  MacAddress         Port         Type
+-----  ------  -----------------  -----------  -------
+    1    1000  88:E9:A4:03:0C:81  Ethernet109  Dynamic
+    2    1000  DE:E1:79:96:C4:F2  Ethernet103  Dynamic
+    3    1000  0E:35:9C:66:0F:9B  Ethernet95   Dynamic
+    4    1000  EA:12:92:8F:30:ED  Ethernet109  Dynamic
+    5    1000  22:D6:6F:11:71:4C  Ethernet31   Dynamic
+    6    1000  EE:0C:11:DC:85:5E  Ethernet108  Dynamic
+Total number of entries 6

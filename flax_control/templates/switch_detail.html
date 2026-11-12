@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% import "_components.html" as c %}
+{% block title %}flax-control — {{ switch }} / {{ port }}{% endblock %}
+{% block content %}
+{{ c.breadcrumb([['Switches', '/switches'], [switch, '/switches/' ~ switch], [port, '']]) }}
+{{ c.page_header(switch + ' / ' + port) }}
+
+<div class="grid2">
+  <div class="side-card">
+    <h3>switch_facts (raw)</h3>
+    {% if port_fact %}
+      {% set macs_html %}
+        {% for m in port_fact.macs or [] %}<a href="/devices/{{ m }}"><code>{{ m }}</code></a>{% if not loop.last %}, {% endif %}{% else %}—{% endfor %}
+      {% endset %}
+      {% set nic_macs_html %}
+        {% for m in port_fact.nic_macs or [] %}<a href="/devices/{{ m }}"><code>{{ m }}</code></a>{% if not loop.last %}, {% endif %}{% else %}—{% endfor %}
+      {% endset %}
+      {% set bmc_mac_html %}
+        {% if port_fact.bmc_mac %}<a href="/devices/{{ port_fact.bmc_mac }}"><code>{{ port_fact.bmc_mac }}</code></a>{% else %}—{% endif %}
+      {% endset %}
+      {% set lldp_text %}
+        {% for n in port_fact.lldp_neighbors %}{{ n.sysname }} ({{ n.mac }}{% if n.port_description %} {{ n.port_description }}{% endif %}){% if not loop.last %}; {% endif %}{% else %}—{% endfor %}
+      {% endset %}
+      {{ c.kv('link', c.badge(port_fact.link, 'g' if port_fact.link == 'link' else 'c')) }}
+      {{ c.kv('mask', port_fact.mask or "—") }}
+      {{ c.kv('macs', macs_html) }}
+      {{ c.kv('bmc mac', bmc_mac_html) }}
+      {{ c.kv('nic macs', nic_macs_html) }}
+      {{ c.kv('junk macs', port_fact.junk_macs | length) }}
+      {{ c.kv('classification', port_fact.classification_source + (' · LLDP disagreement' if port_fact.lldp_disagreement else '')) }}
+      {{ c.kv('lldp neighbors', lldp_text) }}
+    {% else %}
+    <p class="empty">No switch_facts row for this port.</p>
+    {% endif %}
+  </div>
+
+  <div class="side-card">
+    <h3>observe_state (12-var)</h3>
+    {% if observe_row %}
+      {{ c.kv('generation', observe_row.generation) }}
+      {{ c.kv('last_polled', observe_row.last_polled) }}
+      {% for var, slot in observe_vars_sorted or [] %}
+        {{ c.kv(var, (slot.value | string) + ' · ' + (slot.since or "—")) }}
+      {% endfor %}
+    {% else %}
+    <p class="empty">No observe_state row for this port.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="section">
+  <h2>Reconcile</h2>
+  <div class="side-card">
+    <form method="post" action="/reconcile/flap" style="margin-bottom:0.75rem;">
+      <input type="hidden" name="switch" value="{{ switch }}">
+      <input type="hidden" name="port" value="{{ port }}">
+      <input type="hidden" name="mac" value="{{ port_fact.bmc_mac if port_fact and port_fact.bmc_mac else '' }}">
+      <input type="hidden" name="kind" value="bmc">
+      <input type="hidden" name="return_to" value="/switches/{{ switch }}/{{ port }}">
+      <button type="submit" class="ds-btn" {% if not port_fact or not port_fact.bmc_mac %}disabled{% endif %}>
+        Flap port (kick re-DHCP)
+      </button>
+    </form>
+    {% if reconcile_status %}
+    <p style="margin:0.25rem 0 0.5rem 0;">
+      {% if not reconcile_status.macs %}
+        <span class="muted">— no reservation for this port</span>
+      {% elif reconcile_status.converged %}
+        {{ c.badge('✓ converged — lease matches reservation', 'g') }}
+      {% else %}
+        {{ c.badge('⚠ ' + reconcile_status.live_mismatches|string + ' live mismatch(es)', 'w') }}
+      {% endif %}
+    </p>
+    {% endif %}
+    {% if actions %}
+    <p class="muted" style="font-size:0.82rem;margin:0.25rem 0 0.5rem;">reconcile history (most recent first) — see current status above</p>
+    <div class="table-scroll"><table class="data-table"><thead><tr>
+      <th>when</th><th>action</th><th>outcome</th><th>reason</th>
+    </tr></thead><tbody>
+        {% for a in actions %}
+        <tr><td class="muted">{{ a.ts }}</td><td>{{ a.action }}</td>
+            <td>{{ c.outcome_badge(a.outcome) }}</td>
+            <td>{{ a.reason or "—" }}</td></tr>
+        {% endfor %}
+    </tbody></table></div>
+    {% else %}<p class="empty">No reconcile actions for this port.</p>{% endif %}
+  </div>
+</div>
+{% endblock %}

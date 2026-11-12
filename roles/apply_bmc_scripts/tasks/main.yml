@@ -1,0 +1,106 @@
+---
+# Operator BMC recovery / configuration scripts.
+#
+# These are user-callable tools, not daemons:
+#   - bmc-reset-via-redfish: ForceRestart a stuck BMC (recovery for the
+#     AMI MegaRAC IPMI-session-exhaustion symptom; see TODO.md).
+#   - bmc-enable-inband-admin: grant admin priv on the in-band/KCS
+#     channel so host-side ipmitool works (Phosphor OpenBMC fleet).
+#
+# Both reach BMCs over the network (curl/ssh) and do not require root
+# on the bang itself — hence /opt/flax/bin (not /opt/flax/sbin).
+# the flax classifier will eventually invoke these on classification (per
+# TODO 779d39e); deploying them everywhere in the fleet now means that
+# integration is purely a pipeline-side change when it lands.
+
+- name: Ensure {{ apply_bmc_scripts_dest_dir }} exists
+  become: true
+  ansible.builtin.file:
+    path: "{{ apply_bmc_scripts_dest_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# The OpenBMC-fallback scripts embed the BMC root password; source it from the
+# vaulted credentials-bmc.json (root entry) and render it in rather than committing a
+# literal. bmc-reset-via-redfish.sh has no vars, so templating it is a plain copy.
+- name: Load the vaulted BMC root password (for the templated operator scripts)
+  ansible.builtin.set_fact:
+    bmc_root_password: "{{ (lookup('file', config_output_dir + '/' + site_name + '/services/credentials-bmc.json') | from_json | selectattr('bmcuser', 'equalto', 'root') | list | first).bmcpass }}"
+  no_log: true
+
+# Rendered/copied on the controller into a private stage (the templated scripts carry
+# the BMC root password: 0700, removed whatever happens), then ONE rsync -- was a
+# template/copy task per script. /opt/flax/bin is shared with ghost's tools:
+# --files-from touches only these scripts, never the dir or anything else in it.
+# bios_gate (and the rest of apply_bmc_scripts_plain) has no variables to render, so it is
+# copied, not templated -- it must never be added to apply_bmc_scripts_files.
+- name: BMC operator scripts
+  block:
+    - name: Script stage dir (controller, private)
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: reaper-bmcscripts-
+      delegate_to: localhost
+      become: false
+      check_mode: false
+      diff: false
+      changed_when: false
+      register: _bmc_stage
+
+    - name: Render the vault-templated scripts into the stage
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../scripts/{{ item.src }}"
+        dest: "{{ _bmc_stage.path }}/{{ item.dest }}"
+        mode: "0700"
+      loop: "{{ apply_bmc_scripts_files }}"
+      delegate_to: localhost
+      become: false
+      check_mode: false
+      changed_when: false
+      no_log: true
+
+    - name: Copy the plain scripts into the stage
+      ansible.builtin.command:
+        argv: [cp, "{{ playbook_dir }}/../scripts/{{ item.src }}", "{{ _bmc_stage.path }}/{{ item.dest }}"]
+      loop: "{{ apply_bmc_scripts_plain | default([]) }}"
+      delegate_to: localhost
+      become: false
+      check_mode: false
+      changed_when: false
+
+    - name: List the staged scripts
+      ansible.builtin.copy:
+        content: "{{ ((apply_bmc_scripts_files + (apply_bmc_scripts_plain | default([]))) | map(attribute='dest') | join('\n')) ~ '\n' }}"
+        dest: "{{ _bmc_stage.path }}/.list"
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      check_mode: false
+      diff: false
+      changed_when: false
+
+    - name: Sync the BMC operator scripts (one rsync; only these files)
+      become: true
+      ansible.posix.synchronize:
+        src: "{{ _bmc_stage.path }}/"
+        dest: "{{ apply_bmc_scripts_dest_dir }}/"
+        archive: false
+        recursive: true
+        checksum: true
+        perms: true
+        owner: true
+        group: true
+        rsync_opts: ["--files-from={{ _bmc_stage.path }}/.list", "--chown=root:root", "--chmod=F0755"]
+  always:
+    - name: Remove the script stage
+      ansible.builtin.file:
+        path: "{{ _bmc_stage.path }}"
+        state: absent
+      delegate_to: localhost
+      become: false
+      check_mode: false
+      diff: false
+      changed_when: false
+      when: _bmc_stage.path is defined

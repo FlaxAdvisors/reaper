@@ -1,0 +1,5 @@
+# WAN via bang-fiesta (its mgmt .21, NOT the .10 VIP: siesta may hold the VIP).
+# fiesta forwards internal->external (apply_bang_router masq policy) and NATs out
+# its wired public uplink. wlan0 is the backup at 200; wan-failover demotes this
+# route to 300 when probes through eth0 fail (host_vars/bang-siesta.yml).
+default 192.168.88.21 - eth0 metric 100

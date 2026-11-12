@@ -1,0 +1,49 @@
+FRU Device Description : Builtin FRU Device (ID 0)
+ Chassis Type          : Rack Mount Chassis
+ Chassis Part Number   : B60.00X1C.0011
+ Chassis Serial        : C.M.B60.00X1C.001109201900Z2
+ Chassis Extra         : M92S6N4300800
+ Chassis Extra         : M92S6N4300853
+ Chassis Area Checksum : OK
+ Board Mfg Date        : Thu 28 Mar 2019 10:31:00 PM UTC UTC
+ Board Mfg             : Wistron
+ Board Product         : Tioga Pass Single Side
+ Board Serial          : WTH19131LGZA1
+ Board Part Number     : B91.00X10.0016
+ Board Extra           : 02-000287
+ Board Extra           : LBG-1G
+ Board Area Checksum   : OK
+ Product Manufacturer  : Wiwynn
+ Product Name          : Type6 Tioga Pass Single Side
+ Product Part Number   : B91.00X01.0061
+ Product Version       : MP
+ Product Serial        : WTH49152ZGM1A
+ Product Asset Tag     : 6472353
+ Product Extra         : 01-003104
+ Product Extra         : 2019-04-12 00:40:14+02:00
+ Product Area Checksum : OK
+
+FRU Device Description : HPE Eth 10/25Gb  (ID 86)
+ Board Mfg Date        : Thu 30 Jun 2022 01:36:00 PM UTC UTC
+ Board Mfg             : HPE
+ Board Product         : HPE Eth 10/25Gb 2p 640SFP28 Adptr
+ Board Serial          : 1I02270LSS
+ Board Part Number     : 840140-001
+ Board Extra           : d23048
+ Board Extra           : d5817751b001
+ Board Area Checksum   : OK
+ Product Manufacturer  : HPE
+ Product Name          : HPE Eth 10/25Gb 2p 640SFP28 Adptr
+ Product Part Number   : 817753-B21
+ Product Serial        : 1I02270LSS
+ Product Area Checksum : OK
+
+FRU Device Description : Ava-M.2-SSD-Adap (ID 186)
+ Board Mfg Date        : Mon 30 Jul 2018 11:27:00 PM UTC UTC
+ Board Mfg             : Quanta
+ Board Product         : Ava-M.2-SSD-Adapter
+ Board Serial          : VSP82201881
+ Board Part Number     : 3YF08PB0000
+ Board Extra           : MP
+ Board Area Checksum   : OK
+

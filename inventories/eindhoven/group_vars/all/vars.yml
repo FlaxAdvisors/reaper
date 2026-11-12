@@ -1,0 +1,477 @@
+---
+site_name: eindhoven
+
+# Absolute path for collected config output. playbook_dir is the playbooks/ directory;
+# go one level up to land in the repo root's files/configs/ tree.
+config_output_dir: "{{ playbook_dir }}/../files/configs"
+
+# Inventory hostnames match ~/.ssh/config Host aliases (rabbit-lorax, turtle-lorax).
+# ProxyJump through bang-lorax is configured in ~/.ssh/config — no inline proxy needed.
+# StrictHostKeyChecking is disabled because lab devices don't have stable host keys.
+ansible_ssh_common_args: >-
+  -o StrictHostKeyChecking=no
+  -o UserKnownHostsFile=/dev/null
+
+site_jumphosts:
+  - { name: bang-edam, ts_ip: "{{ bang_edam_ts_ip }}" }
+  - { name: bang-gouda, ts_ip: "{{ bang_gouda_ts_ip }}" }
+
+bang_domain: "{{ vault_bang_domain }}"   # <bang>.<bang_domain>: vhosts, TLS, health board, install-media peers
+bang_lab_domain: ehv.lab
+
+# Per-site core infra: primary turtle is the L2/L3 spine, primary
+# rabbit is the managed switch peering it. Eindhoven's bang-edam shares
+# this primary pair rather than running a dedicated rabbit-edam/turtle-edam
+# pair (operators wanting bang-edam-local mac data use macsum's `-r`
+# CLI override).
+primary_rabbit: rabbit-gouda
+primary_turtle: turtle-gouda
+turtle_type: cisco
+
+# Kernel console arg presets. Use these names in the vlans: array below
+# instead of typing `console=ttyS0,...` strings — fewer typos, easy bulk
+# edits, and a single place to fix if a baud convention changes.
+console_zeroslow: "console=ttyS0,57600n8"
+console_zerofast: "console=ttyS0,115200n8"
+console_oneslow:  "console=ttyS1,57600n8"
+console_onefast:  "console=ttyS1,115200n8"
+
+# Master VLAN list — single source of truth for keepalived, dnsmasq, nginx,
+# and per-VLAN /srv/pxe/v<vid>/boot.ipxe content. Adding a new device-type
+# VLAN is a one-entry append here; re-run apply_bang_services.yml.
+#
+# `console:` references one of the four presets above. For wedge VLANs the
+# value is currently unused (Arista EOS install via ONIE doesn't take a kernel
+# console arg from us) but is kept populated so the data shape stays uniform.
+# pool_guard: BMC pool exclusion on vids 16/17 (Part 3 E) -- ON since 2026-09-28 (operator go after Part 2 hold, classify hold and link-up boot grace were seen live on et8b3)
+vlans:
+  - { vid: 16, family: leopard,      phase: triage, parent: eth1, cidr: 172.16.0.0/16, gateway_vip: 172.16.0.10, console: "{{ console_zerofast }}", pool_guard: true }
+  - { vid: 17, family: tiogapass,    phase: triage, parent: eth1, cidr: 172.17.0.0/16, gateway_vip: 172.17.0.10, console: "{{ console_zerofast }}", pool_guard: true }
+  - { vid: 18, family: wedge100s,    phase: triage, parent: eth1, cidr: 172.18.0.0/16, gateway_vip: 172.18.0.10, console: "{{ console_zeroslow }}" }
+  - { vid: 19, family: wedge400,     phase: triage, parent: eth1, cidr: 172.19.0.0/16, gateway_vip: 172.19.0.10, console: "{{ console_zeroslow }}" }
+  - { vid: 20, family: yv3,          phase: triage, parent: eth1, cidr: 172.20.0.0/16, gateway_vip: 172.20.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 21, family: brycecanyon,  phase: triage, parent: eth1, cidr: 172.21.0.0/16, gateway_vip: 172.21.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 22, family: lightning,    phase: triage, parent: eth1, cidr: 172.22.0.0/16, gateway_vip: 172.22.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 23, family: grandcanyon,  phase: triage, parent: eth1, cidr: 172.23.0.0/16, gateway_vip: 172.23.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 24, family: leopard,      phase: post,   parent: eth1, cidr: 172.24.0.0/16, gateway_vip: 172.24.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 25, family: tiogapass,    phase: post,   parent: eth1, cidr: 172.25.0.0/16, gateway_vip: 172.25.0.10, console: "{{ console_zerofast }}" }
+  # vids 26/27 carry switch OOB-mgmt (turtle<->bang eth0 path). These are NOT
+  # monitored by the flax-* services, so reservation-only + authoritative-NAK
+  # just starves the OOB gear and any host booting on those ports. dhcp_mode:
+  # pool opts them back into an open pool (172.<vid>.0.50-.200), same override
+  # vid 31 uses. Reservations still win over the pool when one exists.
+  - { vid: 26, family: wedge100s,    phase: post,   parent: eth0, cidr: 172.26.0.0/16, gateway_vip: 172.26.0.10, console: "{{ console_zeroslow }}", dhcp_mode: pool }
+  - { vid: 27, family: wedge400,     phase: post,   parent: eth0, cidr: 172.27.0.0/16, gateway_vip: 172.27.0.10, console: "{{ console_zeroslow }}", dhcp_mode: pool }
+  - { vid: 28, family: yv3,          phase: post,   parent: eth1, cidr: 172.28.0.0/16, gateway_vip: 172.28.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 29, family: brycecanyon,  phase: post,   parent: eth1, cidr: 172.29.0.0/16, gateway_vip: 172.29.0.10, console: "{{ console_zerofast }}" }
+  - { vid: 30, family: lightning,    phase: post,   parent: eth1, cidr: 172.30.0.0/16, gateway_vip: 172.30.0.10, console: "{{ console_zerofast }}" }
+  # vid 31: access vlan for the customer post switch uplink (reclassified
+  # from grandcanyon 2026-07-01; was "open DHCP pool for integration work"
+  # 2026-05-13). Open DHCP pool: bypasses the site-level reservation_only_dhcp
+  # and reaper-leased enrollment entirely; dnsmasq leases freely from the
+  # apply_bang_services_dhcp_pool range, third-party gear shows up in the
+  # dashboard's Leases tab via /api/leases, and reaper-leased's state.json
+  # stays untouched for this vlan.
+  #
+  # pxe.menu/submenu: gear boots a stock Ubuntu installer rather than the
+  # SUSE Leap live image; menu-ubuntu + submenu C_24.04 picks that path from
+  # the iPXE menu. family=tiogapass so com/com_setting/node derive com1f/
+  # ttys0f (wiwynn-tp) — the lindhof (Tioga Pass) nodes prepped here need the
+  # ttyS0 serial console, matching TP vids 17/25. (grandcanyon defaulted to
+  # ttys1f, which would have broken that console on deploy.)
+  - { vid: 31, family: tiogapass,    phase: post,   parent: eth1, cidr: 172.31.0.0/16, gateway_vip: 172.31.0.10, console: "{{ console_zerofast }}", dhcp_mode: pool, pxe: { menu: menu-ubuntu, submenu: "C_24.04" } }
+  # vid 32: a general-purpose post VLAN on the eth0/turtle path (mirrors the
+  # 26/27 eth0 OOB placement, NOT eth1 like 31). "Non-hardware-specific": it is
+  # deliberately ABSENT from flax_role_post_vid_by_family below, so flax-classify
+  # never steers a family to it and never sweeps it -- a pure open DHCP pool
+  # (dhcp_mode: pool, 172.32.0.50-.200) for post/integration work the flax
+  # pipeline shouldn't touch, the same posture as 26/27. family: tiogapass only
+  # sets the FALLBACK PXE console (com1f/ttyS0 115200n8, node wiwynn-tp) for an
+  # un-pinned client; the per-MAC pins in /srv/pxe/ipxe override it. No pxe:
+  # override, so phase=post gives menu-live + staylive. Companion config:
+  # ifcfg-eth0.32 on both bangs (172.32.0.1/.2) and `32` appended to the turtle
+  # Te1/1/1 + Te1/1/2 trunk allowed-vlan list (running-config.txt).
+  - { vid: 32, family: tiogapass,    phase: post,   parent: eth0, cidr: 172.32.0.0/16, gateway_vip: 172.32.0.10, console: "{{ console_zerofast }}", dhcp_mode: pool }
+
+# Mgmt VIP (VLAN 4 native on eth0). Carried by the same vrrp_instance.
+bang_mgmt_vip: 192.168.88.10
+bang_mgmt_cidr: 192.168.88.10/24
+bang_mgmt_iface: eth0
+bang_wan_iface: eth0.2
+# corp eth0.2 (metric 100) is the primary WAN; the guest-wifi dongle on both
+# bangs is the hotplug backup. A replug re-creates wlan0 and wicked loses its
+# route priority (lavergne 2026-10-28), so the guard holds it at 200.
+apply_bang_router_wan_route_metrics: ["wlan0:200"]
+
+# Dynamic DHCP pool for laptops/on-site tooling on the mgmt VLAN.
+# Consumed by roles/apply_bang_services/templates/dnsmasq.conf.j2.
+# Omitting this var falls back to the legacy static-only range
+# (current behaviour at lavergne). Not a role default — deliberately
+# scoped to mgmt-VLAN, not per-DUT-VLAN ranges.
+mgmt_guest_pool:
+  start: 192.168.88.200
+  end:   192.168.88.249
+  lease: 8h
+
+# Enable RA-stateless on the mgmt VLAN. LL-only (no prefix), no v6 default
+# route. See docs/superpowers/specs/2026-05-11-mgmt-vlan-dhcpv6-ra-stateless-design.md
+mgmt_v6_ra_stateless: true
+
+# Same RA-stateless treatment on every lab-data VLAN in `vlans:` below.
+# Suppresses dnsmasq "no address range available for DHCPv6 request via
+# eth1.<vid>" log spam (OpenBMC BMCs SOLICIT v6 alongside their v4 DISCOVER
+# on link-up; without an RA there's nowhere for them to land). Stateful
+# DHCPv6 with a v6 leases table is still the long-term plan (see TODO.md)
+# — this is the noise-suppressing prerequisite, not a replacement.
+lab_data_v6_ra_stateless: true
+
+# Arista ZTP bootfile-name URL for switches tagged set:arista-ztp in
+# bmc-reservations.conf. Live config on bang-gouda uses the mgmt VIP
+# literal rather than the FQDN — captured here so a re-render doesn't
+# strip the hand-added line. Switch to bang.{{ bang_lab_domain }} once
+# we've confirmed EOS resolves the FQDN through dnsmasq during ZTP.
+arista_ztp_url: "http://192.168.88.10/arista-ztp.conf"
+
+# Reservation-only DHCP on lab-data VLANs (vid 16-31). Pool removed;
+# unknown MACs get denied and reaper-leased's denial watcher picks them
+# up from the dnsmasq journal (log-dhcp required) to trigger FDB+LL
+# discovery. See docs/superpowers/specs/2026-05-12-reservation-only-lab-data-design.md
+# Lavergne and braintree keep the pool form until their own cutover specs.
+reservation_only_dhcp: true
+# 2026-11-06: BMC_UDHCP-only pool on the reservation-only post VLANs (24/25/28/29/30),
+# so an AMI/IPMI-only BMC (Leopard) gets IPv4 to be probed; hosts + BMC_FB_DHCLIENT stay
+# reservation-only. Departs from the 2026-09-27 "no pool IP for BMCs" ruling for post only.
+apply_kea_res_only_bmc_pool: true
+# ...and reconcile kicks a post BMC off that pool onto its post reservation (only while on
+# a pool lease). Keep equal to apply_kea_res_only_bmc_pool: the pool and its escape move together.
+flax_role_post_reconcile_pool_bmc: true
+
+# Per-vlan L3 SVI hostname → IP suffix map. Consumed by lab-hosts.j2 to
+# render switch SVI A records (172.<vid>.0.<suffix>) for every vlan in
+# vlans:. Switches don't have these SVIs configured yet — DNS records
+# resolve but ping fails until the eindhoven switch SVI follow-up lands.
+switch_host_suffix:
+  rabbit-gouda: 3
+  rabbit-edam: 4
+  turtle-gouda: 5
+
+# Per-host static IP suffix on every VLAN. bang-gouda = .1 (master, prio 110),
+# bang-edam = .2 (backup, prio 90). Used by keepalived role to compute priorities.
+bang_host_suffix:
+  bang-gouda: 1
+  bang-edam:  2
+
+bang_vrrp_priority:
+  bang-gouda: 110
+  bang-edam:  90
+
+# apply_keepalived defaults this to bang-gouda already (matches our
+# priority assignment above), but the var only resolves when the
+# apply_keepalived role is in the play. Pinned in group_vars so
+# thin single-role playbooks (apply_triage_compose.yml etc.) whose
+# tasks/handlers gate restart on master vs backup don't fail with
+# 'apply_keepalived_master_host is undefined'.
+apply_keepalived_master_host: bang-gouda
+
+# Triage UI/API stack runs only on the VIP master — the SOL websocket
+# listener requires single-instance per fleet. notify_master.sh and
+# notify_backup.sh (apply_keepalived) start/stop the stack on VIP
+# transitions; apply_triage_compose handles the initial up/down at
+# deploy time.
+apply_keepalived_compose_stacks:
+  - /etc/flax/triage/docker-compose-prod.yml
+
+# ── flax-stack / Kea / Postgres-HA wiring (2026-06-20 eindhoven migration) ──
+# Mirrors braintree. Secrets live in this site's encrypted vault.yml.
+# Kea DHCP cutover flipped 2026-06-21: dnsmasq drops to DNS+TFTP-only;
+# kea-dhcp4/6 + radvd own DHCP (VIP-exclusive via keepalived); flax-reconcile
+# becomes the sole switch writer (neuters legacy reaper-leased writes).
+bang_dhcp_server: kea
+bang_reconcile: flax
+apply_flax_stack_postgres_superuser_password: "{{ vault_flax_stack_postgres_superuser_password }}"
+apply_flax_stack_db_passwords: "{{ vault_flax_stack_db_passwords }}"
+
+# Postgres HA: bang-gouda primary, bang-edam streaming standby. Each bang allows
+# the OTHER as the replicator role over its mgmt IP. apply_flax_stack_is_primary
+# is per-host (host_vars/bang-edam.yml sets it false → standby gates OFF alembic).
+apply_flax_stack_peers:
+  - { name: bang-gouda, ip: 192.168.88.21 }
+  - { name: bang-edam,  ip: 192.168.88.22 }
+
+# /export/share mirror (apply_share_sync.yml): hourly cron on the source only,
+# and it runs only while that bang holds bang_mgmt_vip.
+apply_share_sync_from: bang-gouda
+apply_share_sync_to: bang-edam
+
+apply_flax_switch_sense_db_password: "{{ vault_flax_stack_db_passwords.flax_switch_sense }}"
+apply_flax_observe_db_password: "{{ vault_flax_stack_db_passwords.flax_observe }}"
+apply_flax_classify_db_password: "{{ vault_flax_stack_db_passwords.flax_classify }}"
+apply_flax_discover_db_password: "{{ vault_flax_stack_db_passwords.flax_discover }}"
+apply_flax_reconcile_db_password: "{{ vault_flax_stack_db_passwords.flax_reconcile }}"
+apply_flax_post_db_password: "{{ vault_flax_stack_db_passwords.flax_post }}"
+# Post-UI Wave 3 (PWR/IDNT/INV/POP action buttons). Pins eindhoven's post
+# image explicitly (was tracking the role default). 0.9.113 = main + the
+# post-UI-actions branch. Viewer unit gains creds-bmc/opt-flax-bin/export/
+# node_config mounts; image adds nmap/jq/curl for the ghost helpers.
+apply_flax_post_image_tag: "0.9.209"  # 0.9.209 = Deploy reads dimmerr labels with spaces ("DIMM A0")
+apply_flax_post_deploy_enabled: true   # Loose Post Deploy ON (operator 2026-11-06): a Qualify pass -> Ubuntu 24.04 + flax_user + iperf + stress -> Done; wipes the system disk unless post installed it
+
+# Core flax services pinned to the SAME build as flax_post (2026-09-11). Until
+# now each ran the tag of its own last change (classify 0.9.104, observe
+# 0.9.87, reconcile 0.9.83, switch-sense 0.9.41, discover 0.9.46, console
+# 0.9.123) and the role defaults lagged too, so a routine apply could move a
+# service by accident. One tag for the whole bundle; bump them together.
+apply_flax_classify_image_tag: "0.9.203"  # 0.9.203 = post per-node order assignment + Finish order (migrations 041/042), console closed_by guard
+apply_flax_observe_image_tag: "0.9.203"  # 0.9.203 = post per-node order assignment + Finish order (migrations 041/042), console closed_by guard
+apply_flax_reconcile_image_tag: "0.9.203"  # 0.9.203 = post per-node order assignment + Finish order (migrations 041/042), console closed_by guard
+apply_flax_switch_sense_image_tag: "0.9.203"  # 0.9.203 = post per-node order assignment + Finish order (migrations 041/042), console closed_by guard
+apply_flax_discover_image_tag: "0.9.203"  # 0.9.203 = post per-node order assignment + Finish order (migrations 041/042), console closed_by guard
+apply_flax_stack_flax_control_image_tag: "0.9.203"  # 0.9.203 = post per-node order assignment + Finish order (migrations 041/042), console closed_by guard
+# SOL console (flax-post-sol Node relay + flax_post/web SOL modal), 2026-07-10.
+apply_flax_post_sol_image_tag: "0.9.209"  # 0.9.209 = relay reads post's blades feed again (racks map); 0.9.195 skipped it
+apply_flax_post_ladder_ports: ""  # every slot: the engine power-on was proven on et8b4 2026-09-11 and every guard held on the other 46 for 3 h
+
+# NIC firmware: pinned to 'detect' 2026-09-06. The role default is 'enforce'
+# (the only one of the three agents that ships armed) -- see
+# roles/apply_flax_post/defaults/main.yml.
+#
+# Post nodes already have their Mellanox cards flashed IN BAND: post.sh runs
+# ./update_mellanox.sh on the live ISO for every Leopard/Tioga Pass chassis,
+# from that script's own embedded FWREL/FWMAP (14_32_1912). flax_post/nicd is
+# a SECOND flasher for the same cards, over SSH, from a separate source of
+# truth (/etc/flax/nic-firmware-versions.json). Nothing keeps the two maps in
+# step, and nothing arbitrates between them.
+#
+# nicd has never actually flashed here -- its gate (nicd/classify.flash_eligible)
+# additionally requires fw_bmc_phase AND fw_bios_phase == 'up_to_date', and
+# neither holds on the edam rack today. But that is a temporary accident, not a
+# design: bringing BMC to flax-onetree-1.1.1 and BIOS to TPC_P26F -- which is
+# exactly what the current work is doing -- opens the gate and makes nicd a
+# live second writer. Pin it now, while the choice is still ours to make.
+#
+# 'detect' keeps the agent as a reporter (probe + classify into the viewer),
+# which is all it has ever effectively been.
+apply_flax_post_nic_fw_mode: "detect"
+
+# BIOS firmware: pinned to 'detect' 2026-09-06, by operator decision, and this
+# one must NOT be armed until post's BIOS agent reaches triage parity on the
+# post-flash recovery path. It relies on the role default today; pinned here so
+# a future default change cannot arm it silently (which is exactly how
+# apply_flax_post_nic_fw_mode came to be armed).
+#
+# Triage's blade-power-cycle design records the measured behaviour of THIS
+# fleet: a BIOS flash ends with the host powered off, and it "frequently cannot
+# be powered back on" -- the BMC drives POWER_OUT, waits for PS_PWROK, and the
+# power-good watchdog expires after ~8 s. Triage handles that with a
+# needs_power_cycle phase and an i2c 12 V sled cycle (bmc-blade-power-cycle),
+# plus an entity-manager cache clear (bmc-clear-entity-cache).
+#
+# flax_post/biosd has NONE of it, and cannot: it mounts neither /opt/flax/bin
+# (so it cannot call those bins -- the gap triage fixed for itself in 0b0eb2f)
+# nor credentials-bmc.json (so it has no BMC path at all), and there is no
+# needs_power_cycle phase in flax_post.
+#
+# The failure is silent, not loud. biosd/service._reprobe_inflight does
+#     rc, out = deps.run(ip, check_script); if rc != 0: return
+# and its only fault branch requires `current == baseline`, which requires a
+# SUCCESSFUL ssh read. A host that never powers back on therefore never trips
+# FLASH_TIMEOUT_S: the port stays 'flashing' with the registry claim held
+# forever, no fault and no alarm. On a rack whose only post node is et10b3,
+# that is the whole pipeline stopped, needing hands on a customer site.
+#
+# Prerequisites before arming: mount /opt/flax/bin; give biosd credentials-bmc;
+# add needs_power_cycle + the blade cycle; give _reprobe_inflight a wall-clock
+# timeout that fires when the host NEVER answers; port the entity-cache clear.
+apply_flax_post_bios_fw_mode: "detect"
+
+# BMC firmware: pinned to 'detect' 2026-09-06, by operator decision. Like the
+# BIOS pin above this relied on the role default; pin it so it cannot be armed
+# by a default change.
+#
+# Arming this is not just "flash the BMC". flax_post/fwd/enforce.run_node calls
+# client.set_boot_pxe() and client.power_on() BEFORE any flash, and set_boot_pxe
+# PATCHes BootSourceOverrideEnabled=Continuous -- a PERSISTENT boot-order flip,
+# not one-shot. Braintree's vars carry the standing site constraint verbatim:
+# devices that boot from disk are LEFT ALONE, nothing may alter a node's boot
+# order, and "do not arm any of the three without revisiting" it.
+#
+# Post's BMC agent is also behind triage's on the flash path itself. Triage
+# shipped dual-chip management on 2026-09-02 -- it reports BOTH BMC flash chips
+# and refreshes the cold spare from the same artifact (backup_version,
+# backup_state, backup_attempts, backup_write_attempted in bmcfw.json).
+# flax_post/fwd has NO backup handling at all. And per the frontier note the
+# flash -> backup -> power-on path has never been exercised on hardware in
+# either agent; only the in-service backup-only branch has.
+#
+# The one post node's Redfish is currently flapping as well (TCP 443 accepts,
+# GET .../FirmwareInventory/bmc_active intermittently times out; the store row
+# oscillates unreachable <-> needs_update), which is not a BMC to commit to a
+# ~13 minute flash plus activation reboot.
+#
+# Note this also keeps flax_post/biosd disarmed in practice regardless of the
+# pin above: biosd's flash_eligible requires fw_bmc_phase == 'up_to_date', and
+# with the BMC agent in detect the edam rack stays at
+# flax-onetree-1.0.9-202607032146 against target flax-onetree-1.1.1.
+apply_flax_post_fw_mode: "detect"
+
+# BMC firmware manifest: live file hand-managed until 2026-09-28; this is its
+# content + the Part 3 option (post_flash_net_reset).
+bmc_fw_platforms:
+  tiogapass-openbmc:
+    match:
+      product_name: ["(?i)tioga", "(?i)tp[-_ ]?", "(?i)wiwynn.*tp", "(?i)quanta.*tioga"]
+      bmc_kind: openbmc
+    target_version: "flax-onetree-1.1.5"
+    check: { method: redfish-firmware-inventory, id: bmc_active }
+    flash: { method: redfish-update-multipart, artifact: "SXC-Lab_OCP-Updates/OpenBMC/flax-onetree-1.1.5.tar" }
+    auto: true
+    post_flash_net_reset: true   # Part 3 D: clear 00-bmc-eth0.network after a flash (gated by BMC_FW_NETRESET_PORTS)
+  # Quanta Leopards (operator 2026-10-27): report-only. triage bmc_fw reads the
+  # BMC version over IPMI (`mc info`, ami_legacy -C 3) once per link session
+  # and reports at_target / off_target; it never flashes them. 14.00 is the
+  # fleet version (metal Socflash f06_1250_1400.bin, SXC Quanta_Leopard-DDR4_BMC_14).
+  # updatable:false also keeps post's fwd from ever flashing one; its check.id
+  # is not bmc_active, so fwd's onetree match never picks it.
+  leopard-ami:
+    match:
+      product_name: ["(?i)leopard"]
+    target_version: "14.00"
+    check: { method: ipmi-mc-info, id: ipmi_fw_rev }
+    updatable: false
+
+# Host (BIOS) firmware manifest for the triage bios_fw worker (role default is
+# TPC_P26F). 2026-09-29 operator: TPO_P26F. 2026-10-02 operator: one BIOS for
+# Quanta and Wiwynn again (the Quanta-only F08 entry is gone).
+host_fw_platforms:
+  tiogapass-bios:
+    match:
+      product_name: ["(?i)tioga", "(?i)sv7220g3"]
+    target_version: "TPO_P27F"
+    flash:
+      method: redfish-update-multipart
+      artifact: "SXC-Lab_OCP-Updates/OEM-TP-wiwynn-FW-2021-02-23/tiogapass-bios-update-TPO_P27F.tar"
+    auto: true
+  # Quanta Leopards (operator 2026-10-27): report-only. post flashes F06_3B22
+  # (update_quanta_leopard.sh); triage bios_fw only reads the version the BIOS
+  # wrote into the BMC at POST (`mc getsysinfo system_fw_version`) and reports
+  # at_target / off_target. No flash entry: bios_fw never flashes these.
+  leopard-bios:
+    match:
+      product_name: ["(?i)leopard"]
+    target_version: "F06_3B22"
+    check: { method: ipmi-sysinfo }
+
+# Post-lane BIOS manifest (flax-post-biosd + the rack firmware rungs), rendered to
+# /etc/flax/bios-firmware-versions.json by apply_flax_post (--tags post_bios_manifest).
+# host_fw_family links an entry to its triage host_fw_platforms family: `reaper fw
+# <site> bios <family> <tar>` moves target + bin_url here in the same commit.
+post_bios_fw_platforms:
+  - platform: "Wiwynn Tioga Pass"
+    family: tiogapass
+    host_fw_family: tiogapass-bios
+    target: "TPO_P27F"
+    afulnx_url: "http://bang/export/share/SXC-Lab_OCP-Updates/Linux_Flash_Utilities/afulnx_64_Wiwynn_Tioga_Pass"
+    bin_url: "http://bang/export/share/SXC-Lab_OCP-Updates/OEM-TP-wiwynn-FW-2021-02-23/tiogapass-bios-update-TPO_P27F.tar"
+    bin_path: image-bios
+    flags: ["/X", "/B", "/P", "/K", "/N", "/ME", "/REBOOT"]
+  - platform: "Quanta Leopard"
+    family: leopard
+    target: "F06_3B22"
+    updatable: false
+
+# Role registry (spine migration phase 1) universe for the post role,
+# rendered into /etc/flax/roles.d/post.json by apply_lease_agent. Values
+# match the flax_role_post_* template defaults -- pinned explicitly here so
+# eindhoven's deploy is declarative; other sites fall back to the defaults.
+flax_role_post_switches: ["rabbit-edam"]
+flax_role_post_prefixes: ["turtle"]
+# NO catch_all (2026-09-11). The only post switch is rabbit-edam, plus the
+# turtle-gouda ports (wedge OOB mgmt) via the prefix claim. With catch_all a
+# rabbit-gouda port absent from geometry.json resolved to post and reconcile
+# steered it into a post VLAN (the et26 column landed on 25 while flax-classify
+# read a stale geometry). Unmatched ports now get NO role: no reservation, no
+# desired_port, nothing steered.
+flax_role_post_catch_all: false
+
+# Role registry (spine migration phase 6) universe for the integra role,
+# rendered into /etc/flax/roles.d/integra.json by apply_lease_agent. A pure
+# ports-claim role: one explicit (switch, port) claim on the customer post
+# switch uplink; values match the flax_role_integra_* template defaults --
+# pinned here so eindhoven's deploy is declarative.
+flax_role_integra_ports: { "rabbit-gouda": ["et32/1"] }
+flax_role_integra_vid: 31
+
+# Vid-by-family steering maps (spine migration Task 4), rendered into
+# roles.d/{triage,post}.json.j2's policy.vid.by_family and consumed by
+# flax_classify.vlan_policy.fp_to_vid_from_roles. This is the DEPLOYED gouda
+# /etc/flax/vlans.json map TRANSCRIBED VERBATIM (verified 2026-07-05) --
+# deliberately NOT derived from the `vlans:` array above. That array
+# currently carries a PENDING, NOT-YET-LIVE integra reclass (vid 31 flipped
+# to family: tiogapass, phase: post, for the customer post-switch uplink --
+# see the vid 31 entry's comment above) that must not leak into the role
+# registry until the reclass is actually rolled out; grandcanyon stays 31
+# here until then.
+flax_role_triage_vid_by_family:
+  leopard: 16
+  tiogapass: 17
+  wedge100s: 18
+  wedge400: 19
+  yv3: 20
+  brycecanyon: 21
+  lightning: 22
+  grandcanyon: 23
+flax_role_post_vid_by_family:
+  leopard: 24
+  tiogapass: 25
+  wedge100s: 26
+  wedge400: 27
+  yv3: 28
+  brycecanyon: 29
+  lightning: 30
+  grandcanyon: 31
+
+# Spine-migration phase-3a cutover (2026-07-04, operator green-lit remote flips;
+# physical node-move validation deferred -- no one on-site). Two-key arming:
+# mode=enforce AND the role named; the materializer is the sole kea writer for
+# enforced roles. Rollback = revert these two lines + re-apply --tags flax_classify.
+apply_flax_classify_materializer_mode: "enforce"
+apply_flax_classify_materializer_enforce_roles: "post,triage"
+
+# Kea Postgres backends: kea = libdhcp_pgsql hook (lease+hosts); flax_kea_hook =
+# the run_script discover-hook (INSERT-only into lease_events).
+apply_kea_db_password: "{{ vault_flax_stack_db_passwords.kea }}"
+apply_kea_hook_db_password: "{{ vault_flax_stack_db_passwords.flax_kea_hook }}"
+
+# radvd image tag (radvd is gated on bang_dhcp_server=kea — deploys at cutover).
+apply_radvd_image_tag: "latest"
+
+# Fleet TLS CA private key (PEM). Signs per-host wildcard leaves on the control
+# node only (apply_flax_tls, delegate_to localhost) -- never copied to a bang.
+# Same plaintext across all sites; encrypted separately per site vault.
+apply_flax_tls_ca_key: "{{ vault_flax_tls_ca_key }}"
+
+# Triage UI: the population profile a bang with no /etc/flax/triage-ui/settings.json
+# starts on (a file under /opt/flax/node_config, deployed from
+# files/configs/eindhoven/services/node_config/). Seed only -- the UI owns the
+# file once it exists.
+apply_triage_compose_node_config: ovh-bare-tp
+
+# Post fleet viewer (view.<host>.<bang_domain>) on BOTH bangs (operator
+# 2026-11-05): the order archive's files live in Postgres since migration 040, so
+# edam's viewer reads the whole archive from its streaming replica (read-only,
+# docker exec psql on the local postgres) and survives a failover. Rackpost itself
+# stays primary-only: order dirs are not synced. Both lists are derived in
+# playbooks/group_vars/all/placement.yml.
+
+# Per-site triage compose values (Phase 5, spec 2026-11-08-reaper-triage-deploy-design):
+# `reaper deploy <site> triage` renders these into /etc/flax/triage/.env, and the triage
+# repo's compose reads each as ${VAR?} (unset stops compose; it never blanks a list).
+# The four lists are the mezz-unlock station slots and MUST be equal: a station slot
+# missing from a DISABLE list lets bmc_fw/bios_fw act on a blade mid-unlock
+# (reaper-devel tests/test_mezzflash_compose_ports.py).
+# Zone A: rabbit-gouda Et5 (left), Et9 (centre), Et27 (right), top four OUs.
+apply_triage_compose_env:
+  POWER_INTERLOCK_SKIP_PORTS: "et5b1,et5b2,et5b3,et5b4,et9b1,et9b2,et9b3,et9b4,et27b1,et27b2,et27b3,et27b4"
+  MEZZ_FLASH_PORTS: "et5b1,et5b2,et5b3,et5b4,et9b1,et9b2,et9b3,et9b4,et27b1,et27b2,et27b3,et27b4"
+  BMC_FW_DISABLE_PORTS: "et5b1,et5b2,et5b3,et5b4,et9b1,et9b2,et9b3,et9b4,et27b1,et27b2,et27b3,et27b4"
+  BIOS_FW_DISABLE_PORTS: "et5b1,et5b2,et5b3,et5b4,et9b1,et9b2,et9b3,et9b4,et27b1,et27b2,et27b3,et27b4"

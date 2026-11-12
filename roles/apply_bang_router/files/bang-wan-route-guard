@@ -1,0 +1,38 @@
+#!/bin/sh
+# Managed by apply_bang_router. Do not edit.
+#
+# bang-wan-route-guard IFACE:METRIC [IFACE:METRIC ...]
+#
+# Keep each listed WAN's default route at its configured metric. wicked
+# 0.6.77 drops DHCLIENT_ROUTE_PRIORITY when a hotplug device is re-created:
+# replugging bang-rhythm's wifi dongle (2026-10-28) put wlan0's default route
+# at metric 0, ahead of corp (100), so the backup WAN carried everything.
+# A default route on IFACE with any other metric is re-added at METRIC and the
+# wrong one deleted. Other interfaces are never touched. Run by
+# bang-wan-route-guard.timer every minute.
+
+for pair in "$@"; do
+    case "$pair" in
+        [!:]*:[0-9]*) ;;
+        *) echo "usage: $0 IFACE:METRIC ..." >&2; exit 2 ;;
+    esac
+    case "${pair#*:}" in
+        *[!0-9]*) echo "usage: $0 IFACE:METRIC ..." >&2; exit 2 ;;
+    esac
+done
+
+for pair in "$@"; do
+    dev=${pair%%:*}
+    want=${pair#*:}
+    ip -4 route show default dev "$dev" | while read -r line; do
+        gw=$(echo "$line" | sed -n 's/.*via \([0-9.]*\).*/\1/p')
+        [ -n "$gw" ] || continue
+        have=$(echo "$line" | sed -n 's/.* metric \([0-9]*\).*/\1/p')
+        have=${have:-0}
+        [ "$have" = "$want" ] && continue
+        ip route add default via "$gw" dev "$dev" proto dhcp metric "$want" 2>/dev/null
+        ip route del default via "$gw" dev "$dev" metric "$have" &&
+            logger -t bang-wan-route-guard "$dev default via $gw metric $have -> $want"
+    done
+done
+exit 0

@@ -1,0 +1,58 @@
++-----------+--------------+------------+----------------+-------------+-----------------------+
+|   VLAN ID | IP Address   | Ports      | Port Tagging   | Proxy ARP   | DHCP Helper Address   |
++===========+==============+============+================+=============+=======================+
+|      1000 |              | Ethernet0  | untagged       | disabled    |                       |
+|           |              | Ethernet1  | untagged       |             |                       |
+|           |              | Ethernet2  | untagged       |             |                       |
+|           |              | Ethernet3  | untagged       |             |                       |
+|           |              | Ethernet4  | untagged       |             |                       |
+|           |              | Ethernet5  | untagged       |             |                       |
+|           |              | Ethernet6  | untagged       |             |                       |
+|           |              | Ethernet7  | untagged       |             |                       |
+|           |              | Ethernet8  | untagged       |             |                       |
+|           |              | Ethernet9  | untagged       |             |                       |
+|           |              | Ethernet10 | untagged       |             |                       |
+|           |              | Ethernet11 | untagged       |             |                       |
+|           |              | Ethernet12 | untagged       |             |                       |
+|           |              | Ethernet13 | untagged       |             |                       |
+|           |              | Ethernet14 | untagged       |             |                       |
+|           |              | Ethernet15 | untagged       |             |                       |
+|           |              | Ethernet16 | untagged       |             |                       |
+|           |              | Ethernet17 | untagged       |             |                       |
+|           |              | Ethernet18 | untagged       |             |                       |
+|           |              | Ethernet19 | untagged       |             |                       |
+|           |              | Ethernet20 | untagged       |             |                       |
+|           |              | Ethernet21 | untagged       |             |                       |
+|           |              | Ethernet22 | untagged       |             |                       |
+|           |              | Ethernet23 | untagged       |             |                       |
+|           |              | Ethernet24 | untagged       |             |                       |
+|           |              | Ethernet25 | untagged       |             |                       |
+|           |              | Ethernet26 | untagged       |             |                       |
+|           |              | Ethernet27 | untagged       |             |                       |
+|           |              | Ethernet28 | untagged       |             |                       |
+|           |              | Ethernet29 | untagged       |             |                       |
+|           |              | Ethernet30 | untagged       |             |                       |
+|           |              | Ethernet31 | untagged       |             |                       |
+|           |              | Ethernet32 | untagged       |             |                       |
+|           |              | Ethernet33 | untagged       |             |                       |
+|           |              | Ethernet34 | untagged       |             |                       |
+|           |              | Ethernet35 | untagged       |             |                       |
+|           |              | Ethernet36 | untagged       |             |                       |
+|           |              | Ethernet37 | untagged       |             |                       |
+|           |              | Ethernet38 | untagged       |             |                       |
+|           |              | Ethernet39 | untagged       |             |                       |
+|           |              | Ethernet40 | untagged       |             |                       |
+|           |              | Ethernet41 | untagged       |             |                       |
+|           |              | Ethernet42 | untagged       |             |                       |
+|           |              | Ethernet43 | untagged       |             |                       |
+|           |              | Ethernet44 | untagged       |             |                       |
+|           |              | Ethernet45 | untagged       |             |                       |
+|           |              | Ethernet46 | untagged       |             |                       |
+|           |              | Ethernet47 | untagged       |             |                       |
+|           |              | Ethernet48 | untagged       |             |                       |
+|           |              | Ethernet49 | untagged       |             |                       |
+|           |              | Ethernet50 | untagged       |             |                       |
+|           |              | Ethernet51 | untagged       |             |                       |
+|           |              | Ethernet52 | untagged       |             |                       |
+|           |              | Ethernet56 | untagged       |             |                       |
++-----------+--------------+------------+----------------+-------------+-----------------------+

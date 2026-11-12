@@ -1,0 +1,4 @@
+# apply the bigsur settings
+set node-setting bigsur
+set com-default com2s
+set com-setting ${ttys1s}

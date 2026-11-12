@@ -1,0 +1,10 @@
+---
+# /export/share mirror, source bang -> peer, hourly and only while the source
+# holds the mgmt VIP. Source/target per site: apply_share_sync_from/_to.
+- name: Apply /export/share sync cron
+  hosts: jumphosts
+  gather_facts: false
+  tasks:
+    - name: Apply role apply_share_sync
+      ansible.builtin.import_role:
+        name: apply_share_sync

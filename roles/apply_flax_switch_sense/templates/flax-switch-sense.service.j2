@@ -1,0 +1,42 @@
+[Unit]
+Description=flax-switch-sense — switch poller publishing switch_facts to Postgres
+After=docker.service network-online.target flax-stack.service
+Wants=network-online.target
+Requires=docker.service flax-stack.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/flax/flax-switch-sense/flax-switch-sense.env
+# VIP-gate. Exits 0 iff MGMT_VIP is on this host. Inline bash (no container)
+# so the gate adds <100ms instead of 2-3s. The python --check-vip-holder
+# inside the image is for operator ad-hoc runs; the systemd path uses bash.
+ExecStartPre=/bin/bash -c '. /etc/flax/site.env && ip -o -4 addr | grep -qE " $${MGMT_VIP}/"'
+
+# --init: run tini as PID 1 so any orphaned child (e.g. an ssh subprocess) is
+# reaped. Without it the python entrypoint is PID 1 and never wait()s orphans,
+# which let backgrounded ssh masters pile up as zombies until PID exhaustion
+# (see feedback_ios_ssh_controlmaster_session_is_a_trap). Belt to the driver's
+# own no-ControlMaster, one-ssh-per-poll suspenders.
+ExecStart=/usr/bin/docker run --rm --init --name flax-switch-sense \
+    --network host \
+    --env-file /etc/flax/flax-switch-sense/flax-switch-sense.env \
+    -v /etc/flax/switches.json:/etc/flax/switches.json:ro \
+    -v /etc/flax/credentials.json:/etc/flax/credentials.json:ro \
+    -v /etc/flax/macmath:/etc/flax/macmath:ro \
+    -v /etc/flax/site.env:/etc/flax/site.env:ro \
+    flax-control:${FLAX_SWITCH_SENSE_IMAGE_TAG} \
+    python -m flax_switch_sense \
+        --switches /etc/flax/switches.json \
+        --credentials /etc/flax/credentials.json \
+        --macmath-dir /etc/flax/macmath \
+        --cycle-secs {{ apply_flax_switch_sense_cycle_secs }} \
+        --healthz-port {{ apply_flax_switch_sense_healthz_port }} \
+        --healthz-stale-secs {{ apply_flax_switch_sense_healthz_stale_secs }}
+
+ExecStop=/usr/bin/docker stop flax-switch-sense
+
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

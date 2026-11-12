@@ -1,0 +1,5 @@
+# apply the dellfx settings (defaults)
+set node-setting dellfx
+set com-default com1f
+set com-setting ${ttys0f}
+

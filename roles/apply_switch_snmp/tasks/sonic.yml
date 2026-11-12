@@ -1,0 +1,40 @@
+---
+# Enable v2c read-only SNMP on community SONiC (Dell N3248TE / Wedge100S builds).
+# Like the EOS/IOS `lines:` and the Cumulus surgical snmpd.conf edit, this
+# touches only the four SNMP settings, through sonic-utilities `config snmp`
+# (which writes CONFIG_DB SNMP / SNMP_COMMUNITY and restarts the snmp container
+# itself) -- NOT a whole-config_db `config load`: that is apply_config.yml's
+# declarative push, which would also replace everything else on the box.
+#
+# Idempotent: filter_plugins/sonic_snmp.py diffs the running config_db and
+# emits only the commands that differ; a change is persisted with
+# `config save -y` (the handler), as EOS/IOS save_when: modified.
+# SONiC CLI rules: `sudo -n ... </dev/null` (passwordless sudo, empty stdin).
+# raw is skipped in --check, so a dry run only reads and prints the plan.
+
+- name: Read running config_db
+  # 2>/dev/null: "No such container: bgp" on stderr would break the JSON.
+  ansible.builtin.raw: sudo -n show runningconfiguration all </dev/null 2>/dev/null
+  register: apply_switch_snmp_running
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Plan SONiC SNMP changes
+  ansible.builtin.set_fact:
+    apply_switch_snmp_plan: >-
+      {{ apply_switch_snmp_running.stdout | sonic_snmp_plan(apply_switch_snmp_community,
+         apply_switch_snmp_location, apply_switch_snmp_contact) }}
+  no_log: true
+
+- name: Show SONiC SNMP changes
+  when: ansible_check_mode or ansible_diff_mode
+  ansible.builtin.debug:
+    msg: "{{ apply_switch_snmp_plan.changes or ['no change'] }}"
+
+- name: Configure SNMP community + sysinfo on SONiC
+  when: apply_switch_snmp_plan.cmds | length > 0
+  ansible.builtin.raw: "{{ apply_switch_snmp_plan.cmds | join(' && ') }}"
+  changed_when: true
+  no_log: true
+  notify: Save SONiC config

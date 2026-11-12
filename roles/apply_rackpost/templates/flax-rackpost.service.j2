@@ -1,0 +1,14 @@
+[Unit]
+Description=flax-rackpost — customer rack order server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart={{ apply_rackpost_wrapper }} serve --root {{ apply_rackpost_root }} --bind {{ apply_rackpost_bind }} --port {{ apply_rackpost_port }}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

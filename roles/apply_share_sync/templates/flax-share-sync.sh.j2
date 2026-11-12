@@ -1,0 +1,24 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Mirror {{ apply_share_sync_path }} to {{ apply_share_sync_to }} ({{ apply_share_sync_to_ip }}),
+# only while this bang holds the mgmt VIP {{ bang_mgmt_vip }}: the VIP holder is
+# the live side, so a box that lost it does not push a stale tree with --delete.
+set -uo pipefail
+exec 9> /run/flax-share-sync.lock
+flock -n 9 || { logger -t flax-share-sync "previous run still going, skipping"; exit 0; }
+
+if ! ip -o -4 addr | grep -qE " {{ bang_mgmt_vip | replace('.', '\\.') }}/"; then
+    exit 0
+fi
+
+out=$(rsync -aHAX --delete --stats \
+        -e "ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new" \
+        {{ apply_share_sync_path }}/ root@{{ apply_share_sync_to_ip }}:{{ apply_share_sync_path }}/ 2>&1)
+rc=$?
+summary=$(grep -E "^Number of (created|deleted|regular files transferred)|^Total transferred" <<< "$out" | paste -sd';')
+if [ $rc -eq 0 ]; then
+    logger -t flax-share-sync "ok -> {{ apply_share_sync_to }}: $summary"
+else
+    logger -p user.err -t flax-share-sync "FAILED rc=$rc -> {{ apply_share_sync_to }}: $(tail -n3 <<< "$out" | paste -sd' ')"
+fi
+exit $rc

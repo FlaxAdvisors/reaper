@@ -1,0 +1,473 @@
+#!/bin/bash
+# bmc-fw-update -- flash a TiogaPass OpenBMC image over Redfish and wait for the
+# BMC to come back activated. Reaper replacement for ghost's
+# playbooks/roles/utils/files/bin/bmc-fw-update (2026-06-23); same interface and
+# the same output records, so bmc_fw (triage services/api/bmcfw/worker.py) needs
+# no change:
+#
+#   bmc-fw-update version <bmc-ip> [--id <fw-inventory-id>]
+#   bmc-fw-update flash   <bmc-ip> <artifact-url> [--same] [--downgrade] [--port <et6b1>]
+#       -> {"phase":...,"percent":N,"task_id":"...","state":"..."} lines
+#       --port: holds the manual claim /run/flax/bmc-fw-manual/<port> for the
+#       run, touches /run/flax/bmc-reboot/<port> at write-committed, and runs
+#       flax-forget-port there -- except with --same (the MAC does not move).
+#
+# Exit codes: 0 activated at a new version; 1 failure; 2 usage;
+#             3 INTERLOCK -- nothing was pushed (state "InterlockBusy").
+#
+# RENDERED FROM THE SITE VAULT by roles/apply_bmc_scripts. RULE ZERO: the BMC
+# root credential comes from the vaulted credentials-bmc.json (root entry) and
+# reaches curl through a netrc fed on stdin -- never argv, never output, and
+# no process-substitution child left for PID 1 to reap. (Ghost's version
+# carried a literal default credential and passed it with -u.)
+#
+# Observed behaviour this is built around (ghost, validated et10b1 2026-06-23):
+#   * The BMC self-reboots to ACTIVATE after the image write -- Redfish is down
+#     ~10-15 min. The flash MUST tolerate that drop.
+#   * TaskState stays "New" while PercentComplete climbs (it never reports
+#     "Completed" on this Phosphor build). Success = the BMC returns at a NEW
+#     version, not TaskState.
+# Added 2026-09-24:
+#   * THE INTERLOCK. No push while any update job on the BMC is live or ended
+#     less than QUIET_S ago, or while another fw update for the same BMC runs
+#     on this host. A 423 is busy too; the busy flag is never cleared here.
+# NOTE: NOT `set -e` -- the poll loop must survive the activation drop.
+set -uo pipefail
+
+# Kill every descendant of $1: FREEZE the whole subtree first (SIGSTOP,
+# depth-first) so a still-running parent cannot spawn a new child while we
+# are mid-walk, then TERM + CONT each node, deepest first. Command
+# substitutions and pipelines run in subshells that a plain `kill $$` does
+# not reach; a killed bin must never leave an ssh or journal read behind
+# holding the per-BMC lock (et6b4 2026-09-27: >1 h).
+kill_tree() {
+    local c
+    [ "$1" != "$$" ] && kill -STOP "$1" 2>/dev/null
+    for c in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$c"; done
+    [ "$1" != "$$" ] && { kill -TERM "$1" 2>/dev/null; kill -CONT "$1" 2>/dev/null; }
+    return 0
+}
+# 2026-09-27 fix round 2 (Review Focus 2, N1/N2): this bin now runs as TWO
+# processes. The PARENT (the pid callers see, at the very bottom of this
+# file) parses argv, runs need_lock_dir, and -- for `flash`, the only
+# subcommand that locks -- takes the per-BMC flock on fd 9 ITSELF, then
+# re-execs its own body as a CHILD (`FLAX_BIN_CHILD=1 setpriv --pdeathsig
+# KILL "$0" "$@" 9>&-`) that never sees fd 9 and never takes the lock
+# again. `on_signal` (PARENT only) freezes and kills the CHILD's whole
+# subtree; `--pdeathsig KILL` makes the kernel SIGKILL the child the
+# instant the PARENT dies for ANY reason, including a SIGKILL to the
+# PARENT itself, which no trap can catch. Round 1's `main "$@" & wait`
+# looked similar but forked a SUBSHELL of the SAME process (not a real
+# child), so SIGKILL of the bin pid left that subshell alive, holding the
+# lock, running to completion. This design ties the lock's fate to the
+# PARENT process's own survival: fd 9 is only ever open in the PARENT, so
+# it closes the instant the PARENT exits, however that happens.
+on_signal() {
+    trap - TERM INT HUP
+    kill_tree "$CHILD"
+    # 2026-09-27 fix round 3, M1: wait (bounded) for the child to actually
+    # exit before this process does -- see bios-fw-update.sh.j2's on_signal
+    # for why (there, a race here let $ART survive in 3 of 6 runs; this
+    # bin has no equivalent state, but the same ordering discipline
+    # applies uniformly).
+    local w
+    for w in $(seq 1 20); do kill -0 "$CHILD" 2>/dev/null || break; sleep 0.1; done
+    hb_stop
+    claim_release   # Task 3: the manual claim goes with the lock
+    exit 143
+}
+
+# ── manual-run claim + BMC reboot marker (2026-09-27, part1 Task 3) ──────────
+# CLAIM. Reconcile defers every action on a port while a fw bin runs on it.
+# A bin's claim is /run/flax/bmc-fw-manual/<port> -- NOT bmc-fw-active/<port>,
+# which is bmc_fw's own (days-long) claim and which no bin ever touches. The
+# PARENT (the lock holder) writes it right after taking the per-BMC lock and
+# removes it on normal exit and on TERM/INT/HUP, so it lives and dies with
+# the lock. It is a HEARTBEAT: the PARENT re-touches it every HEARTBEAT_S
+# (60 s) from its wait loop while it lives, and reconcile honours it only
+# while now - mtime < 180 s -- so a flash of any length stays protected, and
+# a SIGKILLed bin's claim (which nothing can remove) goes stale within 3 min
+# because nothing is left to touch it. Content is "<parent pid>@<host>"; on exit a bin removes the
+# file only if it still holds its OWN token (two IPs mapping to one port can
+# race; the per-BMC lock serialises runs per IP only). A stale claim from a
+# dead run is simply overwritten.
+# (Every external command here closes fd 9: the PARENT holds the lock.)
+# REBOOT MARKER. /run/flax/bmc-reboot/<port>, touched by whichever process
+# sends a reboot-causing action; its mtime is the reboot time, from which
+# reconcile gives the port a boot-grace window (no switch_flap mid-boot).
+MANUAL_CLAIM_DIR="${FLAX_MANUAL_CLAIM_DIR:-/run/flax/bmc-fw-manual}"
+REBOOT_DIR="${FLAX_REBOOT_DIR:-/run/flax/bmc-reboot}"
+HEARTBEAT_S="${FLAX_CLAIM_HEARTBEAT_S:-60}"
+CLAIM_FILE=""; CLAIM_TOKEN=""; HB_PID=""
+# A port becomes a file name: accept only the internal port form's alphabet.
+port_ok() { [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; }
+# arg_port <argv...> -> the value of the LAST --port (the child's parser
+# also keeps the last, so claim and marker always name the same port); a
+# following token that starts with "--" is a flag, not a value -> "".
+arg_port() {
+    local v=""
+    while [ $# -gt 0 ]; do
+        if [ "$1" = --port ]; then
+            case "${2:-}" in --*|"") v="" ;; *) v="$2"; shift ;; esac
+        fi
+        shift
+    done
+    printf '%s' "$v"
+}
+claim_take() {   # claim_take <port> -- PARENT only, after take_lock
+    [ -n "${1:-}" ] || return 0
+    port_ok "$1" || { echo "claim: ignoring malformed port '$1'" >&2; return 0; }
+    mkdir -p "$MANUAL_CLAIM_DIR" 2>/dev/null 9>&- || { echo "claim: cannot create $MANUAL_CLAIM_DIR; running unclaimed" >&2; return 0; }
+    CLAIM_TOKEN="$$@${HOSTNAME:-$(cat /proc/sys/kernel/hostname 2>/dev/null)}"
+    if printf '%s\n' "$CLAIM_TOKEN" > "$MANUAL_CLAIM_DIR/$1" 2>/dev/null; then
+        CLAIM_FILE="$MANUAL_CLAIM_DIR/$1"
+    else
+        echo "claim: cannot write $MANUAL_CLAIM_DIR/$1; running unclaimed" >&2
+    fi
+    return 0
+}
+claim_release() {   # PARENT only; removes the claim only if it is still ours
+    [ -n "$CLAIM_FILE" ] || return 0
+    [ "$(cat "$CLAIM_FILE" 2>/dev/null 9>&-)" = "$CLAIM_TOKEN" ] && rm -f "$CLAIM_FILE" 9>&-
+    CLAIM_FILE=""
+    return 0
+}
+claim_heartbeat() {   # PARENT, from its wait loop: move the claim's mtime
+    [ -n "$CLAIM_FILE" ] || return 0
+    if [ -e "$CLAIM_FILE" ]; then touch -c "$CLAIM_FILE" 2>/dev/null 9>&-
+    else printf '%s\n' "$CLAIM_TOKEN" > "$CLAIM_FILE" 2>/dev/null; fi   # re-claim if another run's exit removed it
+    return 0
+}
+# The ticker that wakes the PARENT's `wait` every HEARTBEAT_S: a separate
+# process that sends this PARENT a (trapped, no-op) USR1. The PARENT does the
+# touching itself, so once the PARENT is gone nothing touches the claim. The
+# ticker dies with the PARENT (--pdeathsig KILL; its own $PPID check closes
+# the fork-to-prctl window exactly as the CHILD's marker check does), and
+# never holds fd 9 or the caller's stdout/stderr.
+hb_start() {   # PARENT only, after the CHILD is spawned
+    [ -n "$CLAIM_FILE" ] || return 0
+    trap ':' USR1   # before the ticker exists: an untrapped USR1 would kill us
+    # The sleep runs in the BACKGROUND under a TERM trap that kills it, so
+    # hb_stop never leaves an orphaned `sleep` (re-parented to PID 1 -- a
+    # zombie under a non-reaping init; cf. the 2026-09-25 pids-max incident).
+    FLAX_HB_PARENT=$$ setpriv --pdeathsig KILL bash -c \
+        'p=$FLAX_HB_PARENT; [ "$PPID" = "$p" ] || exit 0; s=""
+         trap '"'"'[ -n "$s" ] && kill "$s" 2>/dev/null; exit 0'"'"' TERM
+         while :; do sleep "$1" & s=$!; wait "$s" || exit 0; s=""; kill -USR1 "$p" 2>/dev/null || exit 0; done' _ "$HEARTBEAT_S" \
+        </dev/null >/dev/null 2>&1 9>&- &
+    HB_PID=$!
+}
+hb_stop() {   # belt and braces: the ticker's own sleep first, then the ticker
+    [ -n "$HB_PID" ] && { pkill -P "$HB_PID" 2>/dev/null 9>&-; kill "$HB_PID" 2>/dev/null; }
+    HB_PID=""; return 0
+}
+mark_reboot() {   # mark_reboot <port> -- touch, so an existing marker's mtime moves too
+    port_ok "${1:-}" || return 0
+    mkdir -p "$REBOOT_DIR" 2>/dev/null 9>&- && touch "$REBOOT_DIR/$1" 2>/dev/null 9>&-
+    return 0
+}
+
+export SSHPASS={{ bmc_root_password | quote }}
+RF_USER=root
+
+FW_ID_DEFAULT="${BMC_FW_ID:-bmc_active}"
+ACTIVATION_WAIT_SECS="${BMC_FW_ACTIVATION_WAIT:-1500}"   # 25 min cap
+POLL_SECS="${BMC_FW_POLL_SECS:-10}"
+ACT_POLL_SECS="${BMC_FW_ACT_POLL_SECS:-15}"
+QUIET_S="${BMC_FW_UPDATE_QUIET_S:-60}"
+LOCK_DIR="${BMC_FW_UPDATE_LOCK_DIR:-/run/flax}"
+
+# flax-forget-port lives alongside this bin; used on flash success to tell
+# flax-observe to forget the port's pre-flash identity (the BMC MAC moves
+# +1 -> +2 on activation). Resolved next to $0, then PATH.
+SELF_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+FORGET_BIN="${FLAX_FORGET_BIN:-$SELF_DIR/flax-forget-port}"
+[ -x "$FORGET_BIN" ] || FORGET_BIN="$(command -v flax-forget-port 2>/dev/null || echo "$FORGET_BIN")"
+
+# ── transport (test hooks; production leaves them unset) ──────────────────────
+
+rf() {   # rf <METHOD> <ip> <path> [curl args...] -> body, then HTTP=<code>
+    local method="$1" ip="$2" path="$3"; shift 3
+    if [ -n "${FLAX_REDFISH_EXEC:-}" ]; then
+        "$FLAX_REDFISH_EXEC" "$method" "$path" "$@" 9>&-
+        return $?
+    fi
+    # No caller passes a request body on stdin (the flash upload reads the
+    # artifact from a tempfile path via --data-binary "@$art"), so the netrc
+    # can safely ride curl's own stdin -- no process substitution, no child
+    # process for PID 1 to reap. 9>&- (2026-09-27): curl must never inherit
+    # the per-BMC lock fd -- see bios-fw-update.sh.j2's rf() for why.
+    curl -sk --netrc-file /dev/stdin \
+        --connect-timeout 6 --max-time "${RF_MAX_TIME:-15}" -X "$method" \
+        -w '\nHTTP=%{http_code}' "https://${ip}${path}" "$@" \
+        <<<"machine $ip login $RF_USER password $SSHPASS" 9>&-
+}
+fetch() {
+    if [ -n "${FLAX_FETCH_EXEC:-}" ]; then "$FLAX_FETCH_EXEC" "$1" "$2" 9>&-; return $?; fi
+    curl -skLo "$2" --max-time 120 "$1" 9>&-
+}
+alive() {
+    if [ -n "${FLAX_PING_EXEC:-}" ]; then "$FLAX_PING_EXEC" "$1" 9>&-; return $?; fi
+    ping -c1 -W2 "$1" >/dev/null 2>&1 9>&-
+}
+nap() { [ "${1:-0}" -gt 0 ] 2>/dev/null && sleep "$1"; return 0; }
+body_of() { sed '$d'; }
+code_of() { tail -n 1 | sed -n 's/^HTTP=//p'; }
+
+jver() {   # <ip> <fw-id> -> Version, or empty on any failure
+    local r; r=$(rf GET "$1" "/redfish/v1/UpdateService/FirmwareInventory/${2}")
+    [ "$(printf '%s' "$r" | code_of)" = "200" ] || { echo ""; return; }
+    printf '%s' "$r" | body_of | python3 -c 'import sys, json
+try: print(json.load(sys.stdin).get("Version") or "")
+except Exception: print("")'
+}
+
+emit() { printf '{"phase":"%s","percent":%s,"task_id":"%s","state":"%s"}\n' "$1" "${2:-0}" "${3:-}" "${4:-}"; }
+
+# ── the interlock (same rules as bios-fw-update's busy_check) ─────────────────
+busy_check() {
+    local ip="$1" coll ids docs="[" first=1 id t
+    coll=$(rf GET "$ip" /redfish/v1/TaskService/Tasks)
+    [ "$(printf '%s' "$coll" | code_of)" = "200" ] || { echo "tasks_unreadable"; return 3; }
+    ids=$(printf '%s' "$coll" | body_of | python3 -c '
+import sys, json
+try:
+    for m in json.load(sys.stdin).get("Members", []):
+        print(m.get("@odata.id", "").rstrip("/").rsplit("/", 1)[-1])
+except Exception:
+    print("__UNREADABLE__")')
+    case "$ids" in *__UNREADABLE__*) echo "tasks_unreadable"; return 3;; esac
+    for id in $ids; do
+        t=$(rf GET "$ip" "/redfish/v1/TaskService/Tasks/$id")
+        [ "$(printf '%s' "$t" | code_of)" = "200" ] || { echo "tasks_unreadable"; return 3; }
+        [ $first = 1 ] || docs="$docs,"; first=0
+        docs="$docs$(printf '%s' "$t" | body_of)"
+    done
+    printf '%s]' "$docs" | QUIET="$QUIET_S" python3 -c '
+import sys, json, os, re, calendar, time
+quiet = float(os.environ["QUIET"]); now = time.time()
+LIVE = {"New", "Starting", "Running", "Pending", "Stopping", "Suspended",
+        "Interrupted", "Cancelling", "Service"}
+def epoch(s):
+    m = re.match(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.\d+)?(Z|[+-]\d\d:\d\d)?$", s or "")
+    if not m: return None
+    t = calendar.timegm(time.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S"))
+    tz = m.group(2)
+    if tz and tz != "Z":
+        t -= (1 if tz[0] == "+" else -1) * (int(tz[1:3]) * 3600 + int(tz[4:6]) * 60)
+    return t
+try: tasks = json.loads(sys.stdin.read())
+except Exception: print("tasks_unreadable"); sys.exit(3)
+for t in tasks:
+    if t.get("TaskState") in LIVE:
+        print("job_running task=%s state=%s" % (t.get("Id"), t.get("TaskState"))); sys.exit(3)
+ends = [e for e in (epoch(t.get("EndTime")) for t in tasks) if e is not None]
+if ends and now - max(ends) < quiet:
+    print("quiet_window ended_s_ago=%d" % int(now - max(ends))); sys.exit(3)
+print("idle")'
+}
+
+take_lock() {
+    local dir="$LOCK_DIR"
+    exec 9>"$dir/fw-update-${1}.lock" || return 1
+    flock -n 9
+}
+
+# The lock lives in LOCK_DIR (/run/flax), shared by the agents' containers
+# (root) and operators on the bang host. An operator without write access
+# re-runs this bin under passwordless sudo. There is deliberately NO fallback
+# directory: a lock taken in a different directory is no lock at all.
+# (FLAX_SUDO is the test hook.)
+need_lock_dir() {
+    [ -w "$LOCK_DIR" ] && return 0
+    if [ "$(id -u)" != 0 ] && "${FLAX_SUDO:-sudo}" -n true 2>/dev/null; then
+        exec "${FLAX_SUDO:-sudo}" -n "$0" "$@"
+    fi
+    echo "$(basename "$0"): cannot write the lock directory $LOCK_DIR; run as root or with passwordless sudo" >&2
+    exit 2
+}
+
+# ── subcommands ───────────────────────────────────────────────────────────────
+
+cmd_version() {
+    local bmc="${1:?bmc ip required}"; shift || true
+    local fwid="$FW_ID_DEFAULT"
+    while [ $# -gt 0 ]; do case "$1" in --id) fwid="$2"; shift 2;; *) shift;; esac; done
+    jver "$bmc" "$fwid"
+}
+
+cmd_flash() {
+    local bmc="${1:?bmc ip required}" arturl="${2:?artifact url required}"; shift 2 || true
+    # --same / --downgrade accepted for symmetry; the skip/downgrade DECISION is
+    # the worker's (it only calls flash when it intends to proceed).
+    # Task 3 (2026-09-27): --same is no longer ignored -- a same-version
+    # reflash keeps the BMC's MAC, so it must not forget the port identity.
+    local port="" same=""
+    while [ $# -gt 0 ]; do case "$1" in --same) same=1; shift;; --downgrade) shift;; --port) case "${2:-}" in --*|"") port="";; *) port="$2"; shift;; esac; shift;; *) shift;; esac; done
+    # Task 3 fix M2: a value that is not a port (e.g. "../x") is dropped --
+    # never a claim/marker file name, never a flax-forget-port argument.
+    port_ok "$port" || port=""
+    local fwid="$FW_ID_DEFAULT"
+
+    # NOTE (2026-09-27 fix round 2): the per-BMC local lock (fd 9) is taken
+    # by the PARENT process, before this CHILD was ever forked -- see the
+    # bottom of this file. This function never calls take_lock() itself.
+    local why; why=$(busy_check "$bmc"); local brc=$?
+    if [ $brc -ne 0 ]; then
+        emit flashing 0 "" InterlockBusy; echo "interlock: $why" >&2; return 3
+    fi
+
+    local pre; pre="$(jver "$bmc" "$fwid")"            # baseline version
+    local art; art="$(mktemp "${TMPDIR:-/tmp}/bmc-fw-XXXXXX.tar")"
+    # Self-disarms FIRST: a RETURN trap is NOT scoped to this function --
+    # left armed, it fires AGAIN when `main()` (the caller, since fix round
+    # 1 wraps the dispatch in that function) itself returns, by which point
+    # $art no longer exists and `set -u` kills the bin (measured 2026-09-27;
+    # same defect independently found in bios-fw-update.sh.j2's cmd_flash).
+    trap 'trap - RETURN; rm -f "$art"' RETURN
+    if ! fetch "$arturl" "$art" || [ ! -s "$art" ]; then
+        emit flashing 0 "" FetchFailed; echo "fetch failed: $arturl" >&2; return 1
+    fi
+
+    emit flashing 0 "" Uploading
+    local resp code task
+    resp=$(RF_MAX_TIME=600 rf POST "$bmc" /redfish/v1/UpdateService/update -i \
+        -H 'Content-Type: application/octet-stream' --data-binary "@${art}")
+    code="$(printf '%s' "$resp" | code_of)"
+    if [ "$code" = "423" ]; then
+        emit flashing 0 "" InterlockBusy; echo "interlock: http_423 (BMC reports an update in progress; not overriding)" >&2; return 3
+    fi
+    task="$(printf '%s' "$resp" | body_of | python3 -c 'import sys, re
+data = sys.stdin.read()
+m = re.search(r"(?i)^location:\s*\S*/Tasks/(\S+)\s*$", data, re.M)
+if not m: m = re.search(r"/redfish/v1/TaskService/Tasks/([^\"\s]+)", data)
+print(m.group(1) if m else "")' 2>/dev/null)"
+    if [ -z "$task" ]; then
+        emit flashing 0 "" Rejected; echo "update POST rejected (http $code):" >&2; printf '%s\n' "$resp" | body_of >&2; return 1
+    fi
+
+    # Monitor the write. Tolerate Redfish drops: once progress was seen, a lost
+    # connection means the BMC is rebooting to ACTIVATE. Genuine task errors fail.
+    local seen=0 fails=0 tj st pct
+    while true; do
+        tj="$(rf GET "$bmc" "/redfish/v1/TaskService/Tasks/${task}")"
+        if [ "$(printf '%s' "$tj" | code_of)" != "200" ]; then
+            fails=$((fails + 1))
+            if [ "$seen" = 1 ]; then emit monitoring 99 "$task" Activating; break; fi
+            if [ "$fails" -ge 6 ]; then emit monitoring 0 "$task" Unreachable; echo "task $task unreadable" >&2; return 1; fi
+        else
+            fails=0
+            read -r st pct < <(printf '%s' "$tj" | body_of | python3 -c 'import sys, json
+try: d = json.load(sys.stdin); print(d.get("TaskState", "") or "New", d.get("PercentComplete", 0) or 0)
+except Exception: print("New", 0)')
+            if [ "${pct:-0}" -gt 0 ] 2>/dev/null; then seen=1; fi
+            emit monitoring "${pct:-0}" "$task" "${st:-New}"
+            case "$st" in
+                Completed) emit monitoring 100 "$task" Completed; break;;
+                Exception|Killed|Cancelled) echo "task $task ended: $st" >&2; return 1;;
+            esac
+        fi
+        nap "$POLL_SECS"
+    done
+
+    # Write committed; the BMC is (or is about to start) rebooting to activate
+    # -> its MAC flips +1 -> +2 when it returns. Forget the port identity NOW,
+    # at comms-loss, not after the ~13 min wait. Best-effort; no-op without --port.
+    # Task 3: the reboot marker is written HERE, at write-committed, for every
+    # flash (--same included: the BMC still reboots to activate).
+    mark_reboot "$port"
+    if [ -n "$port" ] && [ -z "$same" ] && [ -x "$FORGET_BIN" ]; then
+        "$FORGET_BIN" "$port" >&2 || true
+    fi
+
+    # Activation wait: success = the BMC returns at a version that DIFFERS from
+    # pre-flash (activation applied).
+    emit activating 99 "$task" Rebooting
+    local deadline cur; deadline=$(( $(date +%s) + ACTIVATION_WAIT_SECS ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        if alive "$bmc"; then
+            cur="$(jver "$bmc" "$fwid")"
+            if [ -n "$cur" ] && { [ "$cur" != "$pre" ] || [ -z "$pre" ]; }; then
+                emit activated 100 "$task" "$cur"; return 0
+            fi
+        fi
+        nap "$ACT_POLL_SECS"
+    done
+    emit fault 0 "$task" ActivationTimeout
+    echo "BMC did not return at a new version within ${ACTIVATION_WAIT_SECS}s" >&2; return 1
+}
+
+main() {
+    local cmd="${1:-}"; shift || true
+    case "$cmd" in
+        version) cmd_version "$@";;
+        flash)   cmd_flash "$@";;
+        *) echo "usage: bmc-fw-update {version <bmc> [--id ID] | flash <bmc> <url> [--same|--downgrade] [--port P]}" >&2; exit 2;;
+    esac
+}
+
+if [ -n "${FLAX_BIN_CHILD:-}" ]; then
+    # ── CHILD (2026-09-27 fix round 2; marker hardened round 3, I1/M3) ──
+    # $FLAX_BIN_CHILD carries the PARENT's own pid (not a literal "1") --
+    # see bios-fw-update.sh.j2's child branch for the full explanation:
+    # `setpriv` only arms --pdeathsig AFTER it execs, so a PARENT killed in
+    # the narrow window between fork and that exec leaves this process
+    # reparented with no signal ever coming and no lock held. $PPID is set
+    # at this process's own startup, i.e. after the prctl, so a mismatch
+    # here means it was already orphaned before pdeathsig was armed.
+    [ "$PPID" = "$FLAX_BIN_CHILD" ] || exit 70
+    unset FLAX_BIN_CHILD
+    # The PARENT already holds the per-BMC lock and owns all TERM/INT/HUP
+    # handling via kill_tree; this process must not compete with it.
+    main "$@"
+    exit $?
+fi
+
+# ── PARENT (the pid callers see) ────────────────────────────────────────
+[ "${1:-}" = flash ] && need_lock_dir "$@"
+if [ "${1:-}" = flash ]; then
+    bmc_ip="${2:-}"
+    if ! take_lock "$bmc_ip"; then
+        emit flashing 0 "" InterlockBusy
+        echo "interlock: local_lock (another fw update for $bmc_ip on this host)" >&2
+        exit 3
+    fi
+    # Task 3: the manual claim, taken only once the lock is ours. Until
+    # on_signal is armed below, a TERM/INT/HUP still removes it.
+    trap 'claim_release; exit 143' TERM INT HUP
+    claim_take "$(arg_port "$@")"
+fi
+# Re-exec the whole body as a CHILD that never sees fd 9 (2026-09-27 fix
+# round 2, N2): a command-substitution subshell inherits an open fd across
+# a fork, so nothing short of a SEPARATE process with fd 9 closed at its
+# own exec keeps the lock's fate tied to THIS process alone.
+# `--pdeathsig KILL` (util-linux setpriv) makes the kernel SIGKILL the
+# child the instant this PARENT dies for ANY reason -- including a SIGKILL
+# to this process, which no trap can catch. The marker is THIS process's
+# own pid (I1), and `readlink -f` resolves `$0` to an absolute path (M2)
+# so setpriv's execvp() never falls through to a PATH search.
+FLAX_BIN_CHILD=$$ setpriv --pdeathsig KILL "$(readlink -f -- "$0")" "$@" 9>&- &
+CHILD=$!
+trap on_signal TERM INT HUP
+hb_start   # Task 3: claim heartbeat (no-op without a claim)
+# Only re-wait while the child is actually still alive (2026-09-27 fix
+# round 2, N1): bash keeps the SAVED exit status of an already-reaped pid,
+# so `wait "$CHILD"` after the child is gone returns that same status
+# forever -- a naive `while [ "$rc" -gt 128 ]` loop (round 1) spun at 100%
+# CPU whenever the child ended above 128 for a reason unrelated to a
+# signal THIS process received. `kill -0` distinguishes "wait was itself
+# interrupted, child still alive, wait again" from "the child is actually
+# dead", so this exits promptly either way.
+# Task 3: the heartbeat ticker's USR1 also interrupts `wait` -- same
+# "child still alive -> wait again" path, touching the claim on the way.
+# After the loop, one more `wait` reads the child's REAL status (a USR1 that
+# lands just as the child exits would otherwise leave rc=138).
+while :; do
+    wait "$CHILD"; rc=$?
+    kill -0 "$CHILD" 2>/dev/null || break
+    claim_heartbeat
+done
+hb_stop
+wait "$CHILD"; rc=$?
+claim_release
+exit "$rc"

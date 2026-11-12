@@ -1,0 +1,20 @@
+NRestarts=0
+Id=flax-post.service
+ActiveState=active
+SubState=running
+UnitFileState=disabled
+ActiveEnterTimestamp=Fri 2026-11-06 19:25:02 GMT
+
+NRestarts=0
+Id=kea-dhcp4.service
+ActiveState=active
+SubState=running
+UnitFileState=disabled
+ActiveEnterTimestamp=Sat 2026-11-07 21:59:29 GMT
+
+NRestarts=0
+Id=flax-iperf.service
+ActiveState=inactive
+SubState=dead
+UnitFileState=
+ActiveEnterTimestamp=

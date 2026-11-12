@@ -1,0 +1,376 @@
+---
+# reaper component registry (spec 2026-11-07 reaper-cli §5.2).
+# Every unit, container, timer, cron file and port a role installs is listed under
+# exactly one component; `reaper report` enumerates from here. A role change that
+# installs something new must add it here (tests/test_reapercli_components.py).
+#
+# lane:      infra | core | triage | post-loose | post-rack   (the two flax axes, spec §7)
+# placement: primary | standby | both   (placement_var: a site override in group_vars/jumphosts)
+# vip_gated: runs only on the VIP holder (its env/units still land on both bangs)
+# optional:  installed at some sites only -> absent is info, never FAIL
+# compose:   kind compose only: {dir, project, file, env_file, services, drain}.
+#            services = what `svc restart` may recreate; postgres is deliberately absent.
+# norestart: units `svc restart` refuses
+# ports / udp_ports: TCP / UDP listeners (reaper status checks ports; the site health board both)
+
+# ---------------------------------------------------------------- infra
+flax_facts:
+  lane: infra
+  tags: [flax_facts]
+  placement: both
+  kind: host
+
+bang_router:
+  lane: infra
+  tags: [bang_router, wan_route_guard]
+  placement: both
+  kind: host
+  units: [bang-wan-route-guard]
+  timers: [bang-wan-route-guard]
+  optional: true
+
+ssh_keys:
+  # flax's authorized_keys from files/ssh/flax/keys/*.pub; the tag never touches the network
+  lane: infra
+  tags: [ssh_keys]
+  placement: both
+  kind: host
+  playbook: apply_jumphost_config.yml
+
+reaper_toolchain:
+  # /opt/flax/venv/reaper-ansible: the pinned venv the reaper shim uses on a bang
+  lane: infra
+  tags: [reaper_toolchain]
+  placement: both
+  kind: host
+
+bang_chrony:
+  lane: infra
+  tags: [bang_chrony]
+  placement: both
+  kind: host
+  units: [chronyd]
+
+bang_records:                       # persistent journal + rasdaemon (FOLLOWUP-20261109 item 8)
+  lane: infra
+  tags: [bang_records]
+  placement: both
+  kind: host
+  units: [rasdaemon]
+
+keepalived:
+  lane: infra
+  tags: [keepalived]
+  placement: both
+  kind: host
+  units: [keepalived]
+  ha_sensitive: true
+  norestart: [keepalived]          # notify_backup/master stop+relaunch stacks: ha keepalived-roll only
+
+bang_services:
+  lane: infra
+  tags: [bang_services, v6_addrs, quiet_units, nginx, dnsmasq]   # dnsmasq: conf/CNAME change alone
+  placement: both
+  kind: host
+  units: [dnsmasq, nginx, bang-v6-addrs]
+  ports: [80]
+  udp_ports: [53, 69]           # dnsmasq DNS, TFTP
+  ha_sensitive: true
+
+pxe_payloads:
+  lane: infra
+  tags: [pxe_payloads, boot_ipxe, pxe_files, tftp, ipxe_templates, install_files]
+  placement: both
+  kind: host
+  ha_sensitive: true
+
+install_media:
+  # install ISOs under /export/isos (sha256-verified, fetched or peer-copied) and their loop
+  # mounts under /export/install: systemd .mount units, one per files/install-media.yml entry
+  # with a mount (were ghost's hourly mountisos)
+  lane: infra
+  tags: [install_media]
+  placement: both
+  kind: host
+  playbook: apply_install_media.yml
+  files: [/opt/flax/sbin/flax-install-media, /etc/flax/install-media.json]
+
+flax_tls:
+  lane: infra
+  tags: [flax_tls]
+  placement: both
+  kind: host
+  ha_sensitive: true
+
+flax_stack:
+  lane: infra
+  tags: [flax_stack, flax_pg_hooks, flax_nginx]
+  placement: both
+  kind: compose
+  units: [flax-stack]
+  containers: [flax-stack-postgres-1, flax-stack-nginx-1]
+  ha_sensitive: true
+  compose: {dir: /etc/flax/flax-stack, project: flax-stack, file: docker-compose.yml,
+            env_file: flax-stack.env, services: [nginx]}
+  norestart: [flax-stack]          # restarting the unit bounces postgres: deploy flax_stack instead
+
+kea:
+  lane: infra
+  tags: [kea]
+  placement: both
+  kind: host
+  units: [kea-dhcp4, kea-dhcp6]
+  containers: [kea-dhcp4, kea-dhcp6]
+  udp_ports: [67, 547]          # DHCPv4, DHCPv6
+  vip_gated: true
+
+radvd:
+  lane: infra
+  tags: [radvd]
+  placement: both
+  kind: host
+  units: [radvd]
+  vip_gated: true
+
+lease_agent:
+  # the flax site config: /etc/flax credentials, geometry, vlans, roles.d,
+  # macmath -- and /opt/flax/node_config (the name is history: no lease daemon is left)
+  lane: infra
+  tags: [lease_agent]
+  placement: both
+  kind: host
+
+node_config:
+  # only the population profiles + blocklist-parts.json into /opt/flax/node_config
+  # (two tasks of apply_lease_agent; lease_agent deploys them too)
+  lane: infra
+  tags: [node_config]
+  placement: both
+  kind: host
+
+bmc_scripts:
+  lane: infra
+  tags: [bmc_scripts]
+  placement: both
+  kind: host
+
+triage_firewall:
+  lane: infra
+  tags: [triage_firewall]
+  placement: both
+  kind: host
+  units: [firewalld]
+  norestart: [firewalld]           # a restart can wipe docker's chains
+
+docker:
+  lane: infra
+  tags: [docker]
+  placement: both
+  kind: host
+  units: [docker]
+  norestart: [docker]              # no live-restore: kills postgres + flax-control on the VIP holder
+
+health:
+  lane: infra
+  tags: [node_exporter, health_metrics_hooks, health_compose]
+  placement: both
+  kind: compose
+  units: [prometheus-node_exporter]
+  timers: [health-hook@vrrp_state, health-hook@bang_hw, health-hook@services, health-hook@chk_services_metric,
+           health-hook@coredump_count, health-hook@firewalld_zones]
+  containers: [prod-health-prometheus-1, prod-health-alertmanager-1, prod-health-grafana-1,
+               prod-health-blackbox-1, prod-health-snmp_exporter-1, prod-health-smartctl_exporter-1]
+  ports: [9090, 9093, 3000, 9100]
+  compose: {dir: /etc/flax/health, project: prod-health, file: docker-compose-prod.yml,
+            services: [prometheus, alertmanager, grafana, blackbox, snmp_exporter, smartctl_exporter]}
+
+kroki:
+  lane: infra
+  tags: [kroki]
+  placement: primary
+  placement_var: apply_kroki_hosts
+  kind: compose
+  optional: true                   # opt-in per site (eindhoven: bang-gouda only)
+  containers: [kroki-kroki-1]
+  ports: [8796]
+  compose: {dir: /etc/flax/kroki, project: kroki, file: docker-compose.yml, services: [kroki]}
+
+wan:
+  lane: infra
+  tags: []
+  playbook: apply_wan_failover.yml
+  placement: both
+  kind: host
+  units: [wan-failover, wlan-watchdog]
+  timers: [wlan-watchdog]
+  optional: true
+
+share_sync:
+  lane: infra
+  tags: []
+  playbook: apply_share_sync.yml
+  placement: primary
+  kind: host
+  crons: [flax-share-sync]
+  optional: true
+
+# ---------------------------------------------------------------- core (axis 1)
+# One entry per service, deployed together as group flax_core (build-and-deploy §6a).
+flax_classify:
+  lane: core
+  group: flax_core
+  tags: [flax_classify]
+  placement: both
+  kind: unit
+  vip_gated: true
+  units: [flax-classify]
+  containers: [flax-classify]
+  image_var: apply_flax_classify_image_tag
+  image_repo: flax-control
+  freshness: {table: desired_port, column: wrote_at, warn_s: 600, fail_s: 3600}
+
+flax_discover:
+  lane: core
+  group: flax_core
+  tags: [flax_discover]
+  placement: both
+  kind: unit
+  vip_gated: true
+  units: [flax-discover]
+  containers: [flax-discover]
+  image_var: apply_flax_discover_image_tag
+  image_repo: flax-control
+  freshness: {table: devices, column: last_seen, warn_s: 600, fail_s: 3600}
+
+flax_observe:
+  lane: core
+  group: flax_core
+  tags: [flax_observe]
+  placement: both
+  kind: unit
+  vip_gated: true
+  units: [flax-observe]
+  containers: [flax-observe]
+  image_var: apply_flax_observe_image_tag
+  image_repo: flax-control
+  freshness: {table: observe_state, column: last_polled, warn_s: 600, fail_s: 3600}
+
+flax_reconcile:
+  lane: core
+  group: flax_core
+  tags: [flax_reconcile, apply_flax_reconcile]
+  placement: both
+  kind: unit
+  vip_gated: true
+  units: [flax-reconcile]
+  containers: [flax-reconcile]
+  image_var: apply_flax_reconcile_image_tag
+  image_repo: flax-control
+  # no freshness: reconcile_actions only grows when something needs steering
+
+flax_switch_sense:
+  lane: core
+  group: flax_core
+  tags: [flax_switch_sense]
+  placement: both
+  kind: unit
+  vip_gated: true
+  units: [flax-switch-sense]
+  containers: [flax-switch-sense]
+  image_var: apply_flax_switch_sense_image_tag
+  image_repo: flax-control
+  freshness: {table: switch_facts, column: polled_at, warn_s: 600, fail_s: 3600}
+
+flax_console:
+  lane: core
+  tags: [flax_console]          # Phase 2 adds this tag to apply_flax_stack (spec §8.4)
+  placement: both
+  kind: compose
+  containers: [flax-stack-flax-control-1]
+  image_var: apply_flax_stack_flax_control_image_tag
+  image_repo: flax-control
+  ha_sensitive: true
+  compose: {dir: /etc/flax/flax-stack, project: flax-stack, file: docker-compose.yml,
+            env_file: flax-stack.env, services: [flax-control]}
+
+# ---------------------------------------------------------------- triage (axis 2)
+triage:
+  lane: triage
+  tags: [triage_compose]
+  placement: both
+  kind: compose
+  vip_gated: true
+  containers: [prod-api-1, prod-server-1, prod-bmc_fw-1, prod-bios_fw-1, prod-fru_fw-1]
+  ports: [5555, 5559]
+  compose: {dir: /etc/flax/triage, project: prod, file: docker-compose-prod.yml,
+            services: [server, api, bmc_fw, bios_fw, fru_fw],
+            # the fw agents drain before a recreate (fw-agents-drain-before-deploy): reaper appends
+            # the running agents it will recreate (a bare `on` drains every agent), and releases
+            # them after: an agent the play did not recreate would otherwise stay drained for ever
+            drain: {services: [bmc_fw, bios_fw, fru_fw], cmd: docker exec prod-api-1 python fwdrain.py on,
+                    release: docker exec prod-api-1 python fwdrain.py off}}
+
+# ---------------------------------------------------------------- post, loose lane
+flax_post:
+  lane: post-loose
+  tags: [flax_post]
+  placement: both
+  kind: unit
+  vip_gated: true
+  units: [flax-post, flax-post-observe, flax-post-fwd, flax-post-biosd, flax-post-nicd,
+          flax-post-nginx, flax-post-deployd]
+  containers: [flax-post, flax-post-observe, flax-post-fwd, flax-post-biosd, flax-post-nicd,
+               flax-post-nginx]
+  ports: [8446, 8444]          # 8444 = flax-post-nginx TLS vhost
+  image_var: apply_flax_post_image_tag
+  image_repo: flax-control
+
+flax_post_sol:
+  lane: post-loose
+  tags: [flax_post]
+  placement: both
+  kind: unit
+  vip_gated: true
+  units: [flax-post-sol]
+  containers: [flax-post-sol]
+  ports: [8448]
+  image_var: apply_flax_post_sol_image_tag
+  image_repo: flax-post-sol
+
+post_tgz:
+  lane: post-loose
+  tags: [post_tgz]
+  placement: both
+  kind: host
+  files: [/srv/pxe/post.tgz]
+
+flax_iperf:
+  lane: post-loose
+  tags: [flax_iperf]
+  placement: standby
+  placement_var: post_iperf_server
+  kind: host
+  units: [flax-iperf]
+  ports: [11001]
+
+post_fleet_viewer:
+  lane: post-loose
+  tags: [post_fleet_viewer]
+  placement: both
+  placement_var: apply_post_fleet_viewer_hosts
+  kind: host
+  units: [flax-post-fleet-viewer]
+  ports: [8799]
+  ha_sensitive: true
+
+# ---------------------------------------------------------------- post, rack lane
+rackpost:
+  lane: post-rack
+  tags: [rackpost]
+  placement: primary
+  placement_var: apply_rackpost_hosts
+  kind: host
+  units: [flax-rackpost]
+  files: [/opt/flax/rackpost/BUILD]
+  ports: [8452]
+  ha_sensitive: true

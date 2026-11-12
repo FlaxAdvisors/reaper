@@ -1,0 +1,7 @@
+LocalPort  Speed  Mode      RemoteHost    RemotePort
+---------  -----  --------  ------------  ----------
+eth0       1G     Mgmt      turtle-lorax  swp3
+swp1       1G     Trunk/L2  bang          postprod
+swp2       1G     Trunk/L2  rabbit-lorax
+swp3       1G     Trunk/L2  turtle-lorax  eth0
+swp52      10G    Trunk/L2  rabbit-lorax

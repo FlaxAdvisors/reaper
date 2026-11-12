@@ -1,0 +1,14 @@
+BMC Version: fbttn-v2019.52.0
+Fan Speed Controller Version: fbttn-type5-mp-v3
+ROM Version: fbttn-v2.0
+TPM Version: 133.33
+MCU Bootloader Version: NA
+MCU Version: NA
+Mellanox NIC firmware version: 14.20.1202
+Expander Version: 0x1b0e0016
+SCC IOC Version: NA (Server Power-off)
+Bridge-IC Version: NA (server is empty)
+Bridge-IC Bootloader Version: NA (server is empty)
+BIOS Version: NA (server is empty)
+CPLD Version: NA (server is empty)
+ME Version: NA (server is empty)

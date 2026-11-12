@@ -1,0 +1,4 @@
+# apply the mitac-capri2 settings
+set node-setting amdepyc-7c13
+set com-default com1f
+set com-setting ${ttys0f}

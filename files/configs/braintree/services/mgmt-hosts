@@ -1,0 +1,26 @@
+# Managed by apply_bang_services. Do not edit.
+# Loaded by dnsmasq via hostsdir=/etc/dnsmasq.hosts (see dnsmasq.conf).
+# DNS resolution for VLAN-4 mgmt addresses: bang BMCs and lab switches.
+# expand-hosts in dnsmasq.conf appends the configured domain automatically.
+# Non-DUT mgmt devices are statically assigned; these names are DNS-only.
+192.168.88.11 bang-fiesta-bmc
+192.168.88.12 bang-siesta-bmc
+192.168.88.21 bang-fiesta
+192.168.88.22 bang-siesta
+192.168.88.31 rabbit-lorax
+192.168.88.33 turtle-lorax
+# rabbit-lorax-bmc is the ONE mgmt device that can't be statically assigned;
+# it is served by Kea (legacy-import reservation, kea.hosts subnet 4 -> .13),
+# NOT dnsmasq DHCP. Its DNS name resolves via the Kea-side hostname / this A:
+192.168.88.13 rabbit-lorax-bmc
+# (hare-lorax-bmc / hare-lorax removed — rabbit-hare is a DUT now, served via
+#  the DUT pool, not mgmt.)
+#
+# IPv6 link-local fallback — useful if DHCP fails or before the BMC has
+# completed its first DHCPDISCOVER (e.g. on initial cabling):
+#   ssh -6 root@<addr>%eth0   (password: BMC vendor default — see credentials-bmc.json, then sol.sh)
+# Not parsed by dnsmasq (the %scope-id form isn't valid in hosts files);
+# kept here as the canonical operator reference. Rediscover with:
+#   ip -6 neigh show dev eth0  |  grep <oui>
+#
+# rabbit-lorax-bmc  fe80::aa2b:b5ff:feb8:01d4%mgmt  (a8:2b:b5:b8:01:d4)

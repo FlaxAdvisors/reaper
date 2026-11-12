@@ -1,0 +1,11 @@
+---
+- name: Restart host manifest readers
+  become: true
+  ansible.builtin.shell: |
+    # the console bind-mounts the manifest as a single file: a rename (ansible
+    # template/copy) leaves it on the old inode until it restarts. Only if running.
+    if [ -n "$(docker ps -q -f name=^flax-stack-flax-control-1$)" ]; then
+      docker restart flax-stack-flax-control-1 >/dev/null && echo "restarted the console"
+    fi
+  register: apply_host_fw_manifest_restart
+  changed_when: true

@@ -1,0 +1,350 @@
+---
+- name: Ensure /etc/flax/flax-post exists
+  become: true
+  ansible.builtin.file:
+    path: /etc/flax/flax-post
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+# PERSISTENT hold directory (mirrors triage's bios-fw-hold): touching
+# <dir>/<port> stops the slot ladder from powering that blade on; touch+rm
+# is the operator's "reset a faulted ladder" gesture. Never tmpfs.
+- name: Ensure the per-port post power-on hold directory exists
+  become: true
+  ansible.builtin.file:
+    path: "{{ apply_flax_post_power_hold_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure the SOL capture directory exists (sol writes, observe reads)
+  become: true
+  ansible.builtin.file:
+    path: "{{ apply_flax_post_sol_capture_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# /run is tmpfs: this only seeds the dir until the next reboot; claims.claim()
+# also mkdir -p's it, so a missing dir after reboot is harmless.
+- name: Ensure the reconcile claim directory exists
+  become: true
+  ansible.builtin.file:
+    path: "{{ apply_flax_post_claim_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure an empty post_fw.json exists for the read-only bind mount
+  become: true
+  ansible.builtin.copy:
+    content: "{}\n"
+    dest: /etc/flax/post_fw.json
+    force: false
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Ensure an empty post_bios_fw.json exists for the read-only bind mount
+  become: true
+  ansible.builtin.copy:
+    content: "{}\n"
+    dest: /etc/flax/post_bios_fw.json
+    force: false
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Deploy BIOS firmware version manifest
+  # per site from post_bios_fw_platforms; `reaper fw <site> bios` renders it alone
+  # with --tags post_bios_manifest after moving a family's target
+  become: true
+  ansible.builtin.template:
+    src: bios-firmware-versions.json.j2
+    dest: /etc/flax/bios-firmware-versions.json
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-post-biosd     # loads it once at start, single-file mount
+  tags: [flax_post, post_bios_manifest]
+
+- name: Ensure an empty post_nic_fw.json exists for the read-only bind mount
+  become: true
+  ansible.builtin.copy:
+    content: "{}\n"
+    dest: /etc/flax/post_nic_fw.json
+    force: false
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Deploy nic-firmware-versions.json
+  become: true
+  ansible.builtin.copy:
+    src: nic-firmware-versions.json
+    dest: /etc/flax/nic-firmware-versions.json
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-post-nicd      # loads it once at start, single-file mount
+
+- name: Deploy flax-post.env
+  become: true
+  ansible.builtin.template:
+    src: flax-post.env.j2
+    dest: /etc/flax/flax-post/flax-post.env
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  # The viewer, the observe producer AND the fwd/biosd drivers all read this
+  # env (shared image tag via EnvironmentFile), so an image-tag bump must
+  # restart all four to land the new image. (The fwd driver was revived in
+  # 0.9.59 for the firmware test page — it is no longer deliberately stopped.)
+  notify:
+    - Restart flax-post
+    - Restart flax-post-observe
+    - Restart flax-post-fwd
+    - Restart flax-post-biosd
+    - Restart flax-post-nicd
+    # deployd reads this env too (FLAX_POST_DEPLOY, PG*): an on/off flip lands here
+    - Restart flax-post-deployd
+    # NOT flax-post-sol: it has no EnvironmentFile and doesn't read flax-post.env.
+    # Restarting it on unrelated env changes would drop all live/retained SOL
+    # session buffers. Its own template task (below) notifies Restart flax-post-sol
+    # on a tag/template change, which is the only restart it needs.
+
+- name: Deploy flax-post.service unit
+  become: true
+  ansible.builtin.template:
+    src: flax-post.service.j2
+    dest: /etc/systemd/system/flax-post.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-post
+
+- name: Enable flax-post (start via VIP-gate handler / notify_master)
+  become: true
+  ansible.builtin.systemd:
+    name: flax-post.service
+    # VIP-exclusive (master-only): the firmware writer (Plan 2) must never run on
+    # two bangs. enabled:false + the VIP-gated Restart handler start it on master.
+    enabled: false
+    daemon_reload: true
+
+- name: Deploy flax-post-fwd.service unit
+  become: true
+  ansible.builtin.template:
+    src: flax-post-fwd.service.j2
+    dest: /etc/systemd/system/flax-post-fwd.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-post-fwd
+
+- name: Enable flax-post-fwd (start via VIP-gate handler / notify_master)
+  become: true
+  ansible.builtin.systemd:
+    name: flax-post-fwd.service
+    enabled: false
+    daemon_reload: true
+
+- name: Deploy flax-post-biosd.service unit
+  become: true
+  ansible.builtin.template:
+    src: flax-post-biosd.service.j2
+    dest: /etc/systemd/system/flax-post-biosd.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-post-biosd
+
+- name: Enable flax-post-biosd (start via VIP-gate handler / notify_master)
+  become: true
+  ansible.builtin.systemd:
+    name: flax-post-biosd.service
+    enabled: false
+    daemon_reload: true
+
+- name: Deploy flax-post-nicd.service unit
+  become: true
+  ansible.builtin.template:
+    src: flax-post-nicd.service.j2
+    dest: /etc/systemd/system/flax-post-nicd.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-post-nicd
+
+- name: Enable flax-post-nicd (start via VIP-gate handler / notify_master)
+  become: true
+  ansible.builtin.systemd:
+    name: flax-post-nicd.service
+    enabled: false
+    daemon_reload: true
+
+- name: Deploy flax-post-sol.service unit
+  become: true
+  ansible.builtin.template:
+    src: flax-post-sol.service.j2
+    dest: /etc/systemd/system/flax-post-sol.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-post-sol
+
+- name: Enable flax-post-sol (start via VIP-gate handler / notify_master)
+  become: true
+  ansible.builtin.systemd:
+    name: flax-post-sol.service
+    enabled: false
+    daemon_reload: true
+
+- name: Deploy flax-post-observe.service unit
+  become: true
+  ansible.builtin.template:
+    src: flax-post-observe.service.j2
+    dest: /etc/systemd/system/flax-post-observe.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-post-observe
+
+- name: Enable flax-post-observe (start via VIP-gate handler / notify_master)
+  become: true
+  ansible.builtin.systemd:
+    name: flax-post-observe.service
+    # VIP-exclusive (master-only): the IPMI producer is the sole writer of
+    # post_state/post_node; it must never run on two bangs simultaneously.
+    # enabled:false + the VIP-gated ExecStartPre guard start it on master.
+    enabled: false
+    daemon_reload: true
+
+- name: Deploy flax-post-nginx.conf (TLS vhost -> viewer)
+  become: true
+  ansible.builtin.template:
+    src: flax-post-nginx.conf.j2
+    dest: /etc/flax/nginx/flax-post-nginx.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-post-nginx
+
+- name: Deploy flax-post-nginx.service unit
+  become: true
+  ansible.builtin.template:
+    src: flax-post-nginx.service.j2
+    dest: /etc/systemd/system/flax-post-nginx.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-post-nginx
+
+- name: Enable flax-post-nginx (start via VIP-gate handler / notify_master)
+  become: true
+  ansible.builtin.systemd:
+    name: flax-post-nginx.service
+    # VIP-exclusive — tracks the viewer it fronts (master-only).
+    enabled: false
+    daemon_reload: true
+
+# ---- flax-post-deployd: Loose Post Deploy, host-side (spec 2026-11-06) ----
+- name: Create the deployd code + work dirs
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ apply_flax_post_deployd_dir }}"
+    - "{{ apply_flax_post_deployd_vendor_dir }}"
+    - /var/lib/flax-post-deployd
+
+# rsync (one call per tree, checksum-compared), not per-file ansible.builtin.copy.
+- name: Deploy flax_post + flax_rungs for deployd
+  become: true
+  ansible.posix.synchronize:
+    src: "{{ playbook_dir }}/../{{ item }}/"
+    dest: "{{ apply_flax_post_deployd_dir }}/{{ item }}/"
+    archive: false
+    recursive: true
+    perms: true
+    checksum: true
+    # go-w: the mode must not follow the deploying clone's umask (bang clones 0002, orbit 0022)
+    rsync_opts: ['--chown=root:root', '--chmod=go-w', '--exclude=__pycache__', '--exclude=*.pyc']
+  loop:
+    - flax_post
+    - flax_rungs
+  notify: Restart flax-post-deployd
+
+- name: Deploy dimmerr.sh for deployd (piped to the installed OS over ssh)
+  become: true
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../scripts/dimmerr.sh"
+    dest: "{{ apply_flax_post_deployd_dir }}/dimmerr.sh"
+    owner: root
+    group: root
+    mode: "0644"
+
+# pip --target always reports changed: the pinned dist-info dir is the marker
+- name: Check the vendored psycopg pin
+  ansible.builtin.stat:
+    path: "{{ apply_flax_post_deployd_vendor_dir }}/psycopg-3.2.3.dist-info"
+  register: apply_flax_post_deployd_pip_marker
+
+- name: Vendor psycopg for the host python
+  become: true
+  ansible.builtin.pip:
+    name: "{{ apply_flax_post_deployd_pips }}"
+    executable: "{{ apply_flax_post_deployd_python | replace('python', 'pip') }}"
+    extra_args: "--upgrade --target {{ apply_flax_post_deployd_vendor_dir }}"
+  when: not apply_flax_post_deployd_pip_marker.stat.exists
+  notify: Restart flax-post-deployd
+
+- name: Remove the old unkeyed deployd vendor dir (python3.11 builds)
+  become: true
+  ansible.builtin.file:
+    path: "{{ apply_flax_post_deployd_dir }}/vendor"
+    state: absent
+
+- name: Deploy flax-post-deployd.service unit
+  become: true
+  ansible.builtin.template:
+    src: flax-post-deployd.service.j2
+    dest: /etc/systemd/system/flax-post-deployd.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-post-deployd
+
+- name: Register flax-post-deployd (VIP-gated; started by the handler / notify_master)
+  become: true
+  ansible.builtin.systemd:
+    name: flax-post-deployd.service
+    enabled: false
+    daemon_reload: true
+
+# A handler fires only on a change; a bang whose deployd files were already in place
+# (shipped off, then switched on) must still get it running on the VIP holder.
+- name: Start flax-post-deployd on the VIP holder while Deploy is on
+  become: true
+  ansible.builtin.systemd:
+    name: flax-post-deployd.service
+    state: started
+  when: (apply_flax_post_deploy_enabled | bool) and (apply_flax_stack_is_primary | default(true) | bool)
+
+- name: Stop flax-post-deployd while Deploy is off
+  become: true
+  ansible.builtin.systemd:
+    name: flax-post-deployd.service
+    state: stopped
+  when: not (apply_flax_post_deploy_enabled | bool)
+  failed_when: false

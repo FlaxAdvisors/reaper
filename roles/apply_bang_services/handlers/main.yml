@@ -1,0 +1,27 @@
+---
+# Order matters — handlers run in definition order. The apparmor profile
+# reload must complete before dnsmasq restart so the daemon comes up under
+# the updated profile. It also listens on every dnsmasq restart: an override
+# file can be current while the kernel still holds a stale profile (bang-blues
+# 2026-11-09: a CNAME-only restart failed on EACCES for the log file).
+- name: reload apparmor dnsmasq profile
+  become: true
+  ansible.builtin.command: apparmor_parser -r /etc/apparmor.d/usr.sbin.dnsmasq
+  changed_when: false
+  listen: [restart dnsmasq]
+
+- name: restart dnsmasq
+  become: true
+  ansible.builtin.systemd:
+    name: dnsmasq
+    # KEA mode: dnsmasq is DNS+TFTP only and active-active (tasks/main.yml), so
+    # restart it everywhere. Stopping it on the backup here left bang-edam with
+    # no DNS/TFTP from a 2026-10-21 config push until 2026-10-27.
+    state: "{{ 'restarted' if (inventory_hostname == apply_keepalived_master_host or (bang_dhcp_server | default('dnsmasq')) == 'kea') else 'stopped' }}"
+    daemon_reload: true
+
+- name: reload nginx
+  become: true
+  ansible.builtin.systemd:
+    name: nginx
+    state: reloaded

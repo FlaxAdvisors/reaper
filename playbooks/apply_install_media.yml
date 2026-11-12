@@ -1,0 +1,8 @@
+---
+# Install ISOs on every bang: fetch/peer-copy + sha256 verify + loop mounts (systemd).
+# The /export/install text files that boot from them come from apply_pxe_payloads --tags install_files.
+- name: Apply install media
+  hosts: jumphosts
+  gather_facts: false
+  roles:
+    - apply_install_media

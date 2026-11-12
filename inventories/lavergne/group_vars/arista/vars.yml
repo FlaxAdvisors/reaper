@@ -1,0 +1,10 @@
+---
+ansible_connection: ansible.netcommon.network_cli
+ansible_network_os: arista.eos.eos
+ansible_network_cli_ssh_type: libssh
+ansible_user: "{{ vault_arista_user }}"
+ansible_password: "{{ vault_arista_password }}"
+ansible_become: true
+ansible_become_method: enable
+ansible_become_password: "{{ vault_arista_enable_password }}"
+device_role: arista_eos

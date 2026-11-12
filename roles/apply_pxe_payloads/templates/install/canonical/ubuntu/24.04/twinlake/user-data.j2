@@ -1,0 +1,156 @@
+#cloud-config
+autoinstall:
+  version: 1
+  identity:
+    hostname: tempname
+    password: "{{ vault_install_secrets.ubuntu_identity_hash }}"
+    realname: pxadmin
+    username: pxadmin
+  keyboard:
+    layout: us
+    toggle: null
+    variant: ""
+  locale: en_us.UTF-8
+  apt:
+    geoip: false
+    primary:
+      - arches: [default]
+        uri: http://mirrors.edge.kernel.org/ubuntu
+    security:
+      - arches: [default]
+        uri: http://mirrors.edge.kernel.org/ubuntu
+  packages:
+    - stress-ng
+    - rasdaemon
+  ssh:
+    allow-pw: true
+    authorized-keys:
+      [
+{% for k in vault_install_authorized_keys %}
+        "{{ k }}",
+{% endfor %}
+      ]
+    install-server: true
+  storage:
+    config:
+      - {
+          ptable: gpt,
+          path: /dev/nvme0n1,
+          wipe: superblock,
+          preserve: false,
+          name: "",
+          grub_device: false,
+          type: disk,
+          id: system-disk,
+        }
+      - {
+          device: system-disk,
+          size: 1127219200,
+          wipe: superblock,
+          flag: boot,
+          number: 1,
+          preserve: false,
+          grub_device: true,
+          type: partition,
+          id: partition-0,
+        }
+      - {
+          fstype: fat32,
+          volume: partition-0,
+          preserve: false,
+          type: format,
+          id: format-0,
+        }
+      - {
+          device: system-disk,
+          size: 2147483648,
+          wipe: superblock,
+          flag: "",
+          number: 2,
+          preserve: false,
+          grub_device: false,
+          type: partition,
+          id: partition-1,
+        }
+      - {
+          fstype: ext4,
+          volume: partition-1,
+          preserve: false,
+          type: format,
+          id: format-1,
+        }
+      - {
+          device: system-disk,
+          size: -1,
+          wipe: superblock,
+          flag: "",
+          number: 3,
+          preserve: false,
+          grub_device: false,
+          type: partition,
+          id: partition-2,
+        }
+      - {
+          name: ubuntu-vg,
+          devices: [partition-2],
+          preserve: false,
+          type: lvm_volgroup,
+          id: lvm_volgroup-0,
+        }
+      - {
+          name: ubuntu-lv,
+          volgroup: lvm_volgroup-0,
+          size: 100G,
+          wipe: superblock,
+          preserve: false,
+          type: lvm_partition,
+          id: lvm_partition-0,
+        }
+      - {
+          fstype: ext4,
+          volume: lvm_partition-0,
+          preserve: false,
+          type: format,
+          id: format-2,
+        }
+      - { path: /, device: format-2, type: mount, id: mount-2 }
+      - { path: /boot, device: format-1, type: mount, id: mount-1 }
+      - { path: /boot/efi, device: format-0, type: mount, id: mount-0 }
+  late-commands:
+    - 'echo "pxadmin ALL=(ALL) NOPASSWD:ALL" > /target/etc/sudoers.d/pxadmin'
+    - chmod 440 /target/etc/sudoers.d/pxadmin
+    - rm /target/etc/hostname
+    # ras=cec_disable: the kernel's correctable-error collector otherwise keeps CEs from EDAC,
+    # so dimmerr reads 0 for a DIMM rasdaemon logged (LVQ et7b4 2026-11-10)
+    - 'printf "%s\n" ''GRUB_CMDLINE_LINUX="$GRUB_CMDLINE_LINUX ras=cec_disable"'' > /target/etc/default/grub.d/90-flax-ras.cfg'
+    - curtin in-target --target=/target -- update-grub
+    - shutdown -h now
+
+  user-data:
+    disable_root: true
+    timezone: UTC
+    package_upgrade: false
+    users:
+      - name: flax
+        primary_group: users
+        groups: sudo
+        lock_passwd: false
+        passwd: "{{ vault_install_secrets.ubuntu_flax_hash }}"
+        shell: /bin/bash
+        ssh_authorized_keys:
+{% for k in vault_install_authorized_keys %}
+          - "{{ k }}"
+{% endfor %}
+        sudo: ALL=(ALL) NOPASSWD:ALL
+
+      - name: pxadmin
+        primary_group: users
+        groups: sudo
+        lock_passwd: false
+        passwd: "{{ vault_install_secrets.ubuntu_pxadmin_hash }}"
+        shell: /bin/bash
+        ssh_authorized_keys:
+{% for k in vault_install_authorized_keys %}
+          - "{{ k }}"
+{% endfor %}
+        sudo: ALL=(ALL) NOPASSWD:ALL

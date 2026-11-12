@@ -1,0 +1,23 @@
+Wedge EEPROM :
+Version: 1
+Product Name: WEDGE100S12V
+Product Part Number: 20-001688
+System Assembly Part Number: 135-000013-03
+Facebook PCBA Part Number: 132-000052-03
+Facebook PCB Part Number: 131-000025-04
+ODM PCBA Part Number: NP3FB7632001A
+ODM PCBA Serial Number: AI34020882
+Product Production State: 4
+Product Version: 1
+Product Sub-Version: 2
+Product Serial Number: AI34020882
+Product Asset Tag: 4620745
+System Manufacturer: Joytech
+System Manufacturing Date: 08-29-18
+PCB Manufacturer: ISU
+Assembled At: Joytech
+Local MAC: B8:6A:97:19:C8:FD
+Extended MAC Base: B8:6A:97:19:C8:FE
+Extended MAC Address Size: 128
+Location on Fabric: WEDGE100
+CRC8: 0xd1

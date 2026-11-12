@@ -1,0 +1,88 @@
+---
+# Per project_bang_firewalld_external_zone: host-mode docker services need
+# explicit firewalld port allowlist in zone external. Without this, nginx's
+# 8443 listener is reachable on localhost but not on the management interface.
+#
+# ansible.posix.firewalld would be cleaner but requires python-firewall on
+# the bang, which isn't always present on the system python that ansible
+# uses. Same workaround as apply_lease_agent: shell out to firewall-cmd.
+
+- name: Check if flax-control HTTPS port is already open in zone external (permanent)
+  become: true
+  ansible.builtin.command:
+    cmd: "firewall-cmd --permanent --zone=external --query-port={{ apply_flax_stack_https_port }}/tcp"
+  register: apply_flax_stack_port_query
+  changed_when: false
+  failed_when: false
+
+- name: Open flax-control HTTPS port in zone external (permanent)
+  become: true
+  ansible.builtin.command:
+    cmd: "firewall-cmd --permanent --zone=external --add-port={{ apply_flax_stack_https_port }}/tcp"
+  when: apply_flax_stack_port_query.rc != 0
+  changed_when: true
+  notify: Reload firewalld
+
+- name: Open flax-control HTTPS port in zone external (runtime)
+  become: true
+  ansible.builtin.command:
+    cmd: "firewall-cmd --zone=external --add-port={{ apply_flax_stack_https_port }}/tcp"
+  when: apply_flax_stack_port_query.rc != 0
+  changed_when: true
+
+- name: Check if :443 vhost port is already open in zone external (permanent)
+  become: true
+  ansible.builtin.command:
+    cmd: "firewall-cmd --permanent --zone=external --query-port={{ apply_flax_stack_vhost_port }}/tcp"
+  register: apply_flax_stack_vhost_query
+  changed_when: false
+  failed_when: false
+
+- name: Open :443 vhost port in zone external (permanent)
+  become: true
+  ansible.builtin.command:
+    cmd: "firewall-cmd --permanent --zone=external --add-port={{ apply_flax_stack_vhost_port }}/tcp"
+  when: apply_flax_stack_vhost_query.rc != 0
+  changed_when: true
+  notify: Reload firewalld
+
+- name: Open :443 vhost port in zone external (runtime)
+  become: true
+  ansible.builtin.command:
+    cmd: "firewall-cmd --zone=external --add-port={{ apply_flax_stack_vhost_port }}/tcp"
+  when: apply_flax_stack_vhost_query.rc != 0
+  changed_when: true
+
+# Postgres streaming replication. The mgmt interface (where the peer connects via
+# its .2x IP) lives in the `internal` zone, which does not allow 5432 by default —
+# the peer gets "No route to host" (firewalld REJECT). Add a per-peer rich rule
+# scoping the Postgres port to the peer's mgmt IP, both permanent (persist) and
+# runtime (immediate). Idempotent — firewall-cmd returns ALREADY_ENABLED (rc 0)
+# when the rule exists. Loop is empty on standalone sites (no peers => no rules).
+- name: Allow Postgres replication from each peer (permanent, internal zone)
+  become: true
+  ansible.builtin.command:
+    argv:
+      - firewall-cmd
+      - --permanent
+      - "--zone={{ apply_flax_stack_replication_zone }}"
+      - '--add-rich-rule=rule family="ipv4" source address="{{ item.ip }}/32" port port="{{ apply_flax_stack_postgres_port }}" protocol="tcp" accept'
+  loop: "{{ apply_flax_stack_peers | default([]) | rejectattr('name', 'equalto', inventory_hostname) | list }}"
+  loop_control:
+    label: "{{ item.name }} ({{ item.ip }})"
+  register: pg_repl_fw_perm
+  changed_when: "'ALREADY_ENABLED' not in ((pg_repl_fw_perm.stdout | default('')) ~ (pg_repl_fw_perm.stderr | default('')))"
+  notify: Reload firewalld
+
+- name: Allow Postgres replication from each peer (runtime, internal zone)
+  become: true
+  ansible.builtin.command:
+    argv:
+      - firewall-cmd
+      - "--zone={{ apply_flax_stack_replication_zone }}"
+      - '--add-rich-rule=rule family="ipv4" source address="{{ item.ip }}/32" port port="{{ apply_flax_stack_postgres_port }}" protocol="tcp" accept'
+  loop: "{{ apply_flax_stack_peers | default([]) | rejectattr('name', 'equalto', inventory_hostname) | list }}"
+  loop_control:
+    label: "{{ item.name }} ({{ item.ip }})"
+  register: pg_repl_fw_runtime
+  changed_when: "'ALREADY_ENABLED' not in ((pg_repl_fw_runtime.stdout | default('')) ~ (pg_repl_fw_runtime.stderr | default('')))"

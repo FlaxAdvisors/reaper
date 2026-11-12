@@ -1,0 +1,38 @@
+---
+- name: Ensure /opt/flax/var/postgres exists
+  become: true
+  ansible.builtin.file:
+    path: /opt/flax/var/postgres
+    state: directory
+    # Postgres container runs as UID 999; data dir must be writable by it.
+    # Container's POSTGRES_INITDB will chown if directory is empty.
+    owner: "999"
+    group: "999"
+    mode: "0700"
+
+- name: Ensure /etc/flax/postgres exists
+  become: true
+  ansible.builtin.file:
+    path: /etc/flax/postgres
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure /etc/flax/flax-stack exists
+  become: true
+  ansible.builtin.file:
+    path: /etc/flax/flax-stack
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"  # holds env file with secrets
+
+- name: Ensure /etc/flax/nginx exists
+  become: true
+  ansible.builtin.file:
+    path: /etc/flax/nginx
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"

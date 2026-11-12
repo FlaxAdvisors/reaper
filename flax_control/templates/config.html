@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+{% import "_components.html" as c %}
+{% block title %}flax-control — config{% endblock %}
+{% block content %}
+{{ c.page_header('Config', 'Read-only view of /etc/flax configuration files. Credential values are never displayed — see the Credentials section below for the vault reference.') }}
+
+<div class="side-card" style="margin-bottom:1rem;">
+  <h3>Related</h3>
+  {% set _v1 %}<a href="/roles">Registry →</a>{% endset %}
+  {{ c.kv('roles.d publishing (role definitions)', _v1) }}
+  {% set _v2 %}<a href="/shadow">Materializer →</a>{% endset %}
+  {{ c.kv('desired_reservations / materializer_plan convergence', _v2) }}
+</div>
+
+<!-- ── 0. Config in use ────────────────────────────────────────────────── -->
+<section class="block"><h2>Config in use</h2>
+<table class="cfg-table">
+  <thead><tr><th>File</th><th>What it decides</th><th>Read by</th><th>Status</th></tr></thead>
+  <tbody>
+  {% for f in config_map %}
+    <tr>
+      <td class="file mono">{{ f.name }}</td>
+      <td>{{ f.decides }}</td>
+      <td class="mono">{{ f.readers | join(', ') or '—' }}</td>
+      <td>
+        {% if f.live_state == 'live' %}{{ c.badge('live', 'g') }}
+        {% elif f.live_state == 'drift' %}{{ c.badge('changed · unpicked', 'w') }}
+        {% else %}{{ c.badge('absent', 'n') }}{% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</section>
+
+<!-- ── 1. Service tunables + Site switches ─────────────────────────────── -->
+<div class="grid2">
+  <div class="side-card">
+    <h3>Service tunables</h3>
+    <p class="muted" style="font-size:0.78rem; margin:0 0 8px;">
+      Source: <code>/etc/flax/reconcile.json</code> &nbsp;·&nbsp;
+      Deployed by: <code>apply_flax_reconcile</code>
+    </p>
+    {% if reconcile_tunables %}
+      {% for row in reconcile_tunables %}
+        {% set _v %}{{ row.current }} <span class="muted">(default {{ row.default }})</span>
+          {% if row.source == "(default)" %}{{ c.badge(row.source, 'n') }}
+          {% else %}{{ c.badge(row.source, 'a') }}{% endif %}
+        {% endset %}
+        {{ c.kv(row.key, _v) }}
+      {% endfor %}
+    {% else %}
+    <p class="empty">No reconcile tunables available.</p>
+    {% endif %}
+  </div>
+
+  <div class="side-card">
+    <h3>Site switches</h3>
+    <p class="muted" style="font-size:0.78rem; margin:0 0 8px;">
+      Source: <code>/etc/flax/site.env</code> (allowlisted keys only) &nbsp;·&nbsp;
+      Deployed by: <code>apply_flax_facts</code>
+    </p>
+    {% if site_env %}
+      {% for row in site_env %}
+        {{ c.kv(row.key, row.value) }}
+      {% endfor %}
+    {% else %}
+    <p class="empty">not present on this host</p>
+    {% endif %}
+  </div>
+</div>
+
+<!-- ── 2. Topology & policy ─────────────────────────────────────────────── -->
+<div class="section">
+  <h2>Topology &amp; policy</h2>
+  {% for tf in topology_files %}
+  <div class="side-card">
+    {{ c.kv('file', tf.path) }}
+    {{ c.kv('drives', tf.drives) }}
+    {{ c.kv('deployed by', tf.deployed_by) }}
+    {% if tf.present and tf.data is not none %}
+    <details style="margin-top:8px;">
+      <summary class="muted" style="cursor:pointer; font-size:0.78rem;">view parsed contents</summary>
+      <div class="table-wrap">
+        <pre style="margin:0; padding:0.75rem 1rem; overflow:auto; font-size:0.80rem; line-height:1.45; white-space:pre-wrap;">{{ tf.data | tojson(indent=2) }}</pre>
+      </div>
+    </details>
+    {% elif tf.present %}
+    <p class="empty" style="color:var(--warn); margin-top:8px;">file present but could not be parsed (check JSON syntax)</p>
+    {% else %}
+    <p class="empty" style="margin-top:8px;">not present on this host</p>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+<!-- ── 2b. Classifiers (macmath/ + family-map/ dirs) ───────────────────── -->
+<div class="section">
+  <h2>Classifiers</h2>
+  {% for cd in classifier_dirs %}
+  <div class="side-card">
+    {{ c.kv('directory', cd.path + '/') }}
+    {{ c.kv('drives', cd.drives) }}
+    {% if not cd.present %}
+    <p class="empty" style="margin-top:8px;">not present on this host</p>
+    {% elif not cd.files %}
+    <p class="empty" style="margin-top:8px;">(directory is empty)</p>
+    {% else %}
+    {% for f in cd.files %}
+    <details style="margin-top:8px;">
+      <summary class="muted" style="cursor:pointer; font-size:0.78rem;"><code>{{ f.name }}</code></summary>
+      <div class="table-wrap">
+        <pre style="margin:0; padding:0.75rem 1rem; overflow:auto; font-size:0.80rem; line-height:1.45; white-space:pre-wrap;">{% if f.data is not none %}{{ f.data | tojson(indent=2) }}{% else %}{{ f.raw }}{% endif %}</pre>
+      </div>
+    </details>
+    {% endfor %}
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+<!-- ── 2c. BMC firmware target ─────────────────────────────────────────── -->
+<div class="section">
+  <h2>BMC firmware</h2>
+  <div class="side-card">
+    {{ c.kv('file', bmc_fw_manifest.path) }}
+    {{ c.kv('drives', bmc_fw_manifest.drives) }}
+    {{ c.kv('deployed by', bmc_fw_manifest.deployed_by) }}
+    {% if bmc_fw_manifest.present and bmc_fw_manifest.data is not none %}
+    <details style="margin-top:8px;">
+      <summary class="muted" style="cursor:pointer; font-size:0.78rem;">view parsed contents</summary>
+      <div class="table-wrap">
+        <pre style="margin:0; padding:0.75rem 1rem; overflow:auto; font-size:0.80rem; line-height:1.45; white-space:pre-wrap;">{{ bmc_fw_manifest.data | tojson(indent=2) }}</pre>
+      </div>
+    </details>
+    {% elif bmc_fw_manifest.present %}
+    <p class="empty" style="color:var(--warn); margin-top:8px;">file present but could not be parsed (check JSON syntax)</p>
+    {% else %}
+    <p class="empty" style="margin-top:8px;">not present on this host</p>
+    {% endif %}
+  </div>
+  <p class="muted" style="font-size:0.8rem;">
+    Related: BMC firmware fleet status lives on the <a href="/bmc-fw">BMC firmware</a> page.
+  </p>
+</div>
+
+<!-- ── 3. Credentials reference ─────────────────────────────────────────── -->
+<div class="section">
+  <h2>Credentials {{ c.badge('redacted · vault-managed', 'w') }}</h2>
+  <p class="muted" style="font-size:0.82rem;">
+    Credential values are <strong>never</strong> loaded or displayed here.
+    The files below are not mounted into this container.
+    Use <code>ansible-vault</code> to view or edit.
+  </p>
+  <div class="grid2">
+  {% for cred in credentials %}
+  <div class="side-card">
+    <h3><code>{{ cred.path }}</code></h3>
+    <p class="muted" style="font-size:0.8rem; margin:0 0 8px;">{{ cred.description }}</p>
+    <p style="margin:0 0 8px; font-size:0.75rem; color:var(--muted);">Key names (no values):</p>
+    <div style="display:flex; flex-wrap:wrap; gap:0.4rem; margin-bottom:0.6rem;">
+      {% for k in cred.key_names %}
+      <span class="tag"><code>{{ k }}</code></span>
+      {% endfor %}
+    </div>
+    <p style="margin:0; font-size:0.75rem; color:var(--muted);">{{ cred.note }}</p>
+  </div>
+  {% endfor %}
+  </div>
+</div>
+
+{% endblock %}

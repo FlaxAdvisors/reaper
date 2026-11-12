@@ -1,0 +1,17 @@
+latest inventory in post-98039ba8f1ea is from 2026-06-03T12:38:26Z (36 days 12:19:32 ago)
+==========
+BMC Version:  
+BIOS Version: TPC_P26C, Release Date: 10/15/2020, BIOS Revision: 5.14, Firmware Revision: 0.0
+System Mfg: Wiwynn, Product Name: TiogaPass, UUID: 03000200-0400-0500-0006-000700080009
+Base Board Serial: Default string
+Chassis Serial: Default string
+2 Processor Version: Intel(R) Xeon(R) Gold 6138 CPU @ 2.00GHz
+8 Memory Size: 32 GB, Speed: 2666 MT/s, Mfg: Samsung, Part: M393A4K40BB2-CTD
+1 Model: "Mellanox MCX4411A-ACQN, ConnectX-4 Lx EN OCP, 1x25Gb", SubVendor: pci 0x15b3 "Mellanox Technologies", SubDevice: pci 0x0020 "MCX4411A-ACQN, ConnectX-4 Lx EN OCP, 1x25Gb"
+1 Model: "Broadcom / LSI MegaRAID SAS 9380-8e", SubVendor: pci 0x1000 "Broadcom / LSI", SubDevice: pci 0x9380 "MegaRAID SAS 9380-8e", Driver: "megaraid_sas"
+1 Model: "Intel C620 Series Chipset Family SATA Controller [AHCI mode]", SubVendor: pci 0x8086 "Intel Corporation", SubDevice: pci 0x7270 , Driver: "ahci"
+1 Model: "Intel C620 Series Chipset Family SSATA Controller [AHCI mode]", SubVendor: pci 0x8086 "Intel Corporation", SubDevice: pci 0x7270 , Driver: "ahci"
+2 Model: "HITACHI H5H72121 EMC12T0", Revision: "D614", Capacity: 11176 GB
+1 Model: "Realtek CS1030 250GB SSD", SubVendor: pci 0x10ec "Realtek Semiconductor Co., Ltd.", SubDevice: pci 0x5765 , Capacity: 232 GB
+1 Model: "Virtual USB Slot_2", Capacity: 2 GB
+

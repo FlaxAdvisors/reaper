@@ -1,0 +1,1011 @@
+{
+  "lldp": [
+    {
+      "interface": [
+        {
+          "name": "eth0",
+          "via": "LLDP",
+          "rid": "19",
+          "age": "50 days, 12:51:52",
+          "chassis": [
+            {
+              "id": [
+                {
+                  "type": "mac",
+                  "value": "a8:2b:b5:2e:f6:80"
+                }
+              ],
+              "name": [
+                {
+                  "value": "turtle-lorax"
+                }
+              ],
+              "descr": [
+                {
+                  "value": "Cumulus Linux version 3.7.3 running on accton as4610_54"
+                }
+              ],
+              "mgmt-ip": [
+                {
+                  "value": "192.168.88.33"
+                },
+                {
+                  "value": "fe80::aa2b:b5ff:fe2e:f680"
+                }
+              ],
+              "capability": [
+                {
+                  "type": "Bridge",
+                  "enabled": true
+                },
+                {
+                  "type": "Router",
+                  "enabled": true
+                }
+              ]
+            }
+          ],
+          "port": [
+            {
+              "id": [
+                {
+                  "type": "ifname",
+                  "value": "swp3"
+                }
+              ],
+              "descr": [
+                {
+                  "value": "swp3"
+                }
+              ],
+              "ttl": [
+                {
+                  "value": "120"
+                }
+              ],
+              "auto-negotiation": [
+                {
+                  "supported": true,
+                  "enabled": true,
+                  "advertised": [
+                    {
+                      "type": "10Base-T",
+                      "hd": false,
+                      "fd": true
+                    },
+                    {
+                      "type": "100Base-TX",
+                      "hd": false,
+                      "fd": true
+                    },
+                    {
+                      "type": "1000Base-T",
+                      "hd": false,
+                      "fd": true
+                    }
+                  ],
+                  "current": [
+                    {
+                      "value": "1000BaseTFD - Four-pair Category 5 UTP, full duplex mode"
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "lldp-med": [
+            {
+              "device-type": [
+                {
+                  "value": "Network Connectivity Device"
+                }
+              ],
+              "capability": [
+                {
+                  "type": "Capabilities",
+                  "available": true
+                },
+                {
+                  "type": "Policy",
+                  "available": true
+                },
+                {
+                  "type": "Location",
+                  "available": true
+                },
+                {
+                  "type": "MDI/PSE",
+                  "available": true
+                },
+                {
+                  "type": "MDI/PD",
+                  "available": true
+                },
+                {
+                  "type": "Inventory",
+                  "available": true
+                }
+              ],
+              "inventory": [
+                {
+                  "software": [
+                    {
+                      "value": "3.7.3"
+                    }
+                  ],
+                  "firmware": [
+                    {
+                      "value": "U-Boot 2012.10-gd563f4a"
+                    }
+                  ],
+                  "serial": [
+                    {
+                      "value": "EC1719001894"
+                    }
+                  ],
+                  "manufacturer": [
+                    {
+                      "value": "accton"
+                    }
+                  ],
+                  "model": [
+                    {
+                      "value": "as4610_54"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "swp2",
+          "via": "LLDP",
+          "rid": "5",
+          "age": "63 days, 05:59:15",
+          "chassis": [
+            {
+              "id": [
+                {
+                  "type": "mac",
+                  "value": "00:90:fb:5f:d8:af"
+                }
+              ],
+              "name": [
+                {
+                  "value": "rabbit-lorax"
+                }
+              ],
+              "descr": [
+                {
+                  "value": "Arista Networks EOS version 4.27.0F running on a Facebook WEDGE100S12V"
+                }
+              ],
+              "mgmt-ip": [
+                {
+                  "value": "192.168.88.31"
+                }
+              ],
+              "capability": [
+                {
+                  "type": "Bridge",
+                  "enabled": true
+                },
+                {
+                  "type": "Router",
+                  "enabled": false
+                }
+              ]
+            }
+          ],
+          "port": [
+            {
+              "id": [
+                {
+                  "type": "ifname",
+                  "value": "Management1"
+                }
+              ],
+              "ttl": [
+                {
+                  "value": "120"
+                }
+              ],
+              "mfs": [
+                {
+                  "value": "1518"
+                }
+              ]
+            }
+          ],
+          "lldp-med": [
+            {
+              "device-type": [
+                {
+                  "value": "Network Connectivity Device"
+                }
+              ],
+              "capability": [
+                {
+                  "type": "Capabilities",
+                  "available": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "swp3",
+          "via": "LLDP",
+          "rid": "19",
+          "age": "50 days, 12:51:52",
+          "chassis": [
+            {
+              "id": [
+                {
+                  "type": "mac",
+                  "value": "a8:2b:b5:2e:f6:80"
+                }
+              ],
+              "name": [
+                {
+                  "value": "turtle-lorax"
+                }
+              ],
+              "descr": [
+                {
+                  "value": "Cumulus Linux version 3.7.3 running on accton as4610_54"
+                }
+              ],
+              "mgmt-ip": [
+                {
+                  "value": "192.168.88.33"
+                },
+                {
+                  "value": "fe80::aa2b:b5ff:fe2e:f680"
+                }
+              ],
+              "capability": [
+                {
+                  "type": "Bridge",
+                  "enabled": true
+                },
+                {
+                  "type": "Router",
+                  "enabled": true
+                }
+              ]
+            }
+          ],
+          "port": [
+            {
+              "id": [
+                {
+                  "type": "ifname",
+                  "value": "eth0"
+                }
+              ],
+              "descr": [
+                {
+                  "value": "eth0"
+                }
+              ],
+              "ttl": [
+                {
+                  "value": "120"
+                }
+              ],
+              "auto-negotiation": [
+                {
+                  "supported": true,
+                  "enabled": true,
+                  "advertised": [
+                    {
+                      "type": "10Base-T",
+                      "hd": true,
+                      "fd": true
+                    },
+                    {
+                      "type": "100Base-TX",
+                      "hd": true,
+                      "fd": true
+                    },
+                    {
+                      "type": "1000Base-T",
+                      "hd": false,
+                      "fd": true
+                    }
+                  ],
+                  "current": [
+                    {
+                      "value": "1000BaseTFD - Four-pair Category 5 UTP, full duplex mode"
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "lldp-med": [
+            {
+              "device-type": [
+                {
+                  "value": "Network Connectivity Device"
+                }
+              ],
+              "capability": [
+                {
+                  "type": "Capabilities",
+                  "available": true
+                },
+                {
+                  "type": "Policy",
+                  "available": true
+                },
+                {
+                  "type": "Location",
+                  "available": true
+                },
+                {
+                  "type": "MDI/PSE",
+                  "available": true
+                },
+                {
+                  "type": "MDI/PD",
+                  "available": true
+                },
+                {
+                  "type": "Inventory",
+                  "available": true
+                }
+              ],
+              "inventory": [
+                {
+                  "software": [
+                    {
+                      "value": "3.7.3"
+                    }
+                  ],
+                  "firmware": [
+                    {
+                      "value": "U-Boot 2012.10-gd563f4a"
+                    }
+                  ],
+                  "serial": [
+                    {
+                      "value": "EC1719001894"
+                    }
+                  ],
+                  "manufacturer": [
+                    {
+                      "value": "accton"
+                    }
+                  ],
+                  "model": [
+                    {
+                      "value": "as4610_54"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "swp5",
+          "via": "LLDP",
+          "rid": "29",
+          "age": "29 days, 04:58:42",
+          "chassis": [
+            {
+              "id": [
+                {
+                  "type": "mac",
+                  "value": "a0:36:9f:d6:51:7c"
+                }
+              ],
+              "name": [
+                {
+                  "value": "bang-fiesta"
+                }
+              ],
+              "descr": [
+                {
+                  "value": "openSUSE Leap 15.6 Linux 6.4.0-150600.23.103-default #1 SMP PREEMPT_DYNAMIC Fri May  8 13:08:22 UTC 2026 (52e00eb) x86_64"
+                }
+              ],
+              "mgmt-ip": [
+                {
+                  "value": "100.64.0.204"
+                },
+                {
+                  "value": "fd7a:115c:a1e0::4401:e54b"
+                }
+              ],
+              "capability": [
+                {
+                  "type": "Bridge",
+                  "enabled": true
+                },
+                {
+                  "type": "Router",
+                  "enabled": true
+                },
+                {
+                  "type": "Wlan",
+                  "enabled": false
+                },
+                {
+                  "type": "Station",
+                  "enabled": false
+                }
+              ]
+            }
+          ],
+          "port": [
+            {
+              "id": [
+                {
+                  "type": "mac",
+                  "value": "a0:36:9f:d6:51:7c"
+                }
+              ],
+              "descr": [
+                {
+                  "value": "mgmt"
+                }
+              ],
+              "ttl": [
+                {
+                  "value": "120"
+                }
+              ],
+              "auto-negotiation": [
+                {
+                  "supported": true,
+                  "enabled": true,
+                  "advertised": [
+                    {
+                      "type": "1000Base-T",
+                      "hd": false,
+                      "fd": true
+                    }
+                  ],
+                  "current": [
+                    {
+                      "value": "1000BaseTFD - Four-pair Category 5 UTP, full duplex mode"
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "lldp-med": [
+            {
+              "device-type": [
+                {
+                  "value": "Generic Endpoint (Class I)"
+                }
+              ],
+              "capability": [
+                {
+                  "type": "Capabilities",
+                  "available": true
+                },
+                {
+                  "type": "Policy",
+                  "available": true
+                },
+                {
+                  "type": "Location",
+                  "available": true
+                },
+                {
+                  "type": "MDI/PSE",
+                  "available": true
+                },
+                {
+                  "type": "MDI/PD",
+                  "available": true
+                },
+                {
+                  "type": "Inventory",
+                  "available": true
+                }
+              ],
+              "inventory": [
+                {
+                  "hardware": [
+                    {
+                      "value": "To be filled by O.E.M."
+                    }
+                  ],
+                  "software": [
+                    {
+                      "value": "6.4.0-150600.23.103-default"
+                    }
+                  ],
+                  "firmware": [
+                    {
+                      "value": "F06_3B17"
+                    }
+                  ],
+                  "serial": [
+                    {
+                      "value": "To be filled by O.E.M."
+                    }
+                  ],
+                  "manufacturer": [
+                    {
+                      "value": "Quanta"
+                    }
+                  ],
+                  "model": [
+                    {
+                      "value": "Leopard ORv2-DDR4"
+                    }
+                  ],
+                  "asset": [
+                    {
+                      "value": "3072684"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "swp8",
+          "via": "LLDP",
+          "rid": "16",
+          "age": "14 days, 02:39:39",
+          "chassis": [
+            {
+              "id": [
+                {
+                  "type": "mac",
+                  "value": "00:13:3b:5a:c6:08"
+                }
+              ],
+              "name": [
+                {
+                  "value": "bang-siesta"
+                }
+              ],
+              "descr": [
+                {
+                  "value": "openSUSE Leap 15.6 Linux 6.4.0-150600.23.103-default #1 SMP PREEMPT_DYNAMIC Fri May  8 13:08:22 UTC 2026 (52e00eb) x86_64"
+                }
+              ],
+              "mgmt-ip": [
+                {
+                  "value": "192.168.88.22"
+                },
+                {
+                  "value": "fd00:16::2"
+                }
+              ],
+              "capability": [
+                {
+                  "type": "Bridge",
+                  "enabled": true
+                },
+                {
+                  "type": "Router",
+                  "enabled": true
+                },
+                {
+                  "type": "Wlan",
+                  "enabled": true
+                },
+                {
+                  "type": "Station",
+                  "enabled": false
+                }
+              ]
+            }
+          ],
+          "port": [
+            {
+              "id": [
+                {
+                  "type": "mac",
+                  "value": "00:13:3b:5a:c6:08"
+                }
+              ],
+              "descr": [
+                {
+                  "value": "mgmt"
+                }
+              ],
+              "ttl": [
+                {
+                  "value": "120"
+                }
+              ],
+              "auto-negotiation": [
+                {
+                  "supported": true,
+                  "enabled": true,
+                  "advertised": [
+                    {
+                      "type": "10Base-T",
+                      "hd": true,
+                      "fd": true
+                    },
+                    {
+                      "type": "100Base-TX",
+                      "hd": true,
+                      "fd": true
+                    },
+                    {
+                      "type": "1000Base-T",
+                      "hd": false,
+                      "fd": true
+                    }
+                  ],
+                  "current": [
+                    {
+                      "value": "1000BaseTFD - Four-pair Category 5 UTP, full duplex mode"
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "lldp-med": [
+            {
+              "device-type": [
+                {
+                  "value": "Generic Endpoint (Class I)"
+                }
+              ],
+              "capability": [
+                {
+                  "type": "Capabilities",
+                  "available": true
+                },
+                {
+                  "type": "Policy",
+                  "available": true
+                },
+                {
+                  "type": "Location",
+                  "available": true
+                },
+                {
+                  "type": "MDI/PSE",
+                  "available": true
+                },
+                {
+                  "type": "MDI/PD",
+                  "available": true
+                },
+                {
+                  "type": "Inventory",
+                  "available": true
+                }
+              ],
+              "inventory": [
+                {
+                  "hardware": [
+                    {
+                      "value": "To be filled by O.E.M."
+                    }
+                  ],
+                  "software": [
+                    {
+                      "value": "6.4.0-150600.23.103-default"
+                    }
+                  ],
+                  "firmware": [
+                    {
+                      "value": "F06_3B17"
+                    }
+                  ],
+                  "serial": [
+                    {
+                      "value": "To be filled by O.E.M."
+                    }
+                  ],
+                  "manufacturer": [
+                    {
+                      "value": "Quanta"
+                    }
+                  ],
+                  "model": [
+                    {
+                      "value": "Leopard ORv2-DDR4"
+                    }
+                  ],
+                  "asset": [
+                    {
+                      "value": "3084608"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "swp23",
+          "via": "LLDP",
+          "rid": "8726",
+          "age": "2 days, 00:39:50",
+          "chassis": [
+            {
+              "id": [
+                {
+                  "type": "mac",
+                  "value": "00:90:fb:61:da:a0"
+                }
+              ],
+              "name": [
+                {
+                  "value": "sonic"
+                }
+              ],
+              "descr": [
+                {
+                  "value": "SONiC Software Version: SONiC.wedge100s-260423-86aa3b9c0 - HwSku: Accton-WEDGE100S-32X - Distribution: Debian 13.4 - Kernel: 6.12.41+deb13-sonic-amd64"
+                }
+              ],
+              "mgmt-ip": [
+                {
+                  "value": "240.127.1.1"
+                },
+                {
+                  "value": "fd00::1"
+                }
+              ],
+              "capability": [
+                {
+                  "type": "Bridge",
+                  "enabled": true
+                },
+                {
+                  "type": "Router",
+                  "enabled": true
+                },
+                {
+                  "type": "Wlan",
+                  "enabled": false
+                },
+                {
+                  "type": "Station",
+                  "enabled": false
+                }
+              ]
+            }
+          ],
+          "port": [
+            {
+              "id": [
+                {
+                  "type": "mac",
+                  "value": "00:90:fb:61:da:a0"
+                }
+              ],
+              "descr": [
+                {
+                  "value": "eth0"
+                }
+              ],
+              "ttl": [
+                {
+                  "value": "120"
+                }
+              ],
+              "auto-negotiation": [
+                {
+                  "supported": true,
+                  "enabled": true,
+                  "advertised": [
+                    {
+                      "type": "10Base-T",
+                      "hd": true,
+                      "fd": true
+                    },
+                    {
+                      "type": "100Base-TX",
+                      "hd": true,
+                      "fd": true
+                    },
+                    {
+                      "type": "1000Base-T",
+                      "hd": false,
+                      "fd": true
+                    }
+                  ],
+                  "current": [
+                    {
+                      "value": "1000BaseTFD - Four-pair Category 5 UTP, full duplex mode"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "swp44",
+          "via": "LLDP",
+          "rid": "52",
+          "age": "17 days, 06:16:19",
+          "chassis": [
+            {
+              "id": [
+                {
+                  "type": "mac",
+                  "value": "4c:38:d5:1e:ef:e6"
+                }
+              ],
+              "name": [
+                {
+                  "value": "AMI4C38D51EEFE6"
+                }
+              ],
+              "descr": [
+                {
+                  "value": " Linux 5.4.210-ami #1 SMP Thu Sep 28 09:13:32 UTC 2023 armv7l"
+                }
+              ],
+              "mgmt-ip": [
+                {
+                  "value": "172.24.0.144"
+                },
+                {
+                  "value": "fe80::4e38:d5ff:fe1e:efe6"
+                }
+              ],
+              "capability": [
+                {
+                  "type": "Bridge",
+                  "enabled": false
+                },
+                {
+                  "type": "Router",
+                  "enabled": false
+                },
+                {
+                  "type": "Wlan",
+                  "enabled": false
+                },
+                {
+                  "type": "Station",
+                  "enabled": true
+                }
+              ]
+            }
+          ],
+          "port": [
+            {
+              "id": [
+                {
+                  "type": "mac",
+                  "value": "4c:38:d5:1e:ef:e6"
+                }
+              ],
+              "descr": [
+                {
+                  "value": "eth0"
+                }
+              ],
+              "ttl": [
+                {
+                  "value": "120"
+                }
+              ],
+              "auto-negotiation": [
+                {
+                  "supported": true,
+                  "enabled": true,
+                  "advertised": [
+                    {
+                      "type": "10Base-T",
+                      "hd": true,
+                      "fd": true
+                    },
+                    {
+                      "type": "100Base-TX",
+                      "hd": true,
+                      "fd": true
+                    },
+                    {
+                      "type": "1000Base-T",
+                      "hd": false,
+                      "fd": true
+                    }
+                  ],
+                  "current": [
+                    {
+                      "value": "1000BaseTFD - Four-pair Category 5 UTP, full duplex mode"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "swp52",
+          "via": "LLDP",
+          "rid": "5",
+          "age": "63 days, 05:59:12",
+          "chassis": [
+            {
+              "id": [
+                {
+                  "type": "mac",
+                  "value": "00:90:fb:5f:d8:af"
+                }
+              ],
+              "name": [
+                {
+                  "value": "rabbit-lorax"
+                }
+              ],
+              "descr": [
+                {
+                  "value": "Arista Networks EOS version 4.27.0F running on a Facebook WEDGE100S12V"
+                }
+              ],
+              "mgmt-ip": [
+                {
+                  "value": "192.168.88.31"
+                }
+              ],
+              "capability": [
+                {
+                  "type": "Bridge",
+                  "enabled": true
+                },
+                {
+                  "type": "Router",
+                  "enabled": false
+                }
+              ]
+            }
+          ],
+          "port": [
+            {
+              "id": [
+                {
+                  "type": "ifname",
+                  "value": "Ethernet32/1"
+                }
+              ],
+              "ttl": [
+                {
+                  "value": "120"
+                }
+              ],
+              "mfs": [
+                {
+                  "value": "9236"
+                }
+              ]
+            }
+          ],
+          "lldp-med": [
+            {
+              "device-type": [
+                {
+                  "value": "Network Connectivity Device"
+                }
+              ],
+              "capability": [
+                {
+                  "type": "Capabilities",
+                  "available": true
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+

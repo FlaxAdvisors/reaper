@@ -1,0 +1,55 @@
+FRU Device Description : Builtin FRU Device (ID 00)
+ Chassis Type          : Rack Mount Chassis
+ Chassis Serial        : QCFF0818360193
+ Chassis Extra         : 78TU571600716
+ Chassis Extra         : 78TU571600178
+ Chassis Area Checksum : OK
+ Board Mfg Date        : Fri 31 Aug 2018 10:24:00 PM UTC UTC
+ Board Mfg             : Quanta
+ Board Product         : Tioga Pass Single Side
+ Board Serial          : XSP82502110
+ Board Part Number     : 31F08MB00A0
+ Board Extra           : 02-000257
+ Board Extra           : PCH-1G
+ Board Extra           : 11MBZZZ073B
+ Board Area Checksum   : OK
+ Product Manufacturer  : Quanta
+ Product Name          : Tioga Pass Single Side
+ Product Part Number   : 1HY9UAZ005L
+ Product Serial        : QCFF0818360193
+ Product Asset Tag     : 4321658
+ Product Extra         : 01-002950
+ Product Extra         : MP
+ Product Area Checksum : OK
+
+FRU Device Description : HPE Eth 10/25Gb  (ID 86)
+ Board Mfg Date        : Thu 30 Jun 2022 12:16:00 PM UTC UTC
+ Board Mfg             : HPE
+ Board Product         : HPE Eth 10/25Gb 2p 640SFP28 Adptr
+ Board Serial          : 1I02270LP4
+ Board Part Number     : 840140-001
+ Board Extra           : d23048
+ Board Extra           : d5817751b001
+ Board Area Checksum   : OK
+ Product Manufacturer  : HPE
+ Product Name          : HPE Eth 10/25Gb 2p 640SFP28 Adptr
+ Product Part Number   : 817753-B21
+ Product Serial        : 1I02270LP4
+ Product Area Checksum : OK
+
+FRU Device Description : Ava-M.2-SSD-Adap (ID 186)
+ Board Mfg Date        : Tue 05 Jun 2018 05:52:00 AM UTC UTC
+ Board Mfg             : Wiwynn
+ Board Product         : Ava-M.2-SSD-Adapter
+ Board Serial          : WK028220GBZA1
+ Board Part Number     : B91.01210.0002
+ Board Extra           : 19-000931
+ Board Extra           : 0.2
+ Board Extra           : MP
+ Board Extra           : x4x4x4x4 PCIe 3.0 M.2 carrier card
+ Board Area Checksum   : OK
+ Product Part Number   : B91.01228.0012
+ Product Serial        : AVA12M8092606E
+ Product Extra         : 19-001136
+ Product Area Checksum : OK
+

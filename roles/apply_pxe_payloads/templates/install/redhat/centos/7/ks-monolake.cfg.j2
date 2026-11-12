@@ -1,0 +1,56 @@
+#version=DEVEL
+# System authorization information
+auth --enableshadow --passalgo=sha512
+# Use text mode install
+text
+# Run the Setup Agent on first boot
+firstboot --enable
+ignoredisk --only-use=/dev/disk/by-path/pci-0000:00:1f.2-ata-1.0
+# Keyboard layouts
+keyboard --vckeymap=us --xlayouts=''
+# System language
+lang en_US.UTF-8
+
+# Network information
+network  --bootproto=dhcp --device=ens1 --ipv6=auto --activate
+network  --hostname=localhost.localdomain
+
+# Use network installation
+url --url="http://bang/install//redhat/centos/7/ga"
+# Root password
+rootpw --iscrypted {{ vault_install_secrets.centos_root_hash }}
+# System services
+services --enabled="chronyd"
+# Do not configure the X Window System
+skipx
+# System timezone
+timezone Etc/UTC --isUtc --ntpservers=1.pool.ntp.org,0.pool.ntp.org
+user --groups=wheel --name=flax --password={{ vault_install_secrets.centos_flax_hash }} --iscrypted --gecos="Flax"
+# System bootloader configuration
+bootloader --append=" crashkernel=auto" --location=mbr --boot-drive=/dev/disk/by-path/pci-0000:00:1f.2-ata-1.0
+autopart --type=plain
+# Partition clearing information
+clearpart --all --initlabel --drives=/dev/disk/by-path/pci-0000:00:1f.2-ata-1.0
+
+shutdown
+
+%packages
+@core
+chrony
+kexec-tools
+kernel-devel
+git
+make
+gcc
+bc
+%end
+
+%addon com_redhat_kdump --enable --reserve-mb='auto'
+
+%end
+
+%anaconda
+pwpolicy root --minlen=6 --minquality=1 --notstrict --nochanges --notempty
+pwpolicy user --minlen=6 --minquality=1 --notstrict --nochanges --emptyok
+pwpolicy luks --minlen=6 --minquality=1 --notstrict --nochanges --notempty
+%end

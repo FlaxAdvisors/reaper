@@ -1,0 +1,92 @@
+#!/bin/bash
+# wlan0 stuck-wifi recovery: probe the wlan interface and bounce it
+# (wicked ifdown && ifup) on consecutive probe failures.
+#
+# Triggered by wlan-watchdog.timer; runs as a oneshot. State persists in
+# $WLAN_WATCHDOG_STATE_FILE as key=value lines.
+
+set -uo pipefail
+
+: "${WLAN_WATCHDOG_IFACE:?required}"
+: "${WLAN_WATCHDOG_PROBE_TARGETS:=1.1.1.1 8.8.8.8}"
+: "${WLAN_WATCHDOG_FAILURE_THRESHOLD:=2}"
+: "${WLAN_WATCHDOG_STATE_FILE:=/var/lib/wan-failover/wlan-watchdog.state}"
+
+readonly TAG="wlan-watchdog"
+
+log() { logger -t "$TAG" -- "$1"; }
+now_iso() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
+
+read_field() {
+    local field="$1" default="$2"
+    [[ -r "$WLAN_WATCHDOG_STATE_FILE" ]] || { echo "$default"; return; }
+    local value
+    value="$(awk -F= -v f="$field" '$1==f {print $2; exit}' "$WLAN_WATCHDOG_STATE_FILE")"
+    echo "${value:-$default}"
+}
+
+write_state() {
+    # args: result counter [bounce_reason]
+    local result="$1" counter="$2" bounce_reason="${3:-}"
+    local last_bounce_at last_bounce_reason total_bounces
+    last_bounce_at="$(read_field last_bounce_at '')"
+    last_bounce_reason="$(read_field last_bounce_reason '')"
+    total_bounces="$(read_field total_bounces 0)"
+
+    if [[ -n "$bounce_reason" ]]; then
+        last_bounce_at="$(now_iso)"
+        last_bounce_reason="$bounce_reason"
+        total_bounces=$((total_bounces + 1))
+    fi
+
+    local tmp="${WLAN_WATCHDOG_STATE_FILE}.tmp"
+    cat > "$tmp" <<EOF
+last_check_at=$(now_iso)
+last_check_result=$result
+consecutive_fails=$counter
+last_bounce_at=$last_bounce_at
+last_bounce_reason=$last_bounce_reason
+total_bounces=$total_bounces
+EOF
+    mv -f "$tmp" "$WLAN_WATCHDOG_STATE_FILE"
+}
+
+main() {
+    if ! ip link show "$WLAN_WATCHDOG_IFACE" &>/dev/null; then
+        log "$WLAN_WATCHDOG_IFACE not present, skipping"
+        write_state "skipped" 0
+        return 0
+    fi
+
+    local probe_ok=0
+    local target
+    for target in $WLAN_WATCHDOG_PROBE_TARGETS; do
+        if ping -I "$WLAN_WATCHDOG_IFACE" -c 1 -W 3 -q "$target" &>/dev/null; then
+            probe_ok=1
+            break
+        fi
+    done
+
+    if [[ $probe_ok -eq 1 ]]; then
+        write_state "pass" 0
+        return 0
+    fi
+
+    local counter
+    counter="$(read_field consecutive_fails 0)"
+    counter=$((counter + 1))
+
+    if [[ $counter -ge $WLAN_WATCHDOG_FAILURE_THRESHOLD ]]; then
+        local reason="$counter consecutive probe failures"
+        log "BOUNCE $WLAN_WATCHDOG_IFACE: $reason"
+        wicked ifdown "$WLAN_WATCHDOG_IFACE" || true
+        sleep 5
+        wicked ifup "$WLAN_WATCHDOG_IFACE" || true
+        write_state "bounced" 0 "$reason"
+    else
+        log "$WLAN_WATCHDOG_IFACE probe failed ($counter/$WLAN_WATCHDOG_FAILURE_THRESHOLD)"
+        write_state "fail" "$counter"
+    fi
+}
+
+main "$@"

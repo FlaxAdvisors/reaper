@@ -1,0 +1,23 @@
+---
+- name: Render SSH jump host entries
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../inventories/{{ site_name }}/group_vars/all/vars.yml"
+    - "{{ playbook_dir }}/../inventories/{{ site_name }}/group_vars/all/vault.yml"
+  tasks:
+    - name: Ensure output directory exists
+      ansible.builtin.file:
+        path: "{{ output_file | dirname }}"
+        state: directory
+        mode: "0700"
+      when: "'/tmp' not in output_file"
+
+    - name: Write SSH jump host block for this site
+      ansible.builtin.blockinfile:
+        path: "{{ output_file }}"
+        block: "{{ lookup('template', playbook_dir + '/../templates/ssh_jumphosts.j2') }}"
+        marker: "# {mark} REAPER SITE: {{ site_name }}"
+        create: true
+        mode: "0600"

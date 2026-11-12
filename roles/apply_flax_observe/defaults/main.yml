@@ -1,0 +1,13 @@
+---
+apply_flax_observe_image_tag: "0.9.87"
+apply_flax_observe_healthz_port: 10993
+apply_flax_observe_cycle_secs: 10
+apply_flax_observe_healthz_stale_secs: 60
+apply_flax_observe_enroll_resync_secs: 30
+
+apply_flax_observe_db_password: ""
+
+apply_flax_observe_geometry_path: /etc/flax/geometry.json
+apply_flax_observe_credentials_path: /etc/flax/credentials.json
+apply_flax_observe_bmc_credentials_path: /etc/flax/credentials-bmc.json
+apply_flax_observe_host_credentials_path: /etc/flax/credentials-host.json

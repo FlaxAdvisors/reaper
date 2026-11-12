@@ -1,0 +1,4 @@
+# apply the mitac-capri2 settings
+set node-setting mitac-capri2
+set com-default com2f
+set com-setting ${ttys1f}

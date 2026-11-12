@@ -1,0 +1,4 @@
+---
+# No role defaults. All destination paths are fixed under /etc/flax and are
+# written literally in tasks/main.yml; the source files come from the
+# per-site config tree via config_output_dir / site_name (set globally).

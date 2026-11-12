@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Run wlan-watchdog every {{ jumphost_wan_failover_wlan_watchdog_interval_sec }} seconds
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec={{ jumphost_wan_failover_wlan_watchdog_interval_sec }}
+RandomizedDelaySec=60
+Persistent=true
+Unit=wlan-watchdog.service
+
+[Install]
+WantedBy=timers.target

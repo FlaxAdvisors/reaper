@@ -1,0 +1,179 @@
+---
+# Guarded, one-time standby bootstrap. Reseeds THIS host (a Postgres standby)
+# from the primary via pg_basebackup. DESTRUCTIVE: it WIPES /opt/flax/var/postgres.
+#
+# NEVER runs in a normal deploy — only via playbooks/pg_standby_bootstrap.yml
+# (tag pg_standby_bootstrap). Guards:
+#   * refuses unless this host is configured as a standby (is_primary=false);
+#   * refuses to wipe a primary that holds migrated flax data (could be a
+#     promoted-after-failover node with the only current copy) unless
+#     -e pg_bootstrap_force=true;
+#   * no-ops (end_host) if the host is already a healthy standby, unless forced.
+
+- name: Assert this host is a standby (never bootstrap the primary)
+  ansible.builtin.assert:
+    that:
+      # | bool so a plain `-e apply_flax_stack_is_primary=false` (string) works,
+      # not only JSON extra-vars — a string "false" is otherwise truthy in Jinja.
+      - not (apply_flax_stack_is_primary | default(true) | bool)
+    fail_msg: >
+      Refusing to bootstrap {{ inventory_hostname }} — it is the configured
+      PRIMARY (apply_flax_stack_is_primary). Bootstrap runs on the standby only.
+
+- name: Identify the primary peer (the other bang in apply_flax_stack_peers)
+  ansible.builtin.set_fact:
+    pg_primary_peer: "{{ (apply_flax_stack_peers | rejectattr('name', 'equalto', inventory_hostname) | list | first) }}"
+
+- name: Derive primary host/ip + slot name
+  ansible.builtin.set_fact:
+    pg_primary_host: "{{ pg_bootstrap_primary_host | default(pg_primary_peer.name) }}"
+    pg_primary_ip: "{{ pg_bootstrap_primary_ip | default(pg_primary_peer.ip) }}"
+    pg_slot: "{{ pg_bootstrap_slot | default('standby_' + (inventory_hostname | replace('-', '_'))) }}"
+
+- name: Probe local Postgres recovery state (empty if not running)
+  become: true
+  ansible.builtin.command: >
+    docker compose -f {{ apply_flax_stack_compose_path }} exec -T postgres
+    psql -U postgres -d flax -tAc "SELECT pg_is_in_recovery()"
+  register: pg_recovery
+  failed_when: false
+  changed_when: false
+
+- name: Probe whether local Postgres holds migrated flax data
+  become: true
+  ansible.builtin.command: >
+    docker compose -f {{ apply_flax_stack_compose_path }} exec -T postgres
+    psql -U postgres -d flax -tAc
+    "SELECT count(*) FROM information_schema.tables WHERE table_name = 'alembic_version'"
+  register: pg_hasdata
+  failed_when: false
+  changed_when: false
+
+- name: Summarise local state
+  ansible.builtin.set_fact:
+    pg_in_recovery: "{{ (pg_recovery.stdout | default('')) | trim }}"
+    pg_migrated: "{{ ((pg_hasdata.stdout | default('0')) | trim) not in ['0', ''] }}"
+    pg_force: "{{ pg_bootstrap_force | default(false) | bool }}"
+
+- name: Report what was found
+  ansible.builtin.debug:
+    msg: >
+      {{ inventory_hostname }}: in_recovery='{{ pg_in_recovery }}'
+      migrated={{ pg_migrated }} force={{ pg_force }};
+      primary={{ pg_primary_host }} ({{ pg_primary_ip }}) slot={{ pg_slot }}
+
+- name: Already a healthy standby — nothing to do (override with force)
+  ansible.builtin.meta: end_host
+  when:
+    - pg_in_recovery == 't'
+    - not pg_force
+
+- name: Guard — never wipe a populated primary unless explicitly forced
+  ansible.builtin.assert:
+    that:
+      - not (pg_in_recovery == 'f' and pg_migrated and not pg_force)
+    fail_msg: >
+      {{ inventory_hostname }} is a PRIMARY holding migrated flax data
+      (pg_is_in_recovery=f, alembic_version present). Refusing to WIPE it — it may
+      be a promoted-after-failover node holding the only current copy. Use the
+      failback runbook (docs/runbooks/postgres-failback.md), or re-run with
+      -e pg_bootstrap_force=true if you are certain this data is disposable.
+
+- name: Drop any stale replication slot on the primary (idempotent — enables re-bootstrap)
+  become: true
+  delegate_to: "{{ pg_primary_host }}"
+  ansible.builtin.command: >
+    docker compose -f {{ apply_flax_stack_compose_path }} exec -T postgres
+    psql -U postgres -d flax -tAc
+    "SELECT pg_drop_replication_slot('{{ pg_slot }}')
+       WHERE EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name = '{{ pg_slot }}')"
+  changed_when: false
+  failed_when: false
+
+- name: Stop flax-stack (release the data dir)
+  become: true
+  ansible.builtin.systemd:
+    name: flax-stack.service
+    state: stopped
+
+- name: Wipe the Postgres data dir
+  become: true
+  ansible.builtin.file:
+    path: /opt/flax/var/postgres
+    state: absent
+
+- name: Recreate an empty data dir owned by the postgres container UID (999)
+  become: true
+  ansible.builtin.file:
+    path: /opt/flax/var/postgres
+    state: directory
+    owner: "999"
+    group: "999"
+    mode: "0700"
+
+- name: pg_basebackup from the primary (standby.signal + primary_conninfo + slot)
+  become: true
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - --user
+      - "999:999"
+      - -v
+      - /opt/flax/var/postgres:/data
+      - postgres:16
+      - pg_basebackup
+      - -D
+      - /data
+      - -Fp
+      - -Xs
+      - -P
+      - -R
+      - -C
+      - -S
+      - "{{ pg_slot }}"
+      - -d
+      - "host={{ pg_primary_ip }} port={{ apply_flax_stack_postgres_port }} user=replicator password={{ apply_flax_stack_db_passwords.replicator }} dbname=replication"
+  no_log: true
+  register: pg_basebackup_run
+  # --network host: reach the primary's mgmt IP. --user 999: files match the
+  # postgres container UID. -R writes standby.signal + primary_conninfo (with the
+  # password from the -d conninfo) + primary_slot_name. -C -S creates a permanent
+  # physical slot on the primary so it retains WAL for this standby.
+
+- name: Start flax-stack (comes up as a streaming standby)
+  become: true
+  ansible.builtin.systemd:
+    name: flax-stack.service
+    state: started
+
+- name: Wait until local Postgres reports standby (in recovery)
+  become: true
+  ansible.builtin.command: >
+    docker compose -f {{ apply_flax_stack_compose_path }} exec -T postgres
+    psql -U postgres -d flax -tAc "SELECT pg_is_in_recovery()"
+  register: pg_post_recovery
+  until: (pg_post_recovery.stdout | default('') | trim) == 't'
+  retries: 30
+  delay: 2
+  changed_when: false
+
+- name: Confirm the WAL receiver is streaming from the primary
+  become: true
+  ansible.builtin.command: >
+    docker compose -f {{ apply_flax_stack_compose_path }} exec -T postgres
+    psql -U postgres -d flax -tAc "SELECT status FROM pg_stat_wal_receiver"
+  register: pg_wal_receiver
+  until: (pg_wal_receiver.stdout | default('') | trim) == 'streaming'
+  retries: 15
+  delay: 2
+  changed_when: false
+
+- name: Bootstrap complete
+  ansible.builtin.debug:
+    msg: >
+      {{ inventory_hostname }} is now a streaming standby of {{ pg_primary_host }}
+      (slot {{ pg_slot }}). Verify on the primary: SELECT * FROM pg_stat_replication.

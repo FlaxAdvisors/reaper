@@ -1,0 +1,1436 @@
+// flax_rack/web/rackpost.js: petite-vue app for one rack order (layout = mockup rack-v3).
+// Polls api/state (relative: the page lives at /<prefix>/) every 5 s. Only the
+// populated OUs are drawn; a dashed marker stands for each run of skipped OUs.
+// Phases with rungs: discover, firmware (Post's steps, detect + report only), qualify (the
+// device's qualify_rungs from the server), deploy (its deploy_rungs: install, firstboot,
+// flax-user, ha-config, ha-test, deploy-iperf, deploy-stress). The server leaves out hidden_rungs (Qualify's
+// agent-stages watchdog and console, Deploy's install-console): the drawer's console
+// panel shows the SOL, and a hidden row that failed still fails its phase and the device
+// (counted here, listed under alerts). A running step reads "running…" (state `run`),
+// never the amber of a step that needs attention. A step whose target did not answer is `unmeasured` (verdict):
+// grey "not measured", never a fault and never done. done (its done_rungs: end-summary
+// (SDR/SEL + installed-OS captures), boot-reset, components) writes the customer CSVs,
+// linked from the header once written; it never power-controls a node.
+// Deploy's gate may be passed with a recorded waiver of named Qualify rungs: the tile
+// and drawer show a "waived" chip while it is active (a named rung still not passed).
+// A skip the server marks skip_reason "n/a" (the rung does not apply to the endpoint's
+// kind) counts as done; an "upstream" skip (cancelled, an earlier step/phase failed) is
+// `held`: neutral. A phase with no rungs at all for the endpoint (a switch's Qualify/
+// Deploy/Done, a JBOD's host rungs) is green once the phase before it is.
+// Link pills and the presence dot read ONLY the live link monitor (live_links /
+// presence, every ~30 s): ok = filled green, up = green outline, down/wrong = red,
+// unknown = grey; the tooltip says what was seen and how long ago.
+// Every switch and every BMC endpoint opens its own drawer (sel in the URL hash):
+// a device `R05`, one JBOD IOM `JBOD01.iom2`, a switch `_sw-A`, a wedge's BMC
+// `_sw-A.bmc`. Each is an object carrying pos (= the sel key), runs and
+// qualify_rungs, so one set of pipeline functions serves them all. A step row
+// opens the evidence modal (Post's stepinfo: headline, rows, a table when the step has
+// one -- fio's per device x job --, notes, artifacts);
+// an artifact opens the in-page viewer (artM) over it, never a raw tab.
+// Header counters: each device counted ONCE, in the phase it has reached (chipPhase, as
+// Post's chip_phase): its earliest failed phase, else the phase in progress, else the
+// last phase passed; they sum to the device count. ALERTS = devices held on a failure.
+// Firmware is detect + report only: a finding (needs_update, an unsupported PSID, a
+// version not read) is an amber note on its bar, never a red dot, never in ALERTS.
+// Tiles carry no firmware; the drawer's firmware block does (BIOS, BMC active/backup or
+// an IOM's BMC + ROM, NIC per port with PSID).
+// The drawer's pipeline opens on a now-line (nowInfo: stage · its phase · the step
+// running · mm:ss[/the phase's deadline] · what is next; also the tile step bar's
+// tooltip) and on the running step; a finished phase folds to its summary line (click to
+// unfold), one with a failure stays open. A stage re-run for a device shows only its new
+// attempt's rows (the server's latest_runs(attempt=True)): unreached steps read not run.
+// Header: the count tiles, then the stage launch buttons (Run, Discover, Firmware, Qualify,
+// Deploy, Done) in the same shape. One rule for every stage button (stagePass): green ✓
+// when that stage passed in this pass for every device it applies to (Firmware: read to
+// the end for every device, report only), lit while it runs, neutral otherwise; its sub
+// line is passed/of. Run ✓ = the current Run done with every stage ✓.
+// Drawer PWR / IDNT (a host's BMC, api/power + api/identify): PWR shows the poller's
+// power, on / off / cycle / reset (off, cycle and reset confirm naming the node; refused
+// while a stage runs for it: stage_positions, null = the rack); IDNT on 240 s / force /
+// off, lit while on, and the tile carries a blinking ID marker. Both disabled on a closed order.
+// Serial console: the shared flax-post-sol relay holds the BMC's one SOL session.
+// While a device's console / install-console rung runs, the drawer tails the relay's
+// capture file (api/console/<pos>, every CON_MS); the SOL button opens the Post UI's
+// live terminal (sol.js + xterm over the relay's /socket.io/, loaded on first use):
+// both only watch the relay's session, never open a second one.
+
+const POLL_MS = 5000;
+// geometry cols are ints 1..5 (L/C/R = 1/2/3); a group of rows is drawn with
+// max(3, highest col used in it) columns so an L/C/R rack looks as before.
+const COLNAME = { 1: 'left', 2: 'center', 3: 'right' };
+const COLTAG = { 1: 'L', 2: 'C', 3: 'R' };
+const colHead = (c, n) => (n <= 3 ? COLNAME[c] : `col ${c}`);
+const emptyLabel = (c, ou) => (COLTAG[c] ? COLTAG[c] + pad(ou) : `col${c} · ${pad(ou)}`);
+const RGB = { discover: '163,113,247', firmware: '88,166,255', qualify: '210,153,34',
+              deploy: '57,197,207', done: '63,185,80', fault: '248,81,73', grey: '110,118,129',
+              unmeasured: '110,118,129' };
+const KIND = { 'bc-head-tp': 'BC head' };
+const SWKIND = { mgmt: 'mgmt 1G', tor: 'TOR' };
+// a wedge BMC's own Discover rows (the rest of the switch ladder is the SONiC half)
+const BMC_STEPS = ['switchportlink', 'bmc-mac-seen', 'bmc-reserved', 'bmc-leased', 'bmc-pinged', 'serial', 'bmc-ready'];
+// the viewer reads at most this much of an artifact (the rest: Download)
+const ART_MAX = 2 * 1024 * 1024;
+const CON_MS = 2000;
+const CON_KEEP = 256 * 1024;          // the live viewer keeps this much of the tail
+const CON_RUNGS = ['console', 'install-console'];
+// the phases whose failure holds a device (alerts): Firmware is report only
+const ALERT_PHASES = ['discover', 'qualify', 'deploy', 'done'];
+// the header's stage buttons, in order (each a stage key and its label)
+const STAGE_BTNS = [['run', 'Run'], ['discover', 'Discover'], ['firmware', 'Firmware'],
+                    ['qualify', 'Qualify'], ['deploy', 'Deploy'], ['done', 'Done']];
+// Deploy start-at phases that re-run just themselves on deployed nodes (no install, no gate)
+const LATE_FROM = ['checks', 'iperf', 'stress'];   // no Qualify gate, no waiver
+// terminal escapes (colour, cursor moves, charset picks) and bare CRs out of the
+// relay's raw capture: the viewer is a <pre>, not a terminal
+const stripAnsi = (t) => t.replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]|\x1b[()][0-9A-Za-z]|\x1b[=>78DEHMc]|\r/g, '');
+const loaded = {};
+function loadAsset(src) {
+  if (!loaded[src]) loaded[src] = new Promise((ok, bad) => {
+    const css = src.endsWith('.css'), el = document.createElement(css ? 'link' : 'script');
+    if (css) { el.rel = 'stylesheet'; el.href = src; } else { el.src = src; }
+    el.onload = ok; el.onerror = () => { delete loaded[src]; bad(new Error('could not load ' + src)); };
+    document.head.appendChild(el);
+  });
+  return loaded[src];
+}
+const STEP_WORD = { done: 'done', run: 'running…', cur: 'in progress', fault: 'fault', pending: 'not run', skip: 'skipped', held: 'skipped (upstream)', unknown: 'unknown', unmeasured: 'not measured', fwnote: 'to note (report only)', flag: 'done · flagged' };
+// Firmware is report only (controller ruling 2026-10-30): a finished Firmware row that
+// found something (needs_update, a fault such as an unsupported PSID, a version not read)
+// is an amber note, never a red fault: it never reddens the dot nor counts in ALERTS
+const FW_NOTE = ['fault', 'cur', 'unmeasured'];
+// live link state -> pill class
+const LINK_CLS = { ok: 'ok', up: 'up', down: 'bad', wrong: 'bad', unknown: 'unk' };
+
+const iomObj = (d, ep) => ({ type: 'iom', pos: `${d.pos}.${ep}`, dev: d, ep, n: Number(ep.slice(3)),
+  runs: (d.endpoint_runs || {})[ep] || {}, qualify_rungs: [], view: (d.ioms || {})[ep] || {} });
+const swObj = (sw) => ({ type: 'sw', pos: '_sw-' + sw.id, sw, runs: sw.runs || {}, qualify_rungs: [] });
+const swBmcObj = (sw) => ({ type: 'swbmc', pos: `_sw-${sw.id}.bmc`, sw, runs: sw.runs || {}, qualify_rungs: [], only: BMC_STEPS });
+
+const pad = (n) => String(n).padStart(2, '0');
+const mmss = (s) => `${pad(Math.floor(s / 60))}:${pad(Math.floor(s % 60))}`;
+const span = (top, bot) => (top === bot ? pad(top) : `${pad(top)}–${pad(bot)}`);
+
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? { cache: 'no-store' } : {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  let j = {}; try { j = await r.json(); } catch (e) { /* empty body */ }
+  if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+  return j;
+}
+
+const POST_STATES = ['done', 'cur', 'pending', 'fault'];
+
+function stepState(run) {
+  if (!run) return 'pending';
+  if (run.status === 'running') return 'run';
+  if (run.status === 'interrupted') return 'unknown';
+  // the target did not answer: grey, whatever Post's own state (a Firmware row keeps it)
+  if (run.verdict === 'unmeasured') return 'unmeasured';
+  // Firmware rows carry Post's own step state (needs_update = cur, not a red fault)
+  const st = (run.detail || {}).state;
+  if (POST_STATES.includes(st)) return st;
+  if (run.verdict === 'skip') return run.skip_reason === 'upstream' ? 'held' : 'skip';
+  // passed, with a drive outside its fio range: amber on the row, its modal and a tile
+  // marker only; every phase / counter / summary reads it as done (entriesOf)
+  if (run.verdict === 'pass' && (run.detail?.flagged || []).length) return 'flag';
+  return { pass: 'done', fail: 'fault' }[run.verdict] || 'unknown';
+}
+
+const gbit = (b) => (b == null ? '?' : (b / 1e9).toFixed(b < 1e10 ? 2 : 1));
+
+function stepNote(run, name) {
+  if (!run) return '';
+  if (run.status === 'interrupted') return 'interrupted';
+  if (run.status === 'running') return 'running…';
+  const d = run.detail || {};
+  if (run.verdict === 'unmeasured') return d.headline || d.reason || d.error || 'not measured';
+  if (d.state && d.headline) return d.headline;
+  if (run.verdict === 'fail') return d.error || [d.status, d.note].filter(Boolean).join(' ') || 'fail';
+  if (run.verdict === 'skip') return d.reason || 'skipped';
+  if (name === 'population-check') return d.profile || '';
+  if (name === 'smbios-serial') return `SN ${(d.fru0_serials || [])[0] || '?'}`;
+  if (name === 'tpm-state') return `TPM ${d.version || '?'} cleared`;
+  if (name === 'console') return d.bytes != null ? `${d.bytes} B` : '';
+  if (name === 'install-console') return d.findings ? `${d.findings} finding(s)` : d.findings === 0 ? 'clean' : '';
+  if (name === 'iperf-mesh' || name === 'deploy-iperf') {
+    if (d.served) return `served ${d.served.length}`;
+    return ['mgmt', 'A', 'B', 'bond'].filter((n) => d[n]).map((n) => `${n} ${gbit(d[n].tx_bps)}/${gbit(d[n].rx_bps)}G`).join(' · ');
+  }
+  if (name === 'fabric-addr') return Object.values(d).filter((x) => typeof x === 'string').join(' ');
+  if (name === 'pxe-live' && d.ssh_after_s != null) return `ssh after ${d.ssh_after_s}s`;
+  if (d.headline) return d.headline;
+  if (d.power) return 'power ' + d.power;
+  if (d.count != null) return d.count + (name && name.startsWith('lldp') ? ' neighbours' : ' MACs');
+  return '';
+}
+
+// rows keyed by bottom OU; groups = contiguous OU runs of one family (switch / device)
+function buildLayout(s) {
+  const rows = [];
+  for (const sw of s.switches || []) rows.push({ key: 'sw-' + sw.id, family: 'sw', layout: 'full', ou: sw.ou, top: sw.ou, sw });
+  const lcr = {};
+  for (const d of s.devices || []) {
+    const top = d.ou + d.h - 1;
+    if (d.col) {
+      const r = (lcr[d.ou] ??= { key: 'lcr-' + d.ou, family: 'dev', layout: 'lcr', ou: d.ou, top, byCol: {} });
+      r.top = Math.max(r.top, top); r.byCol[d.col] = d;
+    } else {
+      const ioms = Object.keys(d.links).filter((k) => /^iom\d+$/.test(k)).sort();
+      const cells = ioms.length
+        ? ioms.map((k, i) => ({ key: d.pos + '-' + k, dev: d, iom: k, idx: i, obj: iomObj(d, k), label: `${d.pos} ${k.toUpperCase()} · ${d.links[k]}` }))
+        : [{ key: d.pos, dev: d, label: `${d.pos}${d.links.mezz0 ? ' · ' + d.links.mezz0 : ''}` }];
+      rows.push({ key: 'dev-' + d.pos, family: 'dev', layout: ioms.length > 1 ? 'two' : 'full', ou: d.ou, top, cells });
+    }
+  }
+  for (const r of Object.values(lcr)) rows.push(r);
+  rows.sort((a, b) => b.top - a.top || b.ou - a.ou);
+  const groups = [];
+  let g = null;
+  for (const r of rows) {
+    r.label = pad(r.ou);
+    if (g && r.family === g.family && r.top >= g.bottom - 1) {
+      g.rows.push(r); g.bottom = Math.min(g.bottom, r.ou);
+      continue;
+    }
+    const gap = g && r.top < g.bottom - 1 ? `┄ ${span(g.bottom - 1, r.top + 1)} ┄` : '';
+    g = { family: r.family, top: r.top, bottom: r.ou, rows: [r], gap };
+    groups.push(g);
+  }
+  for (const x of groups) {
+    const n = Math.max(3, ...x.rows.filter((r) => r.byCol).flatMap((r) => Object.keys(r.byCol).map(Number)));
+    const cols = Array.from({ length: n }, (_, i) => i + 1);
+    x.heads = x.family === 'sw' ? ['switches'] : cols.map((c) => colHead(c, n));
+    x.style = x.family !== 'sw' && n > 3 ? `grid-template-columns:46px repeat(${n},1fr)` : '';
+    for (const r of x.rows) {
+      if (!r.byCol) continue;
+      r.style = x.style;
+      r.cells = cols.map((c) => {
+        const d = r.byCol[c];
+        if (!d) return { key: 'e' + c + '-' + pad(r.ou), empty: true, label: emptyLabel(c, r.ou) };
+        return { key: d.pos, dev: d, label: `${d.pos}${d.links.mezz0 ? ' · ' + d.links.mezz0 : ''}`, kindLabel: KIND[d.kind] };
+      });
+    }
+  }
+  for (const x of groups) x.range = span(x.top, x.bottom);
+  // petite-vue does not re-run the bindings of a tile nested three v-fors deep when
+  // only the polled data under it changed: key each group by its content, so a group
+  // whose devices changed is re-mounted (and an unchanged one is left alone)
+  for (const x of groups) x.key = `${x.range}#${hashStr(JSON.stringify(x.rows.map((r) => r.sw || r.cells.map((c) => c.dev || c.label))))}`;
+  return groups;
+}
+
+function hashStr(t) {
+  let h = 5381;
+  for (let i = 0; i < t.length; i++) h = ((h << 5) + h + t.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
+}
+
+// one link's presence: present when up/ok/wrong, absent when down, else unknown
+function linkPresence(l) {
+  const st = (l || {}).state;
+  return ['ok', 'up', 'wrong'].includes(st) ? 'present' : st === 'down' ? 'absent' : 'unknown';
+}
+
+function selFromHash() {
+  const m = /(?:^#|&)sel=([A-Za-z0-9._-]+)/.exec(location.hash);
+  return m ? m[1] : null;
+}
+
+function App() {
+  return {
+    s: { switches: [], devices: [], phases: ['discover', 'firmware', 'qualify', 'deploy', 'done'], profiles: [], rack_runs: {}, events: [] },
+    layout: [],                // buildLayout(s), rebuilt on every poll (refresh)
+    live: null, bootBuild: null, sel: selFromHash(), filter: null, q: '', popOpen: null, now: Date.now(),
+    placeSel: {}, moveTo: '', placeMsg: null,   // lab racks: Place / Move inputs
+    actionMsg: null, hdrMsg: null, stepM: null, artM: null, artSeq: 0, closing: false, confirmText: '', closeMsg: null, busy: false,
+    qualifying: false, qualText: '', discovering: false, discText: '', finishing: false, doneText: '',
+    freshing: false, freshText: '', freshReason: '', freshMsg: null,
+    hdrStage: null,            // the stage hdrMsg announced: the message goes when it stops
+    deploying: false, depText: '', depFrom: 'install', depReinstall: false,
+    // Run modal (typed order id; reinstall + the id typed again) and the held Run's
+    // Continue modal: contM = {msg} while open, contWaive = {pos: {rung: ticked}}
+    running: false, runConfirm: '', runRein: false, runReinText: '', contM: null, contWaive: {}, contReason: '',
+    // per-device Deploy modal: depM = {pos, msg} while open; its inputs are top-level so
+    // v-model never reads through a null depM while the modal tears down
+    depM: null, devFrom: 'install', devReinText: '', devWaive: {}, devReason: '',
+    // drawer PWR / IDNT modals: pwrM / idntM = {pos, ip, msg} while open
+    pwrM: null, pwrChoice: null, pwrConfirm: false, idntM: null, idntMode: 'on',
+    // live console tail (con) of the selected device while its console rung runs; the
+    // SOL terminal modal (solM = {pos, ip}) and its lock/log state (as the Post UI's)
+    phOpen: {},                // drawer phases the operator unfolded / folded: {"<pos>/<phase>": open}
+    con: null, solM: null, solHeld: false, solHolder: null, solClientId: null, solLog: [], solIdle: null, solErr: null,
+    // header counters: what each counts is counted() (its filter shows the same set)
+    metricList: [
+      { key: 'discover', label: 'discover', title: 'devices in Discover: failed there, running it, or nothing past it yet' },
+      { key: 'firmware', label: 'firmware', title: 'devices in Firmware: its read running, or Discover + Firmware done and nothing later yet (report only: an off-target version never holds a device)' },
+      { key: 'qualify', label: 'qualify', title: 'devices in Qualify: failed there, running it, or passed it and not deployed yet' },
+      { key: 'deploy', label: 'deploy', title: 'devices in Deploy: failed there, running it, or deployed and Done not run' },
+      { key: 'done', label: 'done', title: 'devices done: every phase passed (a JBOD has no host phases)' },
+      { key: 'alert', label: 'alerts', title: 'devices held on a failure: a failed step in Discover, Qualify, Deploy or Done that no active Deploy waiver covers (also counted in that phase)' },
+    ],
+
+    async mounted() {
+      document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape') return;
+        if (this.solM) this.closeSol(); else if (this.artM) this.backArt(); else if (this.stepM) this.stepM = null; else if (this.pwrM) this.pwrM = null; else if (this.idntM) this.idntM = null; else if (this.depM) this.depM = null; else if (this.contM) this.contM = null; else if (this.running) this.running = false; else if (this.finishing) this.finishing = false; else if (this.freshing) this.freshing = false; else if (this.deploying) this.deploying = false; else if (this.qualifying) this.qualifying = false; else if (this.discovering) this.discovering = false; else if (this.closing) this.closing = false; else if (this.popOpen) this.popOpen = null; else this.close();
+      });
+      await this.refresh(); setInterval(() => this.refresh(), POLL_MS);
+      // the drawer docks under the header, whose height follows the width (rows wrap)
+      const top = document.querySelector('.top');
+      if (top && window.ResizeObserver) new ResizeObserver(() => document.documentElement.style.setProperty('--top-h', top.offsetHeight + 'px')).observe(top);
+      if (this.sel) this.scrollToRun();
+      setInterval(() => this.tickConsole(), CON_MS);
+    },
+    async refresh() {
+      try {
+        this.s = await api('api/state'); this.layout = buildLayout(this.s); this.live = true; this.now = Date.now(); document.title = `${this.s.prefix} rackpost`;
+        this.checkBuild(this.s.build);
+        // "<stage> started" outlives its stage otherwise (finished, or died on a restart)
+        const on = this.hdrStage === 'run' ? this.runRunning : this.s.stage === this.hdrStage;
+        if (this.hdrStage && !(this.s.stage_running && on)) { this.hdrMsg = null; this.hdrStage = null; }
+      }
+      catch (e) { this.live = false; console.error(e); }
+    },
+    // A deploy must reach every open browser (the Post UI's checkVersion): the page keeps
+    // the build its first poll saw; a poll carrying another one reloads the page, the
+    // #sel= hash kept so the drawer reopens. Held while any modal or popover is open
+    // (a SOL console, a typed confirm or waiver must not be dropped) or a field has
+    // focus; the next poll retries. One reload per build per tab: a page that still
+    // disagrees cannot loop.
+    checkBuild(b) {
+      if (!b) return;
+      if (!this.bootBuild) { this.bootBuild = b; return; }
+      if (b === this.bootBuild || this.modalOpen()) return;
+      const a = document.activeElement;
+      if (a && ['INPUT', 'TEXTAREA', 'SELECT'].includes(a.tagName)) return;
+      try {
+        if (sessionStorage.getItem('rackpost-reloaded-for') === b) return;
+        sessionStorage.setItem('rackpost-reloaded-for', b);
+      } catch (e) { /* no storage: reload anyway */ }
+      location.reload();
+    },
+    // the header chip names this page's build; ↻ = a newer one is served, the reload waits
+    buildPending() { return !!(this.bootBuild && this.s.build && this.s.build !== this.bootBuild); },
+    buildTitle() {
+      return this.buildPending() ? `server is on ${this.s.build}: this page reloads once the open dialog or field is closed`
+        : 'this page\'s build (it reloads itself when a new one is deployed)';
+    },
+    // every modal / popover Esc closes (the keydown chain in mounted)
+    modalOpen() {
+      return !!(this.solM || this.artM || this.stepM || this.pwrM || this.idntM || this.depM || this.contM || this.running || this.finishing
+        || this.freshing || this.deploying || this.qualifying || this.discovering || this.closing || this.popOpen);
+    },
+    // a header message about a stage just started (cleared once that stage is not running)
+    started(stage, msg) { this.hdrMsg = msg; this.hdrStage = stage; },
+    // a header message about a refusal (stays until the next one)
+    refused(msg) { this.hdrMsg = msg; this.hdrStage = null; },
+
+    // the selected object: a device (itself), an IOM, a switch or a wedge's BMC
+    get selObj() {
+      const k = this.sel; if (!k) return null;
+      let m = /^_sw-([^.]+)(\.bmc)?$/.exec(k);
+      if (m) {
+        const sw = (this.s.switches || []).find((x) => x.id === m[1]);
+        return !sw ? null : m[2] ? (sw.bmc ? swBmcObj(sw) : null) : swObj(sw);
+      }
+      m = /^(.+)\.(iom\d+)$/.exec(k);
+      if (m) {
+        const d = (this.s.devices || []).find((x) => x.pos === m[1]);
+        return d && (d.links || {})[m[2]] ? iomObj(d, m[2]) : null;
+      }
+      return (this.s.devices || []).find((d) => d.pos === k) || null;
+    },
+    get selKind() { const o = this.selObj; return !o ? null : o.type || 'dev'; },
+    get selDev() { return this.selKind === 'dev' ? this.selObj : null; },
+
+    // ---- per-device pipeline (null-safe: petite-vue may evaluate during teardown) ----
+    steps(d, phase) {
+      if (!d) return {};
+      const runs = d.runs || {}, rr = this.s.rack_runs || {};
+      const out = {};
+      if (phase === 'discover') {
+        const steps = (this.s.discover_rungs || []).filter((r) => !d.only || d.only.includes(r));
+        for (const rung of steps) out[rung] = runs[rung];
+        // a device with only pre-2b Discover rows shows those (order.db history)
+        if (!steps.some((r) => runs[r])) {
+          for (const rung of this.s.discover_old_rungs || []) if (runs[rung]) out[rung] = runs[rung];
+        }
+      } else if (phase === 'firmware') {
+        for (const rung of this.s.firmware_rungs || []) out[rung] = runs[rung];
+        for (const rung of this.s.firmware_old_rungs || []) if (runs[rung]) out[rung] = runs[rung];
+      } else if (phase === 'qualify') {
+        for (const rung of d.qualify_rungs || []) out[rung] = runs[rung];
+        // the agent's battery stages are recorded as each phase ends: while its watchdog
+        // (agent-stages, not drawn) runs, the first stage not yet recorded since is running
+        const w = runs['agent-stages'];
+        if (w && w.status === 'running') {
+          // (of the phase Qualify is in: an earlier phase's stages were recorded before it)
+          const cur = (this.s.qualify_phase_stages || {})[(this.qprog || {}).phase] || this.s.agent_stages || [];
+          const r = cur.find((x) => x in out && (!out[x] || (out[x].started_at || '') < (w.started_at || '')));
+          if (r) out[r] = { status: 'running', started_at: w.started_at, detail: { headline: 'the qual agent is running this phase' }, artifacts: {} };
+        }
+      } else if (phase === 'deploy') {
+        for (const rung of d.deploy_rungs || []) out[rung] = runs[rung];
+      } else if (phase === 'done') {
+        for (const rung of d.done_rungs || []) out[rung] = runs[rung];
+      }
+      return out;
+    },
+    stepEntries(d, phase) { return this.entriesOf(this.steps(d, phase), d && d.pos, phase); },
+    // the rows the server hides (Qualify's agent-stages + console, Deploy's
+    // install-console): not drawn, but a failed one still fails its phase and the device
+    hiddenEntries(d, phase) {
+      const runs = (d && d.runs) || {};
+      const names = ((this.s.hidden_rungs || {})[phase] || []).filter((n) => runs[n]);
+      return this.entriesOf(Object.fromEntries(names.map((n) => [n, runs[n]])), d && d.pos);
+    },
+    hiddenBad(d, phase) { return this.hiddenEntries(d, phase).filter((x) => ['fault', 'unmeasured', 'unknown'].includes(x.state)); },
+    entriesOf(steps, key, phase) {
+      const state = (run) => { const st = stepState(run); return phase === 'firmware' && FW_NOTE.includes(st) ? 'fwnote' : st; };
+      // a flagged step is 'done' to every phase / counter / summary helper; `flag` is
+      // read only by the step row, its modal and the tile marker
+      return Object.entries(steps).map(([name, run]) => [name, run, state(run)]).map(([name, run, st]) => ({
+        name, run, key: `${key}/${name}`, state: st === 'flag' ? 'done' : st, flag: st === 'flag', note: stepNote(run, name),
+        arts: Object.entries((run && run.artifacts) || {}).map(([n, url]) => ({ name: n, url })),
+        ev: run && run.detail && (run.detail.rows || run.detail.notes || run.detail.table) ? run.detail : null,
+        title: (run ? `${run.status}${run.verdict ? ' · ' + run.verdict : ''} · ${run.finished_at || run.started_at}` : 'not run')
+          + (run ? ' — ' + stepNote(run, name) : '') + ' (click for the evidence)' }));
+    },
+    // a JBOD's IOMs: each endpoint's own Firmware rows (key <pos>.iomN)
+    endpointFw(d) {
+      if (!d) return [];
+      return Object.entries(d.endpoint_runs || {}).map(([ep, runs]) => {
+        const steps = {};
+        for (const rung of this.s.firmware_rungs || []) steps[rung] = runs[rung];
+        return { ep, entries: this.entriesOf(steps, `${d.pos}.${ep}`, 'firmware') };
+      }).filter((x) => x.entries.some((e) => e.run));
+    },
+    // the step evidence modal (Post's stepinfo): a snapshot of the step at the click
+    openStep(o, phase, st) {
+      if (!st) return;
+      const run = st.run, d = (run && run.detail) || {};
+      this.stepM = {
+        who: this.whoName(o), phase, name: st.name, state: st.flag ? 'flag' : st.state,
+        word: ((w) => (run && run.verdict && st.state !== 'unmeasured' ? `${w} · ${run.verdict}` : w))(
+          STEP_WORD[st.flag ? 'flag' : st.state] || st.state),
+        headline: run ? (d.headline || st.note || '') : '', rows: d.rows || [], notes: d.notes || [],
+        table: d.table && Array.isArray(d.table.rows) ? d.table : null,
+        arts: st.arts || [], ran: !!run,
+        when: run ? [run.started_at && `started ${run.started_at}`, run.finished_at && `finished ${run.finished_at}`].filter(Boolean).join(' · ') : '' };
+    },
+    // ---- artifact viewer: the text in-page (first ART_MAX bytes), Copy / Download / Back ----
+    // fromStep: Back / Esc return to the evidence modal under it; ✕ / the scrim close both.
+    async openArt(a, fromStep) {
+      if (!a || !a.url) return;
+      const seq = ++this.artSeq;
+      this.artM = { name: a.name, url: a.url, fromStep: !!fromStep, loading: true, text: '',
+                    error: null, size: null, loaded: 0, lines: 0, truncated: false, copied: '' };
+      try {
+        const r = await fetch(a.url, { cache: 'no-store' });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const total = Number(r.headers.get('Content-Length')) || null;
+        const dec = new TextDecoder();
+        let text = '', n = 0, cut = false;
+        if (r.body && r.body.getReader) {
+          const rd = r.body.getReader();
+          for (;;) {                                   // stop at the first byte past ART_MAX
+            const { done, value } = await rd.read();
+            if (done) break;
+            const take = Math.min(value.length, ART_MAX - n);
+            text += dec.decode(value.subarray(0, take), { stream: true }); n += take;
+            if (take < value.length) { cut = true; rd.cancel().catch(() => {}); break; }
+          }
+          text += dec.decode();
+        } else {
+          const b = new Uint8Array(await r.arrayBuffer());
+          cut = b.length > ART_MAX; n = Math.min(b.length, ART_MAX); text = dec.decode(b.subarray(0, n));
+        }
+        if (seq !== this.artSeq) return;               // a newer artifact was opened
+        const lines = text ? text.split('\n').length - (text.endsWith('\n') ? 1 : 0) : 0;
+        this.artM = { ...this.artM, loading: false, text, loaded: n, size: total ?? n, lines, truncated: cut };
+      } catch (e) {
+        if (seq === this.artSeq && this.artM) this.artM = { ...this.artM, loading: false, error: e.message };
+      }
+    },
+    // Back (and Esc): to the evidence modal it was opened from; close: the viewer and that modal
+    backArt() { this.artSeq++; this.artM = null; },
+    closeArt() { const f = this.artM && this.artM.fromStep; this.artSeq++; this.artM = null; if (f) this.stepM = null; },
+    // a step row's artifact chip: the step's evidence modal with the viewer over it
+    openStepArt(o, phase, st, a) { this.openStep(o, phase, st); this.openArt(a, true); },
+    artInfo() {
+      const m = this.artM; if (!m || m.loading || m.error) return '';
+      const kb = (b) => (b == null ? '?' : b < 10240 ? `${b} B` : b < 1048576 ? `${(b / 1024).toFixed(1)} KiB` : `${(b / 1048576).toFixed(1)} MiB`);
+      return `${m.lines} line${m.lines === 1 ? '' : 's'} · ${kb(m.size)}` + (m.truncated ? ` · first ${kb(m.loaded)} shown` : '');
+    },
+    // the clipboard API needs a secure context (this page is often plain http): fall back
+    async copyArt() {
+      const m = this.artM; if (!m || !m.text) return;
+      let ok = false;
+      try { if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(m.text); ok = true; } }
+      catch (e) { /* fall back below */ }
+      if (!ok) {
+        const ta = document.createElement('textarea');
+        ta.value = m.text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select();
+        try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+        ta.remove();
+      }
+      if (this.artM === m) this.artM = { ...m, copied: ok ? (m.truncated ? 'copied (shown part)' : 'copied') : 'copy failed' };
+    },
+    // ---- serial console (flax-post-sol relay) ----
+    // the console rung now running for d (its name), else null
+    conRung(d) {
+      const runs = (d && d.runs) || {};
+      return CON_RUNGS.find((r) => runs[r] && runs[r].status === 'running') || null;
+    },
+    async tickConsole() {
+      const d = this.selDev, rung = this.conRung(d);
+      if (!rung) { if (this.con && (!d || this.con.pos !== d.pos)) this.con = null; else if (this.con) this.con.live = false; return; }
+      const c = this.con && this.con.pos === d.pos ? this.con : { pos: d.pos, ino: null, offset: null, text: '', live: true };
+      const q = c.ino != null ? `?offset=${c.offset}&ino=${c.ino}` : '';
+      try {
+        const t = await api(`api/console/${encodeURIComponent(d.pos)}${q}`);
+        if (!this.selDev || this.selDev.pos !== c.pos) return;     // drawer moved on meanwhile
+        const pre = document.getElementById('rp-contail');
+        const atEnd = !pre || pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 8;
+        const text = ((t.reset ? '' : c.text) + stripAnsi(t.text || '')).slice(-CON_KEEP);
+        this.con = { pos: c.pos, ino: t.ino, offset: t.offset, text, ip: t.ip, rung, live: true, at: Date.now(), err: null };
+        if (atEnd) setTimeout(() => { const p = document.getElementById('rp-contail'); if (p) p.scrollTop = p.scrollHeight; }, 0);
+      } catch (e) { this.con = { ...c, rung, err: e.message }; }
+    },
+    conInfo() {
+      const c = this.con; if (!c) return '';
+      if (c.err) return `could not read: ${c.err}`;
+      if (c.ino == null) return `no relay capture for ${c.ip || 'its BMC'} yet`;
+      return `${c.ip}.txt · ${c.text.split('\n').length - 1} lines shown`;
+    },
+    // the drawer's console panel header: `console · <bmc ip> · live` while a capture runs,
+    // else `console · clean | N findings | captured | …` (details in the tooltip)
+    conHead(d) {
+      const c = d && d.console; if (!c) return '';
+      return c.live ? `console · ${(d.addrs || {}).bmc || '?'} · live` : `console · ${c.word}`;
+    },
+    conTitle(d) {
+      const c = d && d.console; if (!c) return '';
+      const what = c.rung === 'console' ? 'Qualify SOL capture (not scanned)' : 'Deploy SOL capture, scanned for error patterns (a finding fails the device)';
+      return [what, c.headline, c.live ? this.conInfo() : c.at && `at ${c.at}`].filter(Boolean).join(' · ');
+    },
+    conArts(d) { return this.artList(d && d.console); },
+    // the Run's Firmware findings (report only: never held)
+    runFw() { return Object.entries((this.s.run || {}).firmware || {}); },
+    runFwTitle() { return 'Firmware findings (report only: they never hold the Run)\n' + this.runFw().map(([k, b]) => `${k}: ${b.map((x) => x.replace(/^firmware: /, '')).join('; ')}`).join('\n'); },
+    // the SOL button: the Post UI's terminal, attached to the relay's session
+    async openSol(d) {
+      const ip = d && (d.addrs || {}).bmc; if (!ip) return;
+      this.closeSol();
+      this.solM = { pos: d.pos, ip }; this.solLog = []; this.solErr = null;
+      try {
+        await Promise.all(['static/vendor/xterm.css', 'static/vendor/xterm.js', 'static/vendor/socket.io.min.js'].map(loadAsset));
+        await loadAsset('static/sol.js');
+      } catch (e) { this.solErr = e.message; return; }
+      if (!this.solM || this.solM.ip !== ip) return;               // closed while loading
+      const el = document.getElementById('rp-solterm'); if (!el || !window.SolConsole) return;
+      this.solHeld = false; this.solHolder = null; this.solClientId = null;
+      window.SolConsole.open(el, null, ip, {
+        onLock: (holder, held) => { this.solHolder = holder; this.solHeld = held; },
+        onEvent: (m) => { this.solLog.unshift(m); if (this.solLog.length > 200) this.solLog.pop(); },
+        onClient: (sid) => { this.solClientId = sid; },
+      });
+      this._solIdle = setInterval(() => { this.solIdle = window.SolConsole ? window.SolConsole.idleSeconds() : null; }, 1000);
+    },
+    closeSol() {
+      try { if (window.SolConsole) window.SolConsole.close(); } catch (e) { console.error(e); }
+      if (this._solIdle) { clearInterval(this._solIdle); this._solIdle = null; }
+      this.solM = null; this.solIdle = null; this.solHolder = null; this.solHeld = false; this.solClientId = null;
+    },
+    solLockState() { return !this.solHolder ? 'request' : this.solHeld ? 'release' : 'requestRelease'; },
+    solLockLabel() { return { request: 'Request Lock', release: 'Release Lock', requestRelease: 'Request Lock Release' }[this.solLockState()]; },
+    solLock() {
+      if (!window.SolConsole) return;
+      const st = this.solLockState();
+      if (st === 'request') window.SolConsole.lock(); else if (st === 'release') window.SolConsole.unlock(); else window.SolConsole.requestRelease();
+    },
+    solRelaunch() {
+      if (window.SolConsole && window.confirm(`Relaunch the relay's SOL session to ${this.solM && this.solM.ip}? (it restarts the BMC-side SOL; a running capture keeps going)`)) window.SolConsole.relaunch();
+    },
+    whoName(o) {
+      if (!o) return '';
+      return o.type === 'iom' ? `${o.dev.pos} ${o.ep.toUpperCase()}` : o.type === 'sw' ? `SW ${o.sw.id}`
+        : o.type === 'swbmc' ? `SW ${o.sw.id} BMC` : o.pos;
+    },
+    hasRuns(d, phase) { return this.stepEntries(d, phase).some((x) => x.run); },
+    // the phase whose steps the tile's second bar shows: the latest one with a run
+    curPhase(d) {
+      const r = (this.s.phases || []).find((p) => this.stepEntries(d, p).some((x) => x.state === 'run'));
+      if (r) return r;                    // a stage re-run now: its steps, not the last phase's
+      return this.hasRuns(d, 'done') ? 'done' : this.hasRuns(d, 'deploy') ? 'deploy' : this.hasRuns(d, 'qualify') ? 'qualify' : 'discover'; },
+    phaseState(d, p) {
+      // a lab rack's absent BOM slot: nothing placed, nothing judged (grey, never green)
+      if (d?.absent || d?.dev?.absent) return 'grey';
+      const v = this.stepEntries(d, p).map((x) => x.state);
+      // nothing to do for this endpoint (a BC IOM's Qualify/Deploy/Done, a switch's): complete,
+      // whatever the phase before it says (operator 2026-10-30: never looks like waiting)
+      if (!v.length) return 'done';
+      const hb = this.hiddenBad(d, p).map((x) => x.state);
+      if (v.includes('fault') || hb.includes('fault')) return 'fault';
+      // finished, but a step's target did not answer: grey (not measured), never done
+      if ((v.includes('unmeasured') || hb.length) && v.every((x) => ['done', 'skip', 'unmeasured', 'held'].includes(x))) return 'unmeasured';
+      if (v.every((x) => x === 'done' || x === 'skip')) return 'done';
+      // Firmware read to the end with something to note: amber, complete, never a fault
+      if (v.includes('fwnote') && v.every((x) => ['done', 'skip', 'fwnote'].includes(x))) return 'fwnote';
+      if (v.includes('cur') || v.includes('run')) return 'cur';
+      if (v.includes('held')) return '';      // skipped because something upstream failed
+      if (v.some((x) => x !== 'pending')) return 'cur';
+      return '';
+    },
+    // a phase with a step running now: blue pulse (never the amber of "needs attention")
+    phaseSegs(d) {
+      return !d ? [] : this.s.phases.map((p) => {
+        const st = this.phaseState(d, p);
+        return st === 'cur' && this.stepEntries(d, p).some((x) => x.state === 'run') ? 'run' : st;
+      });
+    },
+    stepSegs(d) {
+      if (!d) return [];
+      return this.stepEntries(d, this.curPhase(d)).map((x) => (x.state === 'done' || x.state === 'skip') ? 'done'
+        : ['fault', 'cur', 'run', 'unmeasured'].includes(x.state) ? x.state : '');
+    },
+    // a Qualify rung an active Deploy waiver names stays red in the pipeline (the truth)
+    // but no longer makes the tile an alert: the operator accepted it, on record
+    waived(d, phase, name) { const w = d && d.waiver; return phase === 'qualify' && !!w && w.active && w.rungs.includes(name); },
+    // phases: all five (the tile's red), or ALERT_PHASES (Firmware is report only)
+    faulted(d, phases) {
+      return !!d && (phases || ['discover', 'firmware', 'qualify', 'deploy', 'done']).some((p) =>
+        [...this.stepEntries(d, p), ...this.hiddenBad(d, p)].some((x) => x.state === 'fault' && !this.waived(d, p, x.name)));
+    },
+    phaseKey(d) {
+      if (!d) return 'grey';
+      if (this.faulted(d)) return 'fault';
+      // every phase passed or has nothing to do for it (a JBOD IOM, a switch)
+      if ((this.s.phases || []).every((p) => ['done', 'fwnote'].includes(this.phaseState(d, p)))) return 'done';
+      const cp = this.phaseState(d, this.curPhase(d));
+      if (cp === 'unmeasured') return 'unmeasured';
+      if (this.hasRuns(d, 'done')) {
+        // Done never makes a tile green on its own: a node that never deployed is not delivered
+        if (this.deployOk(d)) return 'done';
+        return this.hasRuns(d, 'deploy') ? 'deploy' : this.hasRuns(d, 'qualify') ? 'qualify' : 'discover';
+      }
+      if (this.hasRuns(d, 'deploy')) return cp === 'done' ? 'done' : 'deploy';
+      if (this.hasRuns(d, 'qualify')) return cp === 'done' ? 'done' : 'qualify';
+      return Object.keys(d.runs || {}).length ? 'discover' : 'grey';
+    },
+    // Deploy passed (every step done/skipped), or the device has no Deploy steps
+    deployOk(d) { return !this.stepEntries(d, 'deploy').length || this.phaseState(d, 'deploy') === 'done'; },
+    dotCls(d) { return this.phaseKey(d); },
+    phaseDot(d, p) { const st = this.phaseState(d, p); return ['done', 'fault', 'unmeasured', 'fwnote'].includes(st) ? st : st === 'cur' ? p : 'grey'; },
+    phasePct(d, p) {
+      const v = this.stepEntries(d, p); if (!v.length) return '';
+      return `${v.filter((x) => ['done', 'skip', 'fwnote'].includes(x.state)).length}/${v.length}`;
+    },
+    // ---- where a device is now: `now: <stage> · <phase> · <step> · mm:ss[/limit]` and
+    // what comes next (the drawer's top line, the tile's step-bar tooltip) ----
+    nowInfo(o) {
+      if (!o) return { text: '', next: '' };
+      const ps = this.s.phases || [];
+      const prog = (p) => (this.s.stage_running && this.s.stage === p
+        ? (p === 'qualify' ? this.qprog : p === 'deploy' ? this.dprog : null) : null);
+      const after = (p, es, i) => {
+        const n = es.slice(i + 1).find((x) => !['done', 'skip'].includes(x.state));
+        if (n) return `next: ${n.name}`;
+        const q = ps.slice(ps.indexOf(p) + 1).find((x) => this.stepEntries(o, x).length);
+        return q ? `next: ${q}` : 'next: finished';
+      };
+      for (const p of ps) {
+        const es = this.stepEntries(o, p), g = prog(p);
+        let i = es.findIndex((x) => x.state === 'run');
+        if (i >= 0) {
+          const st = es[i], lim = g && (g.limit_s || {})[o.pos];
+          const el = st.run.started_at ? Math.max(0, (this.now - Date.parse(st.run.started_at)) / 1000) : null;
+          return { text: 'now: ' + [p, g && g.phase !== st.name && g.phase, st.name].filter(Boolean).join(' · ') +
+                     (el == null ? '' : ` · ${mmss(el)}${lim ? '/' + mmss(lim) : ''}`), next: after(p, es, i) };
+        }
+        // in this stage but between steps: waiting at its barrier for the others
+        i = es.findIndex((x) => x.state === 'pending');
+        if (g && i > 0 && es.slice(0, i).some((x) => x.run)) {
+          const w = (g.waiting_on || []).filter((x) => x !== o.pos);
+          return { text: `now: ${p} · ${g.phase} · waiting` + (w.length ? ` for ${w.join(', ')}` : ''), next: `next: ${es[i].name}` };
+        }
+      }
+      return { text: `now: idle · ${this.statusText(o)}`, next: '' };
+    },
+    nowTitle(o) { const n = this.nowInfo(o); return [n.text, n.next].filter(Boolean).join(' · '); },
+    // a finished phase (every step passed / n/a, or Firmware read with notes) folds to its
+    // summary line; one with a failure, or not finished, stays open. A click toggles it.
+    phFinished(o, p) { return !!this.stepEntries(o, p).length && ['done', 'fwnote'].includes(this.phaseState(o, p)); },
+    phFolded(o, p) {
+      if (!o || !this.phFinished(o, p)) return false;
+      const k = `${o.pos}/${p}`;
+      return k in this.phOpen ? !this.phOpen[k] : true;
+    },
+    togglePh(o, p) { if (this.phFinished(o, p)) this.phOpen = { ...this.phOpen, [`${o.pos}/${p}`]: this.phFolded(o, p) }; },
+    // a device's flagged steps (a pass with a drive outside its fio range): the tile's ⚑
+    flaggedSteps(d) {
+      return !d ? [] : (this.s.phases || []).flatMap((p) => this.stepEntries(d, p).filter((x) => x.flag)
+        .map((x) => `${p} · ${x.name}: ${x.note}`));
+    },
+    stepIcon(st) { return { flag: '⚑', done: '✓', run: '◌', cur: '◉', fault: '✕', pending: '·', skip: '–', held: '–', unknown: '?', unmeasured: '○', fwnote: '!' }[st] || '·'; },
+    statusText(d) {
+      if (!d) return '';
+      for (const p of ['discover', 'firmware', 'qualify', 'deploy', 'done']) {
+        const bad = [...this.stepEntries(d, p), ...this.hiddenBad(d, p)].find((x) => x.state === 'fault' && !this.waived(d, p, x.name));
+        if (bad) return `${p} · ${bad.name}`;
+      }
+      const p = this.curPhase(d);
+      if (p === 'done' && !this.deployOk(d)) return 'done · not deployed';
+      const cur = this.stepEntries(d, p).find((x) => !['done', 'skip', 'held'].includes(x.state));
+      return !cur ? `${p} ✓` : cur.state === 'unmeasured' ? `${p} · ${cur.name} not measured`
+        : cur.state === 'run' ? `${p} · ${cur.name} running…` : `${p} · ${cur.name}`;
+    },
+    statusStyle(d) { const c = RGB[this.phaseKey(d)] || RGB.discover; return `background:rgba(${c},.15);color:rgb(${c})`; },
+    faults(d) {
+      if (!d) return [];
+      return ['discover', 'firmware', 'qualify', 'deploy', 'done'].flatMap((p) =>
+        [...this.stepEntries(d, p).filter((x) => x.state === 'fault' || x.state === 'unknown'),
+         ...this.hiddenBad(d, p)].map((x) => ({ ...x, phase: p })))
+        .map((x) => ({ rung: x.name, text: x.note, bad: x.state === 'fault', phase: x.phase, st: x }));
+    },
+    popRun(d) { return d && (d.runs || {})['population-check']; },
+    popMark(d) {
+      const r = this.popRun(d);
+      if (!r || r.status !== 'done') return { t: '·', cls: '', title: 'POP not run yet (Qualify)' };
+      const x = r.detail || {};
+      if (r.verdict === 'pass') return { t: '✓', cls: 'ok', title: `POP ${x.profile}: every rule found` };
+      if (r.verdict === 'skip') return { t: '–', cls: '', title: 'POP skipped: ' + (x.reason || '') };
+      if (r.verdict === 'unmeasured') return { t: '○', cls: 'unm', title: 'POP not measured: ' + (x.headline || x.reason || '') };
+      return { t: '✕', cls: 'bad', title: 'POP: ' + (x.error || 'fail') };
+    },
+    openPop(d) { if (this.popRun(d) && this.popRun(d).detail) this.popOpen = d.pos; },
+    get popDev() { return this.popOpen ? (this.s.devices.find((d) => d.pos === this.popOpen) || null) : null; },
+
+    // ---- BMC power chip from the poller (stale after 3 intervals -> grey ?) ----
+    power(c) {
+      const d = c.dev;
+      if (!(d.addrs || {}).bmc) return null;
+      const b = d.bmc_live || {}, iv = (this.s.poll_interval_s || 60) * 1000;
+      if (!b.at) return { t: '?', cls: 'unk', title: 'BMC not polled yet' };
+      const age = this.now - Date.parse(b.at);
+      if (age > 3 * iv) return { t: '?', cls: 'unk', title: `stale: last BMC poll ${b.at}` };
+      if (b.reachable === false) return { t: 'bmc ✕', cls: 'bad', title: `BMC ${d.addrs.bmc} no ping reply · ${b.at}` };
+      if (!b.power) return { t: '?', cls: 'unk', title: `BMC answers ping, no power reading · ${b.at}` };
+      return { t: b.power, cls: b.power === 'on' ? 'on' : 'off', title: `chassis power ${b.power} · ${b.at}` };
+    },
+
+    // ---- header ----
+    // a phase's state for the banner: Firmware (report only) is reached once its read ran
+    // to the end, whatever it found; every other phase as the pipeline shows it
+    chipState(d, p) {
+      if (p !== 'firmware') {
+        const st = this.phaseState(d, p);
+        // every fault in it waived (Deploy went ahead on record): passed, for the count
+        return st === 'fault' && !this.faulted(d, [p]) ? 'done' : st;
+      }
+      const v = this.stepEntries(d, p).map((x) => x.state);
+      if (!v.length) return 'done';
+      if (v.includes('run')) return 'cur';
+      if (v.every((x) => x === 'pending')) return '';
+      return v.includes('pending') ? 'cur' : 'done';
+    },
+    // the one phase a device is counted in (Post's chip_phase): its earliest failed or
+    // not-measured phase, else the phase in progress, else the last phase passed (a phase
+    // with nothing to do for it counts once the one before it passed; Done only once
+    // Deploy passed); a device nothing ran on is in Discover
+    chipPhase(d) {
+      const ps = this.s.phases || [], st = ps.map((p) => this.chipState(d, p));
+      let i = st.findIndex((x) => x === 'fault' || x === 'unmeasured');
+      if (i < 0) i = st.findIndex((x) => x === 'cur');
+      if (i >= 0) return ps[i];
+      let reached = 0;
+      ps.forEach((p, k) => {
+        if (st[k] !== 'done' || (p === 'done' && !this.deployOk(d))) return;
+        if (this.hasRuns(d, p) || (!this.stepEntries(d, p).length && reached === k - 1)) reached = k;
+      });
+      return ps[reached];
+    },
+    // the one place a header counter (and its filter) decides: alerts = held on a failure
+    // (an unwaived fault outside Firmware), a phase = chipPhase (each device once)
+    counted(d, key) { return key === 'alert' ? this.faulted(d, ALERT_PHASES) : this.chipPhase(d) === key; },
+    get counts() {
+      const ds = (this.s.devices || []).filter((d) => !d.absent);   // absent slots count nowhere
+      return Object.fromEntries(this.metricList.map((m) => [m.key, ds.filter((d) => this.counted(d, m.key)).length]));
+    },
+    // the phase chip of the stage now running (a Run's inner stage) is lit
+    metricLit(m) { return !!this.s.stage_running && this.s.stage === m.key; },
+    metricTitle(m) {
+      const n = (this.s.devices || []).filter((d) => !d.absent).length;
+      return `${m.title} · ${this.counts[m.key]} of ${n} devices` +
+        (this.s.lab ? ` present (${this.s.total} in the BOM)` : '') +
+        (m.key === 'alert' ? '' : ' · each device counted once, in the phase it has reached') +
+        (this.metricLit(m) ? ' · running now' : '') + ' · click to show only them';
+    },
+    toggle(f) { this.filter = this.filter === f ? null : f; },
+    inFilter(d, f) { return this.counted(d, f); },
+    qualifyTitle() {
+      const q = this.s.qualify || {}, why = q.why || {};
+      const base = 'run Qualify: SOL capture + live boot → battery → population-check, smbios-serial, tpm-state per node, then wedge LLDP → HA path → fabric addresses → iperf mesh';
+      const np = (q.not_passed || []).map((p) => (why[p] ? `${p} (${why[p]})` : p));
+      return q.passed ? base + ' · rack passed' : np.length ? `${base} · not passed: ${np.join(', ')}` : base;
+    },
+    stageText() {
+      if (this.s.closed_at) return 'closed ' + new Date(this.s.closed_at).toLocaleString();
+      if (this.s.stage_running) return `${this.s.stage || 'stage'} ${this.s.cancelling ? 'cancelling' : 'running'}…`;
+      const e = (this.s.events || [])[0];
+      return e ? `${e.text} · ${new Date(e.ts).toLocaleTimeString()}` : 'no stage run yet';
+    },
+    // Qualify's lockstep phase: which one, and how many devices wait at its barrier
+    get qprog() { return (this.s.qualify || {}).progress || null; },
+    qphaseCls(p) {
+      const i = (this.s.qualify_phases || []).indexOf(p), n = (this.qprog?.n || 0) - 1;
+      return i < n ? 'past' : i === n ? 'cur' : '';
+    },
+    qphaseTitle() {
+      const g = this.qprog || {}, w = g.waiting_on || [];
+      return `Qualify phase ${g.n} of ${g.of} (${g.phase}): ${g.done} of ${g.devices} device(s) done, ` +
+        `waiting at the barrier` + (w.length ? ` for ${w.join(', ')}` : '');
+    },
+    // Deploy's lockstep phase (install → firstboot → user → ha-config → ha-test → iperf → stress)
+    get dprog() { return (this.s.deploy || {}).progress || null; },
+    dphaseCls(p) {
+      const i = (this.s.deploy_phases || []).indexOf(p), n = (this.dprog?.n || 0) - 1;
+      return i < n ? 'past' : i === n ? 'cur' : '';
+    },
+    dphaseTitle() {
+      const g = this.dprog || {}, w = g.waiting_on || [];
+      return `Deploy phase ${g.n} of ${g.of} (${g.phase}): ${g.done} of ${g.devices} device(s) done, ` +
+        `waiting at the barrier` + (w.length ? ` for ${w.join(', ')}` : '');
+    },
+    // the order's delivered HA mode (from ha-test)
+    get haMode() { return (this.s.deploy || {}).ha_mode || null; },
+    haText() {
+      const h = this.haMode; if (!h) return '';
+      const n = h.devices.length + h.missing.length;
+      return `HA ${h.mode}` + (h.missing.length ? ` ${h.devices.length}/${n}` : '');
+    },
+    haTitle() {
+      const h = this.haMode; if (!h) return '';
+      return `bond0 ${h.mode}: latest ha-test passed on ${h.devices.join(', ')}` +
+        (h.missing.length ? ` · not passed: ${h.missing.join(', ')}` : '') + (h.at ? ` · recorded ${h.at}` : '') +
+        ((h.notes || []).length ? '\n' + h.notes.join('\n') : '');
+    },
+    deployTitle() {
+      const q = this.s.deploy || {}, why = q.why || {};
+      const base = 'run Deploy: SOL capture + Ubuntu 24.04 install → first boot (installed-OS proof, SOL scan) → flax_user → bond0 active-backup → whole-wedge HA test';
+      const gated = this.depHosts().filter((d) => d.deploy_gate).map((d) => `${d.pos} (${d.deploy_gate})`);
+      return gated.length ? `${base} · gate: ${gated.join('; ')}` : q.passed ? base + ' · rack deployed' : base;
+    },
+    eventsTitle() { return (this.s.events || []).slice(0, 12).map((e) => `${e.ts} ${e.kind}: ${e.text}`).join('\n'); },
+
+    // ---- tiles ----
+    swKind(sw) { return `${SWKIND[sw.role] || sw.role} · ${sw.model} · ${sw.nos}`; },
+    swRun(sw) { return (this.s.rack_runs || {})[sw.role === 'tor' ? 'lldp-' + sw.id : 'switch-fdb']; },
+    // the switch's own Discover/Firmware ladder when it ran, else its FDB/LLDP read
+    swDot(sw) {
+      const o = swObj(sw);
+      if (Object.keys(o.runs).length) {
+        const k = this.phaseKey(o);
+        return k === 'discover' && this.phaseState(o, 'discover') === 'done' ? 'done' : k;
+      }
+      const r = this.swRun(sw);
+      if (!sw.mgmt_ip && !r) return 'grey';
+      return !r ? 'grey' : r.status === 'running' ? (sw.role === 'tor' ? 'qualify' : 'discover')
+        : r.verdict === 'pass' ? 'done' : r.verdict === 'unmeasured' ? 'unmeasured' : 'fault';
+    },
+    swObj(sw) { return swObj(sw); },
+    swBmcObj(sw) { return swBmcObj(sw); },
+    swSel(sw) { return this.sel === '_sw-' + sw.id || this.sel === `_sw-${sw.id}.bmc`; },
+    epText(e) { return !e ? '' : `${e.mac || '⋯'} · ${e.ip || '⋯'}`; },
+    // the switch's own ssh answer to the link monitor (no answer = grey, never red)
+    swLive(sw) {
+      const l = sw.live || {};
+      if (l.ok) return { cls: 'ok', title: `answers ssh · links read ${this.ago(l.at)}` };
+      return { cls: 'unk', title: (l.error || (l.at ? `last read ${this.ago(l.at)}` : 'not read yet')) + ' · its links are unknown' };
+    },
+    // uplinkN / site pills of a switch tile
+    swPills(sw) {
+      return Object.entries(sw.live_links || {}).sort().map(([n, l]) =>
+        this.pill(n === 'site' ? 'site' : 'uplink ' + n.slice(6), l,
+                  n === 'site' ? `site ${(sw.site_port || {}).switch} ${(sw.site_port || {}).port}` : `uplink port ${n.slice(6)}`));
+    },
+    cellMac(c) { return c.iom ? (c.obj.view.mac || (c.dev.iom_macs || [])[c.idx]) : c.dev.bmc_mac; },
+    // the object a tile stands for (an IOM tile is its own endpoint) and its serial
+    cellObj(c) { return c.obj || c.dev; },
+    cellSerial(c) { return c.iom ? c.obj.view.serial : c.dev.serial; },
+    // an IOM tile's side: what its check_pal_sku.sh reported vs what the geometry wants
+    iomSide(c) {
+      const v = c.obj.view || {}, want = v.want_side;
+      if (!v.side) return { t: want ? `side ${want}?` : '', cls: 'dimv', title: `side not read yet${want ? ' · geometry wants Side ' + want : ''}` };
+      const bad = want && v.side !== want;
+      return { t: `side ${v.side}`, cls: bad ? 'bad' : '',
+               title: bad ? `IOM reports Side ${v.side}, geometry wants Side ${want} on ${c.iom} (cables swapped?)`
+                          : `IOM Location: Side ${v.side} (check_pal_sku.sh)` };
+    },
+    serialOf(o) {
+      if (!o) return null;
+      return o.type === 'iom' ? (o.view || {}).serial : o.type === 'sw' || o.type === 'swbmc' ? o.sw.serial : o.serial;
+    },
+    identOf(o) {
+      if (!o) return null;
+      return o.type === 'iom' ? (o.view || {}).identity : o.type === 'sw' || o.type === 'swbmc' ? o.sw.identity : o.identity;
+    },
+    fwViewOf(o) {
+      if (!o) return null;
+      return o.type === 'iom' ? (o.view || {}).fw : o.type === 'sw' || o.type === 'swbmc' ? o.sw.fw : o.fw;
+    },
+    // the firmware block: BIOS, BMC active, BMC backup (an IOM: BMC, ROM), NIC per port
+    // with its PSID; then the rest of a fw-util read, then the not-present parts
+    verRows(o) {
+      const f = this.fwViewOf(o); if (!f) return [];
+      const one = (x) => {
+        if (!x.current) return { k: x.part, v: 'not read', cls: 'dimv', title: x.why || '' };
+        const tgt = x.target && x.target !== x.current ? ` → ${x.target}` : '';
+        const psid = x.psid ? ` · PSID ${x.psid}${x.target_psid && x.target_psid !== x.psid ? ' → ' + x.target_psid : ''}` : '';
+        return { k: x.part, v: x.current + tgt + psid, cls: x.phase === 'needs_update' ? 'amb' : ['fault', 'unsupported'].includes(x.phase) && x.part.startsWith('NIC') ? 'bad' : '',
+                 title: x.phase ? `${x.phase}${x.target ? ' · target ' + x.target : ''}` : '' };
+      };
+      return [...(f.parts || []).map(one),
+              ...Object.entries(f.versions || {}).map(([k, v]) => ({ k, v, cls: '', title: '' })),
+              ...Object.entries(f.not_present || {}).map(([k, v]) => ({ k, v: `not present (${v})`, cls: 'dimv', title: '' }))];
+    },
+    artList(x) { return Object.entries((x && x.artifacts) || {}).map(([name, url]) => ({ name, url })); },
+    popTitle(d) {
+      if (!d) return '';
+      return d.pop_overridden ? `override: BOM part ${d.part} defaults to ${d.pop_default}` : `default from BOM part ${d.part}`;
+    },
+    // "12 s ago" from an ISO time (the poll clock)
+    ago(at) {
+      if (!at) return 'never';
+      const s = Math.max(0, Math.round((this.now - Date.parse(at)) / 1000));
+      return s < 120 ? `${s} s ago` : `${Math.round(s / 60)} min ago`;
+    },
+    // one live link pill: label, class from its state, tooltip = what was seen + age
+    pill(label, l, bom) {
+      l = l || { state: 'unknown', text: 'not read yet' };
+      return { label, state: 'live ' + (LINK_CLS[l.state] || 'unk'),
+               title: `${label} · ${l.state}: ${l.text}` + (l.iface ? ` · ${l.switch} ${l.iface}` : '') +
+                      ` · BOM ${bom} · read ${this.ago(l.at)}` };
+    },
+    chips(c) {
+      const d = c.dev, live = d.live_links || {};
+      const names = c.iom ? [c.iom] : Object.keys(d.links).sort();
+      return names.map((n) => {
+        const m = /^pcie(\d+)$/.exec(n);
+        return this.pill(m ? `P${m[1]}→${d.links[n].split(':')[0]}` : 'mgmt', live[n], d.links[n]);
+      });
+    },
+    // the presence dot: the device (or this IOM's own link) seen on any switch port now
+    presence(c) {
+      const d = c.dev;
+      const p = c.iom ? linkPresence((d.live_links || {})[c.iom]) : d.presence || 'unknown';
+      const word = { present: 'present: a link is up on its switch port', absent: 'absent: every link down',
+                     unknown: 'unknown: its switches have not been read' }[p];
+      return { cls: p, title: word };
+    },
+    matches(d) {
+      const q = this.q.trim().toLowerCase(); if (!q) return false;
+      return [d.pos, d.host_mac, d.bmc_mac, ...(d.iom_macs || []), ...Object.values(d.names || {}), ...Object.values(d.addrs || {})]
+        .concat(Object.values(d.ioms || {}).map((x) => x.mac))
+        .some((v) => v && v.toLowerCase().includes(q));
+    },
+    get matchCount() { return (this.s.devices || []).filter((d) => this.matches(d)).length; },
+    // lab racks: the BOM slots no hardware has been placed into, and a Place hint
+    absentSlots() {
+      return [...(this.s.devices || []).filter((d) => d.absent),
+              ...(this.s.iom_slots || []).map((k) => ({ pos: k, kind: 'iom' }))];
+    },
+    placeNote(u, d) {
+      const fam = { 'compute-tp': ['tiogapass'], 'compute-leopard': ['leopard'] }[d.kind];
+      return fam && u.family && !fam.includes(u.family) ? ` (≠ ${u.family})` : '';
+    },
+    async placeCall(path, body, ok) {
+      this.busy = true; this.placeMsg = null;
+      try { const r = await api(path, body); this.placeMsg = ok(r); this.moveTo = ''; }
+      catch (e) { this.placeMsg = `${path.slice(4)}: ${e.message}`; }
+      this.busy = false; await this.refresh();
+    },
+    place(u) {
+      const pos = this.placeSel[u.port_label];
+      return this.placeCall('api/place', { pos, port: u.port, lane: u.lane },
+        (r) => `${u.serial} placed in ${pos}` + (r.deviation ? ` · ${r.deviation}` : ''));
+    },
+    unplace(pos) { return this.placeCall('api/unplace', { pos }, () => `${pos} unplaced`); },
+    move(pos) {
+      const to = this.moveTo;
+      return this.placeCall('api/move', { pos, to }, (r) => `${pos} moved to ${to}` + (r.deviation ? ` · ${r.deviation}` : ''));
+    },
+    wrapCls(c) {
+      if (c.empty) return 'empty';
+      const cl = [];
+      if (c.dev?.absent) cl.push('absent');
+      if (this.sel === this.cellObj(c).pos) cl.push('active');
+      if (this.q) cl.push(this.matches(c.dev) ? 'match' : 'faded');
+      else if (this.filter && !this.inFilter(c.dev, this.filter)) cl.push('faded');
+      return cl.join(' ');
+    },
+    tileStyle(c) {
+      if (c.empty || this.sel !== this.cellObj(c).pos) return '';
+      return `background:rgba(${RGB[this.phaseKey(this.cellObj(c))] || RGB.discover},.12)`;
+    },
+    colName(d) { return !d ? '' : d.col ? (COLNAME[d.col] || `col ${d.col}`) : 'full'; },
+
+    // ---- drawer ----
+    open(c) { if (c && !c.empty) this.select(this.cellObj(c).pos); },
+    // toggle a drawer by its key (device pos, <pos>.iomN, _sw-<id>, _sw-<id>.bmc)
+    select(key) {
+      this.actionMsg = null; this.stepM = null; this.artM = null;
+      this.sel = this.sel === key ? null : key;
+      history.replaceState(null, '', this.sel ? '#sel=' + this.sel : location.pathname);
+      if (this.sel) this.scrollToRun();
+    },
+    // a drawer opens on the step running now (or the now-line when none runs)
+    scrollToRun() {
+      setTimeout(() => {
+        const el = document.querySelector('.drawer .step.run') || document.querySelector('.drawer .now-line');
+        if (el) el.scrollIntoView({ block: 'center' });
+      }, 0);
+    },
+    close() { this.sel = null; this.stepM = null; this.artM = null; history.replaceState(null, '', location.pathname); },
+    // drawer header sub-line per kind
+    subLine(o) {
+      if (!o) return '';
+      if (o.type === 'iom') {
+        const d = o.dev;
+        return `OU ${d.ou} · ${d.pos} ${o.ep.toUpperCase()} · ${(d.names || {})[o.ep] || ''} · ${d.kind} ${d.part} · link ${(d.links || {})[o.ep] || '—'}`;
+      }
+      if (o.type === 'sw' || o.type === 'swbmc') {
+        const sw = o.sw, sp = sw.site_port || {};
+        return `OU ${sw.ou} · SW ${sw.id}${o.type === 'swbmc' ? ' BMC' : ''} · ${this.swKind(sw)}` +
+          (sp.switch ? ` · site ${sp.switch} ${sp.port}` : '');
+      }
+      return `OU ${o.ou} ${this.colName(o)} · ${o.pos} · ${(o.names || {}).host || (o.names || {}).host1 || (o.names || {}).iom1 || ''} · ${o.kind} ${o.part}`;
+    },
+    // the IOM's own link row (switch:port, seen MAC, oper from its switchportlink)
+    iomLink(o) {
+      if (!o || o.type !== 'iom') return null;
+      return this.liveRow(o.ep, (o.dev.links || {})[o.ep], (o.dev.live_links || {})[o.ep]);
+    },
+    // a drawer link row from the live monitor: name, BOM, what is seen now
+    liveRow(name, expected, l) {
+      l = l || { state: 'unknown', text: 'not read yet' };
+      return { name, expected, seen: `${l.state} · ${l.text}`, title: `read ${this.ago(l.at)}`,
+               state: { ok: 'ok', up: 'ok', down: 'bad', wrong: 'bad' }[l.state] || 'dimv' };
+    },
+    swLinkRows(o) {
+      if (!o || o.type !== 'sw') return [];
+      const sw = o.sw, sp = sw.site_port || {};
+      return Object.entries(sw.live_links || {}).sort().map(([n, l]) =>
+        this.liveRow(n, n === 'site' ? `${sp.switch} ${sp.port}` : `port ${n.slice(6)}`, l));
+    },
+    // a switch's address rows: SONiC mgmt, its BMC (wedges: opens the BMC drawer)
+    swAddr(o) {
+      if (!o || !o.sw) return [];
+      const sw = o.sw, out = [];
+      if (sw.sonic && o.type === 'sw') out.push({ role: 'SONIC', ...sw.sonic, key: null, note: sw.mgmt_ip && !String(sw.mgmt_ip).startsWith('fake-') ? `geometry mgmt_ip ${sw.mgmt_ip}` : 'dynamic lease (vid 26 pool)' });
+      if (sw.bmc) out.push({ role: 'BMC', ...sw.bmc, key: o.type === 'sw' ? `_sw-${sw.id}.bmc` : null, note: 'dynamic lease (vid 26 pool)' });
+      return out;
+    },
+    // identity facts beside the serial (whatever the kind's read carried)
+    // (facts the read's own rows already show are not repeated)
+    identRows(o) {
+      const i = this.identOf(o); if (!i) return [];
+      const shown = new Set((i.rows || []).map((r) => String(r[1]).split(' (')[0].toLowerCase()));
+      const L = { product_name: 'product', board_product: 'board product',
+                  board_serial: 'board serial', part_number: 'part number', service_tag: 'service tag',
+                  asset_tag: 'asset tag', local_mac: 'local MAC (BMC)', ext_mac_base: 'ext MAC base',
+                  base_mac: 'base MAC', syseeprom_serial: 'SONiC syseeprom serial', platform: 'platform' };
+      return Object.keys(L).filter((k) => i[k] && !shown.has(String(i[k]).toLowerCase()))
+        .map((k) => ({ k: L[k], v: i[k] }));
+    },
+    fwTarget(o) { return !o ? null : o.type === 'iom' ? o.dev.pos : o.sw ? '_sw-' + o.sw.id : o.pos; },
+    // the identity read's own rows, minus the versions the versions section shows
+    identReadRows(o) {
+      const i = this.identOf(o); if (!i) return [];
+      const v = new Set(this.verRows(o).map((r) => r.k));
+      return (i.rows || []).filter((r) => !v.has(r[0]));
+    },
+    portRows(o) { return (o && o.sw && o.type === 'sw' && o.sw.ports) || []; },
+    addrRows(d) {
+      if (!d) return [];
+      const rr = (d.runs || {})['bmc-reserved'] || (d.runs || {}).reserve;
+      const reserved = new Set(((rr || {}).detail?.reserved || []).map((x) => x.role));
+      const mac = { host: d.host_mac, bmc: d.bmc_mac };
+      const order = Object.keys(d.addrs).sort((a, b) => (a === 'bmc' ? -1 : b === 'bmc' ? 1 : a.localeCompare(b)));
+      return order.map((role) => {
+        const ok = reserved.has(role), failed = rr && rr.verdict === 'fail' && !ok;
+        return { role: role.toUpperCase(), ip: d.addrs[role], name: (d.names || {})[role],
+                 mac: role.startsWith('iom') ? (d.iom_macs || [])[Number(role.slice(3)) - 1] : mac[role],
+                 mark: ok ? '✓ reserved' : failed ? '✕ reserve' : '—', cls: ok ? 'ok' : failed ? 'bad' : 'no' };
+      });
+    },
+    linkRows(d) {
+      if (!d) return [];
+      return Object.keys(d.links).sort().map((n) => this.liveRow(n, d.links[n], (d.live_links || {})[n]));
+    },
+    async setPop(d, value) {
+      try { await api('api/pop', { pos: d.pos, profile: value === d.pop_default ? null : value }); }
+      catch (e) { this.actionMsg = 'POP: ' + e.message; }
+      await this.refresh();
+    },
+    // Discover may power on / cycle nodes not in the live image: the rack-wide run
+    // takes the typed order id (like Qualify); a drawer RETRY a plain confirm naming it.
+    discHosts() { return (this.s.devices || []).filter((d) => (d.qualify_rungs || []).length); },
+    openDiscover() { this.discovering = true; this.discText = ''; },
+    async doDiscover() {
+      this.discovering = false;
+      try { await api('api/stage/discover', { confirm: this.discText }); this.started('discover', 'discover started'); }
+      catch (e) { this.refused('discover: ' + e.message); }
+      await this.refresh();
+    },
+    async firmware(pos) {
+      try {
+        await api('api/stage/firmware', pos ? { positions: [pos] } : {});
+        const m = `firmware started${pos ? ' for ' + pos : ''} (detect only)`;
+        if (pos) this.actionMsg = m; else this.started('firmware', m);
+      } catch (e) { const m = 'firmware: ' + e.message; if (pos) this.actionMsg = m; else this.refused(m); }
+      await this.refresh();
+    },
+    async retry(pos) {
+      if (!pos) return;
+      if (!window.confirm(`Re-run Discover for ${pos} only? A node that is on but not in the live ` +
+                          'image is power-cycled into it.')) return;
+      try { await api('api/stage/discover', { positions: [pos], confirm: true }); this.actionMsg = `discover started for ${pos}`; }
+      catch (e) { this.actionMsg = 'discover: ' + e.message; }
+      await this.refresh();
+    },
+    // Cancel: the running stage stops between steps/phases (a power action already
+    // sent finishes); later steps are recorded skip "cancelled".
+    async cancelStage() {
+      const what = this.runRunning ? `run (now in ${this.s.stage})` : this.s.stage;
+      if (!window.confirm(`Cancel the running ${what}? It stops after the steps now running.`)) return;
+      const st = this.runRunning ? 'run' : this.s.stage;   // the Run, whatever stage it is in now
+      try { await api('api/stage/cancel', { confirm: true, stage: st }); this.started(st, `${st} cancelling…`); }
+      catch (e) { this.refused('cancel: ' + e.message); }
+      await this.refresh();
+    },
+    // Qualify power-cycles nodes, clears SELs and runs stress: the rack-wide run takes
+    // the typed order id (like Close); a drawer (per-node) run a plain confirm naming it.
+    qualHosts() { return (this.s.devices || []).filter((d) => (d.qualify_rungs || []).length); },
+    openQualify() { this.qualifying = true; this.qualText = ''; },
+    async doQualify() {
+      this.qualifying = false;
+      try { await api('api/stage/qualify', { confirm: this.qualText }); this.started('qualify', 'qualify started'); }
+      catch (e) { this.refused('qualify: ' + e.message); }
+      await this.refresh();
+    },
+    async qualify(pos) {
+      if (!window.confirm(`Re-qualify ${pos}? It is power-cycled into the live image, its SEL is ` +
+                          'cleared and it runs the stress battery.')) return;
+      try { await api('api/stage/qualify', { positions: [pos], confirm: true }); this.actionMsg = `qualify started for ${pos}`; }
+      catch (e) { this.actionMsg = 'qualify: ' + e.message; }
+      await this.refresh();
+    },
+    // ---- Deploy: wipes disks. Rack-wide = typed order id (+ reinstall of installed nodes
+    // with the same typed id); a drawer DEPLOY = its own confirm, waivers and reason, and a
+    // reinstall there takes the typed order id too ----
+    depHosts() { return (this.s.devices || []).filter((d) => (d.deploy_rungs || []).length); },
+    // the server's installed: an install passed in any pass (Start fresh keeps the disk)
+    installed(d) { return !!d && !!d.installed; },
+    depInstalled() { return this.depHosts().filter((d) => this.installed(d)).map((d) => d.pos); },
+    openDeploy() { this.deploying = true; this.depText = ''; this.depFrom = 'install'; this.depReinstall = false; },
+    async doDeploy() {
+      this.deploying = false;
+      const body = { confirm: this.depText, from: this.depFrom };
+      if (this.depFrom === 'install' && this.depReinstall) body.reinstall = this.depText;
+      try { await api('api/stage/deploy', body); this.started('deploy', 'deploy started'); }
+      catch (e) { this.refused('deploy: ' + e.message); }
+      await this.refresh();
+    },
+    openDeployDev(d) {
+      if (!d) return;
+      this.devFrom = this.installed(d) ? (this.s.lab ? 'checks' : 'firstboot') : 'install'; this.devReinText = ''; this.devReason = '';
+      this.devWaive = Object.fromEntries((d.gate_blockers || []).filter((r) => !r.startsWith('verdict ')).map((r) => [r, false]));
+      this.depM = { pos: d.pos, msg: null };
+    },
+    get depDev() { return this.depM ? (this.s.devices || []).find((d) => d.pos === this.depM.pos) || null : null; },
+    depWaived() { return Object.keys(this.devWaive || {}).filter((r) => this.devWaive[r]); },
+    // what still blocks the device with the ticked waivers (empty = it may enter Deploy)
+    depLeft() {
+      const d = this.depDev;
+      return !d || this.lateFrom(this.devFrom) ? [] : (d.gate_blockers || []).filter((r) => !this.depWaived().includes(r));
+    },
+    lateFrom(f) { return LATE_FROM.includes(f); },
+    fromNote(f) {
+      return f === 'firstboot' ? 'skip the install: boot the installed OS, then the rest'
+        : f === 'iperf' ? 'deployed nodes: iperf, then stress (no power action)'
+        : f === 'stress' ? 'deployed nodes: stress only (no power action)'
+        : f === 'checks' ? 'lab rack, a live host: its own OS kept (no install / first boot / flax-user), kind checks + stress' : '';
+    },
+    depReady() {
+      if (!this.depM || this.depLeft().length) return false;
+      if (this.depWaived().length && !this.devReason.trim()) return false;
+      // a reinstall wipes disks: the typed order id, like the rack-wide modal
+      return !(this.devFrom === 'install' && this.installed(this.depDev) && this.devReinText !== this.s.order);
+    },
+    async doDeployDev() {
+      const m = this.depM; if (!m) return;
+      const body = { positions: [m.pos], confirm: true, from: this.devFrom };
+      if (this.devFrom === 'install' && this.installed(this.depDev)) body.reinstall = this.devReinText;
+      const w = this.lateFrom(this.devFrom) ? [] : this.depWaived();
+      if (w.length) body.waive = { [m.pos]: { rungs: w, reason: this.devReason.trim() } };
+      try { await api('api/stage/deploy', body); this.depM = null; this.actionMsg = `deploy started for ${m.pos}`; }
+      catch (e) { this.depM = { ...m, msg: e.message }; }
+      await this.refresh();
+    },
+    // only while active: a waiver whose rungs have passed since is history (drawer only)
+    waiverChip(d) {
+      const w = d && d.waiver; if (!w || !w.active) return null;
+      return { t: 'waived', cls: 'amb', title: `Deploy gate waiver: ${w.rungs.join(', ')} · ${w.reason} · by ${w.who} · ${w.at}` };
+    },
+    // ---- Run: the server drives Discover → Firmware → Qualify → Deploy → Done; held
+    // before Deploy on any blocker, Continue to Deploy (waivers ticked here) goes on ----
+    get runRunning() { return !!this.s.run && this.s.run.state === 'running' && this.s.stage_running; },
+    runText() {
+      const r = this.s.run; if (!r) return '';
+      const st = `${r.stage || 'start'} (${r.n}/${r.of})`;
+      if (r.state === 'running') return `${st}${this.s.cancelling ? ' cancelling…' : ' running…'}`;
+      if (r.state === 'held') {
+        const now = Object.keys(this.runBlocked()).length, then = Object.keys(r.held || {}).length;
+        return `held before deploy · ${now} blocked now` + (now !== then ? ` (${then} at the hold)` : '');
+      }
+      if (r.state === 'interrupted') return `interrupted in ${st} (not resumed: Continue ` +
+        (this.runResumes() ? `re-runs ${r.stage})` : 'goes on)');
+      return `${r.state}${r.state === 'done' ? '' : ' in ' + st}`;
+    },
+    runTitle() {
+      const r = this.s.run; if (!r) return '';
+      return `run ${r.id} by ${r.who} since ${r.started_at}` + (r.finished_at ? ` · ended ${r.finished_at}` : '') +
+        ` · ${r.reinstall ? 'reinstall: installed disks wiped' : 'no reinstall: installed nodes deploy from firstboot'}`;
+    },
+    runInstalled() { return this.depHosts().filter((d) => this.installed(d)).map((d) => d.pos); },
+    openRun() { this.running = true; this.runConfirm = ''; this.runRein = false; this.runReinText = ''; },
+    async doRun() {
+      this.running = false;
+      const body = { confirm: this.runConfirm };
+      if (this.runRein) body.reinstall = this.runReinText;
+      try { await api('api/run', body); this.started('run', 'run started'); }
+      catch (e) { this.refused('run: ' + e.message); }
+      await this.refresh();
+    },
+    // the blockers NOW (the server re-reads the gate over this Run's results each poll;
+    // `held` is the hold's copy): a held key no longer blocked shows as cleared
+    runBlocked() { const r = this.s.run || {}; return r.blocked_now || r.held || {}; },
+    runResumes() { const r = this.s.run || {}; return r.state === 'interrupted' && ['discover', 'firmware', 'qualify'].includes(r.stage); },
+    runStrip() {
+      const r = this.s.run || {}, now = this.runBlocked(), rq = r.requalify || [];
+      if (r.state !== 'held') return [];
+      const keys = [...new Set([...Object.keys(now), ...Object.keys(r.held || {})])];
+      return keys.map((k) => now[k]
+        ? { k, text: now[k].join('; ') + (rq.includes(k) ? ' (Continue qualifies it first)' : ''), cls: '' }
+        : { k, text: 'cleared since the hold', cls: 'ok' });
+    },
+    // the devices blocked now, and per host its current Deploy-gate rungs to waive (the
+    // server's `waivable`: every gate-blocked host, none Discover blocks)
+    contKeys() { return Object.keys(this.runBlocked()); },
+    openContinue() {
+      const w = {}, wv = (this.s.run || {}).waivable || {};
+      for (const [k, rs] of Object.entries(wv)) {
+        if (rs.length) w[k] = Object.fromEntries(rs.map((r) => [r, false]));
+      }
+      this.contWaive = w; this.contReason = ''; this.contM = { msg: null };
+    },
+    contWaived() { return Object.entries(this.contWaive || {}).filter(([, rs]) => Object.values(rs).some(Boolean)); },
+    async doContinue() {
+      const body = { confirm: true }, w = this.contWaived();
+      if (w.length) body.waive = Object.fromEntries(w.map(([k, rs]) => [k, { rungs: Object.keys(rs).filter((r) => rs[r]), reason: this.contReason.trim() }]));
+      this.busy = true;
+      try {
+        const r = await api('api/run/continue', body);
+        const out = Object.keys(r.out || {}), rq = r.requalify || [];
+        this.contM = null;
+        this.started('run', r.resume ? `run continued: ${r.resume} again` :
+          `run continued: ` + (rq.length ? `qualify ${rq.join(', ')} first · ` : '') + `deploy ${r.deploy.join(', ') || 'after that'}` +
+          (out.length ? ` · left out: ${out.join(', ')}` : ''));
+      } catch (e) { this.contM = { msg: e.message }; }
+      this.busy = false;
+      await this.refresh();
+    },
+    async endRun() {
+      if (!window.confirm(`End run ${this.s.run.id}? Nothing more runs for it; every result stays on the tiles.`)) return;
+      try { await api('api/stage/cancel', { confirm: true }); this.refused(`run ${this.s.run.id} ended`); }
+      catch (e) { this.refused('end run: ' + e.message); }
+      await this.refresh();
+    },
+    // ---- Done: end summary (SDR/SEL, installed-OS captures), boot reset (hostname iPXE
+    // file + Redfish override; never a power action), components, then the customer CSVs.
+    // Rack-wide = typed order id (like Qualify); a drawer DONE a plain confirm naming it ----
+    doneHosts() { return (this.s.devices || []).filter((d) => (d.done_rungs || []).length); },
+    openDone() { this.finishing = true; this.doneText = ''; },
+    async doDone() {
+      this.finishing = false;
+      try { await api('api/stage/done', { confirm: this.doneText }); this.started('done', 'done started'); }
+      catch (e) { this.refused('done: ' + e.message); }
+      await this.refresh();
+    },
+    async doneDev(pos) {
+      if (!pos || !window.confirm(`Run Done for ${pos}? Its SDR/SEL and installed OS are read, its ` +
+                                  'boot override and hostname iPXE file are cleared (no power action), ' +
+                                  'and the customer CSVs are rewritten.')) return;
+      try { await api('api/stage/done', { positions: [pos], confirm: true }); this.actionMsg = `done started for ${pos}`; }
+      catch (e) { this.actionMsg = 'done: ' + e.message; }
+      await this.refresh();
+    },
+    get csvAt() { return (this.s.done || {}).csv_at || null; },
+    doneTitle() {
+      const base = 'run Done: per node SDR/SEL (non-benign SEL = fault) + installed-OS captures, clear the hostname iPXE file and the Redfish boot override (never a power action), list components from the Qualify inventory, then write the customer CSVs';
+      return this.csvAt ? `${base} · CSVs written ${this.csvAt}` : base;
+    },
+    openInv(d) {
+      const a = ((d && (d.runs || {}).inventory) || {}).artifacts || {};
+      const n = a['macinv-v'] ? 'macinv-v' : 'macinv';
+      if (a[n]) this.openArt({ name: n, url: a[n] });
+    },
+    invUrl(d) {
+      const a = ((d && (d.runs || {}).inventory) || {}).artifacts || {};
+      return a['macinv-v'] || a.macinv || null;
+    },
+
+    // ---- header stage buttons: one ✓ rule for all (stagePass) ----
+    // what a tile stands for: a device, a JBOD's IOMs (each its own endpoint), a switch
+    tileObjs() {
+      const out = [];
+      for (const d of this.s.devices || []) {
+        const ioms = Object.keys(d.links || {}).filter((k) => /^iom\d+$/.test(k));
+        if (ioms.length) out.push(...ioms.map((k) => iomObj(d, k))); else out.push(d);
+      }
+      return out.concat((this.s.switches || []).map(swObj));
+    },
+    // {n, of}: the endpoints the stage applies to (it has steps for them) and how many
+    // passed it this pass (Firmware: read to the end, whatever it found)
+    stagePass(p) {
+      // a lab rack's absent slots are not judged: they count in no stage button
+      const os = this.tileObjs().filter((o) => !(o.absent || o.dev?.absent) && this.stepEntries(o, p).length);
+      return { n: os.filter((o) => this.chipState(o, p) === 'done').length, of: os.length };
+    },
+    stageOk(p) {
+      if (p === 'run') {
+        const r = this.s.run;
+        return !!r && r.state === 'done' && STAGE_BTNS.slice(1).every(([k]) => this.stageOk(k));
+      }
+      const x = this.stagePass(p);
+      return x.of > 0 && x.n === x.of;
+    },
+    stageLit(p) { return p === 'run' ? this.runRunning : !!this.s.stage_running && this.s.stage === p; },
+    stageBtns() {
+      const tip = { run: this.runTip(), discover: 'run Discover for this rack: Post\'s 16-step ladder per device (switch port → MACs → Kea reserve/lease → power-on → live boot → BMC ready); powers on / cycles nodes not in the live image',
+                    firmware: 'run Firmware for this rack: Post\'s 6 steps per device (BMC Redfish, BIOS dmidecode, Mellanox mstflint query vs the loose-node manifests) -- detect only, never flashes',
+                    qualify: this.qualifyTitle(), deploy: this.deployTitle(), done: this.doneTitle() };
+      return STAGE_BTNS.map(([key, label]) => {
+        const lit = this.stageLit(key), ok = !lit && this.stageOk(key);
+        const x = key === 'run' ? null : this.stagePass(key);
+        const sub = lit ? 'running' : key === 'run' ? ((this.s.run || {}).state || '—') : `${x.n}/${x.of}`;
+        const rule = key === 'run' ? '✓ = this Run done and every stage ✓'
+          : key === 'firmware' ? `✓ = read for every device (report only) · ${x.n}/${x.of} read`
+          : `✓ = passed this pass for every device it applies to · ${x.n}/${x.of} passed`;
+        const why = this.s.closed_at ? 'order is closed · ' : this.s.stage_running && !lit ? 'a stage is running · ' : '';
+        return { key, label, cls: lit ? 'lit' : ok ? 'ok' : '', sub, title: `${why}${tip[key]} · ${rule}${lit ? ' · running now' : ''}` };
+      });
+    },
+    runTip() { return 'Run: Discover → Firmware → Qualify → Deploy → Done, driven by the server; all pass = straight through, any failure = held before Deploy with the blockers listed (then Continue to Deploy)'; },
+    stageGo(k) {
+      ({ run: () => this.openRun(), discover: () => this.openDiscover(), firmware: () => this.firmware(),
+         qualify: () => this.openQualify(), deploy: () => this.openDeploy(), done: () => this.openDone() })[k]();
+    },
+    csvLinks() {
+      const n = (this.s.done || {}).csv_names || {};
+      const what = { devices: 'physical: serials, MACs, front-panel ports', firmware: 'firmware versions + Qualify / Deploy / Done verdicts',
+                     inventory: 'the parts of each node\'s latest Qualify inventory' };
+      return ['devices', 'firmware', 'inventory'].map((k) => ({ k, name: n[k] || `${k}.csv`, what: what[k] }));
+    },
+
+    // ---- drawer PWR / IDNT (a host's BMC) ----
+    hostBmc(d) { return !!d && !!(d.addrs || {}).bmc && (d.qualify_rungs || []).length > 0; },
+    pwrTitle(d) { return (d && (this.power({ dev: d }) || {}).title) || ''; },
+    pwrCls(d) { const p = d && (d.bmc_live || {}).power; return p === 'on' ? 'on' : p === 'off' ? 'off' : 'unk'; },
+    // why the server refuses a power action for d now ('' = it may): a stage runs for it
+    pwrHeld(d) {
+      if (!d || !this.s.stage_running) return '';
+      const sp = this.s.stage_positions;
+      if (sp && !sp.includes(d.pos)) return '';
+      return `${this.s.stage || 'a stage'} runs for ${sp ? d.pos : 'the rack'}`;
+    },
+    get pwrDev() { return this.pwrM ? (this.s.devices || []).find((d) => d.pos === this.pwrM.pos) || null : null; },
+    get idntDev() { return this.idntM ? (this.s.devices || []).find((d) => d.pos === this.idntM.pos) || null : null; },
+    openPwr(d) { if (this.hostBmc(d) && !this.s.closed_at) { this.pwrChoice = null; this.pwrConfirm = false; this.pwrM = { pos: d.pos, ip: d.addrs.bmc, msg: null }; } },
+    async doPower() {
+      const m = this.pwrM, a = this.pwrChoice; if (!m || !a) return;
+      this.busy = true; this.pwrConfirm = false; this.pwrM = { ...m, msg: `power ${a}…` };
+      try {
+        const r = await api('api/power', a === 'on' ? { pos: m.pos, action: a } : { pos: m.pos, action: a, confirm: m.pos });
+        if (this.pwrM) this.pwrM = { ...m, msg: `power ${a} ok · now ${r.power || '?'}` };
+      } catch (e) { if (this.pwrM) this.pwrM = { ...m, msg: e.message }; }
+      this.busy = false;
+      await this.refresh();
+    },
+    identOn(d) {
+      const x = d && d.ident; if (!x || !x.on) return false;
+      return x.mode === 'force' || !x.until || Date.parse(x.until) > this.now;
+    },
+    identTitle(d) {
+      const x = d && d.ident; if (!x) return 'identify: not set from here';
+      const st = this.identOn(d) ? (x.mode === 'force' ? 'on (force, until off)' : `on until ${new Date(x.until).toLocaleTimeString()}`) : 'off';
+      return `identify ${st}` + (x.reported ? ` · BMC reports ${x.reported}` : ' · BMC does not report it: last command') + ` · ${x.mode} by ${x.who} ${x.at}`;
+    },
+    openIdnt(d) { if (this.hostBmc(d) && !this.s.closed_at) { this.idntMode = this.identOn(d) ? 'off' : 'on'; this.idntM = { pos: d.pos, ip: d.addrs.bmc, msg: null }; } },
+    async doIdent() {
+      const m = this.idntM; if (!m) return;
+      this.busy = true;
+      try {
+        const r = await api('api/identify', { pos: m.pos, mode: this.idntMode });
+        if (this.idntM) this.idntM = { ...m, msg: `identify ${this.idntMode} ok` + (r.ident && r.ident.reported ? ` · ${r.ident.reported}` : '') };
+      } catch (e) { if (this.idntM) this.idntM = { ...m, msg: e.message }; }
+      this.busy = false;
+      await this.refresh();
+    },
+
+    // ---- start fresh (a new pass) ----
+    passTitle() {
+      const p = this.s.pass || {};
+      return `pass ${p.id} since ${p.started_at} by ${p.who}: ${p.reason}\nearlier passes: in the process report`;
+    },
+    openFresh() { this.freshing = true; this.freshText = ''; this.freshReason = ''; this.freshMsg = null; },
+    async doFresh() {
+      this.busy = true; this.freshMsg = 'starting…';
+      try {
+        const r = await api('api/fresh', { confirm: this.freshText, reason: this.freshReason });
+        this.freshing = false; this.refused(`pass ${r.pass.id} started`);
+      } catch (e) { this.freshMsg = 'start fresh refused: ' + e.message; }
+      this.busy = false;
+      await this.refresh();
+    },
+
+    // ---- close order ----
+    openClose() { this.closing = true; this.confirmText = ''; this.closeMsg = null; },
+    async doSnapshot() {
+      this.busy = true; this.closeMsg = 'snapshot…';
+      try {
+        const r = await api('api/snapshot', { confirm: this.confirmText });
+        this.closeMsg = `pass ${r.pass} kept in snapshots/pass-${r.pass}/ (${(r.files || []).length} file(s)); ${(r.archived || {}).devices || 0} device(s) archived; the rack stays open`;
+      } catch (e) { this.closeMsg = 'snapshot failed: ' + e.message; }
+      this.busy = false;
+      await this.refresh();
+    },
+    async doClose() {
+      this.busy = true; this.closeMsg = 'closing…';
+      try {
+        const r = await api('api/close', { confirm: this.confirmText });
+        this.closeMsg = `closed; ${(r.archived || {}).devices || 0} device(s) archived; ${r.released} reservation(s) released`;
+      } catch (e) { this.closeMsg = 'close failed, order stays open: ' + e.message; }
+      this.busy = false;
+      await this.refresh();
+    },
+  };
+}
+
+function mount() {
+  if (window.PetiteVue) { window.App = App; window.PetiteVue.createApp({ App }).mount('#app'); }
+  else setTimeout(mount, 20);
+}
+mount();

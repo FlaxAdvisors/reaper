@@ -1,0 +1,27 @@
+---
+- name: Reload systemd
+  become: true
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Restart kea-dhcp4
+  # VIP-exclusive: only the keepalived master runs kea. Restart it only if it is
+  # already active, so a config change lands on the master and a stopped kea
+  # (standby, or a fresh site before cutover) is never started here.
+  become: true
+  ansible.builtin.shell: systemctl is-active --quiet kea-dhcp4.service && systemctl restart kea-dhcp4.service || true
+  changed_when: true
+
+- name: Reload firewalld
+  become: true
+  ansible.builtin.command:
+    cmd: firewall-cmd --reload
+  changed_when: true
+
+- name: Restart kea-dhcp6
+  # VIP-exclusive: only the keepalived master runs kea. Restart it only if it is
+  # already active, so a config change lands on the master and a stopped kea
+  # (standby, or a fresh site before cutover) is never started here.
+  become: true
+  ansible.builtin.shell: systemctl is-active --quiet kea-dhcp6.service && systemctl restart kea-dhcp6.service || true
+  changed_when: true

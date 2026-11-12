@@ -1,0 +1,60 @@
+---
+# ISO media the managed /export/install autoinstalls boot (spec 2026-11-10-install-files-into-reaper).
+# apply_install_media makes every bang hold each one under /export/isos/<path>, sha256-verified,
+# and loop-mounts it at /export/install/<mount>. url: upstream download (sha256 cross-checked
+# against the vendor's published sums 2026-11-10); null = copy bang-to-bang from a peer only
+# (Leap -Current is re-spun upstream under the same name; VMware has no public download).
+# No ISO is ever committed (operator rule: no binaries in git).
+isos:
+  - path: canonical/ubuntu/24.04/ubuntu-24.04.5-live-server-amd64.iso
+    size: 4080486400
+    sha256: 97f3d7ffb032c3eb3b23d2c8be9cc76e60c2c1f2c0146ba5ba9fe01cafae0fd8
+    url: https://releases.ubuntu.com/24.04.5/ubuntu-24.04.5-live-server-amd64.iso
+    mount: canonical/ubuntu/24.04/ga
+  - path: canonical/ubuntu/22.04/ubuntu-22.04.5-live-server-amd64.iso
+    size: 2136926208
+    sha256: 9bc6028870aef3f74f4e16b900008179e78b130e6b0b9a140635434a46aa98b0
+    url: https://releases.ubuntu.com/22.04.5/ubuntu-22.04.5-live-server-amd64.iso
+    mount: canonical/ubuntu/22.04/ga
+  - path: canonical/ubuntu/18.04/ubuntu-18.04.6-server-amd64.iso
+    size: 1010827264
+    sha256: f5cbb8104348f0097a8e513b10173a07dbc6684595e331cb06f93f385d0aecf6
+    url: https://cdimage.ubuntu.com/releases/18.04/release/ubuntu-18.04.6-server-amd64.iso
+    mount: canonical/ubuntu/18.04/iso
+  - path: suse/leap/15/openSUSE-Leap-15.6-DVD-x86_64-Current.iso
+    size: 4631560192
+    sha256: a74d4072e639c75ca127df3d869c1e57bcc44a093a969550f348a3ead561fe4f
+    url: null
+    mount: suse/leap/15.6/ga
+  - path: redhat/centos/7/CentOS-7-x86_64-DVD-2009.iso
+    size: 4712300544
+    sha256: e33d7b1ea7a9e2f38c8f693215dd85254c3a4fe446f93f563279715b68d07987
+    url: https://vault.centos.org/7.9.2009/isos/x86_64/CentOS-7-x86_64-DVD-2009.iso
+    mount: redhat/centos/7/ga
+  - path: vmware/7.0.0/esxi-7.0u1-with-ks-com2-baud57600.iso
+    size: 374771712
+    sha256: f12b32b8b976f925daff53542c15dd0f164616f3431e929edecf704487d1177b
+    url: null
+    mount: null
+  - path: vmware/7.0.0/VMware-VMvisor-Installer-7.0U1-16850804.x86_64.iso
+    size: 374423552
+    sha256: 5c72f1b26e24e2c6195846f555a2f767a3c6e8394ba35769b5be25e51e84ba80
+    url: null
+    mount: null
+  # ex ghost mountisos (2026-11-10)
+  - path: canonical/ubuntu/20.04/ubuntu-20.04.1-legacy-server-amd64.iso
+    size: 855638016
+    sha256: f11bda2f2caed8f420802b59f382c25160b114ccc665dbac9c5046e7fceaced2
+    url: https://cdimage.ubuntu.com/ubuntu-legacy-server/releases/20.04/release/ubuntu-20.04.1-legacy-server-amd64.iso
+    mount: canonical/ubuntu/20.04/iso
+  # ONIE recovery images: no public download, peers only
+  - path: onie/onie-recovery-x86_64-accton_wedge100_32x-r0.iso
+    size: 28573696
+    sha256: ec60eb96c47e1952fdba9f2e1fff82fd2b9be42daa4dc334e9444eedbd93203e
+    url: null
+    mount: onie/wedge100/ga
+  - path: onie/onie-recovery-x86_64-accton_wedge100s_32x-r0.iso
+    size: 34734080
+    sha256: 7ccdc51f8538f2b1aa229935a6563265e0f3fb13f3e4474f41e1ef10b9008761
+    url: null
+    mount: onie/wedge100s/ga

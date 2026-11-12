@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% import "_components.html" as c %}
+{% block title %}flax-control — triage{% endblock %}
+{% block content %}
+<style>
+  /* State-var cells — colours echo the old switchportrecon 10988 dashboard. */
+  #triage-tbl td.st-good    { background:#173d23; color:#7ee2a0; }
+  #triage-tbl td.st-bad     { background:#43181b; color:#f3a0a6; }
+  #triage-tbl td.st-neutral { background:transparent; color:#888; }
+  #triage-tbl td.st-good, #triage-tbl td.st-bad, #triage-tbl td.st-neutral {
+    text-align:center; font-size:15px; white-space:nowrap; padding:3px 6px;
+  }
+  #triage-tbl th.var { font-size:14px; writing-mode:vertical-rl; transform:rotate(180deg);
+                       white-space:nowrap; padding:6px 2px; vertical-align:bottom; }
+  #triage-tbl tr.unobserved td.port-cell { opacity:.55; }
+</style>
+{{ c.page_header('Triage', 'Triage rack ports (from geometry.json) with their flax-observe state vars + transition times — only triage ports (turtle/post ports are excluded).') }}
+<p class="page-sub"><a href="/bmc-fw-triage">BMC firmware (triage) →</a></p>
+{% if rows %}
+<div class="filter-bar">
+  <label>filter <input class="table-filter" data-table="triage-tbl" type="search" placeholder="port, ou, switch…"></label>
+  <span class="muted">{{ rows | length }} triage port{{ '' if rows|length == 1 else 's' }}</span>
+  <span class="muted" id="triage-updated" style="margin-left:auto;" title="this page auto-refreshes">live</span>
+</div>
+<div class="table-scroll">
+<table class="data-table sortable" id="triage-tbl">
+  <thead>
+    <tr>
+      <th>Port</th><th>OU</th><th>Switch</th>
+      {% for v in var_order %}<th class="var" data-nosort>{{ v }}</th>{% endfor %}
+      <th data-nosort>Last polled</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for r in rows %}
+    <tr class="{{ '' if r.observed else 'unobserved' }}">
+      <td class="port-cell"><a href="/switches/{{ r.switch }}/{{ r.port_url }}"><code>{{ r.port }}</code></a></td>
+      <td>{{ r.ou or '—' }}</td>
+      <td><a href="/switches/{{ r.switch }}">{{ r.switch }}</a></td>
+      {% for cell in r.cells %}
+      <td class="st-{{ cell.cls }}" title="{{ cell.name }}{% if cell.since %} · since {{ cell.since }}{% else %} · never{% endif %}">{{ cell.value }}</td>
+      {% endfor %}
+      <td class="muted">{{ r.last_polled or '—' }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="empty">No triage ports in geometry.json (or geometry.json not mounted).</p>
+{% endif %}
+
+<script>
+/* Keep the triage table live (the old switchportrecon 10988 dashboard
+   auto-refreshed too). Re-fetch this page every INTERVAL ms and swap in the
+   fresh <tbody> + count, so observe_state changes (power on/off, ping, inventory)
+   appear without a manual reload. Scroll position is preserved (only the tbody
+   body is replaced); the text filter is re-applied; a manual column sort resets
+   to the default OU order on refresh. */
+(function () {
+  var INTERVAL = 15000;
+  var updated = document.getElementById("triage-updated");
+  function stamp() {
+    if (updated) updated.textContent = "updated " + new Date().toLocaleTimeString();
+  }
+  stamp();
+  async function refresh() {
+    try {
+      var resp = await fetch(window.location.pathname + window.location.search,
+                             { cache: "no-store" });
+      if (!resp.ok) return;
+      var doc = new DOMParser().parseFromString(await resp.text(), "text/html");
+      var fresh = doc.querySelector("#triage-tbl tbody");
+      var cur = document.querySelector("#triage-tbl tbody");
+      if (fresh && cur) cur.innerHTML = fresh.innerHTML;
+      var fc = doc.querySelector(".filter-bar .muted");
+      var cc = document.querySelector(".filter-bar .muted");
+      if (fc && cc) cc.textContent = fc.textContent;
+      var f = document.querySelector('.table-filter[data-table="triage-tbl"]');
+      if (f && f.value) f.dispatchEvent(new Event("input", { bubbles: true }));
+      stamp();
+    } catch (e) { /* transient error — retry next tick */ }
+  }
+  setInterval(refresh, INTERVAL);
+})();
+</script>
+{% endblock %}

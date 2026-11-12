@@ -1,0 +1,20 @@
+latest inventory in post-02face0037fa is from 2026-10-30T00:44:18Z (0 days 00:00:00 ago)
+==========
+BMC MAC1: 02:fa:ce:00:37:fc
+BMC MAC8: 
+BMC Version:  1.04  Wiwynn Corporation
+BIOS Version: TPO_P26F, Release Date: 10/15/2020, BIOS Revision: 5.14, Firmware Revision: 1.4
+System Mfg: Wiwynn , Product Name: SV7220G3, UUID: 00000000-0000-4000-8000-0000fa4e0037
+Base Board Serial: WTHFAKE0000B1
+Chassis Serial: C.M.B60.00X1C.000FAKE000000I
+Board Mfg: Wistron, Product: Tioga Pass Single Side, Serial: WTHFAKE0000B1, Part Number: B91.00X10.0010, Product Serial: WTHFAKE0000P1, Chassis Serial: C.M.B60.00X1C.000FAKE000000I
+Addon FRU: HPE, Product: HPE Eth 10/25Gb 2p 640SFP28 Adptr, Serial: ILCFAKE0R6, Part Number: 840140-001, Product Serial: ILCFAKE0R6
+2 Processor Version: Intel(R) Xeon(R) Gold 6138 CPU @ 2.00GHz
+4 Memory Size: 32 GB, Speed: 2666 MT/s, Mfg: Micron, Part: 36ASF4G72PZ-2G6D1
+1 Model: "Mellanox MCX4411A-ACQN, ConnectX-4 Lx EN OCP, 1x25Gb", SubVendor: pci 0x15b3 "Mellanox Technologies", SubDevice: pci 0x0020 "MCX4411A-ACQN, ConnectX-4 Lx EN OCP, 1x25Gb"
+2 Model: "Mellanox Stand-up ConnectX-4 Lx EN, 25GbE dual-port SFP28, PCIe3.0 x8, MCX4121A-ACAT", SubVendor: pci 0x15b3 "Mellanox Technologies", SubDevice: pci 0x0003 "Stand-up ConnectX-4 Lx EN, 25GbE dual-port SFP28, PCIe3.0 x8, MCX4121A-ACAT"
+1 Model: "ASPEED AST1000/2000", Device: pci 0x2000 "AST1000/2000", SubDevice: pci 0x2000 , Revision: 0x41
+1 Model: "Intel C620 Series Chipset Family SATA Controller [AHCI mode]", SubVendor: pci 0x8086 "Intel Corporation", SubDevice: pci 0x7270 , Driver: "ahci"
+1 Model: "Intel C620 Series Chipset Family SSATA Controller [AHCI mode]", SubVendor: pci 0x8086 "Intel Corporation", SubDevice: pci 0x7270 , Driver: "ahci"
+1 
+

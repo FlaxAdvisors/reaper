@@ -1,0 +1,436 @@
+{
+    "swp1": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        },{
+            "vlan": 4
+        },{
+            "vlan": 6
+        },{
+            "vlan": 8
+        },{
+            "vlan": 10
+        },{
+            "vlan": 12
+        },{
+            "vlan": 16
+        },{
+            "vlan": 17
+        },{
+            "vlan": 18
+        },{
+            "vlan": 19
+        },{
+            "vlan": 20
+        },{
+            "vlan": 21
+        },{
+            "vlan": 22
+        },{
+            "vlan": 23
+        },{
+            "vlan": 24
+        },{
+            "vlan": 25
+        },{
+            "vlan": 26
+        },{
+            "vlan": 27
+        },{
+            "vlan": 28
+        },{
+            "vlan": 29
+        },{
+            "vlan": 30
+        },{
+            "vlan": 31
+        }
+    ],
+    "swp2": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp3": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp4": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp5": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp6": [{
+            "vlan": 4,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp7": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp8": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp9": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp10": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp11": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp12": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp13": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp14": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp15": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp16": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp17": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp18": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp19": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp20": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp21": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp22": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp23": [{
+            "vlan": 26,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp24": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp25": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp26": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp27": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp28": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp29": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp30": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp31": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp32": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp33": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp34": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp35": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp36": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp37": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp38": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp39": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp40": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp41": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp42": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp43": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp44": [{
+            "vlan": 24,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp45": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp46": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp47": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp48": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp49": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp50": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp51": [{
+            "vlan": 2,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        }
+    ],
+    "swp52": [{
+            "vlan": 1,
+            "flags": ["PVID","Egress Untagged"
+            ]
+        },{
+            "vlan": 2
+        },{
+            "vlan": 4
+        },{
+            "vlan": 6
+        },{
+            "vlan": 8
+        },{
+            "vlan": 10
+        },{
+            "vlan": 12
+        },{
+            "vlan": 16
+        },{
+            "vlan": 17
+        },{
+            "vlan": 18
+        },{
+            "vlan": 19
+        },{
+            "vlan": 20
+        },{
+            "vlan": 21
+        },{
+            "vlan": 22
+        },{
+            "vlan": 23
+        },{
+            "vlan": 24
+        },{
+            "vlan": 25
+        },{
+            "vlan": 26
+        },{
+            "vlan": 27
+        },{
+            "vlan": 28
+        },{
+            "vlan": 29
+        },{
+            "vlan": 30
+        },{
+            "vlan": 31
+        }
+    ],
+    "bridge": [{
+            "vlan": 8
+        },{
+            "vlan": 16
+        },{
+            "vlan": 17
+        },{
+            "vlan": 18
+        },{
+            "vlan": 19
+        },{
+            "vlan": 20
+        },{
+            "vlan": 21
+        },{
+            "vlan": 22
+        },{
+            "vlan": 23
+        },{
+            "vlan": 24
+        },{
+            "vlan": 25
+        },{
+            "vlan": 26
+        },{
+            "vlan": 27
+        },{
+            "vlan": 28
+        },{
+            "vlan": 29
+        },{
+            "vlan": 30
+        },{
+            "vlan": 31
+        }
+    ]
+}

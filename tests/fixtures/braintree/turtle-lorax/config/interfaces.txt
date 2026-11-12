@@ -1,0 +1,18 @@
+auto swp1
+iface swp1
+    bridge-pvid 1
+    bridge-vids 2 6
+
+auto swp2
+iface swp2
+    bridge-pvid 1
+    bridge-vids 2 6
+
+auto swp3
+iface swp3
+
+auto bridge
+iface bridge
+    bridge-pvid 1
+    bridge-vids 1 2 4 6 8 10 12
+    bridge-vlan-aware yes

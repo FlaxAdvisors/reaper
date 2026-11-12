@@ -1,0 +1,21 @@
+[Unit]
+Description=flax-post-nginx — TLS front for the Post Servers viewer (:{{ apply_flax_post_https_port }} -> :{{ apply_flax_post_web_port }})
+After=docker.service network-online.target flax-stack.service flax-post.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+# VIP-gate — master-only, tracks the viewer it fronts (the viewer is VIP-exclusive).
+ExecStartPre=/bin/bash -c '. /etc/flax/site.env && ip -o -4 addr | grep -qE " $${MGMT_VIP}/"'
+ExecStart=/usr/bin/docker run --rm --init --name flax-post-nginx \
+    --network host \
+    -v /etc/flax/nginx/flax-post-nginx.conf:/etc/nginx/conf.d/default.conf:ro \
+    -v /etc/flax/nginx/tls:/etc/nginx/tls:ro \
+    {{ apply_flax_post_nginx_image }}
+ExecStop=/usr/bin/docker stop flax-post-nginx
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,17 @@
+Capability codes: (R) Router, (B) Bridge, (O) Other
+LocalPort    RemoteDevice          RemotePortID       Capability    RemotePortDescr
+-----------  --------------------  -----------------  ------------  -------------------------------------------
+Ethernet0    turtle-gouda.ehv.lab  Gi1/0/21           B             F4 rack E1050 uplink (swp25) - post vlan 32
+Ethernet4    tiogapass             b8:59:9f:ac:1e:a8  O             eth0
+Ethernet4    rr101-l05             b8:59:9f:ac:1e:a6  O             enp94s0np0
+Ethernet6    tiogapass             0c:42:a1:e1:6b:52  O             eth0
+Ethernet6    rr101-l37             0c:42:a1:e1:6b:50  O             enp94s0np0
+Ethernet7    tiogapass             b8:59:9f:b8:47:84  O             eth0
+Ethernet7    rr101-c37             b8:59:9f:b8:47:82  O             enp94s0np0
+Ethernet40   tiogapass             b8:59:9f:b8:5e:fc  O             eth0
+Ethernet40   rr101-r37             b8:59:9f:b8:5e:fa  O             enp94s0np0
+Ethernet42   tiogapass             b8:59:9f:ac:19:e6  O             eth0
+Ethernet42   rr101-r05             b8:59:9f:ac:19:e4  O             enp94s0np0
+eth0         turtle-gouda.ehv.lab  Gi1/0/19           B             Zone E switch DUTs (W100S x4) - OOB mgmt
+--------------------------------------------------
+Total entries displayed:  12

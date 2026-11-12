@@ -1,0 +1,11 @@
+---
+# Loopback-only: reached exclusively via flax-stack's nginx TLS vhost
+# (viewer.<host>.<bang_domain>, see apply_flax_stack's nginx.conf.j2),
+# the same pattern as the post/triage/console backends. No auth of its own.
+apply_post_fleet_viewer_bind: 127.0.0.1
+apply_post_fleet_viewer_port: 8799
+apply_post_fleet_viewer_dest_dir: /opt/flax/bin
+apply_post_fleet_viewer_script: post_fleet_viewer.py
+# The script needs python >= 3.7 (ThreadingHTTPServer, subprocess.run(capture_output=)).
+# a bang's system /usr/bin/python3 is 3.6; python3.12 is on every bang.
+apply_post_fleet_viewer_python: /usr/bin/python3.12

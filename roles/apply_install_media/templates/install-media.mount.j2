@@ -1,0 +1,13 @@
+# reaper apply_install_media: {{ item.path }} (files/install-media.yml)
+[Unit]
+Description=install media {{ item.path }}
+After=local-fs.target
+
+[Mount]
+What={{ apply_install_media_isos_root }}/{{ item.path }}
+Where={{ apply_install_media_mount_root }}/{{ item.mount }}
+Type=iso9660
+Options=ro,loop
+
+[Install]
+WantedBy=multi-user.target

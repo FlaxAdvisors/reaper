@@ -1,0 +1,459 @@
+! Command: show running-config
+! device: rabbit-rhythm (WEDGE100S12V, EOS-4.27.0F)
+!
+! boot system flash:/EOS-4.27.0F.swi
+!
+no aaa root
+!
+username admin role network-admin secret sha512 $6$3nHPrw5vdN8ylrRi$7ziq9aX/T3P1ON0qZhvsoxmzHN3icxa9OH5gXyg0lBmQq7zHUl9YGGAgS3XJ4MI5NEpuH3qwDJvjqh.FMJzKM/
+!
+service routing protocols model ribd
+!
+hostname rabbit-rhythm
+ip name-server vrf default 192.168.88.10
+!
+snmp-server contact ops@example.com
+snmp-server location lavergne
+snmp-server community {{ vault_cfg_snmp_ro_community }} ro
+!
+spanning-tree mode mstp
+!
+service unsupported-transceiver sesame f71a13ed
+!
+vlan 2
+   name corp
+!
+vlan 4
+   name mgmt
+!
+vlan 16
+   name triage-leopard
+!
+vlan 17
+   name triage-tiogapass
+!
+vlan 18
+   name triage-wedge100s
+!
+vlan 19
+   name triage-wedge400
+!
+vlan 20
+   name triage-yv3
+!
+vlan 21
+   name triage-brycecanyon
+!
+vlan 22
+   name triage-lightning
+!
+vlan 23
+   name triage-grandcanyon
+!
+vlan 24
+   name post-leopard
+!
+vlan 25
+   name post-tiogapass
+!
+vlan 26
+   name oob-wedge100s
+!
+vlan 27
+   name oob-wedge400
+!
+vlan 28
+   name post-yv3
+!
+vlan 29
+   name post-brycecanyon
+!
+vlan 30
+   name post-lightning
+!
+vlan 31
+   name post-howlin
+!
+vlan 32
+   name post-c2g
+!
+vlan 33
+   name post-muddy
+!
+management api http-commands
+   no shutdown
+   !
+   vrf default
+      no shutdown
+!
+interface Ethernet1/1
+   description bang-rhythm
+   speed forced 25gfull
+   switchport trunk native vlan 4
+   switchport trunk allowed vlan 4,16-25,28-33
+   switchport mode trunk
+!
+interface Ethernet1/2
+   description bang-blues
+   speed forced 25gfull
+   switchport trunk native vlan 4
+   switchport trunk allowed vlan 4,16-25,28-33
+   switchport mode trunk
+!
+interface Ethernet1/3
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet1/4
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet2/1
+   description rabbit-howlin
+   switchport access vlan 31
+!
+interface Ethernet3/1
+   description rabbit-blues
+   switchport trunk allowed vlan 4,24-30
+   switchport mode trunk
+!
+interface Ethernet4/1
+   shutdown
+!
+interface Ethernet5/1
+   shutdown
+!
+interface Ethernet6/1
+   shutdown
+!
+interface Ethernet7/1
+   shutdown
+!
+interface Ethernet8/1
+   shutdown
+!
+interface Ethernet9/1
+   shutdown
+!
+interface Ethernet10/1
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet10/2
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet10/3
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet10/4
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet11/1
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet11/2
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet11/3
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet11/4
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet12/1
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet12/2
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet12/3
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet12/4
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet13/1
+   shutdown
+   speed forced 100gfull
+!
+interface Ethernet13/2
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet13/3
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet13/4
+   speed forced 25gfull
+   switchport access vlan 8
+!
+interface Ethernet14/1
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet14/2
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet14/3
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet14/4
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet15/1
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet15/2
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet15/3
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet15/4
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet16/1
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet16/2
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet16/3
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet16/4
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet17/1
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet17/2
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet17/3
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet17/4
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet18/1
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet18/2
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet18/3
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet18/4
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet19/1
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet19/2
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet19/3
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet19/4
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet20/1
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet20/2
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet20/3
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet20/4
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet21/1
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet21/2
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet21/3
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet21/4
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet22/1
+   shutdown
+!
+interface Ethernet23/1
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet23/2
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet23/3
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet23/4
+   shutdown
+   speed forced 25gfull
+!
+interface Ethernet24/1
+   shutdown
+!
+interface Ethernet25/1
+   description mezz-flash station (OU16)
+   speed forced 25gfull
+   switchport access vlan 16
+!
+interface Ethernet25/2
+   description mezz-flash station (OU16)
+   speed forced 25gfull
+   switchport access vlan 16
+!
+interface Ethernet25/3
+   description mezz-flash station (OU16)
+   speed forced 25gfull
+   switchport access vlan 16
+!
+interface Ethernet25/4
+   description mezz-flash station (OU16)
+   speed forced 25gfull
+   switchport access vlan 17
+!
+interface Ethernet26/1
+   shutdown
+!
+interface Ethernet27/1
+   shutdown
+!
+interface Ethernet28/1
+   description rabbit-muddy
+   switchport access vlan 33
+!
+interface Ethernet29/1
+   speed forced 25gfull
+   switchport access vlan 16
+!
+interface Ethernet29/2
+   speed forced 25gfull
+   switchport access vlan 16
+!
+interface Ethernet29/3
+   speed forced 25gfull
+   switchport access vlan 16
+!
+interface Ethernet29/4
+   speed forced 25gfull
+   switchport access vlan 16
+!
+interface Ethernet30/1
+   speed forced 25gfull
+   switchport access vlan 16
+!
+interface Ethernet30/2
+   speed forced 25gfull
+   switchport access vlan 16
+!
+interface Ethernet30/3
+   speed forced 25gfull
+   switchport access vlan 16
+!
+interface Ethernet30/4
+   speed forced 25gfull
+   switchport access vlan 16
+!
+interface Ethernet31/1
+   speed forced 25gfull
+   switchport access vlan 16
+!
+interface Ethernet31/2
+   speed forced 25gfull
+   switchport access vlan 16
+!
+interface Ethernet31/3
+   speed forced 25gfull
+   switchport access vlan 16
+!
+interface Ethernet31/4
+   speed forced 25gfull
+   switchport access vlan 16
+!
+interface Ethernet32/1
+   description turtle-rhythm
+   speed forced 10000full
+   switchport trunk allowed vlan 2,4,26-27,31
+   switchport mode trunk
+!
+interface Ethernet32/2
+   shutdown
+   speed forced 10000full
+!
+interface Ethernet32/3
+   shutdown
+   speed forced 10000full
+!
+interface Ethernet32/4
+   shutdown
+   speed forced 10000full
+!
+interface Management1
+   ip address 192.168.88.31/24
+!
+no ip routing
+!
+ip route 0.0.0.0/0 192.168.88.10
+!
+ntp server 0.pool.ntp.org
+ntp server 1.pool.ntp.org
+ntp server 2.pool.ntp.org
+!
+end

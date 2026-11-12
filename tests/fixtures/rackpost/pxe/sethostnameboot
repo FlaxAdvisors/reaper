@@ -1,0 +1,221 @@
+#!/bin/bash
+
+function helpandexit()
+{
+    echo "Valid arguments are: <clear|report|amtinventory|bios|inventory|ipmi|live|memtest|memtestipxe|ubuntu|u24|u22|u18|leap|sles|vmware7|vmware8|vm7tp|centos7|rhel84|grml|harcreate|harjoin>"
+    exit 1
+}
+
+if ! [ -f nic0.txt ]
+then
+    echo "nic0.txt file required" 
+    echo "hostname in first column"
+    echo "optional boardtype as '^boardtype^' on same line"
+    exit 1
+fi
+
+if [ $# -lt 1 ]
+then
+    helpandexit
+fi
+
+tgt=$1
+shift
+
+# nic0.txt is 'hostname ip mac' or, on hand-made orders, 'ip hostname mac'
+# (ip first on purpose: nodepower/pingall keep working while DNS is down).
+# Either way the iPXE hostname-<name>.ipxe file must carry the NAME DHCP hands out.
+nic0names() { grep -v '^#' nic0.txt | awk 'NF { print ($1 ~ /^[0-9]+(\.[0-9]+){3}$/) ? $2 : $1 }'; }
+
+declare -a nodes=()
+if [ $# -eq 0 ]
+then
+    nodes=( $(nic0names) )
+else
+    # load hostnames from command line
+    for n in $@
+    do
+	nodes+=( $(nic0names | grep -w $n) )
+    done
+fi
+if [ ${#nodes[@]} -eq 0 ]
+then
+    echo "No valid hostname lines in the nic0.txt file or passed on cmd line"
+    exit 1
+fi
+
+
+# PXE asset roots. New world (bang on nginx): /srv/pxe with per-VLAN trees;
+# per-host overrides live in the order's VLAN ipxe dir, VLAN derived from the
+# order's netpre (e.g. 172.31.0 -> v31). Legacy world: the old Apache htdocs.
+[ -f 00_slack.txt ] && source 00_slack.txt
+if [ -d /srv/pxe ]; then
+    vid="$(echo "${netpre}" | cut -d. -f2)"
+    : "${vid:?sethostnameboot: no netpre for site=${site} in 00_slack.txt (site must match a case there, e.g. eindhoven); run from the order dir}"
+    dstdir=/srv/pxe/v${vid}/ipxe
+    srcdir=/srv/pxe/ipxe/templates
+else
+    htdocs=/srv/www/htdocs
+    dstdir=$htdocs/ipxe
+    srcdir=$htdocs/ipxe/templates
+fi
+
+case $tgt in
+    report|get|print)
+	act='report'
+	;;
+    none|clear|reset)
+	act='none'
+	;;
+    amtinventory|amt)
+        act='amtinventory'
+        ;;
+    bios|Bios|BIOS)
+	act='bios'
+	;;
+    inventory|inv|data)
+	act='inventory'
+	;; 
+    ipmi)
+	act='ipmi'
+	;;
+    live|Live|LIVE)
+	act='live'
+	;;
+    memtest|mt86|memtest86)
+	act='memtest'
+	;;
+    memtestipxe|mipxe)
+	act='memtestipxe'
+	;;
+    grml|grml64|grml64full)
+	act='grml64'
+	;;
+    ubuntu|lts)
+	act='ubuntu-20.04'
+	;;
+    u24|lts24)
+	act='ubuntu-24.04'
+	;;
+    u22|lts22)
+	act='ubuntu-22.04'
+	;;
+    u18|lts18)
+	act='ubuntu-18.04'
+	;;
+    leap|opensuse)
+	act='leap-15.6'
+	;;
+    sles|suse)
+	act='sles-15sp2'
+	;;
+    centos7|CentOS7)
+	act='centos-7'
+	;;
+    rhel84|rhel)
+	act='rhel-84'
+	;;
+    vmware|vmware8s1)
+	act='vmware-8.0'
+	;;
+    vmware|vmware8f0)
+	act='vmware-8.0'
+	;;
+    vmware7)
+	act='vmware-7.0u1'
+	;;
+    vm7tp)
+	act='vmware-7.0u1-tp'
+	;;
+    vmware6)
+	act='vmware-6.7u3'
+	;;
+    harcreate|harvester|hc151)
+	act='harcreate-151'
+	;;
+    harjoin|harvester|hj151)
+	act='harjoin-151'
+	;;
+    *)
+	echo "Invalid action for hosts provided as argument"
+	helpandexit
+	;;
+esac
+
+defaultplatform=${nodeplatform:-leopard}
+
+for hostname in "${nodes[@]}"
+do
+    if [ "$act" == "report" ]
+    then
+		if [ -f ${dstdir}/hostname-${hostname}.ipxe  ]
+		then
+			dstfile=${dstdir}/hostname-${hostname}.ipxe
+			node=$(grep -e '^set node-setting'    ${dstfile} | sort | cut -d' ' -f3)
+			com=$(grep  -e '^set com-default'     ${dstfile} | sort | cut -d' ' -f3)
+			os=$(grep   -e '^set menu-default'    ${dstfile} | sort | cut -d' ' -f3)
+			ver=$(grep  -e '^set submenu-default' ${dstfile} | sort | cut -d' ' -f3)
+			if [ "$os" == "exit" ]; then 
+				os="bios"
+				ver="" 
+			fi
+			printf "%-15s $com %-10s $os $ver\n" $hostname $node
+		else
+			dstfile=${dstdir%/ipxe}/boot.ipxe
+			node=$(grep -F -e 'isset ${node-setting} || set node-setting'    ${dstfile} | sort | cut -d' ' -f6)
+			com=$(grep -F -e 'isset ${com-default} || set com-default'     ${dstfile} | sort | cut -d' ' -f6)
+			os=$(grep -F -e 'isset ${menu-default} || set menu-default'    ${dstfile} | sort | cut -d' ' -f6)
+			ver=$(grep -F -e 'isset ${submenu-default} || set submenu-default' ${dstfile} | sort | cut -d' ' -f6)
+			if [ "$os" == "exit" ]; then 
+				os="bios"
+				ver="" 
+			fi
+			printf "%-15s $com %-10s [pxe defaults] $os $ver\n" $hostname $node
+		fi
+		continue
+    fi
+
+    rm -f ${dstdir}/hostname-${hostname}.ipxe
+    if [ "$act" == "none" ]
+    then
+	# only here to rm files and we do that to start with so just say so
+	echo rm -f ${dstdir}/hostname-${hostname}.ipxe
+	continue
+    fi
+
+    if [ "$act" == "bios" ]
+    then
+	# platform type doesn't matter hard link ipxe exit
+	echo ln ${srcdir}/${act}.ipxe ${dstdir}/hostname-${hostname}.ipxe
+	ln -f ${srcdir}/${act}.ipxe ${dstdir}/hostname-${hostname}.ipxe
+	continue
+    fi
+
+    # attempt to get ^platform^ from nic0.txt file line with node on it
+    platform="$(grep "$hostname " nic0.txt | grep -v '^#' | grep '\^' | cut -d'^' -f2)"
+    if [ -z "$platform" ]
+    then
+	platform=$defaultplatform
+    fi
+
+    # do we have a platform part file for this type
+    if ! [ -f ${srcdir}/${platform}.part ]
+    then
+	echo "This node type is $platform and that is not found here:"
+	echo "  ${srcdir}/${platform}.part"
+	echo "The nic0.txt file should specify one of these:"
+	ls ${srcdir}/*.part | sed -re 's|^.*/([^/.]+).part$|^\1^|g'
+	continue
+    fi
+    echo generating ${dstdir}/hostname-${hostname}.ipxe for $platform to do $act 
+    cat<<EOF>${dstdir}/hostname-${hostname}.ipxe
+#!ipxe
+
+# $hostname $platform to do $act created $(date +"%Y%m%d.%H%M%S")
+
+$(cat ${srcdir}/${platform}.part)
+
+$(cat ${srcdir}/${act}.ipxe | grep -v '^#!ipxe')
+EOF
+
+done

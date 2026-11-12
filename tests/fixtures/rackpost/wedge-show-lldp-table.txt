@@ -1,0 +1,9 @@
+Capability codes: (R) Router, (B) Bridge, (O) Other
+LocalPort    RemoteDevice    RemotePortID       Capability    RemotePortDescr
+-----------  --------------  -----------------  ------------  -----------------
+--------------------------------------------------
+Ethernet31   rr101-l37       88:e9:a4:00:00:01  R             ens3f0np0
+Ethernet108  localhost       88:e9:a4:00:00:21  R             ens3f0np0
+Ethernet109  rr101-r05       88:e9:a4:00:00:31  R             ens3f0np0
+
+Total entries displayed:  3

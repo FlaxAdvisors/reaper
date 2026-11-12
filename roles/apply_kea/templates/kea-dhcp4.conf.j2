@@ -1,0 +1,121 @@
+{
+  "Dhcp4": {
+{#  Control socket: read by kea-health.py (container healthcheck) and reaper status.
+    kea 2.6.3 refuses it unless /var/run/kea is mode 0750 (the unit enforces that). #}
+    "control-socket": { "socket-type": "unix", "socket-name": "/var/run/kea/kea4-ctrl-socket" },
+    "interfaces-config": {
+      "interfaces": [
+{% for v in vlans %}
+        "{{ v.parent }}.{{ v.vid }}",
+{% endfor %}
+        "{{ bang_mgmt_iface }}"
+      ]
+    },
+    "lease-database": {
+      "type": "postgresql", "host": "${KEA_DB_HOST}", "name": "${KEA_DB_NAME}",
+      "user": "${KEA_DB_USER}", "password": "${KEA_DB_PASSWORD}",
+      "max-reconnect-tries": 5
+    },
+    "hosts-database": {
+      "type": "postgresql", "host": "${KEA_DB_HOST}", "name": "${KEA_DB_NAME}",
+      "user": "${KEA_DB_USER}", "password": "${KEA_DB_PASSWORD}"
+    },
+    "valid-lifetime": 4000, "renew-timer": 1000, "rebind-timer": 2000,
+{#  Leases are found by MAC, not client-id (operator 2026-10-28). The triage live
+    image's DHCP client sends an RFC 4361 client-id (type 255, IAID + DUID-LLT) whose
+    DUID timestamp is new on every boot, so each reboot inside valid-lifetime was a
+    "new client": its reserved address was still leased to the previous boot and it
+    landed on a pool address (lavergne et29b4: .29.4 -> .0.53/.54/.62/.68/.70).
+    Reservations are hw-address already; client classes do not read option 61. #}
+    "match-client-id": false,
+    "expired-leases-processing": {
+      "reclaim-timer-wait-time": 10, "flush-reclaimed-timer-wait-time": 25,
+      "hold-reclaimed-time": 3600, "max-reclaim-leases": 100, "max-reclaim-time": 250
+    },
+    "client-classes": [
+      { "name": "iPXE",
+        "test": "substring(option[77].text,0,4) == 'iPXE' or option[175].exists" },
+      { "name": "BIOS",
+        "test": "not member('iPXE') and option[93].hex == 0x0000",
+        "boot-file-name": "bios/undionly.kpxe" },
+      { "name": "EFI64",
+        "test": "not member('iPXE') and (option[93].hex == 0x0007 or option[93].hex == 0x0009)",
+        "boot-file-name": "efi64/ipxe.efi" },
+      { "name": "ONIE",
+        "test": "option[60].text == 'OnieDhcpRequest'" },
+      { "name": "BMC_UDHCP",
+        "test": "substring(option[60].text,0,6) == 'udhcp '" },
+      { "name": "BMC_NETWORKD",
+        "test": "option[55].hex == 0x0103060c0f212a72777879 and not option[60].exists and not option[93].exists and not option[77].exists and not option[175].exists" },
+{#  Facebook OpenBMC (ISC dhclient, /etc/dhcp/dhclient.conf request list): option 55 = 1,28,2,3,15,6,12,44,47,42,
+    no option 60 / client-id. Same list on the old ODM image (eindhoven et24b1) and fbtp-v2019.43.0 (et24b3), 2026-09-30. #}
+      { "name": "BMC_FB_DHCLIENT",
+        "test": "option[55].hex == 0x011c02030f060c2c2f2a and not option[60].exists and not option[93].exists and not option[77].exists and not option[175].exists" },
+      { "name": "POOL_HOSTS",
+        "test": "not member('BMC_UDHCP') and not member('BMC_NETWORKD') and not member('BMC_FB_DHCLIENT')" }
+{% if apply_kea_res_only_bmc_pool | default(false) %}
+{#  BMC-only pool on reservation-only VLANs: an IPMI-only (AMI/udhcp) BMC needs IPv4 before observe
+    can probe it (spec 2026-11-06); post's talk-first reservation lane is unchanged and moves it to
+    its reservation. BMC_FB_DHCLIENT stays reservation-only; hosts never match. Delta: flax-state-delta 6. #}
+      ,{ "name": "POOL_BMC_UDHCP",
+        "test": "member('BMC_UDHCP')" }
+{% endif %}
+    ],
+    "subnet4": [
+{% for v in vlans %}
+{% set o = v.cidr.split('/')[0].split('.') %}
+{% set res_only = (reservation_only_dhcp | default(false)) and (v.dhcp_mode | default('reservation')) != 'pool' and v.phase in (apply_kea_reservation_only_phases | default(['post'])) %}
+      {
+        "id": {{ v.vid }},
+        "subnet": "{{ v.cidr }}",
+        "interface": "{{ v.parent }}.{{ v.vid }}",
+        "next-server": "{{ v.gateway_vip }}",
+{% if res_only %}
+{% if apply_kea_res_only_bmc_pool | default(false) %}
+        "pools": [{ "pool": "{{ o[0] }}.{{ o[1] }}.0.{{ apply_kea_pool_start }} - {{ o[0] }}.{{ o[1] }}.0.{{ apply_kea_pool_end }}", "client-class": "POOL_BMC_UDHCP" }],
+{% else %}
+        "pools": [],
+{% endif %}
+        "authoritative": true,
+{% else %}
+{#  pool_guard (spec 2026-09-27 §7): BMCs (BMC_UDHCP/BMC_NETWORKD) get no POOL address on this vid; reservations are still served. Kea 2.6: singular "client-class". #}
+        "pools": [{ "pool": "{{ o[0] }}.{{ o[1] }}.0.{{ apply_kea_pool_start }} - {{ o[0] }}.{{ o[1] }}.0.{{ apply_kea_pool_end }}"
+        {%- if v.pool_guard | default(false) %}, "client-class": "POOL_HOSTS"{% endif %} }],
+{% endif %}
+        "option-data": [
+          {"name": "routers", "data": "{{ v.gateway_vip }}"},
+          {"name": "domain-name-servers", "data": "{{ v.gateway_vip }}"},
+          {"name": "domain-name", "data": "{{ apply_kea_lab_domain }}"}
+        ]
+      },
+{% endfor %}
+      {
+        "id": {{ apply_kea_mgmt_subnet_id }},
+        "subnet": "{{ apply_kea_mgmt_cidr }}",
+        "interface": "{{ bang_mgmt_iface }}",
+        "pools": [
+          { "pool": "{{ apply_kea_onie_pool_start }} - {{ apply_kea_onie_pool_end }}",
+            "client-class": "ONIE",
+            "option-data": [
+              {"name": "routers", "data": "{{ apply_kea_mgmt_vip }}"},
+              {"name": "domain-name-servers", "data": "{{ apply_kea_mgmt_vip }}"}
+            ] }
+{% if mgmt_guest_pool is defined %}
+          ,
+          { "pool": "{{ mgmt_guest_pool.start }} - {{ mgmt_guest_pool.end }}",
+            "option-data": [
+              {"name": "domain-name-servers", "data": "{{ apply_kea_mgmt_vip }}"},
+              {"name": "domain-name", "data": "{{ apply_kea_lab_domain }}"}
+            ] }
+{% endif %}
+        ],
+        "option-data": [
+          {"name": "domain-name-servers", "data": "{{ apply_kea_mgmt_vip }}"}
+        ]
+      }
+    ],
+    "loggers": [
+      { "name": "kea-dhcp4", "output_options": [{"output": "stdout"}], "severity": "INFO" }
+    ]
+  }
+}

@@ -1,0 +1,65 @@
+# Accept the VMware End User License Agreement
+vmaccepteula
+
+# Clear any existing partitions
+clearpart --firstdisk=local --overwritevmfs
+
+# Set the root password for the DCUI and ESXi Shell
+# this should be SHA-512 crypted and use
+# rootpw --iscrypted {{ vault_install_secrets.esxi_root_password }} but we're not doing that
+rootpw {{ vault_install_secrets.esxi_root_password }}
+
+# Install on the first local disk available on machine
+install --firstdisk=local --overwritevmfs
+
+# Set the network to DHCP on the first network adapater, 
+# use the specified hostname and do not create a portgroup for the VMs
+network --bootproto=dhcp --device=vmnic0 --addvmportgroup=0
+
+# Reboots the host after the scripted installation is completed
+# would really like to find a way to shutdown or curl a REST API
+# to flip a PXE first menu to disk boot target 
+# instead of simple reboot -- oh well.
+reboot
+
+## In the firstboot script we're going to adjust
+## the serial port settings so we can use the DCUI
+## over the BMC interface using serial-overl-lan
+
+## NOTE !!! This requires an additional post-cfg reboot !!!
+
+# Run the following on firstboot
+%firstboot --interpreter=busybox
+sleep 30
+
+#Enter Maintenance mode
+vim-cmd hostsvc/maintenance_mode_enter
+
+# enable & start ESXi Shell (TSM)
+vim-cmd hostsvc/enable_esx_shell
+vim-cmd hostsvc/start_esx_shell
+
+# enable & start remote ESXi Shell (SSH)
+vim-cmd hostsvc/enable_ssh
+vim-cmd hostsvc/start_ssh
+ 
+esxcli system settings kernel set -s logPort -v none
+esxcli system settings kernel set -s gdbPort -v none
+esxcli system settings kernel set -s com1_baud -v 57600
+esxcli system settings kernel set -s com2_baud -v 57600
+esxcli system settings kernel set -s tty2Port -v com2
+
+##### REQUIRED FOR CERTIFICATION 
+# The sfcbd service is disabled by default. To run the server
+# certification HealthStateCollector test successfully, sfcbd
+# must be enabled. Run the following commands on the ESXi Host
+# command prompt, to manually enable the sfcbd service
+#esxcli system wbem set -e 0
+#esxcli system wbem set -e 1
+#####
+
+# Needed for configuration changes that could not be performed in esxcli
+esxcli system shutdown reboot -d 15 -r "Rebooting after host configurations"
+
+# Exit Maintenance mode
+vim-cmd hostsvc/maintenance_mode_exit

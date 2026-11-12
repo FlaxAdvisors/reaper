@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}flax console{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/htmx.min.js" defer></script>
+  <script src="/static/table.js" defer></script>
+  <script>
+    // Theme toggle: stamp data-theme so it overrides prefers-color-scheme both ways.
+    function fxTheme(){
+      var r=document.documentElement, c=r.getAttribute('data-theme');
+      var next = c==='dark' ? 'light' : (c==='light' ? 'dark'
+                 : (matchMedia('(prefers-color-scheme: dark)').matches ? 'light':'dark'));
+      r.setAttribute('data-theme', next);
+    }
+    // "/" focuses the omnibox.
+    document.addEventListener('keydown', function(e){
+      if(e.key==='/' && document.activeElement.tagName!=='INPUT'){
+        e.preventDefault(); var o=document.getElementById('omni'); if(o) o.focus();
+      }
+    });
+  </script>
+  {% block head %}{% endblock %}
+</head>
+{% set path = request.url.path %}
+{% macro navlink(href, label, ico) -%}
+  {% set is_active = (path == href) or (href != '/' and path.startswith(href)) -%}
+  <a href="{{ href }}" class="{{ 'active' if is_active else '' }}"><span class="nav-ico">{{ ico }}</span>{{ label }}</a>
+{%- endmacro %}
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand"><a href="/" aria-label="flax console home"><svg
+   class="brand-logo"
+   version="1.1"
+   id="Calque_1"
+   x="0px"
+   y="0px"
+   viewBox="0 0 413.67003 123.9"
+   xml:space="preserve"
+   sodipodi:docname="flax-logo.svg"
+   width="413.67001"
+   height="123.9"
+   inkscape:version="1.1.2 (b8e25be8, 2022-02-05)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg"><defs
+   id="defs841" /><sodipodi:namedview
+   id="namedview839"
+   pagecolor="#ffffff"
+   bordercolor="#999999"
+   borderopacity="1"
+   inkscape:pageshadow="0"
+   inkscape:pageopacity="0"
+   inkscape:pagecheckerboard="0"
+   showgrid="false"
+   fit-margin-top="0"
+   fit-margin-left="0"
+   fit-margin-right="0"
+   fit-margin-bottom="0"
+   inkscape:zoom="1.2150268"
+   inkscape:cx="111.52017"
+   inkscape:cy="95.88266"
+   inkscape:window-width="1648"
+   inkscape:window-height="969"
+   inkscape:window-x="36"
+   inkscape:window-y="43"
+   inkscape:window-maximized="0"
+   inkscape:current-layer="Calque_1" />
+<style
+   type="text/css"
+   id="style824">
+	.st0{fill:#575656;}
+	.st1{fill:#95C11F;}
+	.st2{fill:#05B4CC;}
+</style>
+<g
+   id="g836"
+   transform="translate(-28.35,-28.34)">
+	<polygon
+   class="st0"
+   points="413.37,28.35 376.58,73.39 339.56,28.35 314.63,28.35 363.85,87.75 310.25,152.22 335.26,152.22 376.48,102.51 417.33,152.22 442.02,152.22 388.72,87.76 438,28.35 "
+   id="polygon826" />
+	<path
+   class="st0"
+   d="m 28.35,29.17 h 76.29 V 47.4 H 48.83 v 39.94 h 55.81 v 18.23 H 48.83 v 46.67 H 28.35 Z"
+   id="path828" />
+	<path
+   class="st2"
+   d="m 259.98,59.78 -47.41,92.44 H 191.52 L 252.97,28.34 h 14.39 l 64.14,123.88 h -20.96 z"
+   id="path830" />
+	<polygon
+   class="st2"
+   points="252.97,121.53 239.86,152.22 281.05,152.22 267.36,121.53 "
+   id="polygon832" />
+	<path
+   class="st0"
+   d="m 126.55,29.17 h 20.48 v 104.42 h 75.09 l -9.56,18.64 h -86.01 z"
+   id="path834" />
+</g>
+</svg></a></div>
+      <nav class="nav">
+        <div class="nav-group">OVERVIEW</div>
+        {{ navlink('/', 'Status', '▦') }}
+        {{ navlink('/devices', 'Nodes', '▤') }}
+        {{ navlink('/switches', 'Switches', '◫') }}
+        {{ navlink('/reservations', 'Reservations', '◧') }}
+        {{ navlink('/leases', 'Leases', '◌') }}
+        {{ navlink('/config', 'Config in use', '◈') }}
+        <div class="nav-group">PIPELINE</div>
+        {{ navlink('/layers/sensing', 'Sensing', '◉') }}
+        {{ navlink('/layers/policy', 'Policy', '◆') }}
+        {{ navlink('/layers/actuation', 'Actuation', '⚒') }}
+        {{ navlink('/lanes', 'Lanes', '⇶') }}
+        <div class="nav-group">INSPECT</div>
+        {{ navlink('/triage', 'Triage', '△') }}
+        {{ navlink('/records', 'Records', '≡') }}
+        {{ navlink('/events', 'Events', '≋') }}
+        {{ navlink('/services', 'Services', '⚙') }}
+      </nav>
+      <div class="sidebar-foot">flax console v{{ version }}</div>
+    </aside>
+    <div class="main">
+      <header class="topbar">
+        <form class="omni" action="/search" method="get" role="search">
+          <span class="omni-ico">⌕</span>
+          <input id="omni" name="q" autocomplete="off"
+                 placeholder="Search MAC · switch/port · serial · order · hostname…">
+        </form>
+        <div class="meta">
+          {% if db_status %}<span class="chip {{ db_status }}"><span class="dot"></span>db: {{ db_status }}</span>{% endif %}
+          <span class="chip">v{{ version }}</span>
+          <button type="button" class="themebtn" onclick="fxTheme()" title="Toggle theme">◐</button>
+        </div>
+      </header>
+      <div class="content">
+        <h1 class="topbar-title">{% block heading %}{% endblock %}</h1>
+        {% block content %}{% endblock %}
+      </div>
+    </div>
+  </div>
+</body>
+</html>

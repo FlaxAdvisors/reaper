@@ -1,0 +1,17 @@
+# Braintree site model: our infrastructure only (spec 2026-11-09-site-health-board-design).
+# bang-siesta is dormant (sites.yml dormant_hosts): shown grey, never alerts.
+# NOT here, ever: DUT blades, switch DUTs (SONiC, Capri), the vid 888 peer devices.
+site: braintree
+devices:
+  - {name: bang-fiesta, kind: bang, mgmt_ip: 192.168.88.21, bmc_ip: 192.168.88.11}
+  - {name: bang-siesta, kind: bang, mgmt_ip: 192.168.88.22, state: dormant, note: "CATERR, awaiting hardware"}
+  - {name: turtle-lorax, kind: switch, vendor: cumulus, mgmt_ip: 192.168.88.33, note: "Cumulus · mgmt/OOB"}
+  - {name: rabbit-lorax, kind: switch, vendor: arista, mgmt_ip: 192.168.88.31, note: "Wedge100S · triage + post DUT switch"}
+  - {name: bldg, kind: uplink, note: "building LAN (wired) · fiesta's only WAN, not via turtle"}
+links:
+  - {a: "bang-fiesta:public", b: "bldg:LAN", speed: 1G, note: "DHCP"}
+  - {a: "bang-fiesta:mgmt", b: "turtle-lorax:swp5", speed: 1G, note: "access 2"}
+  - {a: "bang-siesta:mgmt", b: "turtle-lorax:swp8", speed: 1G, note: "link up, host off"}
+  - {a: "bang-fiesta:eth0", b: "rabbit-lorax:Et32/2", speed: 10G, note: "native 2 (bang BMC NC-SI), tagged 8, 16-31"}
+  - {a: "bang-siesta:eth0", b: "rabbit-lorax:Et32/4", speed: 10G}
+  - {a: "turtle-lorax:swp52", b: "rabbit-lorax:Et32/1", speed: 10G, note: "tagged 2,4,6,8,10,12,16-31"}

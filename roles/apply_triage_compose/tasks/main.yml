@@ -1,0 +1,123 @@
+---
+# Triage UI/API stack -- VIP-exclusive. The SOL websocket listener
+# requires single-instance per fleet, so containers run only on the
+# bang holding the keepalived MASTER state. notify_master.sh /
+# notify_backup.sh (apply_keepalived) handle later VIP transitions from
+# this same system path (ProtectHome=true blocks /home/*).
+#
+# Phase 5 (spec 2026-11-08-reaper-triage-deploy-design): reaper keeps no
+# compose of its own. `reaper deploy <site> triage` builds prod-<svc>:<sha>
+# on the primary from the operator's clean, pushed ~/git/triage, ships it to
+# the standby, and passes apply_triage_compose_src: a local dir holding that
+# commit's compose and .env_prod plus the site .env it rendered (TRIAGE_TAG
+# + apply_triage_compose_env). This role only stages and orchestrates.
+
+- name: Refuse to run without the files reaper deploy fetched
+  ansible.builtin.assert:
+    that:
+      - apply_triage_compose_src | length > 0
+    fail_msg: "apply_triage_compose stages what reaper fetched: run `reaper deploy <site> triage`"
+
+- name: Ensure triage compose dir exists
+  become: true
+  ansible.builtin.file:
+    path: "{{ apply_triage_compose_path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Stage the triage repo's docker-compose-prod.yml
+  become: true
+  ansible.builtin.copy:
+    src: "{{ apply_triage_compose_src }}/docker-compose-prod.yml"
+    dest: "{{ apply_triage_compose_path }}/{{ apply_triage_compose_compose_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+# compose reads .env from the compose file's dir for ${TRIAGE_TAG} and the
+# site's ${VAR?} lists, here and in notify_master: a failover starts exactly this.
+- name: Stage the site .env
+  become: true
+  ansible.builtin.copy:
+    src: "{{ apply_triage_compose_src }}/.env"
+    dest: "{{ apply_triage_compose_path }}/.env"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Stage the triage repo's .env_prod (env_file of the compose services)
+  become: true
+  ansible.builtin.copy:
+    src: "{{ apply_triage_compose_src }}/.env_prod"
+    dest: "{{ apply_triage_compose_path }}/.env_prod"
+    owner: root
+    group: root
+    mode: "0644"
+
+# State the compose file points at but nothing else creates. On a fresh bang
+# the api exits at import without $DB_FILE, and a missing bind-mount source is
+# created by docker as a root-owned DIRECTORY, which the agents cannot open as
+# a file. Seeds only: force:false never touches a store that already holds data.
+- name: Ensure triage state directories exist
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /etc/flax/mezzflash
+    - /etc/flax/frufw-backup
+    - /etc/flax/triage-ui
+
+- name: Seed an empty flash.json (the api's $DB_FILE)
+  become: true
+  ansible.builtin.copy:
+    content: ""
+    dest: /etc/flax/flash.json
+    force: false
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Seed an empty frufw.json state store
+  become: true
+  ansible.builtin.copy:
+    content: "{}\n"
+    dest: /etc/flax/frufw.json
+    force: false
+    owner: root
+    group: root
+    mode: "0600"
+
+# The UI owns this file after first boot (it rewrites it with set_at on every
+# operator change); the seed only gives a fresh bang the site's usual profile.
+- name: Seed the triage UI's selected node_config
+  become: true
+  ansible.builtin.copy:
+    content: "{{ {'node_config': apply_triage_compose_node_config} | to_json }}\n"
+    dest: /etc/flax/triage-ui/settings.json
+    force: false
+    owner: root
+    group: root
+    mode: "0644"
+  when: apply_triage_compose_node_config | length > 0
+
+- name: Bring triage stack up — master only (SOL listener requires VIP exclusivity)
+  become: true
+  ansible.builtin.command:
+    cmd: docker compose -p {{ apply_triage_compose_project }} -f {{ apply_triage_compose_compose_file }} up -d
+    chdir: "{{ apply_triage_compose_path }}"
+  when: inventory_hostname == apply_keepalived_master_host
+  changed_when: true
+
+- name: Ensure triage stack is down on backup (idempotent — VIP exclusivity)
+  become: true
+  ansible.builtin.command:
+    cmd: docker compose -p {{ apply_triage_compose_project }} -f {{ apply_triage_compose_compose_file }} down --remove-orphans
+    chdir: "{{ apply_triage_compose_path }}"
+  when: inventory_hostname != apply_keepalived_master_host
+  changed_when: true

@@ -1,0 +1,22 @@
+---
+# On-host cert directory — the same path flax-stack + flax-post nginx mount.
+apply_flax_tls_dir: /etc/flax/nginx/tls
+# Committed fleet CA cert (public); lives in the repo's files/certs.
+apply_flax_tls_ca_crt_src: "{{ playbook_dir }}/../files/certs/flax-rootCA.crt"
+# DNS zone the host + wildcard names live under (bang_domain).
+apply_flax_tls_domain: "{{ bang_domain }}"   # site vault (vault_bang_domain)
+# Leaf validity.
+apply_flax_tls_days: 3650
+# SAN set for the per-host wildcard leaf. <host> = inventory_hostname.
+apply_flax_tls_sans_base:
+  - "DNS:*.{{ inventory_hostname }}.{{ apply_flax_tls_domain }}"
+  - "DNS:{{ inventory_hostname }}.{{ apply_flax_tls_domain }}"
+  - "DNS:{{ inventory_hostname }}"
+  - "DNS:localhost"
+  - "IP:127.0.0.1"
+# On-site lab names (<svc>.<host>.<lab_domain>, <svc>.bang.<lab_domain>, e.g. the
+# health board's https://health.bang.ehv.lab/), where the site has a lab domain.
+apply_flax_tls_sans_lab: >-
+  {{ ['DNS:*.' ~ inventory_hostname ~ '.' ~ bang_lab_domain, 'DNS:*.bang.' ~ bang_lab_domain]
+     if (bang_lab_domain | default('')) else [] }}
+apply_flax_tls_sans: "{{ apply_flax_tls_sans_base + apply_flax_tls_sans_lab }}"

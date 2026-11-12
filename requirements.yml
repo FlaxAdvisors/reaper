@@ -1,0 +1,18 @@
+---
+# The pinned toolchain venv's collections (scripts/toolchain-venv.sh, python 3.12);
+# a fleet upgrade is a deliberate step -- spec 2026-11-07 reaper-cli §3.1.
+collections:
+  - name: ansible.netcommon
+    version: "7.1.0"
+  - name: ansible.posix
+    version: "1.6.2"
+  - name: ansible.utils
+    version: "5.1.2"
+  - name: arista.eos
+    version: "10.1.1"
+  - name: cisco.ios
+    version: "9.1.1"
+  - name: community.general
+    version: "10.4.0"
+  - name: community.network
+    version: "5.1.0"

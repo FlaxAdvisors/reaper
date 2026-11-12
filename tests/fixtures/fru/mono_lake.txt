@@ -1,0 +1,19 @@
+FRU Device Description : Builtin FRU Device (ID 0)
+ Chassis Type          : Rack Mount Chassis
+ Chassis Extra         : 787918LD01355
+ Chassis Area Checksum : OK
+ Board Mfg Date        : Sun 17 Mar 2019 10:54:00 PM UTC UTC
+ Board Mfg             : Quanta
+ Board Product         : Mono Lake-M.2 SATA
+ Board Serial          : 1PL90901214
+ Board Part Number     : 31F20MB00Y0
+ Board Extra           : 02-000178
+ Board Area Checksum   : OK
+ Product Manufacturer  : Quanta
+ Product Name          : Mono Lake-M.2 SATA
+ Product Part Number   : 1HY9U9Z0021
+ Product Version       : Type5
+ Product Extra         : 01-002330
+ Product Extra         : MP
+ Product Area Checksum : OK
+

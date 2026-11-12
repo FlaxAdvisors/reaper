@@ -1,0 +1,4 @@
+# apply the wiwynn-tp settings
+set node-setting wiwynn-tp
+set com-default com2f
+set com-setting ${ttys1f}

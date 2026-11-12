@@ -1,0 +1,18 @@
+---
+# bang-siesta is the Postgres streaming STANDBY (bang-fiesta is primary).
+# A standby is read-only: alembic must NOT run here (it would fail). The standby
+# receives schema changes via replication. apply_flax_stack/tasks/systemd.yml
+# gates the migration task on this flag. Runtime primary/standby role is owned by
+# the keepalived notify hooks (promote-on-MASTER), not by this deploy-time flag —
+# this only selects whether alembic runs.
+apply_flax_stack_is_primary: false
+
+# WAN (2026-11-10): primary = eth0 static default via bang-fiesta's mgmt (.21),
+# backup = wlan0 (ReadySpaces wifi, DHCP metric 200). wan-failover probes through
+# eth0 and demotes it to 300 when fiesta's path fails; the guard keeps wlan0 at 200.
+# eth0 is internal (fiesta does the NAT), so there is no external-zone check on it.
+jumphost_wan_failover_wan_failover_enabled: true
+jumphost_wan_failover_primary_iface: eth0
+jumphost_wan_failover_backup_iface: wlan0
+jumphost_wan_failover_primary_nat_here: false
+apply_bang_router_wan_route_metrics: ["wlan0:200"]

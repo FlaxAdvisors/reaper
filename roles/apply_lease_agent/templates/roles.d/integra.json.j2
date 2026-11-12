@@ -1,0 +1,9 @@
+{
+  "role": "integra",
+  "universe": {
+    "ports": {{ flax_role_integra_ports | default({"rabbit-gouda": ["et32/1"]}) | to_json }}
+  },
+  "capabilities": {"reconcile_switch": false, "dhcp_reservations": false, "firmware": false},
+  "policy": {"vid": {"default": {{ flax_role_integra_vid | default(31) }}}},
+  "record_keys": ["customer", "order"]
+}

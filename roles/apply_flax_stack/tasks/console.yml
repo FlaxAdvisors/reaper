@@ -1,0 +1,33 @@
+---
+# --tags flax_console: move the console (flax-control) to apply_flax_stack_flax_control_image_tag
+# WITHOUT touching postgres (spec 2026-11-07 reaper-cli §8.4; replaces build-and-deploy §7's
+# hand sed of the generated env).
+#  - The env render below has NO notify: compose.yml's copy notifies "Restart flax-stack",
+#    which restarts the whole unit and bounces postgres.
+#  - The recreate always passes --env-file: compose reads only .env on its own, and without
+#    flax-stack.env every variable is blank (the 2026-09-02 13-minute postgres outage).
+#  - Gated on ansible_run_tags: the playbook's role-level tag [flax_stack] is inherited by
+#    these tasks, and a flax_stack run restarts the unit anyway.
+#  - On the VIP holder this blips healthz: `reaper deploy <site> flax_console` wraps it in
+#    the HA path (quiesce the standby's keepalived, re-arm, pg_ha_check).
+- name: Render flax-stack.env (console deploy; no flax-stack restart)
+  become: true
+  ansible.builtin.template:
+    src: flax-stack.env.j2
+    dest: "{{ apply_flax_stack_env_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true   # password content
+  when: "'flax_console' in ansible_run_tags"
+
+- name: Recreate flax-control only
+  become: true
+  ansible.builtin.command:
+    cmd: >-
+      docker compose --env-file {{ apply_flax_stack_env_path | basename }} -p flax-stack
+      -f {{ apply_flax_stack_compose_path | basename }} up -d --no-deps flax-control
+    chdir: "{{ apply_flax_stack_compose_path | dirname }}"
+  register: flax_console_up
+  changed_when: "'Recreated' in flax_console_up.stderr or 'Started' in flax_console_up.stderr"
+  when: "'flax_console' in ansible_run_tags"

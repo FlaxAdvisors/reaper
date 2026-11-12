@@ -1,0 +1,15 @@
+---
+# Self-hosted kroki (diagram-as-code renderer), CORE image only: graphviz, D2,
+# PlantUML/nwdiag/rackdiag, svgbob, ditaa, ... The Chromium-based companions
+# (mermaid, excalidraw, bpmn, diagrams.net) are deliberately NOT deployed --
+# they add GBs the bang root disk does not have.
+#
+# Loopback-only: reached exclusively via flax-stack's nginx TLS vhost
+# (kroki.<host>.<bang_domain>, see apply_flax_stack's nginx.conf.j2), the
+# same pattern as the post fleet viewer. Self-hosted so site topology never
+# goes to the public kroki.io. Placement: apply_kroki_hosts (placement.yml).
+apply_kroki_image: yuzutech/kroki:0.34.0
+apply_kroki_bind: 127.0.0.1
+apply_kroki_port: 8796
+apply_kroki_path: /etc/flax/kroki
+apply_kroki_project: kroki

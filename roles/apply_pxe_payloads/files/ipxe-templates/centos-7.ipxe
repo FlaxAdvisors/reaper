@@ -1,0 +1,13 @@
+#!ipxe
+set menu-timeout 1000
+set submenu-timeout 1000
+
+# OS to install
+set menu-default menu-redhat
+set submenu-default Centos7
+
+echo
+echo Installing ${menu-default} ${submenu-default}
+echo Target ${node-setting} ${com-setting}
+sleep 2
+chain --replace --autofree ${boot-url}

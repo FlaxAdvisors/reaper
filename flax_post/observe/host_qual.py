@@ -1,0 +1,550 @@
+# flax_post/observe/host_qual.py
+"""The post Qualify+Done producer: a pure poller of the on-node agent.
+
+Polls each booted blade's REST agent (qualclient), maps /status + /stages into
+post_state.vars.qual, and captures each terminal stage's artifacts EXACTLY ONCE
+into the durable post_artifact store (design §5.1/§6). Population-check (Task 5),
+the Done tail (Task 6), and the re-run handshake (Task 7) build on this core.
+
+Sole writer of post_state.vars.qual/pop/done + post_artifact. Never raises out of
+run_once: a dead or misbehaving agent for one blade must not kill the loop.
+"""
+import logging
+import os
+import time
+
+from .. import actions
+from .. import blades
+from .. import blocklist  # noqa: F401 -- qualify_rules' judges, kept reachable here
+from .. import deploy as _deploy
+from .. import fio_judge
+from .. import population  # noqa: F401
+from .. import shipchecks
+from .. import state as _state
+from ..version import __version__
+# population_check / qualify_verdict live in the pure qualify_rules (shared with
+# rackpost); re-imported here so this module's names are unchanged
+from ..qualify_rules import NO_SHIP_RULE, population_check, qualify_verdict  # noqa: F401
+from ..qualclient import QualClient, QualUnreachable
+from flax_rungs import fio as fio_rung
+
+log = logging.getLogger("flax-post.host_qual")
+
+# Debounce the qualify-agent launch. A node that finished Firmware sits at
+# phase=='Qualify'; host_qual SSH-launches the on-node agent, but that launch
+# (post.sh postautomate -> `systemctl stop` + `systemd-run`) is NOT idempotent:
+# firing it every poll while the agent is still coming up stomps the starting
+# agent, so it never persists. It also must not race Firmware's own resets/
+# reboots. So launch at most once per cooldown per node and let it settle;
+# a failed launch (host mid-reboot) simply retries after the cooldown.
+LAUNCH_COOLDOWN_S = int(os.environ.get("FLAX_POST_QUAL_LAUNCH_COOLDOWN", "120"))
+
+QUAL_MAP = {"pass": "done", "running": "cur", "pending": "pending",
+            "fail": "fault", "skip": "done"}
+
+# skip is terminal too: its summary.reason (e.g. fio's "no physical storage
+# media") is what the tile renders as the step note. Skips emit no artifacts.
+_TERMINAL = {"pass", "fail", "skip"}
+
+# The Done tail reads chassis power back after the off command (spec 2026-09-11
+# §2.2): 'power_off: done' is only ever written against a read that says off.
+POWER_OFF_VERIFY_S = int(os.environ.get("FLAX_POST_POWER_OFF_VERIFY", "30"))
+POWER_OFF_POLL_S = 5
+
+
+def agent_step(reachable: bool) -> dict:
+    """The engine's own Qualify step: a running agent answers /health. The
+    boot markers moved to the Discover ladder (observe/ladder.py)."""
+    return {"agent-reachable": {"status": "pass" if reachable else "pending"}}
+
+
+def _default_make_client(host_ip):
+    return QualClient(f"http://{host_ip}:8087")   # agent port (Plan 2 fixes the literal)
+
+
+# Engine-triggered Qualify start: a post node boots ONCE into `staylive` (so biosd/nicd
+# can SSH-flash firmware); when Firmware completes (phase becomes "Qualify") the engine
+# launches the on-node agent over SSH -- no reboot, no kernel-arg. Idempotent: the
+# is-active guard skips a re-launch while the agent is already up (so a poll racing the
+# startup window doesn't restart the battery). curl (not banghook) refreshes the payload
+# to the latest build without touching /proc/cmdline's action.
+_LAUNCH_SH = (
+    "systemctl is-active --quiet flax-qual-agent && exit 0\n"
+    "set -e\n"
+    # The slot ladder launches within seconds of sshd answering, which can be
+    # BEFORE the ISO's banghook service has created /opt/flax/hook (et8b4,
+    # 2026-09-11: `cd: /opt/flax/hook: No such file or directory`). The launch
+    # fetches its own payload, so it needs nothing from the hook but the dir.
+    "mkdir -p /opt/flax/hook && cd /opt/flax/hook\n"
+    # 12 s after sshd answered the fetch failed once on et27b4 (2026-09-12)
+    # and, inside an && list, `set -e` let the script fall through to a
+    # missing ./post.sh (rc=127, no agent, rung expired). Retry for ~15 s
+    # (run_over_ssh's timeout is 30 s) and fail loudly before post.sh.
+    "ok=0; for i in 1 2 3 4 5; do curl -sf http://bang/post.tgz -o post.tgz && ok=1 && break; sleep 3; done\n"
+    "[ \"$ok\" = 1 ] || { echo 'post.tgz fetch failed after 5 tries'; exit 2; }\n"
+    "tar xzf post.tgz\n"
+    "./post.sh postautomate\n"
+)
+
+
+def _default_launch_agent(target) -> tuple:
+    """SSH the booted node and start the qual agent (post.sh's postautomate branch).
+    Reuses biosd's host-cred loader + ssh runner (root via passwordless sudo). The
+    launch (curl+tar+systemd-run) is quick, so a tight 30s timeout bounds how long a
+    flaky node can stall the (single-threaded) poll loop; rc/output is logged because
+    this is the SOLE automated path into Qualify -- a silent bad-creds/unreachable-bang
+    failure would otherwise strand nodes in phase=='Qualify' with no trail.
+    FAST-FOLLOW: offload to a bounded thread pool (cf. fwd) if a large firmware batch
+    completes at once; and skip auto-relaunch of a node whose last verdict was 'fail'
+    (leave that to the manual restart handshake)."""
+    from ..biosd import creds as _creds, driver as _driver
+    user, pw = _creds.load_host_creds()
+    rc, out = _driver.run_over_ssh(user, pw, target["host_ip"], _LAUNCH_SH, timeout=30)
+    if rc == 0:
+        log.info("qual agent launched on %s (%s)", target.get("port"), target["host_ip"])
+    else:
+        log.warning("qual agent launch on %s (%s) rc=%s: %s",
+                    target.get("port"), target["host_ip"], rc, (out or "").strip()[:400])
+    return rc, out
+
+
+def _read_profile_for(target, store) -> "str | None":
+    """The population profile in effect: the blade's pop_override, else the global
+    order default from post_settings.population (design §5.6)."""
+    live = store.read_state().get(target["port"], {}) if hasattr(store, "read_state") else {}
+    override = live.get("pop_override")
+    if override:
+        return override
+    if target.get("population"):        # the node's effective population (assignment/header)
+        return target["population"]
+    return store.read_settings().get("population") if hasattr(store, "read_settings") else None
+
+
+def _capture_console(store, target, run_id, steps, console_reader) -> None:
+    """Store the SOL capture as this run's console artifact and set the
+    engine's `console` step. A store failure must not skip the durable result
+    or the final qual write (et10b2 2026-09-12: the raise left a pass verdict
+    over a stale 'running' qual)."""
+    text = None
+    try:
+        text = console_reader(target.get("bmc_ip"))
+    except Exception:
+        log.exception("console capture read failed for %s", target.get("port"))
+    if not text:
+        steps["console"] = {"status": "fail", "summary": {"reason": "no sol capture"}}
+        return
+    try:
+        store.write_artifact(target["bmc_mac"], run_id, "console", "sol.txt", "raw",
+                             text, serial=target.get("serial"), order_no=target.get("order_no"))
+        steps["console"] = {"status": "pass"}
+    except Exception as e:
+        log.exception("console capture store failed for %s", target.get("port"))
+        steps["console"] = {"status": "fail", "summary": {"reason": "capture store failed: %s" % str(e)[:120]}}
+
+
+def _battery_done(qual) -> bool:
+    """The agent reported its battery terminal (status 'done')."""
+    return ((qual or {}).get("overall") or {}).get("status") == "done"
+
+
+# Ship checks judged and recorded but not gating: status `skip`, the judged
+# verdict kept as `judged`. smbios-serial: the Wiwynn P26F BIOS never copies the
+# FRU serial into SMBIOS on Quanta boards (0 of ~226 runs, 2026-10-30); off
+# until triage writes it (operator 2026-10-30).
+DISABLED_CHECKS = ("smbios-serial",)
+
+
+def ship_checks(store, bmc_mac, run_id, inventory_terminal) -> dict:
+    """{smbios-serial: {...}, tpm-state: {...}} judged from this run's inventory
+    artifacts (spec 2026-10-29); pending until the inventory stage is terminal.
+    A failed or skipped inventory is terminal: its missing artifacts fail."""
+    if not inventory_terminal:
+        return {n: {"status": "pending", "reason": ""} for n in shipchecks.SHIP_CHECKS}
+    art = lambda name: store.get_artifact(bmc_mac, run_id, "inventory", name)
+    out = {"smbios-serial": shipchecks.smbios_serial(art("ipmitool-fru"), art("dmidecode")),
+           "tpm-state": shipchecks.tpm_state(art("tpmstate"))}
+    for name, c in out.items():
+        c["checker"] = "flax-post " + __version__
+        if name in DISABLED_CHECKS:
+            c["judged"] = ("%s: %s" % (c["status"], c["reason"])).rstrip(": ")
+            c["status"], c["reason"] = "skip", "disabled"
+    return out
+
+
+def _store_check_evidence(store, target, run_id, checks) -> None:
+    """Each judged ship check is recorded once per run as its own stage's
+    `check` artifact (checker version + the state it saw)."""
+    for name, c in checks.items():
+        if c["status"] == "pending" or not run_id:
+            continue
+        if any(a["name"] == "check" for a in store.list_artifacts(target["bmc_mac"], run_id, name)):
+            continue
+        store.write_artifact(target["bmc_mac"], run_id, name, "check", "raw",
+                             shipchecks.evidence_text(name, c),
+                             serial=target.get("serial"), order_no=target.get("order_no"))
+
+
+def _power_reading(res) -> str:
+    """'on' | 'off' | 'unreadable' from a run_power(status) result."""
+    res = res or {}
+    out = (res.get("output") or "").lower()
+    if not res.get("ok"):
+        return "unreadable"
+    return "on" if "is on" in out else ("off" if "is off" in out else "unreadable")
+
+
+def run_done(target, verdict, *, identify=actions.run_identify, power=actions.run_power,
+             sleep=time.sleep) -> dict:
+    """On pass: identify LED force-on ('pull me'), power off, then READ POWER BACK for
+    up to POWER_OFF_VERIFY_S. power_off is 'done' only when a read says off; otherwise
+    'fault' with power_off_reason still_on|unreadable. On fail: nothing (leave the
+    node powered for inspection, design §9/§10)."""
+    if verdict != "pass":
+        return {"verdict": verdict}
+    idf = identify(target["bmc_ip"], "force")
+    power(target["bmc_ip"], "off", blocked=False)
+    reading = "unreadable"
+    for _ in range(max(1, POWER_OFF_VERIFY_S // POWER_OFF_POLL_S)):
+        reading = _power_reading(power(target["bmc_ip"], "status", blocked=False))
+        if reading == "off":
+            break
+        sleep(POWER_OFF_POLL_S)
+    done = {"identify": "done" if (idf or {}).get("ok") else "fault",
+            "power_off": "done" if reading == "off" else "fault",
+            "verdict": "pass"}
+    if reading != "off":
+        done["power_off_reason"] = "still_on" if reading == "on" else "unreadable"
+    return done
+
+
+def build_result(target, live, qual, pop, done, now=time.time, checks=None) -> dict:
+    """The durable record of one finished run (spec 2026-09-11 §3). Artifact lists
+    are dropped from the steps: post_artifact is the store for those."""
+    steps = {}
+    for name, rec in ((qual or {}).get("steps") or {}).items():
+        rec = rec or {}
+        steps[name] = {"status": rec.get("status"), "summary": rec.get("summary") or {}}
+    live = live or {}
+    # The run's clean mark (ruling 2026-09-12): every Discover/Firmware step as
+    # frozen with the verdict and every Qualify step done or legitimately
+    # skipped. None when the verdict carried no snapshot (nothing to judge).
+    snap = (done or {}).get("steps") or {}
+    holes, clean = {}, None
+    if isinstance(snap.get("Discover"), dict) and isinstance(snap.get("Firmware"), dict):
+        holes = blades.run_holes({"Discover": snap["Discover"], "Firmware": snap["Firmware"],
+                                  "Qualify": blades._qualify_steps({"qual": qual or {}, "pop": pop or {},
+                                                                    "checks": checks or {}})})
+        clean = (done or {}).get("verdict") == "pass" and not holes
+    lad = live.get("ladder") or {}
+    return {"run_id": (qual or {}).get("run_id"), "verdict": (done or {}).get("verdict"),
+            "clean": clean, "holes": holes,
+            "finished_at": int(now()), "order_no": target.get("order_no"),
+            "sales": target.get("sales"), "customer": target.get("customer"),
+            "port": target.get("port"), "serial": target.get("serial"),
+            "fw": {"bmc": live.get("fw_bmc") or {}, "bios": live.get("fw_bios") or {},
+                   "nic": live.get("fw_nic") or {}},
+            "qual": {"overall": (qual or {}).get("overall") or {}, "steps": steps},
+            "pop": pop or {}, "checks": checks or {}, "done": done or {},
+            # the boot timeline: engine power-on and each boot mark (epoch)
+            "ladder": {"power_on_at": lad.get("power_on_at"), "marks": lad.get("marks") or {},
+                       "human_power_on": bool(lad.get("human_power_on"))}}
+
+
+_FIO_BASELINE: dict | None = None
+
+
+def _fio_baseline() -> dict:
+    """fio_judge's baseline file, read once per process (a deploy restarts observe)."""
+    global _FIO_BASELINE
+    if _FIO_BASELINE is None:
+        _FIO_BASELINE = fio_judge.load_baseline()
+    return _FIO_BASELINE
+
+
+def _judge_fio(store, target, run_id, steps, live_q, baseline) -> None:
+    """Label each drive of a terminal fio stage against its model's history and its
+    siblings (flax_post.fio_judge): summary.judge {dev: {verdict, reasons, expected,
+    serial}} and summary.flagged [dev] (natural order). Once per run: a later poll of
+    the same run carries the first judgement over. Labels only, never the verdict."""
+    fio = steps.get("fio")
+    if not fio or fio.get("status") not in ("pass", "fail") or not hasattr(store, "get_artifact"):
+        return
+    summ = dict(fio.get("summary") or {})
+    prev = ((live_q.get("steps") or {}).get("fio") or {}).get("summary") or {}
+    if live_q.get("run_id") == run_id and "judge" in prev:
+        summ.update(judge=prev["judge"], flagged=prev.get("flagged") or [])
+        fio["summary"] = summ
+        return
+    text = store.get_artifact(target["bmc_mac"], run_id, "fio", "fio")
+    if not text:
+        return
+    parsed: dict = {}
+    for dev, job, out in fio_rung.sections(text):
+        parsed.setdefault(dev, {})[job] = fio_rung.parse_job(out)
+    info = fio_rung.disk_info(store.get_artifact(target["bmc_mac"], run_id, "inventory", "alldisks"))
+    judged = fio_judge.judge(parsed, info, _fio_baseline() if baseline is None else baseline)
+    for dev, j in judged.items():
+        j["serial"] = (info.get(dev) or {}).get("serial")
+    summ.update(judge=judged,
+                flagged=sorted(fio_judge.flagged(judged), key=fio_rung.natural_dev_key))
+    fio["summary"] = summ
+
+
+def _rejudge_population(target, store, live, live_q, now) -> "dict | None":
+    """A latched fail whose only red is the population check is judged again when the
+    node's profile changes (operator 2026-11-10: LVQ et8b3/et8b4 were assigned
+    tec6-spare-tp after the header's tec6-compute-tp had failed them; only a power
+    cycle re-checked). Same run, same stored inventory artifacts, same pure judge:
+    nothing is re-collected. Only fail -> pass: a pass is never re-judged, a battery
+    or ship-check fail still needs a real rerun, and a powered-off node is left alone.
+    A still-red result is stored too (its profile then matches, so it is not redone).
+    Returns the updated qual, or None when nothing changed."""
+    pop_old = live.get("pop") or {}
+    run_id = live_q.get("run_id")
+    status = live_q.get("overall") or {}
+    checks = live.get("checks")
+    if not run_id or live.get("power_on") == "off" or status.get("verdict") != "pass" \
+            or pop_old.get("verdict") != "red" \
+            or any((c or {}).get("status") == "fail" for c in (checks or {}).values()):
+        return None
+    profile = _read_profile_for(target, store)
+    if not profile or profile == pop_old.get("profile") or not hasattr(store, "get_artifact"):
+        return None
+    art = lambda name: store.get_artifact(target["bmc_mac"], run_id, "inventory", name)
+    pop = population_check(art("macinv"), profile, art("dimmsum"),
+                           baseboard=(live.get("ladder") or {}).get("bmc_fru"))
+    store.set_state(target["port"], pop=pop)
+    steps = dict(live_q.get("steps") or {})
+    steps["population-check"] = {"status": {"green": "pass", "red": "fail", "grey": "pending"}[pop["verdict"]]}
+    qual = dict(live_q, steps=steps)
+    if qualify_verdict(status, pop, checks) != "pass":
+        store.set_state(target["port"], qual=qual)
+        return qual
+    old = live.get("done") or {}
+    if _deploy.enabled():
+        done = {"verdict": "pass", "deploy": "pending"}
+    else:
+        done = run_done(target, "pass")
+    if old.get("steps"):
+        done["steps"] = old["steps"]
+    done["rejudged"] = {"from": pop_old.get("profile"), "profile": profile, "at": int(now())}
+    qual["done"] = done
+    store.set_state(target["port"], done=done, qual=qual)
+    log.info("population re-judged %s run %s: %s -> %s, now pass",
+             target.get("port"), run_id, pop_old.get("profile"), profile)
+    if hasattr(store, "update_result"):
+        try:
+            store.update_result(target["bmc_mac"],
+                                build_result(target, live, qual, pop, done, checks=checks))
+        except Exception:
+            log.exception("update_result failed for %s", target.get("port"))
+    return qual
+
+
+def rejudge_target(target, *, store=_state, now=time.time) -> "dict | None":
+    """The slot worker's entry for a row at the ladder's `done` rung, where the agent
+    is no longer polled: a latched fail with its battery terminal gets
+    _rejudge_population. No agent contact."""
+    live = store.read_state().get(target["port"], {})
+    live_q = live.get("qual") or {}
+    if (live.get("done") or {}).get("verdict") != "fail" or not _battery_done(live_q):
+        return None
+    return _rejudge_population(target, store, live, live_q, now)
+
+
+def poll_target(target, *, make_client=_default_make_client, store=_state,
+                launch_agent=None, now=time.time, ping=None, console_reader=None,
+                fio_baseline=None) -> dict:
+    """Poll one blade; write vars.qual; capture terminal-stage artifacts once.
+
+    Guard order (spec 2026-09-11 post-slot-ladder §10): a row with a verdict is
+    latched and costs nothing; a powered-off row costs nothing; then `ping`
+    (when given) must answer before /health is tried, so a leased-but-dead IP
+    never burns an ARP timeout. When the agent is unreachable but Firmware is
+    done (phase == 'Qualify'), launch_agent (if given) SSH-starts it, debounced
+    to once per LAUNCH_COOLDOWN_S."""
+    live = store.read_state().get(target["port"], {}) if hasattr(store, "read_state") else {}
+    done_v = (live.get("done") or {}).get("verdict")
+    live_q = live.get("qual") or {}
+    if done_v is not None:
+        # A pass is complete (the tail powered the blade off). A FAIL is
+        # recorded the moment the population check goes red, while the
+        # battery is still running: keep collecting every later stage's
+        # result and artifacts until the agent reports the battery terminal
+        # (ruling 2026-09-12: progress through the stages, collect every
+        # error or pass along the way) — but never relaunch a latched blade.
+        if done_v == "pass":
+            return live_q
+        if _battery_done(live_q):
+            return _rejudge_population(target, store, live, live_q, now) or live_q
+        launch_agent = None
+    if live.get("power_on") == "off":
+        return live_q
+    pingable = True if ping is None else bool(ping(target["host_ip"]))
+    client = make_client(target["host_ip"]) if pingable else None
+    try:
+        if not pingable:
+            raise QualUnreachable("no ping")
+        health = client.health()
+    except QualUnreachable:
+        # A node with a verdict is latched (spec 2026-09-11 §2): a passed one was
+        # powered off by the Done tail, a failed one may be powered off by the
+        # operator. Either way its qualify evidence (which step failed, the run
+        # id) stays on the tile; and a failed blade is not relaunched until the
+        # power lane clears the latch on the next off->on.
+        # Firmware complete, agent not up yet -> trigger the postautomate launch,
+        # debounced: skip if we launched within LAUNCH_COOLDOWN_S (the launch is not
+        # idempotent and stomps a still-starting agent; Firmware resets must settle).
+        # Record the attempt time BEFORE launching so a failed launch (host mid-reboot)
+        # still backs off a full cooldown. Never let a launch failure kill the poll.
+        if pingable and launch_agent is not None and target.get("phase") == "Qualify":
+            last = (live.get("launch_at") or 0) if isinstance(live, dict) else 0
+            t = now()
+            if t - last >= LAUNCH_COOLDOWN_S:
+                store.set_state(target["port"], launch_at=t)
+                try:
+                    launch_agent(target)
+                except Exception:
+                    log.exception("agent launch trigger failed for %s", target.get("port"))
+            else:
+                log.debug("qual launch debounced for %s (%.0fs into %ss cooldown)",
+                          target.get("port"), t - last, LAUNCH_COOLDOWN_S)
+        if done_v is not None:
+            # post-verdict collection: a miss (node or BMC rebooting) must not
+            # wipe what was collected; the ladder decides when to give up
+            return live_q
+        qual = {"agent": {"reachable": False}, "steps": agent_step(False)}
+        store.set_state(target["port"], qual=qual)
+        return qual
+    run_id = health.get("run_id")
+    status = client.status()
+    stages = client.stages()
+    steps = agent_step(True)
+    for s in stages:
+        steps[s["name"]] = {"status": s["status"], "started": s.get("started"),
+                            "ended": s.get("ended")}
+    # capture-on-completion: for each terminal stage, store artifacts not yet stored
+    for s in stages:
+        if s["status"] in _TERMINAL:
+            existing = {a["name"] for a in store.list_artifacts(target["bmc_mac"], run_id, s["name"])}
+            detail = client.stage(s["name"])
+            for art in detail.get("artifacts", []):
+                if art["name"] not in existing:
+                    text = client.stage_artifact(s["name"], art["name"])
+                    store.write_artifact(target["bmc_mac"], run_id, s["name"], art["name"],
+                                         art.get("kind", "raw"), text,
+                                         serial=target.get("serial"),
+                                         order_no=target.get("order_no"), nbytes=art.get("bytes"))
+            steps[s["name"]]["summary"] = detail.get("summary", {})
+            steps[s["name"]]["artifacts"] = detail.get("artifacts", [])
+    try:
+        _judge_fio(store, target, run_id, steps, live_q, fio_baseline)
+    except Exception:
+        log.exception("fio judge failed for %s", target.get("port"))
+    # inventory dump (the macinv digest) -> population-check (engine-owned, design §4)
+    dump = store.get_artifact(target["bmc_mac"], run_id, "inventory", "macinv") \
+        if hasattr(store, "get_artifact") else None
+    profile = _read_profile_for(target, store)
+    dimmsum = store.get_artifact(target["bmc_mac"], run_id, "inventory", "dimmsum") \
+        if hasattr(store, "get_artifact") else None
+    pop = population_check(dump, profile, dimmsum,
+                           baseboard=(live.get("ladder") or {}).get("bmc_fru"))
+    steps["population-check"] = {"status": {"green": "pass", "red": "fail", "grey": "pending"}[pop["verdict"]]}
+    store.set_state(target["port"], pop=pop)
+    # smbios-serial + tpm-state: engine-owned like population-check, with their
+    # own slice so the result survives a later rewrite of qual.steps
+    checks = ship_checks(store, target["bmc_mac"], run_id,
+                         (steps.get("inventory") or {}).get("status") in _TERMINAL) \
+        if hasattr(store, "get_artifact") else None
+    for name, c in (checks or {}).items():
+        steps[name] = {"status": c["status"], "summary": {"reason": c["reason"]}}
+    if checks is not None:
+        store.set_state(target["port"], checks=checks)
+        try:
+            _store_check_evidence(store, target, run_id, checks)
+        except Exception:
+            log.exception("ship check evidence store failed for %s", target.get("port"))
+    qual = {"run_id": run_id, "agent": {"reachable": True, "ver": health.get("agent_ver")},
+            "overall": status, "steps": steps}
+    verdict = qualify_verdict(status, pop, checks)
+    if verdict is not None:
+        # Once per run: the Done tail (identify + power off) and the durable
+        # post_node record both happen the FIRST time this run reaches a verdict.
+        # Before this guard the tail re-ran on every poll while the agent was
+        # still answering after a pass.
+        already = ((live.get("done") or {}).get("verdict") is not None
+                   and (live.get("qual") or {}).get("run_id") == run_id)
+        if already:
+            done = live.get("done")
+            # the console step is the engine's, not an agent stage: a rebuilt
+            # step map must not lose the one already recorded
+            if "console" in (live_q.get("steps") or {}) and "console" not in steps:
+                steps["console"] = live_q["steps"]["console"]
+                qual["steps"] = steps
+            if done_v == "fail" and _battery_done({"overall": status}) and not _battery_done(live_q):
+                # the battery just finished after the fail verdict: capture the
+                # console to its end and refresh the durable result in place
+                # (same run: no new history entry)
+                if console_reader is not None:
+                    _capture_console(store, target, run_id, steps, console_reader)
+                    qual["steps"] = steps
+                if hasattr(store, "update_result"):
+                    try:
+                        store.update_result(target["bmc_mac"], build_result(target, live, qual, pop, done, checks=checks))
+                    except Exception:
+                        log.exception("update_result failed for %s", target.get("port"))
+        else:
+            if verdict == "pass" and _deploy.enabled():
+                # Loose Post Deploy (spec 2026-11-06): the node stays up for
+                # flax-post-deployd, which runs the Done tail after Deploy
+                done = {"verdict": "pass", "deploy": "pending"}
+            else:
+                done = run_done(target, verdict)
+            # Freeze the run's Discover + Firmware results with the verdict
+            # (ruling 2026-09-12): the worker passes the blade record's step
+            # maps in target["steps"]; after the power-off below the live
+            # sources regress and the tile would paint holes over a clean run.
+            snap = blades.latch_snapshot(target.get("steps"))
+            if snap:
+                done["steps"] = snap
+            store.set_state(target["port"], done=done)
+            if console_reader is not None:
+                _capture_console(store, target, run_id, steps, console_reader)
+                qual["steps"] = steps
+            if hasattr(store, "record_result"):
+                try:
+                    store.record_result(target["bmc_mac"],
+                                        build_result(target, live, qual, pop, done, checks=checks),
+                                        serial=target.get("serial"),
+                                        order_no=target.get("order_no"),
+                                        last_port=target["port"])
+                except Exception:
+                    log.exception("record_result failed for %s", target.get("port"))
+        qual["done"] = done
+    store.set_state(target["port"], qual=qual)
+    return qual
+
+
+def restart_target(target, *, make_client=_default_make_client, store=_state) -> dict:
+    """Re-run handshake (design §5.2): restart -> purge old run's evidence + clear
+    live qual/pop/done -> ACK (the commit point) -> agent starts the new run."""
+    client = make_client(target["host_ip"])
+    try:
+        ids = client.restart()
+    except QualUnreachable:
+        return {"ok": False, "reason": "unreachable"}
+    old_run = ids.get("old_run_id")
+    store.purge_run(target["bmc_mac"], old_run)
+    store.set_state(target["port"], qual={}, pop={}, checks={}, done={})
+    client.restart_ack()
+    return {"ok": True, "new_run_id": ids.get("new_run_id")}
+
+
+def run_once(targets, *, make_client=_default_make_client, store=_state,
+             launch_agent=_default_launch_agent) -> None:
+    """Poll every booted target; a failure on one never aborts the pass."""
+    for target in targets:
+        try:
+            poll_target(target, make_client=make_client, store=store, launch_agent=launch_agent)
+        except Exception:
+            log.exception("host_qual poll failed for %s", target.get("port"))

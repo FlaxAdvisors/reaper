@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# fru_audit_post_vlan.sh — one-shot FRU reconnaissance for braintree's
+# leopard-post vlan (vid 24). Sweeps active dnsmasq leases on
+# 172.24.0.0/16, runs `ipmitool fru` against each from bang-fiesta,
+# and prints one block per BMC: matching reservation line (for cross-
+# reference) plus the FRU fields that identify the chassis family.
+#
+# Operator pipes to a file, reads it, classifies by eye, opens
+# per-node migration commits using the per-port pattern documented
+# in docs/superpowers/specs/2026-05-04-turtle-oem-bmc-vlan-design.md.
+#
+# Usage:
+#   scripts/fru_audit_post_vlan.sh > /tmp/fru-audit-$(date +%F).txt
+#
+# Env overrides for hosts whose IPMI creds have rotated:
+#   IPMI_USER (default ADMIN), IPMI_PASS (default: the vaulted BMC root cred)
+set -euo pipefail
+
+JUMP=bang-fiesta
+LEASES=/var/lib/misc/dnsmasq.leases
+SUBNET_PREFIX='172.24.'
+RES_FILE_LOCAL=files/configs/braintree/bang-fiesta/config/dnsmasq.d/lab-post-reservations.conf
+IPMI_USER="${IPMI_USER:-ADMIN}"
+IPMI_PASS="${IPMI_PASS:-{{ bmc_root_password }}}"
+
+if ! ssh -o BatchMode=yes -o ConnectTimeout=5 "$JUMP" "sudo test -r $LEASES" 2>/dev/null; then
+    echo "ERROR: cannot read $LEASES on $JUMP — update LEASES path" >&2
+    exit 1
+fi
+
+# Lease file format: <expiry-epoch> <mac> <ip> <hostname-or-*> <client-id>
+# shellcheck disable=SC2029  # $LEASES expands on client — intentional
+ips=$(ssh "$JUMP" "sudo cat $LEASES" | awk -v p="$SUBNET_PREFIX" 'index($3, p) == 1 {print $3}' | sort -u)
+
+if [[ -z "$ips" ]]; then
+    echo "No active leases on subnet matching $SUBNET_PREFIX on $JUMP" >&2
+    exit 0
+fi
+
+for ip in $ips; do
+    echo "================================================================"
+    echo "BMC: $ip"
+    # Cross-reference: find the matching reservation line in the local snapshot.
+    if grep -q ",${ip}," "$RES_FILE_LOCAL" 2>/dev/null; then
+        echo "  reservation: $(grep ",${ip}," "$RES_FILE_LOCAL")"
+    else
+        echo "  reservation: (none in $RES_FILE_LOCAL — leased dynamically?)"
+    fi
+    # Run ipmitool from bang-fiesta (the host with vlan-24 reachability).
+    # shellcheck disable=SC2029  # $ip/$IPMI_USER/$IPMI_PASS expand on client — intentional
+    fru=$(ssh "$JUMP" \
+        "ipmitool -I lanplus -H $ip -U $IPMI_USER -P $IPMI_PASS fru 2>/dev/null" \
+        || true)
+    if [[ -z "$fru" ]]; then
+        echo "  fru: (unreachable / auth failed / no FRU response)"
+        continue
+    fi
+    # Print only the identifying fields. -F: only that field; loose match.
+    echo "$fru" | awk '
+        /^ *Chassis Type/ ||
+        /^ *Chassis Part/ ||
+        /^ *Product Manufacturer/ ||
+        /^ *Product Name/ ||
+        /^ *Product Part Number/ ||
+        /^ *Product Serial/ {
+            sub(/^ */, "  fru: ")
+            print
+        }'
+done

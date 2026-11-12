@@ -1,0 +1,33 @@
+# Static configuration; targets are supplied by Prometheus via the probe
+# query parameter. See prometheus.yml's blackbox_* jobs.
+
+modules:
+  icmp:
+    prober: icmp
+    timeout: 5s
+    icmp:
+      preferred_ip_protocol: ip4
+
+  http_2xx:
+    prober: http
+    timeout: 5s
+    http:
+      preferred_ip_protocol: ip4
+      valid_status_codes: [200, 204]
+      method: GET
+      tls_config:
+        insecure_skip_verify: false
+
+  tcp_connect:
+    prober: tcp
+    timeout: 5s
+    tcp:
+      preferred_ip_protocol: ip4
+
+  dns_query:
+    prober: dns
+    timeout: 5s
+    dns:
+      query_name: claude.ai
+      query_type: A
+      preferred_ip_protocol: ip4

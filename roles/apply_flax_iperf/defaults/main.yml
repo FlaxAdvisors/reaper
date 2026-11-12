@@ -1,0 +1,7 @@
+---
+# iperf3 server the post qual agent (qual_battery.py, FLAX_IPERF_SERVER) and the
+# Loose Post Deploy stage (flax-post-deployd, FLAX_POST_DEPLOY_IPERF_SERVER) dial.
+# Runs only on the site's post_iperf_server (the BACKUP bang); every other bang
+# has it removed. Port is fixed in qual_battery.py and flax_post/deploy.py.
+apply_flax_iperf_port: 11001
+apply_flax_iperf_unit: flax-iperf.service

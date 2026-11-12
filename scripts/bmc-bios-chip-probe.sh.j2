@@ -1,0 +1,380 @@
+#!/bin/bash
+# bmc-bios-chip-probe -- is the HOST BIOS SPI chip (pnor) blank?
+#
+# RENDERED FROM THE SITE VAULT by roles/apply_bmc_scripts. The password below
+# is the BMC ROOT SHELL credential, NOT the credentials-bmc.json Redfish
+# entry. RULE ZERO: never echo it. sshpass -e keeps it out of argv and ps.
+#
+# The host BIOS flash is spi1.0 ("pnor") on 1e630000.spi, MUXED between the
+# BMC and the PCH by GPIO N5 (BIOS_SPI_BMC_CTRL). At rest the mux is at PCH,
+# the JEDEC probe reads all-zeros, and spi-nor does not bind -- so there is no
+# pnor MTD to read. The sequence below is taken verbatim from the BMC's own
+# /usr/sbin/bios-update; the only difference is that this reads and never
+# writes.
+#
+# WHY THE MUX MATTERS MORE THAN THE READ: leaving the mux at BMC makes the
+# host unbootable. The EXIT trap returns it on every path that actually took
+# the bus, and success is not reported until the GPIO reads back at PCH --
+# read BEFORE the export directory is torn down, never assumed from its
+# absence (a torn-down/absent readback is mux_stuck, never PCH; see
+# restore_bus below).
+#
+#   probe <bmc-ip>  -> {"chip":"populated"|"blank"|"bootblock_blank"}
+#
+# Errors as {"error":"<code>"}: ssh_unreachable, host_not_off, bind_failed,
+# chip_absent, read_failed, mux_stuck.
+#
+# CONTRACT with bmcfw.worker: no failure path may emit a "chip" key --
+# bios_chip.state_from takes the FIRST record carrying one.
+set -u
+
+# I7: NO surrounding quotes -- ansible's `quote` filter emits its own, correctly,
+# for any value. Hand-wrapping in single quotes breaks (or worse: runs shell)
+# the moment a vaulted password contains a single quote of its own. RULE ZERO
+# holds either way: the rendered value is never echoed.
+export SSHPASS={{ bmc_root_password | quote }}
+SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10"
+
+# 32 MiB / 64 KiB = 512 blocks. Overridable ONLY so the test suite can use a
+# small fixture; production always computes it from the registered MTD size.
+# This NEVER substitutes for the size-plausibility check below -- it only
+# changes how many 64 KiB blocks are addressed once a plausible chip is found.
+PROBE_BLOCKS="${FLAX_PROBE_BLOCKS:-0}"
+
+# Plausible pnor sizes: 16 MiB .. 128 MiB. Anything else means we are not
+# reading the device we think we are -- report chip_absent, never a verdict.
+# This check runs UNCONDITIONALLY: PROBE_BLOCKS overrides only the block
+# count used for reading, never whether the size looks like a real chip.
+MIN_SIZE=16777216
+MAX_SIZE=134217728
+
+# Remote executor. FLAX_BMC_REMOTE_EXEC lets the test suite point this at a
+# stub that runs the same pipeline against fixture files instead of a real BMC;
+# production always leaves it unset and goes over ssh. Same shape as
+# bmc-backup-flash.sh.j2's FLAX_BMC_REMOTE_EXEC hook.
+bmc() {
+    if [ -n "${FLAX_BMC_REMOTE_EXEC:-}" ]; then
+        "$FLAX_BMC_REMOTE_EXEC" "$1" "$2"
+        return $?
+    fi
+    sshpass -e ssh -n -T $SSH_OPTS "root@$1" "$2"
+}
+
+# ORDER IS LOAD-BEARING (final review): restore the mux BEFORE emitting, not
+# after. The EXIT trap does run restore_bus on every path -- but it runs
+# AFTER this function has already printed, so a json_err raised once the bus
+# was taken reported e.g. bind_failed (which bmcfw.bios_chip deliberately
+# treats as non-blocking, "we could not inspect the chip") and the worker
+# then powered the host on while the trap was still failing to put the mux
+# back. A mux we cannot return to the PCH is a HARDER fact than whatever
+# error we were about to report, so it overrides the code: mux_stuck is the
+# one error bios_chip.blocks_power_on refuses to power on through.
+# restore_bus is idempotent and a no-op when the bus was never taken, so the
+# ssh_unreachable / host_not_off paths are unchanged.
+json_err() {
+    _err="$1"
+    # Not on the mux_stuck call site itself: that one is reached by
+    # `restore_bus || json_err mux_stuck`, so the burst has just run and
+    # failed. Repeating it there would add a third burst of remote round
+    # trips to a node whose mux is already known stuck, and would change the
+    # 3-explicit + 3-trap attempt budget this bin's tests pin down.
+    if [ "$_err" != mux_stuck ] \
+       && [ "${_bus_taken:-0}" = 1 ] && [ "${_mux_confirmed:-0}" != 1 ]; then
+        restore_bus >/dev/null 2>&1 || _err=mux_stuck
+    fi
+    printf '{"error":"%s"}\n' "$_err"
+    exit 1
+}
+
+IP=""
+
+# _bus_taken is set ONLY by take_bus, once the mux/bind sequence has actually
+# been sent. ssh_unreachable and host_not_off exit before that ever happens,
+# so restore_bus below must never touch a bus it never took (review finding:
+# "the EXIT trap mutates the bus on paths that never took it").
+_bus_taken=0
+_mux_confirmed=0
+
+take_bus() {
+    _bus_taken=1
+    bmc "$IP" '
+        B=$(sort -n /sys/class/gpio/gpiochip*/base 2>/dev/null | head -n 1)
+        G=$((B + 109))
+        [ -d /sys/class/gpio/gpio$G ] || echo $G > /sys/class/gpio/export
+        echo out > /sys/class/gpio/gpio$G/direction
+        echo 1   > /sys/class/gpio/gpio$G/value
+        sleep 1
+        SPI=/sys/bus/platform/drivers/spi-aspeed-smc
+        [ -e "$SPI/1e630000.spi" ] && { echo -n 1e630000.spi > "$SPI/unbind"; sleep 1; }
+        echo -n 1e630000.spi > "$SPI/bind"
+        sleep 2
+    ' >/dev/null 2>&1
+}
+
+# Unbind, mux back to PCH, and PROVE it landed there -- all in ONE remote
+# call, reading the GPIO value BEFORE it is unexported. Review finding
+# (Critical): the previous version unexported first and read back after,
+# so a successful cleanup always made the directory disappear and the
+# readback's "else echo 0" branch fired every time -- "GPIO absent" was
+# silently read as "mux at PCH", which is exactly the conflation this bin
+# exists to avoid. Here, "cannot read" (absent, empty, non-numeric) is
+# never treated as PCH; only a literal "0" readback counts.
+#
+# Retries a few times (review finding: the trap must not be a no-op on the
+# one path where the mux is known wrong) before giving up. Idempotent: once
+# confirmed, later calls (the EXIT trap after an explicit call already
+# succeeded) are free.
+restore_bus() {
+    [ "$_bus_taken" = 1 ] || return 0
+    [ "$_mux_confirmed" = 1 ] && return 0
+    i=1
+    while [ "$i" -le 3 ]; do
+        val=$(bmc "$IP" '
+            SPI=/sys/bus/platform/drivers/spi-aspeed-smc
+            [ -e "$SPI/1e630000.spi" ] && echo -n 1e630000.spi > "$SPI/unbind" 2>/dev/null
+            B=$(sort -n /sys/class/gpio/gpiochip*/base 2>/dev/null | head -n 1)
+            G=$((B + 109))
+            if [ -d /sys/class/gpio/gpio$G ]; then
+                echo 0  > /sys/class/gpio/gpio$G/value     2>/dev/null
+                echo in > /sys/class/gpio/gpio$G/direction 2>/dev/null
+                cat /sys/class/gpio/gpio$G/value 2>/dev/null
+                echo $G > /sys/class/gpio/unexport         2>/dev/null
+            else
+                echo absent
+            fi
+        ' 2>/dev/null | tr -d '\r ')
+        if [ "$val" = 0 ]; then
+            _mux_confirmed=1
+            return 0
+        fi
+        i=$((i + 1))
+        sleep 1
+    done
+    return 1
+}
+# Best-effort last resort on every exit path: a no-op if the bus was never
+# taken or was already confirmed restored; otherwise one more retry burst.
+trap 'restore_bus >/dev/null 2>&1' EXIT
+
+# Read ONE 64 KiB window with ONE dd invocation into a temp file, then DECIDE
+# whether that window is erased with `cmp -s` against a freshly generated,
+# EXACTLY-IDENTIFIED 64 KiB all-0xFF reference block -- all in the same remote
+# round trip.
+#
+# WHY cmp AND NOT A BYTE COUNT (the lesson of five failed rounds). Every
+# earlier design measured the window by counting bytes
+# (`... | tr -d '\377' | wc -c`) and then gated the count with a threshold.
+# That can never be made safe, because EVERY count is also a legitimate value:
+# a pipeline that dies with zero output prints a clean numeric "0", which is
+# indistinguishable from a window that genuinely held zero non-0xFF bytes --
+# i.e. from `blank`, the verdict that authorises writing a BIOS image. Each
+# round closed one stage and left the adjacent one open (a failed dd coerced
+# to 0; then a runtime dd failure printing a numeric 0; then a size-checked
+# read that was not the read that produced the verdict; then a `tr` that could
+# die leaving `wc` to count an empty pipe; then a sentinel byte whose count of
+# exactly 1 survived `cat` being broken). Counting is the defect: it has no
+# error value.
+#
+# `cmp` does. Verified on the live BMC (172.17.10.101, BusyBox v1.36.1,
+# /usr/bin/cmp):
+#     cmp -s A B  ->  0 = identical, 1 = differ, 2 = ERROR (missing/unreadable)
+# So the decision now carries its own, structurally distinct failure signal:
+# rc 0 and rc 1 are the two verdicts, and ANYTHING else -- 2, 127 (cmp itself
+# missing), empty (ssh dropped mid-answer), or any non-{0,1} text -- is
+# read_failed. There is no number to misread as a verdict.
+#
+# THE REFERENCE BLOCK is generated here, in the same round trip that uses it,
+# and identified EXACTLY -- not counted:
+#     dd if=/dev/zero bs=64k count=1 | tr '\000' '\377'
+# and its md5 must equal FF64K_MD5 below. Generating it in one call and using
+# it in another would reintroduce round 3's exact bug (a checked operation
+# that is not the operation the verdict came from). The md5 is an IDENTITY,
+# not a threshold: dd failing, tr missing, tr degrading to a passthrough of
+# zeros (which would make an all-0x00 window -- what the SPI bus reads with
+# the mux at PCH -- compare "identical" and yield a FALSE blank), or md5sum
+# itself failing all produce a string that is not FF64K_MD5, and every one of
+# them is read_failed. If a future BMC image lacks md5sum the bin fails
+# CLOSED (always read_failed, never a verdict) -- the correct direction for a
+# bin whose blank verdict triggers a reflash.
+#
+# `head -c` IS NOT AVAILABLE on this platform (BusyBox head has no -c; this
+# project has been bitten by GNU-only flags before -- see the `head -n 1`
+# note). Nothing here uses it.
+#
+# The raw byte count of the dd output is still checked (== 65536) BEFORE the
+# cmp result is trusted: that gate proves dd wrote a complete window, which
+# cmp alone cannot tell us (a short window vs. a full one both just "differ").
+# It is the ONLY count left, and it gates a READ, never a verdict.
+#
+# The trap fires on EXIT, INT, TERM, AND HUP -- NOT "EXIT" alone (review
+# finding, minor). This shell is BusyBox on the BMC, not bash: verified with
+# dash that "trap ... EXIT" alone does not fire for an untrapped fatal signal
+# -- SIGHUP, SIGTERM and SIGINT all leak the file. An ssh drop is precisely
+# SIGHUP, and /tmp is tmpfs on a 489 MB board.
+#
+# Emits "<raw> <refsum> <cmprc>" on one line.
+FF64K_MD5=ecb99e6ffea7be1e5419350f725da86b   # md5 of 65536 bytes of 0xFF; confirmed identical on 172.17.10.101 and here
+read_window() {  # $1 = extra dd args, e.g. "" for the head window or "skip=$top" for the top window
+    bmc "$IP" "f=/tmp/.bcp.\$\$
+r=/tmp/.bcpr.\$\$
+trap 'rm -f \"\$f\" \"\$r\"' EXIT INT TERM HUP
+dd if=$dev bs=64k count=1 $1 2>/dev/null > \"\$f\"
+raw=\$(wc -c < \"\$f\" 2>/dev/null)
+dd if=/dev/zero bs=64k count=1 2>/dev/null | tr '\\000' '\\377' > \"\$r\"
+sum=\$(md5sum < \"\$r\" 2>/dev/null)
+sum=\${sum%% *}
+cmp -s \"\$f\" \"\$r\"
+rc=\$?
+printf '%s %s %s' \"\$raw\" \"\$sum\" \"\$rc\"" 2>/dev/null | tr -d '\r'
+}
+
+# Validate ONE window's "<raw> <refsum> <cmprc>" answer and publish its
+# verdict bit in _w_blank (1 = this window is erased, 0 = it holds content).
+#
+# ONE shared validator, deliberately: the review found the previous per-window
+# copies MUTUALLY MASKING (deleting head's gate alone passed 31/0; deleting
+# top's alone passed 31/0), because the only fixtures that exercised them were
+# short for BOTH windows at once. A single validator makes asymmetric gating
+# structurally impossible -- there is no "the other window's gate" to fall
+# back on. It is called from the MAIN shell, never in a command substitution,
+# so json_err's `exit 1` really exits the bin (and still runs the EXIT trap
+# that returns the mux); a $(...) call would swallow the error record into a
+# variable instead. Per-window mutation fixtures in the test suite break each
+# stage for ONE window at a time (keyed on `skip=`) regardless.
+_w_blank=""
+check_window() {  # $1 = the raw "<raw> <refsum> <cmprc>" answer
+    _w_rest="${1#* }"
+    _w_raw="${1%% *}"
+    _w_sum="${_w_rest%% *}"
+    _w_rc="${_w_rest#* }"
+
+    # 1. The READ must be complete: dd wrote a whole 64 KiB window. Short,
+    #    empty, or garbage (ssh drop, EIO, device busy, a stale ro node) is a
+    #    read failure, never a verdict.
+    #
+    #    ONE gate, and it is a STRING equality, not `-eq`. There used to be
+    #    two here -- a non-numeric `case` and a numeric `-eq` -- and mutation
+    #    testing showed they were MUTUALLY MASKING: deleting the `case` alone
+    #    changed nothing, because `[ "dd:" -eq 65536 ]` errors in bash and so
+    #    the `-eq` gate caught non-numeric input too. Relying on a comparison
+    #    ERRORING is exactly the kind of adjacent, unproven behaviour that
+    #    produced five rounds of false verdicts. `=` needs no coercion: "",
+    #    "dd:", "32768" and "065536" all simply are not "65536".
+    [ "$_w_raw" = 65536 ] || json_err read_failed
+
+    # 2. The REFERENCE must be exactly 64 KiB of 0xFF. An identity check, not
+    #    a threshold -- see FF64K_MD5 above for why a degraded reference is
+    #    the one way cmp could hand back a false "blank".
+    [ "$_w_sum" = "$FF64K_MD5" ] || json_err read_failed
+
+    # 3. The DECISION must be one of cmp's two verdict codes. 2 (cmp errored),
+    #    127 (cmp missing), "" (ssh dropped mid-answer), or anything else is a
+    #    measurement failure with its own unambiguous signal -- no counting
+    #    pipeline, so there is no plausible number to mistake for an answer.
+    case "$_w_rc" in
+        0) _w_blank=1 ;;
+        1) _w_blank=0 ;;
+        *) json_err read_failed ;;
+    esac
+}
+
+cmd_probe() {
+    IP="$1"
+
+    # 1. The host MUST be off. Belt and braces: the worker checks this too,
+    #    but the bin must never assume its caller got it right.
+    state=$(bmc "$IP" 'obmcutil state 2>/dev/null | sed -n "s/.*CurrentPowerState *: *//p"' 2>/dev/null)
+    [ -n "$state" ] || json_err ssh_unreachable
+    case "$state" in
+        *Off*) ;;
+        *) json_err host_not_off ;;
+    esac
+
+    # 2. Take the bus: mux to BMC, then unbind/rebind so JEDEC re-probes.
+    take_bus
+
+    # 3. Find the pnor MTD. Its mere registration is the CANARY: it proves
+    #    JEDEC answered, which proves the mux switched. At PCH nothing binds,
+    #    so "no pnor" and "blank chip" stay structurally distinguishable.
+    mtd=""
+    i=1
+    while [ "$i" -le 5 ]; do
+        mtd=$(bmc "$IP" 'for f in /sys/class/mtd/mtd*/name; do
+                  [ "$(cat "$f" 2>/dev/null)" = pnor ] && basename "$(dirname "$f")" && break
+              done' 2>/dev/null | tr -d '\r')
+        [ -n "$mtd" ] && break
+        sleep 2
+        i=$((i + 1))
+    done
+    [ -n "$mtd" ] || json_err bind_failed
+
+    # Shape-guard $mtd before it goes anywhere near a remote command string:
+    # it is untrusted remote output (review finding, minor). It is always
+    # interpolated as a bare device suffix, never quoted into a value that
+    # could itself contain shell metacharacters, so a strict "mtdN" shape
+    # check is sufficient here (unlike bmc-backup-flash.sh.j2's _sq(), which
+    # guards a value that IS placed inside quotes).
+    case "$mtd" in
+        mtd*) mtd_n=${mtd#mtd} ;;
+        *)    mtd_n="" ;;
+    esac
+    case "$mtd_n" in
+        ''|*[!0-9]*) json_err bind_failed ;;
+    esac
+
+    # Read-only node preference (review finding, minor; confirmed live against
+    # 172.17.10.101 by the coordinator): this BMC image exposes /dev/mtd<N>ro
+    # alongside /dev/mtd<N> for every MTD -- a free never-write guarantee at
+    # the device-node level. Prefer it, but NEVER require it: pnor only
+    # exists during the mux window, so its ro twin cannot be verified ahead
+    # of time, and a hard dependency on an unconfirmed node would turn a
+    # safety nicety into an outage. Test for it and fall back to the plain
+    # node if it is absent -- the read-only guarantee then falls back to what
+    # it always was: this bin only ever reads the device with `dd if=` into a
+    # temp file it then measures and compares -- never `of=`, never a write of
+    # any kind -- see read_window above.
+    dev="/dev/mtd$mtd_n"
+    ro_dev="${dev}ro"
+    if [ "$(bmc "$IP" "[ -e $ro_dev ] && echo yes" 2>/dev/null | tr -d '\r ')" = yes ]; then
+        dev="$ro_dev"
+    fi
+
+    # 4. Plausible size, or we are misreading the device. UNCONDITIONAL: never
+    #    gated on PROBE_BLOCKS, which only ever overrides the block count below.
+    size=$(bmc "$IP" "cat /sys/class/mtd/$mtd/size 2>/dev/null" 2>/dev/null | tr -d '\r ')
+    case "$size" in ''|*[!0-9]*) json_err chip_absent ;; esac
+    [ "$size" -ge "$MIN_SIZE" ] && [ "$size" -le "$MAX_SIZE" ] || json_err chip_absent
+
+    blocks="$PROBE_BLOCKS"
+    [ "$blocks" -gt 0 ] || blocks=$((size / 65536))
+    top=$((blocks - 1))
+
+    # 5. Two 64 KiB windows. Each is ONE dd read, size-gated, then decided by
+    #    `cmp -s` against a freshly generated and exactly-identified all-0xFF
+    #    reference in the SAME remote round trip (see read_window above).
+    #    NEVER sample the middle: a HEALTHY image has 12 MiB of all-0xFF
+    #    interior (spec 2.5), so an interior window reads blank on a good chip.
+    check_window "$(read_window "")"
+    head_blank="$_w_blank"
+
+    check_window "$(read_window "skip=$top")"
+    top_blank="$_w_blank"
+
+    # 6. Release the bus and PROVE it went back, before reporting anything.
+    restore_bus || json_err mux_stuck
+
+    # 7. Verdict. The top block is the x86 reset vector: erased means the host
+    #    cannot boot, whatever else the chip holds.
+    if [ "$top_blank" = 0 ]; then
+        printf '{"chip":"populated"}\n'
+    elif [ "$head_blank" = 0 ]; then
+        printf '{"chip":"bootblock_blank"}\n'
+    else
+        printf '{"chip":"blank"}\n'
+    fi
+}
+
+case "${1:-}" in
+    probe) [ $# -eq 2 ] || { echo "usage: bmc-bios-chip-probe probe <bmc-ip>" >&2; exit 2; }; cmd_probe "$2" ;;
+    *) echo "usage: bmc-bios-chip-probe probe <bmc-ip>" >&2; exit 2 ;;
+esac

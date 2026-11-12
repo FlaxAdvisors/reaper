@@ -1,0 +1,14 @@
+---
+# One-way mirror of /export/share from the site's source bang to its peer.
+# Set per site in group_vars: apply_share_sync_from / apply_share_sync_to
+# (names from apply_flax_stack_peers). Only the _from host gets the cron;
+# every other bang has it removed, so a failed-over peer never mirrors back
+# over the source with --delete.
+apply_share_sync_path: /export/share
+apply_share_sync_script: /opt/flax/sbin/flax-share-sync
+apply_share_sync_cron_file: flax-share-sync
+apply_share_sync_minute: "17"
+apply_share_sync_hour: "*"
+# Unset on a site = no bang is a source; the role only removes.
+apply_share_sync_from: ""
+apply_share_sync_to: ""

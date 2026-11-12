@@ -1,0 +1,18 @@
+---
+# Every bang holds and loop-mounts the install ISOs in files/install-media.yml.
+apply_install_media_manifest: "{{ lookup('file', role_path + '/../../files/install-media.yml') | from_yaml }}"
+apply_install_media_isos_root: /export/isos
+apply_install_media_mount_root: /export/install
+apply_install_media_script: /opt/flax/sbin/flax-install-media
+apply_install_media_manifest_json: /etc/flax/install-media.json
+# Peers to copy a url-less or failed ISO from, bang-to-bang over tailscale (never via the dev VM):
+# this site's other bangs first, then every other bang, in list order (reject keeps order;
+# difference did not, so the try order changed run to run). Over ssh as flax.
+apply_install_media_all_bangs: [bang-gouda, bang-edam, bang-rhythm, bang-blues, bang-fiesta, bang-siesta]
+apply_install_media_peer_domain: "{{ bang_domain }}"   # site vault (vault_bang_domain)
+apply_install_media_peers: >-
+  {{ ((groups['jumphosts'] | reject('equalto', inventory_hostname) | list)
+      + (apply_install_media_all_bangs | reject('in', groups['jumphosts']) | list))
+     | map('regex_replace', '$', '.' ~ apply_install_media_peer_domain) | list }}
+# .mount units (named by systemd-escape from the manifest's mount targets, not services)
+apply_install_media_unit_dir: /etc/systemd/system

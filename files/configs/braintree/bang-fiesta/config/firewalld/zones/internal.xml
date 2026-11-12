@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<zone>
+  <short>Internal</short>
+  <description>For use on internal networks. You mostly trust the other computers on the networks to not harm your computer. Only selected incoming connections are accepted.</description>
+  <service name="ssh"/>
+  <service name="mdns"/>
+  <service name="samba-client"/>
+  <service name="dhcpv6-client"/>
+  <service name="dhcp"/>
+  <service name="dns"/>
+  <service name="http"/>
+  <service name="https"/>
+  <service name="iscsi-target"/>
+  <service name="tftp"/>
+  <service name="tigervnc"/>
+  <service name="tigervnc-https"/>
+  <port port="53" protocol="udp"/>
+  <port port="53" protocol="tcp"/>
+  <rule>
+    <protocol value="vrrp"/>
+    <accept/>
+  </rule>
+  <interface name="mgmt"/>
+  <interface name="eth0.8"/>
+  <interface name="eth0"/>
+  <interface name="eth1"/>
+  <forward/>
+</zone>

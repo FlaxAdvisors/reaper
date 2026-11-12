@@ -1,0 +1,10 @@
+---
+# Push v2c SNMP read-only access to the switches so the bang-side snmp_exporter
+# (apply_health_compose/templates/snmp/snmp.yml.j2, auth: site_v2) can scrape ifTable /
+# sensors. The committed switch configs (files/configs/<site>/<switch>/config, pushed by
+# apply_config.yml) carry the same {{ vault_cfg_snmp_ro_community }}: both paths must
+# push one community, from the site vault, never a 'public' fallback (RULE ZERO).
+
+apply_switch_snmp_community: "{{ vault_cfg_snmp_ro_community }}"
+apply_switch_snmp_location: "{{ site_name }}"
+apply_switch_snmp_contact: "{{ vault_snmp_contact | default('ops@example.com') }}"

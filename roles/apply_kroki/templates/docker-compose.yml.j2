@@ -1,0 +1,15 @@
+# Managed by reaper (apply_kroki). Do not edit in place.
+# network_mode: host like every flax container: docker bridge networks fail to
+# create on the bangs (firewalld has no FWD_docker-forwarding chain), and the
+# bind stays loopback-only via KROKI_LISTEN (8000 is flax-control's).
+services:
+  kroki:
+    image: {{ apply_kroki_image }}
+    network_mode: host
+    restart: unless-stopped
+    init: true
+    environment:
+      KROKI_LISTEN: "{{ apply_kroki_bind }}:{{ apply_kroki_port }}"
+      KROKI_SAFE_MODE: secure
+      # Network diagrams for a whole site get large; the default 4096 is tight.
+      KROKI_MAX_URI_LENGTH: "16384"

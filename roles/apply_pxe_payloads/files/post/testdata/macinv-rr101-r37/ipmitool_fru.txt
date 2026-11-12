@@ -1,0 +1,40 @@
+FRU Device Description : Builtin FRU Device (ID 0)
+ Chassis Type          : Rack Mount Chassis
+ Chassis Part Number   : B60.00X1C.0001
+ Chassis Serial        : C.M.B60.00X1C.000FAKE000000I
+ Chassis Extra         : 781FAKE000001
+ Chassis Extra         : 787FAKE000002
+ Chassis Area Checksum : OK
+ Board Mfg Date        : Thu 26 Jul 2018 02:14:00 AM UTC UTC
+ Board Mfg             : Wistron
+ Board Product         : Tioga Pass Single Side
+ Board Serial          : WTHFAKE0000B1
+ Board Part Number     : B91.00X10.0010
+ Board Extra           : 02-000243
+ Board Extra           : LBG-1G
+ Board Area Checksum   : OK
+ Product Manufacturer  : Wiwynn
+ Product Name          : Type6 Tioga Pass Single Side
+ Product Part Number   : B91.00X01.0035
+ Product Version       : MP
+ Product Serial        : WTHFAKE0000P1
+ Product Asset Tag     : 1234567
+ Product Extra         : 01-003037
+ Product Extra         : 2018-10-06 05:23:50+02:00
+ Product Area Checksum : OK
+
+FRU Device Description : HPE Eth 10/25Gb  (ID 86)
+ Board Mfg Date        : Fri 10 Jun 2022 06:06:00 AM UTC UTC
+ Board Mfg             : HPE
+ Board Product         : HPE Eth 10/25Gb 2p 640SFP28 Adptr
+ Board Serial          : ILCFAKE0R6
+ Board Part Number     : 840140-001
+ Board Extra           : d23048
+ Board Extra           : d5fa4e000001
+ Board Area Checksum   : OK
+ Product Manufacturer  : HPE
+ Product Name          : HPE Eth 10/25Gb 2p 640SFP28 Adptr
+ Product Part Number   : 817753-B21
+ Product Serial        : ILCFAKE0R6
+ Product Area Checksum : OK
+

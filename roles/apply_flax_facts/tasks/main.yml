@@ -1,0 +1,23 @@
+---
+# Render site facts to /etc/flax/site.env on each jumphost. Consumed by
+# /opt/flax/bin/ utilities (macsum sources it, and only it). Ghost's old
+# /etc/flax/bangvars fallback was retired 2026-11-09 (ghost 49d5acc), so
+# site.env is the only source of MGMT_RE / PRIMARY_RABBIT / PRIMARY_TURTLE.
+
+- name: Ensure /etc/flax directory exists
+  become: true
+  ansible.builtin.file:
+    path: /etc/flax
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Render /etc/flax/site.env from inventory
+  become: true
+  ansible.builtin.template:
+    src: site.env.j2
+    dest: /etc/flax/site.env
+    owner: root
+    group: root
+    mode: "0644"

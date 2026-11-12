@@ -1,0 +1,25 @@
+FRU Device Description : Builtin FRU Device (ID 0)
+ Chassis Type          : Rack Mount Chassis
+ Chassis Part Number   : B60.00X1C.0001
+ Chassis Serial        : C.M.B60.00X1C.00012820180306
+ Chassis Extra         : 78PJ485800265
+ Chassis Extra         : 78PJ485800295
+ Chassis Area Checksum : OK
+ Board Mfg Date        : Thu 26 Jul 2018 01:35:00 AM UTC UTC
+ Board Mfg             : Wistron
+ Board Product         : Tioga Pass Single Side
+ Board Serial          : WTH18300T0ZA1
+ Board Part Number     : B91.00X10.0010
+ Board Extra           : 02-000243
+ Board Extra           : LBG-1G
+ Board Area Checksum   : OK
+ Product Manufacturer  : Wiwynn
+ Product Name          : Type6 Tioga Pass Single Side
+ Product Part Number   : B91.00X01.0035
+ Product Version       : MP
+ Product Serial        : WTH48391DHM1A
+ Product Asset Tag     : 4692791
+ Product Extra         : 01-003037
+ Product Extra         : 2018-10-06 05:24:25+02:00
+ Product Area Checksum : OK
+

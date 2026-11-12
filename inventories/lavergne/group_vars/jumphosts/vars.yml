@@ -1,0 +1,19 @@
+---
+ansible_connection: ansible.builtin.ssh
+ansible_user: flax
+ansible_ssh_common_args: >-
+  -o StrictHostKeyChecking=no
+  -o UserKnownHostsFile=/dev/null
+device_role: collect_jumphost
+
+# WAN (spec 2026-10-27 §6.2): the corp drop on vid 2 (`corp` = mgmt vid 2) is a
+# follow-up. Until it is brought up, wlan0 (guest wifi) is the ONLY WAN and the
+# only tailscale path on bang-rhythm, so the failover daemon stays off (the wlan0
+# watchdog still runs). The follow-up flips this to true; primary is pre-set.
+jumphost_wan_failover_wan_failover_enabled: false
+jumphost_wan_failover_primary_iface: corp
+
+# Review C1 (2026-10-27): apply_jumphost (also staged by `reaper push lavergne
+# <switch>`) installs every ifcfg and runs `systemctl restart network`, which
+# bounces wlan0 -- bang-rhythm's only WAN/tailscale path. The role refuses here.
+apply_jumphost_allowed: false

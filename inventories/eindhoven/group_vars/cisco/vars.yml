@@ -1,0 +1,24 @@
+---
+# Cisco IOS 15.x on WS-C3750X-48P (turtle-gouda) — network_cli (SSH) transport.
+# Admin user has privilege 15 so login lands directly in privileged exec;
+# `become_method: enable` is harmless and keeps the role symmetric with arista_eos.
+ansible_connection: ansible.netcommon.network_cli
+ansible_network_os: cisco.ios.ios
+# paramiko, not libssh: turtle-gouda is IOS 15.2(4)E10 (SSH "Cisco-1.25") offering only
+# SHA1 kex; the bundled libssh never offers SHA1 and ignores config overrides, while
+# paramiko 3.4 negotiates diffie-hellman-group-exchange-sha1 (verified 2026-11-08).
+# Key lookup is off in ansible.cfg [paramiko_connection]: a pubkey attempt kills the session.
+ansible_network_cli_ssh_type: paramiko
+# paramiko ignores ansible_ssh_extra_args' ProxyCommand: hop via bang-gouda only off site.
+ansible_paramiko_proxy_command: >-
+  {{ '' if lookup('ansible.builtin.pipe', 'hostname -s') in groups['jumphosts']
+     else 'ssh -W %h:%p bang-gouda' }}
+ansible_user: "{{ vault_cisco_user }}"
+ansible_password: "{{ vault_cisco_password }}"
+ansible_become: true
+ansible_become_method: enable
+ansible_become_password: "{{ vault_cisco_enable_password }}"
+ansible_command_timeout: 120
+
+# Which device-specific role collect_config delegates to
+device_role: cisco_ios

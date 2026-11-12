@@ -1,0 +1,6 @@
+Wedge EEPROM :
+Product Name: WEDGE100S12V
+Product Part Number: 20-001688
+Product Serial Number: AI09019591
+Product Production State: 4
+Product Asset Tag: N/A

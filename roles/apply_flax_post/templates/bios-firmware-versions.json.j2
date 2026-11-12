@@ -1,0 +1,8 @@
+{#- post biosd's BIOS manifest, per site from post_bios_fw_platforms (reaper fw keeps
+    target/bin_url in step with host_fw_platforms). host_fw_family is reaper fw's link
+    to the triage family and is dropped here: the file keeps its exact shape. -#}
+{%- set out = [] -%}
+{%- for e in post_bios_fw_platforms -%}
+{%- set _ = out.append(e | dict2items | rejectattr('key', 'equalto', 'host_fw_family') | items2dict) -%}
+{%- endfor -%}
+{{ out | to_nice_json(indent=2, sort_keys=False) }}

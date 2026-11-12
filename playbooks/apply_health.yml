@@ -1,0 +1,23 @@
+---
+# Health-dashboard-only redeploy. Sibling to apply_pxe_payloads.yml — exists
+# so a dashboard / rule / config refresh doesn't have to drag the rest of
+# apply_bang_services.yml (dnsmasq, nginx restart handlers)
+# along with it. Same risk profile as apply_pxe_payloads.yml: template/file
+# staging + a docker-compose up that's idempotent on the running stack.
+
+- name: Apply health-dashboard stack (node_exporter, hooks, compose)
+  hosts: jumphosts
+  gather_facts: true
+  serial: 1
+  tasks:
+    - name: Apply role apply_node_exporter
+      ansible.builtin.import_role:
+        name: apply_node_exporter
+
+    - name: Apply role apply_health_metrics_hooks
+      ansible.builtin.import_role:
+        name: apply_health_metrics_hooks
+
+    - name: Apply role apply_health_compose
+      ansible.builtin.import_role:
+        name: apply_health_compose

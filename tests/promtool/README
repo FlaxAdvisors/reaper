@@ -1,0 +1,4 @@
+promtool rule tests for the health stack's Prometheus rules. There is no promtool on orbit;
+run them in a bang's prometheus container (read-only, a temp dir):
+
+  ~/git/reaper-devel/tests/promtool/run.sh bang-gouda

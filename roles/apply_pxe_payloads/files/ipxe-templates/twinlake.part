@@ -1,0 +1,4 @@
+# apply the twinlake settings
+set com-default com1f
+set com-setting ${ttys0f}
+set node-setting twinlake

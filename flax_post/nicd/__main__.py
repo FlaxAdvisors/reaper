@@ -1,0 +1,104 @@
+"""Entrypoint: wire real deps, run the probe/enforce loop. `python -m flax_post.nicd`.
+No manual-flash endpoint, but the control surface is the stdlib loopback
+server in flax_post.probe_server: POST /probe/<port> on config.CONTROL_PORT
+(8450), started in a background thread. The scan loop stays in the main
+thread."""
+import logging
+import time
+
+log = logging.getLogger("flax-post-nicd")
+
+from .. import queries, state
+from . import bridge, config, creds, driver, manifest, store
+from .service import Registry, enforce_once, probe_once
+
+
+class _Deps:
+    def __init__(self):
+        self.host_creds = creds.load_host_creds()
+        self.matcher = manifest.NicMatcher(manifest.load_nic_manifest(config.CONFIG_DIR))
+        self._install_set_row()
+
+    def _install_set_row(self):
+        def set_row(port, **fields):
+            # setdefault, not mode=...: a caller that passes its own mode= would
+            # otherwise raise TypeError on the duplicate keyword.
+            fields.setdefault("mode", config.MODE)
+            row = store.set_row(port, **fields)
+            try:
+                bridge.mirror_row(state.set_state, port, row)
+            except Exception:
+                log.exception("post_state mirror failed for %s", port)
+            return row
+        self.set_row = set_row
+
+    def _devices(self):
+        return queries.post_devices()
+
+    def hosts(self):
+        out = []
+        for d in self._devices():
+            if d.get("kind") != "host":
+                continue
+            ip = d.get("lease_ip") or d.get("reservation_ip")
+            if ip:
+                out.append({**d, "host_ip": ip})
+        return out
+
+    def powered_off_ports(self) -> set:
+        """Twin of biosd._Deps.powered_off_ports: ports the power lane last
+        read `off`, skipped by the scan pass (service.scan_hosts)."""
+        try:
+            return {p for p, row in state.read_state().items() if row.get("power_on") == "off"}
+        except Exception:
+            log.exception("post_state read failed; scanning every host this pass")
+            return set()
+
+    def run(self, ip, script):
+        u, p = self.host_creds
+        return driver.run_over_ssh(u, p, ip, script)
+
+    def _vars(self, port):
+        return state.read_state().get(port) or {}
+
+    def bmc_phase(self, port):
+        return (self._vars(port).get("fw_bmc") or {}).get("phase")
+
+    def bios_phase(self, port):
+        return (self._vars(port).get("fw_bios") or {}).get("phase")
+
+    def last_row(self, port):
+        return store.read().get(port) or {}
+
+
+def _scan_loop(deps, registry):
+    while True:
+        try:
+            probe_once(deps, registry)
+        except Exception:
+            log.exception("probe pass failed")
+        try:
+            if config.MODE == "enforce":
+                enforce_once(deps, registry, config.MODE, config.ENABLE_PORTS)
+        except Exception:
+            log.exception("enforce pass failed")
+        time.sleep(config.PROBE_INTERVAL_S)
+
+
+def main():
+    logging.basicConfig(level=logging.INFO)
+    log.info("flax-post-nicd starting; mode=%s allow=%s max_parallel=%d control=%s:%d",
+             config.MODE, config.ENABLE_PORTS or "(all)", config.MAX_PARALLEL,
+             config.CONTROL_HOST, config.CONTROL_PORT)
+    deps = _Deps()
+    registry = Registry()
+    from ..probe_server import ProbeServer
+    from .service import probe_port
+    ProbeServer(config.CONTROL_HOST, config.CONTROL_PORT,
+                lambda port: probe_port(deps, registry, port),
+                max_parallel=config.MAX_PARALLEL).start()
+    _scan_loop(deps, registry)
+
+
+if __name__ == "__main__":
+    main()

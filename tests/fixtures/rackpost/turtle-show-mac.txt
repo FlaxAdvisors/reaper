@@ -1,0 +1,29 @@
+terminal length 0
+turtle-gouda#show mac address-table interface Gi1/0/17
+          Mac Address Table
+-------------------------------------------
+
+Vlan    Mac Address       Type        Ports
+----    -----------       --------    -----
+  26    0090.fb62.bb51    DYNAMIC     Gi1/0/17
+  26    3c2c.99e1.e1b8    DYNAMIC     Gi1/0/17
+Total Mac Addresses for this criterion: 2
+turtle-gouda#show mac address-table interface Gi1/0/18
+          Mac Address Table
+-------------------------------------------
+
+Vlan    Mac Address       Type        Ports
+----    -----------       --------    -----
+  26    0090.fb64.b65d    DYNAMIC     Gi1/0/18
+  26    b86a.9719.c8fd    DYNAMIC     Gi1/0/18
+Total Mac Addresses for this criterion: 2
+turtle-gouda#show mac address-table interface Gi1/0/19
+          Mac Address Table
+-------------------------------------------
+
+Vlan    Mac Address       Type        Ports
+----    -----------       --------    -----
+  26    185a.585e.f920    DYNAMIC     Gi1/0/19
+   1    0000.0c07.ac01    STATIC      CPU
+Total Mac Addresses for this criterion: 1
+turtle-gouda#

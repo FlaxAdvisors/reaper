@@ -1,0 +1,461 @@
+<?xml version="1.0"?>
+<!DOCTYPE profile>
+<profile xmlns="http://www.suse.com/1.0/yast2ns" xmlns:config="http://www.suse.com/1.0/configns">
+  <add-on t="map">
+    <add_on_others t="list">
+      <listentry t="map">
+        <alias>bang</alias>
+        <media_url>http://bang/install/rpmbuild</media_url>
+        <name>bang</name>
+        <priority t="integer">99</priority>
+        <product_dir>/</product_dir>
+      </listentry>
+      <listentry t="map">
+        <alias>repo-iso</alias>
+        <media_url>http://bang/install//suse/leap/15.6/ga</media_url>
+        <name>ISO Repository</name>
+        <priority t="integer">99</priority>
+        <product_dir />
+      </listentry>
+
+      <!-- obs repos -->
+      <!--
+      <listentry t="map">
+        <alias>virt_vagrant</alias>
+        <media_url>https://download.opensuse.org/repositories/Virtualization:/vagrant/15.6/</media_url>
+        <name>Devel project for Vagrant</name>
+        <priority t="integer">99</priority>
+        <product_dir>/</product_dir>
+      </listentry>
+      <listentry t="map">
+        <alias>virt_app_builder</alias>
+      <media_url>https://download.opensuse.org/repositories/Virtualization:/Appliances:/Builder/openSUSE_Leap_15.6/</media_url>
+        <name>Appliance Builder</name>
+        <priority t="integer">99</priority>
+        <product_dir>/</product_dir>
+      </listentry>
+      <listentry t="map">
+        <name>Ruby base project</name>
+        <alias>d_l_ruby</alias>
+        <media_url>https://download.opensuse.org/repositories/devel:/languages:/ruby/</media_url>
+        <priority t="integer">99</priority>
+        <product_dir>/</product_dir>
+      </listentry>
+      <listentry t="map">
+        <alias>d_l_ruby_ext</alias>
+      <media_url>https://download.opensuse.org/repositories/devel:/languages:/ruby:/extensions/15.6/</media_url>
+        <name>Ruby Extensions</name>
+        <priority t="integer">99</priority>
+        <product_dir>/</product_dir>
+      </listentry>
+      -->
+
+      <!-- oss -->
+      <!-- 
+      <listentry t="map">
+        <alias>repo-oss</alias>
+        <media_url>http://download.opensuse.org/distribution/leap/15.6/repo/oss/</media_url>
+        <name>OSS Repository</name>
+        <priority t="integer">99</priority>
+        <product_dir/>
+      </listentry>
+      <listentry t="map">
+        <alias>repo-backports-update</alias>
+        <media_url>http://download.opensuse.org/update/leap/15.6/backports/</media_url>
+        <name>Update repository of openSUSE Backports</name>
+        <priority t="integer">99</priority>
+        <product_dir>/</product_dir>
+      </listentry>
+      <listentry t="map">
+        <alias>repo-non-oss</alias>
+        <media_url>http://download.opensuse.org/distribution/leap/15.6/repo/non-oss/</media_url>
+        <name>Non-OSS Repository</name>
+        <priority t="integer">99</priority>
+        <product_dir/>
+      </listentry>
+      <listentry t="map">
+        <alias>repo-update-oss</alias>
+        <media_url>http://download.opensuse.org/update/leap/15.6/oss/</media_url>
+        <name>Update Repository (Oss)</name>
+        <priority t="integer">99</priority>
+        <product_dir/>
+      </listentry>
+      <listentry t="map">
+        <alias>repo-sle-update</alias>
+        <media_url>http://download.opensuse.org/update/leap/15.6/sle/</media_url>
+        <name>Update repository with updates from SUSE Linux Enterprise 15</name>
+        <priority t="integer">99</priority>
+        <product_dir>/</product_dir>
+      </listentry>
+      <listentry t="map">
+        <alias>repo-update-non-oss</alias>
+        <media_url>http://download.opensuse.org/update/leap/15.6/non-oss/</media_url>
+        <name>Update Repository (Non-Oss)</name>
+        <priority t="integer">99</priority>
+        <product_dir/>
+      </listentry>
+      -->
+
+    </add_on_others>
+  </add-on>
+
+  <bootloader t="map">
+    <global t="map">
+      <append>linux nomodeset noquiet splash=off console=tty0 console=ttyS1,57600n8
+        earlyprintk=serial,ttyS1,57600n8 preempt=full mitigations=auto security=apparmor</append>
+      <cpu_mitigations>auto</cpu_mitigations>
+      <gfxmode>auto</gfxmode>
+      <hiddenmenu>false</hiddenmenu>
+      <os_prober>false</os_prober>
+      <secure_boot>true</secure_boot>
+      <serial>serial --unit=1 --speed=57600 --parity=no --word=8</serial>
+      <terminal>gfxterm serial</terminal>
+      <timeout t="integer">8</timeout>
+      <update_nvram>true</update_nvram>
+      <xen_append>console=hvc0</xen_append>
+      <xen_kernel_append>console=com1 com1=57600</xen_kernel_append>
+    </global>
+    <loader_type>grub2-efi</loader_type>
+  </bootloader>
+
+  <general t="map">
+    <mode t="map">
+      <confirm t="boolean">false</confirm>
+      <halt t="boolean">true</halt>
+      <second_stage t="boolean">false</second_stage>
+      <final_halt t="boolean">false</final_halt>
+      <final_reboot t="boolean">false</final_reboot>
+    </mode>
+    <signature-handling t="map">
+      <accept_file_without_checksum t="boolean">false</accept_file_without_checksum>
+      <accept_non_trusted_gpg_key t="boolean">true</accept_non_trusted_gpg_key>
+      <accept_unknown_gpg_key t="boolean">true</accept_unknown_gpg_key>
+      <accept_unsigned_file t="boolean">true</accept_unsigned_file>
+      <accept_verification_failed t="boolean">false</accept_verification_failed>
+      <import_gpg_key t="boolean">true</import_gpg_key>
+    </signature-handling>
+  </general>
+
+  <networking t="map">
+    <dhcp_options t="map">
+      <dhclient_client_id />
+      <dhclient_hostname_option>AUTO</dhclient_hostname_option>
+    </dhcp_options>
+    <interfaces t="list">
+      <interface t="map">
+        <bootproto>dhcp</bootproto>
+        <name>eth0</name>
+        <startmode>auto</startmode>
+      </interface>
+      <interface t="map">
+        <bootproto>dhcp</bootproto>
+        <name>eth1</name>
+        <startmode>auto</startmode>
+      </interface>
+    </interfaces>
+    <ipv6 t="boolean">true</ipv6>
+    <keep_install_network t="boolean">true</keep_install_network>
+    <managed t="boolean">false</managed>
+    <routing t="map">
+      <ipv4_forward t="boolean">false</ipv4_forward>
+      <ipv6_forward t="boolean">false</ipv6_forward>
+    </routing>
+  </networking>
+
+  <firewall>
+    <enable_firewall t="boolean">true</enable_firewall>
+    <log_denied_packets>all</log_denied_packets>
+    <default_zone>external</default_zone>
+    <zones t="list">
+      <zone>
+        <name>external</name>
+        <interfaces t="list">
+          <interface>eth0</interface>
+        </interfaces>
+        <services t="list">
+          <service>ssh</service>
+          <service>dhcp</service>
+          <service>dhcpv6</service>
+          <service>samba</service>
+          <service>vnc-server</service>
+        </services>
+        <ports t="list">
+          <port>21/udp</port>
+          <port>22/udp</port>
+          <port>80/tcp</port>
+          <port>443/tcp</port>
+          <port>8080/tcp</port>
+        </ports>
+      </zone>
+    </zones>
+  </firewall>
+  
+  <ntp-client t="map">
+    <ntp_policy>auto</ntp_policy>
+    <ntp_servers t="list">
+      <ntp_server t="map">
+        <address>0.pool.ntp.org</address>
+        <iburst t="boolean">true</iburst>
+        <offline t="boolean">false</offline>
+      </ntp_server>
+      <ntp_server t="map">
+        <address>1.pool.ntp.org</address>
+        <iburst t="boolean">true</iburst>
+        <offline t="boolean">false</offline>
+      </ntp_server>
+      <ntp_server t="map">
+        <address>2.pool.ntp.org</address>
+        <iburst t="boolean">true</iburst>
+        <offline t="boolean">false</offline>
+      </ntp_server>
+      <ntp_server t="map">
+        <address>3.pool.ntp.org</address>
+        <iburst t="boolean">true</iburst>
+        <offline t="boolean">false</offline>
+      </ntp_server>
+    </ntp_servers>
+    <ntp_sync>systemd</ntp_sync>
+  </ntp-client>
+
+  <partitioning t="list">
+    <drive t="map">
+      <!--
+        #  pci-0000:00:1f.2-ata-1   monolake
+        #  pci-0000:00:1f.2-ata-5   leopard quanta
+        #  pci-0000:00:1f.2-ata-3   bigsur bottom slot
+        #  pci-0000:00:11.4-ata-1   bigsur top slot ???
+        #  pci-0000:01:00.0-nvme-1  tiogapass
+        #  pci-0000:00:04.0         vmware vm
+      -->
+      <device>/dev/disk/by-path/pci-0000:00:1f.2-ata-1</device>
+      <disklabel>gpt</disklabel>
+      <enable_snapshots t="boolean">true</enable_snapshots>
+      <type t="symbol">CT_DISK</type>
+      <use>all</use>
+    </drive>
+  </partitioning>
+
+  <report t="map">
+    <errors t="map">
+      <log t="boolean">true</log>
+      <show t="boolean">false</show>
+      <timeout t="integer">10</timeout>
+    </errors>
+    <messages t="map">
+      <log t="boolean">false</log>
+      <show t="boolean">false</show>
+      <timeout t="integer">2</timeout>
+    </messages>
+    <warnings t="map">
+      <log t="boolean">false</log>
+      <show t="boolean">false</show>
+      <timeout t="integer">2</timeout>
+    </warnings>
+    <yesno_messages t="map">
+      <log t="boolean">false</log>
+      <show t="boolean">false</show>
+      <timeout t="integer">2</timeout>
+    </yesno_messages>
+  </report>
+
+  <scripts t="map">
+    <!--
+    <init-scripts t="list">
+      <script t="map">
+        <filename>zzz_halt</filename>
+        <source>shutdown -h now</source>
+      </script>
+    </init-scripts>
+    -->
+    <chroot-scripts config:type="list">
+      <script>
+        <chrooted config:type="boolean">true</chrooted>
+        <filename>post.sh</filename>
+        <interpreter>shell</interpreter>
+        <source>
+          <![CDATA[
+#!/bin/bash
+
+cat<<-'EOF'>/etc/sudoers.d/admin
+admin ALL=(ALL) NOPASSWD: ALL
+EOF
+cat<<-'EOF'>/etc/sudoers.d/flax
+flax ALL=(ALL) NOPASSWD: ALL
+EOF
+          ]]>
+          </source>
+      </script>
+    </chroot-scripts>
+  </scripts>
+
+  <proxy t="map">
+    <enabled t="boolean">false</enabled>
+  </proxy>
+
+  <services-manager t="map">
+    <default_target>multi-user</default_target>
+    <services t="map">
+      <enable t="list">
+        <service>sshd</service>
+      </enable>
+    </services>
+  </services-manager>
+  <software t="map">
+    <install_recommended t="boolean">true</install_recommended>
+    <instsource />
+    <packages t="list">
+      <package>ansible</package>
+      <package>apache2</package>
+      <package>autoyast2</package>
+      <package>bash-completion</package>
+      <package>bc</package>
+      <package>btrfsprogs</package>
+      <package>bridge-utils</package>
+      <package>chrony</package>
+      <package>dhcp-server</package>
+      <package>dmidecode</package>
+      <package>dnsmasq</package>
+      <package>dosfstools</package>
+      <package>e2fsprogs</package>
+      <package>emacs-nox</package>
+      <package>ethtool</package>
+      <package>expect</package>
+      <package>fio</package>
+      <package>firewalld</package>
+      <package>git</package>
+      <package>glibc</package>
+      <package>google-chrome-stable</package>
+      <package>grub2-x86_64-efi</package>
+      <package>hdparm</package>
+      <package>hwinfo</package>
+      <package>ipmitool</package>
+      <package>irqbalance</package>
+      <package>kexec-tools</package>
+      <package>lldpd</package>
+      <package>lsscsi</package>
+      <package>minicom</package>
+      <package>mokutil</package>
+      <package>mstflint</package>
+      <package>nmap</package>
+      <package>numactl</package>
+      <package>openSUSE-release</package>
+      <package>openssh</package>
+      <package>openvpn</package>
+      <package>os-prober</package>
+      <package>python3-Jinja2</package>
+      <package>python3-netaddr</package>
+      <package>rsync</package>
+      <package>screen</package>
+      <package>shim</package>
+      <package>smartmontools</package>
+      <package>snapper</package>
+      <package>sshpass</package>
+      <package>tailscale</package>
+      <package>targetcli</package>
+      <package>tcpdump</package>
+      <package>tmux</package>
+      <package>tree</package>
+      <package>vim</package>
+      <package>wicked</package>
+      <package>xfsprogs</package>
+      <package>yast2-firewall</package>
+    </packages>
+
+    <patterns t="list">
+      <pattern>apparmor</pattern>
+      <pattern>base</pattern>
+      <pattern>basesystem</pattern>
+      <pattern>console</pattern>
+      <pattern>documentation</pattern>
+      <pattern>enhanced_base</pattern>
+      <pattern>minimal_base</pattern>
+      <pattern>sw_management</pattern>
+      <pattern>yast2_basis</pattern>
+    </patterns>
+    <products t="list">
+      <product>Leap</product>
+    </products>
+  </software>
+  <timezone t="map">
+    <timezone>Etc/GMT</timezone>
+  </timezone>
+  <user_defaults t="map">
+    <expire />
+    <group>100</group>
+    <home>/home</home>
+    <inactive>-1</inactive>
+    <shell>/bin/bash</shell>
+    <skel>/etc/skel</skel>
+    <umask>022</umask>
+  </user_defaults>
+  <users t="list">
+    <user>
+      <authorized_keys t="list">
+        <authorized_key><<KEY>></authorized_key>
+      </authorized_keys>
+      <encrypted config:type="boolean">true</encrypted>
+      <fullname>admin</fullname>
+      <gid>100</gid>
+      <groups>wheel</groups>
+      <home>/home/admin</home>
+      <home_btrfs_subvolume config:type="boolean">false</home_btrfs_subvolume>
+      <password_settings>
+        <expire />
+        <flag />
+        <inact />
+        <max>99999</max>
+        <min>0</min>
+        <warn>7</warn>
+      </password_settings>
+      <shell>/bin/bash</shell>
+      <uid>1000</uid>
+      <user_password><<leap_admin_hash>></user_password>
+      <username>admin</username>
+    </user>
+    <user t="map">
+      <authorized_keys t="list">
+        <authorized_key><<KEY>></authorized_key>
+      </authorized_keys>
+      <encrypted t="boolean">true</encrypted>
+      <fullname>flax</fullname>
+      <gid>100</gid>
+      <home>/home/flax</home>
+      <home_btrfs_subvolume t="boolean">false</home_btrfs_subvolume>
+      <password_settings t="map">
+        <expire />
+        <flag />
+        <inact />
+        <max>99999</max>
+        <min>0</min>
+        <warn>7</warn>
+      </password_settings>
+      <shell>/bin/bash</shell>
+      <uid>1001</uid>
+      <user_password><<flax_hash>></user_password>
+      <username>flax</username>
+    </user>
+    <user t="map">
+      <authorized_keys t="list">
+        <authorized_key><<KEY>></authorized_key>
+      </authorized_keys>
+      <encrypted t="boolean">true</encrypted>
+      <fullname>root</fullname>
+      <gid>0</gid>
+      <home>/root</home>
+      <home_btrfs_subvolume t="boolean">false</home_btrfs_subvolume>
+      <password_settings t="map">
+        <expire />
+        <flag />
+        <inact />
+        <max />
+        <min />
+        <warn />
+      </password_settings>
+      <shell>/bin/bash</shell>
+      <uid>0</uid>
+      <user_password>
+        <<flax_hash>></user_password>
+      <username>root</username>
+    </user>
+  </users>
+</profile>

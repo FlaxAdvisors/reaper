@@ -1,0 +1,3 @@
+---
+# Cap for the persistent journal (/var/log/journal). The bangs' root disks have 50+ GB free.
+apply_bang_records_journal_max_use: 2G

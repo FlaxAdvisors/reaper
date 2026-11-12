@@ -1,0 +1,47 @@
+---
+# Build/refresh /opt/flax/venv/reaper-ansible with scripts/toolchain-venv.sh -- the same
+# script ./setup runs for a developer's own venv, so both get exactly the pins in
+# requirements-ansible.txt + requirements.yml. Needs pypi.org + galaxy.ansible.com.
+# Unchanged pins -> the builder exits "up to date" -> ok.
+
+- name: Ensure the python interpreters reaper runs on
+  become: true
+  community.general.zypper:
+    name: "{{ apply_reaper_toolchain_pythons }}"
+    state: present
+
+- name: Ensure the toolchain source dirs exist
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ apply_reaper_toolchain_src }}"
+    - "{{ apply_reaper_toolchain_src }}/scripts"
+
+- name: Stage the toolchain pins and builder
+  become: true
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../{{ item.src }}"
+    dest: "{{ apply_reaper_toolchain_src }}/{{ item.src }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - {src: requirements-ansible.txt, mode: "0644"}
+    - {src: requirements.yml, mode: "0644"}
+    - {src: scripts/toolchain-venv.sh, mode: "0755"}
+  loop_control:
+    label: "{{ item.src }}"
+
+- name: Build or refresh the pinned venv
+  become: true
+  ansible.builtin.command:
+    cmd: "{{ apply_reaper_toolchain_src }}/scripts/toolchain-venv.sh {{ apply_reaper_toolchain_venv }}"
+  environment:
+    HOME: /root
+  register: apply_reaper_toolchain_build
+  changed_when: "'up to date' not in apply_reaper_toolchain_build.stdout"

@@ -1,0 +1,59 @@
+---
+# Records that survive a reboot or a crash (operator 2026-11-09):
+#
+# * The journal persists. It lived in RAM only (Storage=auto, no /var/log/journal),
+#   so a reboot erased what `reaper diag` reads, and gouda's had already rotated past
+#   its own boot. Capped at apply_bang_records_journal_max_use.
+# * rasdaemon records decoded machine-check, memory and PCIe errors, so the cause
+#   of a CATERR-style hardware reset (bang-siesta) is still readable after it.
+# * No kdump on purpose: a CATERR never reaches the kernel's panic path, and a real
+#   panic's last messages are already kept by pstore (erst backend + systemd-pstore,
+#   archived to /var/lib/systemd/pstore at the next boot). kdump would cost a
+#   crashkernel= reservation, a reboot per bang and vmcores on the root disk.
+
+- name: Ensure rasdaemon installed
+  become: true
+  community.general.zypper:
+    name: rasdaemon
+    state: present
+
+- name: Enable + start rasdaemon
+  become: true
+  ansible.builtin.systemd:
+    name: rasdaemon
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Ensure the journald drop-in directory exists
+  become: true
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Keep the journal on disk, capped
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/systemd/journald.conf.d/50-reaper-persistent.conf
+    content: |
+      # reaper apply_bang_records: the journal survives reboots
+      [Journal]
+      Storage=persistent
+      SystemMaxUse={{ apply_bang_records_journal_max_use }}
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Persist the journal
+
+- name: Ensure /var/log/journal exists
+  become: true
+  ansible.builtin.file:
+    path: /var/log/journal
+    state: directory
+    owner: root
+    group: systemd-journal
+    mode: "2755"
+  notify: Persist the journal

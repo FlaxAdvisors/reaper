@@ -1,0 +1,25 @@
+---
+# The pg notify hooks are tagged flax_pg_hooks so they can be redeployed on their
+# own (e.g. to ship a hook fix) WITHOUT a full flax_stack run — a full run
+# restarts Postgres and, on a temporarily-demoted node during failback, would try
+# to run alembic against a read-only standby. `--tags flax_pg_hooks` is safe on
+# any node in any role: it only rewrites these two scripts.
+- name: Deploy notify_master_postgres.sh
+  become: true
+  ansible.builtin.template:
+    src: notify_master_postgres.sh.j2
+    dest: /opt/flax/sbin/notify_master_postgres.sh
+    owner: root
+    group: root
+    mode: "0750"
+  tags: [flax_pg_hooks]
+
+- name: Deploy notify_backup_postgres.sh
+  become: true
+  ansible.builtin.template:
+    src: notify_backup_postgres.sh.j2
+    dest: /opt/flax/sbin/notify_backup_postgres.sh
+    owner: root
+    group: root
+    mode: "0750"
+  tags: [flax_pg_hooks]

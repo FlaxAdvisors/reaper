@@ -1,0 +1,22 @@
+# {{ ansible_managed }}
+[Unit]
+Description=wlan0 stuck-wifi recovery (probe + bounce)
+After=network-online.target wickedd.service
+ConditionPathExists=/usr/local/sbin/wlan-watchdog
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/wlan-watchdog
+Environment=WLAN_WATCHDOG_IFACE={{ jumphost_wan_failover_wlan_watchdog_iface }}
+Environment="WLAN_WATCHDOG_PROBE_TARGETS={{ jumphost_wan_failover_wlan_watchdog_probe_targets | join(' ') }}"
+Environment=WLAN_WATCHDOG_FAILURE_THRESHOLD={{ jumphost_wan_failover_wlan_watchdog_failure_threshold }}
+Environment=WLAN_WATCHDOG_STATE_FILE={{ jumphost_wan_failover_wlan_watchdog_state_file }}
+User=root
+ProtectSystem=strict
+ReadWritePaths={{ jumphost_wan_failover_state_dir }}
+# PrivateTmp gives the service its own writable /tmp despite ProtectSystem=strict;
+# bash heredocs in write_state() need a writable /tmp for temp files. Matches the
+# sibling wan-failover.service.j2 hardening set.
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectHome=true

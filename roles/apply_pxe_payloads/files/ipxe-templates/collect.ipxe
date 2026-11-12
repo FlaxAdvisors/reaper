@@ -1,0 +1,12 @@
+#!ipxe
+echo
+echo Boot Live ISO for collection
+echo if http://bang/post.tgz is present will do something and power off
+
+# reduce the pause to 1s (instead of default 10s)
+set menu-timeout 1000
+set submenu-timeout 1000
+
+set menu-default menu-live
+set submenu-default collect
+chain --replace --autofree ${boot-url}

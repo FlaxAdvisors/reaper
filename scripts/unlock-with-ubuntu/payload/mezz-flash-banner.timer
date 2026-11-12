@@ -1,0 +1,10 @@
+[Unit]
+Description=Redraw the mezz-flash station banner on the SOL console every 20 seconds
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=20
+AccuracySec=1
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,547 @@
+---
+# Pump the per-vlan PXE chain content + custom TFTP NBPs into /srv/pxe
+# and /srv/tftpboot. apply_bang_services creates the parent dirs and
+# wires nginx/dnsmasq to serve them; this role fills them with the
+# operator-built content captured from the source-of-truth bang.
+#
+# Source of truth lives in roles/apply_pxe_payloads/files/. To update,
+# scp the new content from a known-good bang (typically bang-fiesta
+# during dev cycles) into roles/apply_pxe_payloads/files/v and commit.
+# The TFTP NBPs are not files here: they are built from files/ipxe/
+# (see ipxe.conf) at deploy time. Earlier apply_bang_services commits 4558af1 + e56e19f
+# explicitly stopped clobbering operator-built NBPs from that role —
+# this role is the legitimate place for that content to flow.
+
+# One shell call, not a per-vid file loop (~0.3-0.6 s per item). Check mode only
+# reports. Prints CHANGED when it created or re-owned anything.
+- name: Ensure /srv/pxe/v<vid> dirs exist with dnsmasq ownership
+  become: true
+  ansible.builtin.shell: |
+    set -eu; c=
+    for v in {{ apply_pxe_payloads_vids | join(' ') }}; do
+      d={{ apply_pxe_payloads_pxe_root }}/v$v
+      if [ "$(stat -c %U:%G:%a "$d" 2>/dev/null)" != dnsmasq:dnsmasq:755 ]; then
+        c=1; [ "$DRY" = True ] || install -d -o dnsmasq -g dnsmasq -m 0755 "$d"
+      fi
+    done
+    [ -z "$c" ] || echo CHANGED
+  environment: { DRY: "{{ ansible_check_mode }}" }
+  check_mode: false
+  register: _pxe_vid_dirs
+  changed_when: "'CHANGED' in _pxe_vid_dirs.stdout"
+
+# grml's `ssh=<pw>` kernel arg sets the grml-live root password; source it from the
+# vaulted host creds' `sesame` entry (the managed debug/live cred) rather than a
+# hardcoded literal in the template.
+  tags: [always]
+- name: Load the vaulted live-ISO/grml root password (for boot.ipxe's grml ssh= arg)
+  ansible.builtin.set_fact:
+    live_iso_root_password: "{{ (lookup('file', config_output_dir + '/' + site_name + '/services/credentials-host.json') | from_json | selectattr('user', 'equalto', 'sesame') | list | first).pass }}"
+  no_log: true
+  tags: [boot_ipxe]
+
+# Per-vlan PXE files (boot.ipxe [boot_ipxe]; boot.ipxe.cfg + menu.ipxe [pxe_files]) are
+# rendered on the controller into a private stage, then ONE rsync -- was a template/copy
+# per vid and file (~3 x 18 tasks per bang). --files-from: only the listed files and their
+# v<vid> dirs are touched, never /srv/pxe itself (root:root). The stage holds boot.ipxe's
+# grml ssh= password: 0700, removed whatever happens. --check lists the files that change.
+- name: Per-vlan PXE files
+  block:
+    - name: PXE stage dir (controller, private)
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: reaper-pxe-
+      delegate_to: localhost
+      become: false
+      check_mode: false
+      diff: false
+      changed_when: false
+      register: _pxe_stage
+      tags: [boot_ipxe, pxe_files]
+
+    - name: PXE stage v<vid> dirs
+      ansible.builtin.command:
+        argv: "{{ ['mkdir', '-p'] + (apply_pxe_payloads_vids | map('regex_replace', '^', _pxe_stage.path ~ '/v') | list) }}"
+      delegate_to: localhost
+      become: false
+      check_mode: false
+      changed_when: false
+      tags: [boot_ipxe, pxe_files]
+
+    - name: Render per-vlan boot.ipxe into the stage (family + phase + per-vlan pxe override)
+      ansible.builtin.template:
+        src: v/boot.ipxe.j2
+        dest: "{{ _pxe_stage.path }}/v{{ item }}/boot.ipxe"
+        mode: "0600"
+      vars:
+        current_vid: "{{ item }}"
+      loop: "{{ apply_pxe_payloads_vids }}"
+      delegate_to: localhost
+      become: false
+      check_mode: false
+      changed_when: false
+      tags: [boot_ipxe]
+
+    - name: Stage the shared per-vlan files (boot.ipxe.cfg, menu.ipxe) into every v<vid>
+      ansible.builtin.shell: |
+        set -eu
+        for v in {{ apply_pxe_payloads_vids | join(' ') }}; do
+          cp {{ (role_path ~ '/files/v/boot.ipxe.cfg') | quote }} {{ (role_path ~ '/files/v/menu.ipxe') | quote }} {{ _pxe_stage.path | quote }}/v$v/
+        done
+      delegate_to: localhost
+      become: false
+      check_mode: false
+      changed_when: false
+      tags: [pxe_files]
+
+    - name: List the staged PXE files
+      ansible.builtin.shell: cd {{ _pxe_stage.path | quote }} && find v* -type f > .list && cat .list | wc -l
+      delegate_to: localhost
+      become: false
+      check_mode: false
+      changed_when: false
+      tags: [boot_ipxe, pxe_files]
+
+    - name: Sync the per-vlan PXE files (one rsync; never deletes)
+      become: true
+      ansible.posix.synchronize:
+        src: "{{ _pxe_stage.path }}/"
+        dest: "{{ apply_pxe_payloads_pxe_root }}/"
+        archive: false
+        recursive: true
+        checksum: true
+        perms: true
+        owner: true
+        group: true
+        rsync_opts: ["--files-from={{ _pxe_stage.path }}/.list", "--chown=dnsmasq:dnsmasq", "--chmod=D0755,F0644"]
+      tags: [boot_ipxe, pxe_files]
+  always:
+    - name: Remove the PXE stage
+      ansible.builtin.file:
+        path: "{{ _pxe_stage.path }}"
+        state: absent
+      delegate_to: localhost
+      become: false
+      check_mode: false
+      diff: false
+      changed_when: false
+      when: _pxe_stage.path is defined
+      tags: [boot_ipxe, pxe_files]
+
+# --- Build post.tgz from reaper TEXT source + /opt/flax/bin binaries (no committed blob) ---
+# The two IPMI cred pairs come from the already-vaulted credentials-bmc.json (root +
+# USERID entries); lookup('file') auto-decrypts the vault. setipmiuser.sh is rendered
+# from the vault-backed template into the build tree — never committed as plaintext.
+- name: Load BMC creds (vault-encrypted, auto-decrypted) for setipmiuser rendering
+  ansible.builtin.set_fact:
+    _post_bmc_creds: "{{ lookup('file', config_output_dir + '/' + site_name + '/services/credentials-bmc.json') | from_json }}"
+  no_log: true
+  tags: [post_tgz]
+
+- name: Derive the two IPMI credential pairs (root + USERID) for setipmiuser
+  ansible.builtin.set_fact:
+    post_ipmi_root_password: "{{ (_post_bmc_creds | selectattr('bmcuser', 'equalto', 'root') | list | first).bmcpass }}"
+    post_ipmi_admin_user: "{{ (_post_bmc_creds | selectattr('bmcuser', 'equalto', 'USERID') | list | first).bmcuser }}"
+    post_ipmi_admin_password: "{{ (_post_bmc_creds | selectattr('bmcuser', 'equalto', 'USERID') | list | first).bmcpass }}"
+  no_log: true
+  tags: [post_tgz]
+
+# The build dir persists between runs (it used to be wiped and refilled file by file
+# every deploy, so post.tgz could never be "unchanged"). One rsync syncs the text
+# source into it: --delete drops files removed from the source; the excludes keep
+# tests/templates out AND protect the generated files (rendered/copied below) from
+# that delete. post.tgz is rebuilt only when the assembled tree changes (see Build).
+- name: Ensure the post.tgz build dir exists
+  become: true
+  ansible.builtin.file:
+    path: "{{ post_build_dir }}"
+    state: directory
+    mode: "0755"
+  tags: [post_tgz]
+
+- name: Sync post text source into the build dir
+  become: true
+  ansible.posix.synchronize:
+    src: "{{ role_path }}/files/post/"
+    dest: "{{ post_build_dir }}/"
+    archive: false
+    recursive: true
+    perms: true
+    checksum: true
+    delete: true
+    # P_ = protect (generated below, never in the source; '_' = rsync's no-space rule
+    # separator); --exclude = not shipped AND
+    # deleted from the build dir if present (--delete-excluded), e.g. a .pytest_cache
+    # left by running the tests in the deploying checkout.
+    # --chmod=go-w: modes must not follow the deploying clone's umask (bang clones 0002,
+    # orbit 0022); go-w keeps the scripts' +x.
+    rsync_opts: "{{ (['BUILD', 'setipmiuser.sh', 'flax-qual.env', 'setserial', 'serial_console_fixup.sh', 'serial_watchdog.sh']
+                     + post_build_binaries) | map('regex_replace', '^(.*)$', '--filter=P_/\\1') | list
+                    + ['--delete-excluded', '--chmod=go-w']
+                    + (['*.j2', 'BINARIES.md', 'testdata', 'test_*.py', '__pycache__', '*.pyc', '.pytest_cache']
+                       | map('regex_replace', '^', '--exclude=') | list) }}"
+  tags: [post_tgz]
+
+- name: Render setipmiuser.sh from the vault-backed template
+  become: true
+  ansible.builtin.template:
+    src: "{{ role_path }}/files/post/setipmiuser.sh.j2"   # .j2 lives with the rest of the post source in files/
+    dest: "{{ post_build_dir }}/setipmiuser.sh"
+    mode: "0755"
+  no_log: true
+  tags: [post_tgz]
+
+- name: Render flax-qual.env (per-site qual-agent runtime config; FLAX_IPERF_SERVER)
+  become: true
+  ansible.builtin.template:
+    src: "{{ role_path }}/files/post/flax-qual.env.j2"
+    dest: "{{ post_build_dir }}/flax-qual.env"
+    mode: "0644"
+  tags: [post_tgz]
+
+# Binaries from /opt/flax/bin, plus setserial (below), in one call: install only
+# the ones that differ. Check mode only reports.
+- name: Copy binaries from /opt/flax/bin (and setserial) into the build dir
+  become: true
+  ansible.builtin.shell: |
+    set -eu; c=
+    for src in {{ post_build_binaries | map('regex_replace', '^', '/opt/flax/bin/') | join(' ') }} /usr/bin/setserial; do
+      dst={{ post_build_dir }}/$(basename "$src")
+      if ! cmp -s "$src" "$dst" || [ "$(stat -c %a "$dst")" != 755 ]; then
+        c=1; [ "$DRY" = True ] || install -m 0755 "$src" "$dst"
+      fi
+    done
+    [ -z "$c" ] || echo CHANGED
+  environment: { DRY: "{{ ansible_check_mode }}" }
+  check_mode: false
+  register: _post_bins
+  changed_when: "'CHANGED' in _post_bins.stdout"
+  tags: [post_tgz]
+
+# post_status.sh (the SOL banner) re-uses the mezz-flash station's two serial
+# helpers verbatim -- one copy in the repo, assembled into post.tgz here.
+- name: Copy the SOL console helpers shared with the mezz-flash station into the build dir
+  become: true
+  ansible.builtin.copy:
+    src: "{{ role_path }}/../../scripts/unlock-with-ubuntu/payload/{{ item }}"
+    dest: "{{ post_build_dir }}/{{ item }}"
+    mode: "0755"
+  loop:
+    - serial_console_fixup.sh
+    - serial_watchdog.sh
+  tags: [post_tgz]
+
+# setserial is copied by the binaries task above: the live ISO has none, and the
+# UART re-probe needs it (Leopard SOL UART comes up uart:unknown on ~half of boots).
+# The bang's (setserial-2.17, libc only) was proven on the ISO on et24b3, 2026-09-25.
+
+# post_status.sh reports this as the JSON's `bundle`, so a status can be tied to the
+# post.sh that produced it: the last commit touching the post inputs (+ -dirty).
+# No timestamp: it made every build differ, so post.tgz was rebuilt on every deploy.
+- name: Stamp the build (post_status reports it as bundle)
+  become: true
+  vars:
+    _inputs: "{{ role_path }}/files/post {{ role_path }}/../../scripts/unlock-with-ubuntu/payload"
+  ansible.builtin.copy:
+    content: "{{ lookup('pipe', 'git -C ' + role_path + ' log -1 --format=%h -- ' + _inputs) }}{{ '-dirty' if lookup('pipe', 'git -C ' + role_path + ' status --porcelain -- ' + _inputs) else '' }}\n"
+    dest: "{{ post_build_dir }}/BUILD"
+    mode: "0644"
+  tags: [post_tgz]
+
+# Rebuild only when the assembled tree differs from the one post.tgz was built from
+# (content + mode manifest saved beside it), or post.tgz is missing.
+- name: Build {{ apply_pxe_payloads_pxe_root }}/post.tgz (only when the build tree changed)
+  become: true
+  ansible.builtin.shell: |
+    set -eu
+    sum=$(cd {{ post_build_dir }} && find . -type f -printf '%m %p\n' | sort | while read -r m p; do
+            printf '%s %s %s\n' "$m" "$p" "$(sha256sum < "$p" | cut -c1-64)"; done | sha256sum | cut -c1-64)
+    tgz={{ apply_pxe_payloads_pxe_root }}/post.tgz
+    if [ -f "$tgz" ] && [ "$(cat "$tgz.treesum" 2>/dev/null)" = "$sum" ]; then exit 0; fi
+    echo CHANGED
+    [ "$DRY" = True ] && exit 0
+    tar -C {{ post_build_dir }} -czf "$tgz.new" . && mv -f "$tgz.new" "$tgz" && echo "$sum" > "$tgz.treesum"
+  environment: { DRY: "{{ ansible_check_mode }}" }
+  check_mode: false
+  register: _post_tgz
+  changed_when: "'CHANGED' in _post_tgz.stdout"
+  tags: [post_tgz]
+
+# One shell call, not a file task per vid (same shape as the post.tgz links below).
+- name: Symlink ipxe -> ../ipxe inside each /srv/pxe/v<vid>/ (relative; resolves to /srv/pxe/ipxe)
+  become: true
+  ansible.builtin.shell: |
+    set -eu; c=
+    for v in {{ apply_pxe_payloads_vids | join(' ') }}; do
+      l={{ apply_pxe_payloads_pxe_root }}/v$v/ipxe
+      if [ "$(readlink "$l" 2>/dev/null)" != ../ipxe ]; then
+        c=1; [ "$DRY" = True ] || ln -sfn ../ipxe "$l"
+      fi
+    done
+    [ -z "$c" ] || echo CHANGED
+  environment: { DRY: "{{ ansible_check_mode }}" }
+  check_mode: false
+  register: _ipxe_links
+  changed_when: "'CHANGED' in _ipxe_links.stdout"
+  tags: [pxe_files]
+
+- name: Shared per-host menu dir /srv/pxe/ipxe (every v<vid>/ipxe links here)
+  become: true
+  ansible.builtin.file:
+    path: "{{ apply_pxe_payloads_pxe_root }}/ipxe"
+    state: directory
+    owner: flax
+    group: users
+    mode: "0775"   # operators drop mac-/hold-mac-/hostname-*.ipxe here (as at eindhoven)
+  tags: [pxe_files]
+
+# iPXE templates: <platform>.part (node-setting/com) + <act>.ipxe (menu/submenu default).
+# flax_rungs/pxeboot.py + flax_post/deploy.py (and ghost sethostnameboot) assemble the
+# per-host hostname-<host>.ipxe from them. One set for every site (was hand-copied per
+# bang; lavergne lacked wiwynn-tp-hmc.part -> rack Deploy failed 2026-11-09).
+# Per file, never --delete: a site-local template survives and is reported below.
+# No --inplace: sethostnameboot HARD-LINKS <act>.ipxe into ipxe/, so a template must be
+# replaced by rename (new inode) or the edit would rewrite every linked per-host file.
+- name: iPXE templates dir /srv/pxe/ipxe/templates
+  become: true
+  ansible.builtin.file:
+    path: "{{ apply_pxe_payloads_pxe_root }}/ipxe/templates"
+    state: directory
+    owner: flax
+    group: users
+    mode: "0775"
+  tags: [pxe_files, ipxe_templates]
+
+- name: Sync the iPXE templates (platform .part + act .ipxe)
+  become: true
+  ansible.posix.synchronize:
+    src: "{{ role_path }}/files/ipxe-templates/"
+    dest: "{{ apply_pxe_payloads_pxe_root }}/ipxe/templates/"
+    archive: false
+    recursive: true
+    checksum: true
+    rsync_opts: [--chown=flax:users, --chmod=F0644]
+  tags: [pxe_files, ipxe_templates]
+
+# Retired by the operator 2026-11-09: their menu labels are gone from boot.ipxe.
+# Unlinking a template leaves any hard-linked per-host copy in ipxe/ intact.
+- name: Remove retired iPXE templates
+  become: true
+  ansible.builtin.file:
+    path: "{{ apply_pxe_payloads_pxe_root }}/ipxe/templates/{{ item }}"
+    state: absent
+  loop: "{{ apply_pxe_payloads_ipxe_templates_retired }}"
+  tags: [pxe_files, ipxe_templates]
+
+- name: Report templates on the bang that reaper does not ship (left in place)
+  ansible.builtin.shell: |
+    cd {{ apply_pxe_payloads_pxe_root }}/ipxe/templates || exit 0
+    for f in *; do [ -e "$f" ] || continue
+      case " {{ lookup('fileglob', role_path + '/files/ipxe-templates/*', wantlist=True) | map('basename') | join(' ') }} " in
+        *" $f "*) ;; *) echo "$f" ;;
+      esac
+    done
+  check_mode: false
+  changed_when: false
+  register: _ipxe_tmpl_strays
+  tags: [pxe_files, ipxe_templates]
+
+- name: Unmanaged iPXE templates (add to files/ipxe-templates/ or delete by hand)
+  ansible.builtin.debug:
+    msg: "{{ _ipxe_tmpl_strays.stdout_lines }}"
+  when: _ipxe_tmpl_strays.stdout_lines | length > 0
+  tags: [pxe_files, ipxe_templates]
+
+# --- /export/install autoinstall files: cloud-init, preseed, autoyast, kickstart, ESXi ks ---
+# One template per published file, rendered at every bang (operator 2026-11-10). Never deletes:
+# files under /export/install that reaper does not ship are left alone. Every hash is vaulted
+# verbatim (vault_install_secrets): the pinned toolchain has no passlib for password_hash.
+- name: Install-file credential from credentials-host.json (pxadmin plaintext, d-i preseeds)
+  ansible.builtin.set_fact:
+    install_pxadmin_password: "{{ (lookup('file', config_output_dir + '/' + site_name + '/services/credentials-host.json') | from_json | selectattr('user', 'equalto', 'pxadmin') | list | first).pass }}"
+  no_log: true
+  tags: [install_files]
+
+# Rendered on the controller into a private stage (the files carry vaulted hashes and the
+# pxadmin password: 0700, removed whatever happens), then ONE rsync with --files-from (only
+# the listed files + their dirs; never deletes). A replaced file is kept as <name>.<UTC>~,
+# as the template module's `backup` did.
+- name: Install files under {{ apply_pxe_payloads_install_root }}
+  block:
+    - name: Install-file stage dir (controller, private)
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: reaper-install-
+      delegate_to: localhost
+      become: false
+      check_mode: false
+      diff: false
+      changed_when: false
+      register: _install_stage
+      tags: [install_files]
+
+    - name: Install-file stage dirs
+      ansible.builtin.command:
+        argv: "{{ ['mkdir', '-p'] + (lookup('community.general.filetree', role_path + '/templates/install/')
+                  | selectattr('state', 'equalto', 'directory') | map(attribute='path')
+                  | map('regex_replace', '^', _install_stage.path ~ '/') | list) }}"
+      delegate_to: localhost
+      become: false
+      check_mode: false
+      changed_when: false
+      tags: [install_files]
+
+    - name: Render the install files into the stage (vault-backed)
+      ansible.builtin.template:
+        src: "{{ item.src }}"
+        dest: "{{ _install_stage.path }}/{{ item.path | regex_replace('\\.j2$', '') }}"
+        mode: "0600"
+      loop: "{{ lookup('community.general.filetree', role_path + '/templates/install/') | selectattr('state', 'equalto', 'file') | list }}"
+      loop_control:
+        label: "{{ item.path }}"
+      delegate_to: localhost
+      become: false
+      check_mode: false
+      changed_when: false
+      no_log: true
+      tags: [install_files]
+
+    - name: List the staged install files
+      ansible.builtin.shell: cd {{ _install_stage.path | quote }} && find . -mindepth 1 ! -name .list | sed 's|^\./||' > .list && wc -l < .list
+      delegate_to: localhost
+      become: false
+      check_mode: false
+      changed_when: false
+      tags: [install_files]
+
+    - name: Sync the install files (one rsync; never deletes; keeps the replaced file as <name>.<UTC>~)
+      become: true
+      ansible.posix.synchronize:
+        src: "{{ _install_stage.path }}/"
+        dest: "{{ apply_pxe_payloads_install_root }}/"
+        archive: false
+        recursive: true
+        checksum: true
+        perms: true
+        owner: true
+        group: true
+        rsync_opts: ["--files-from={{ _install_stage.path }}/.list", "--chown=flax:users", "--chmod=D0755,F0644",
+                     "--backup", "--suffix=.{{ '%Y-%m-%dT%H%M%SZ' | strftime(utc=true) }}~"]
+      tags: [install_files]
+  always:
+    - name: Remove the install-file stage
+      ansible.builtin.file:
+        path: "{{ _install_stage.path }}"
+        state: absent
+      delegate_to: localhost
+      become: false
+      check_mode: false
+      diff: false
+      changed_when: false
+      when: _install_stage.path is defined
+      tags: [install_files]
+
+- name: Per-vid override dir /srv/pxe/v<vid>/override (hand-placed mac-<mac>.ipxe; contents never managed)
+  become: true
+  ansible.builtin.file:
+    path: "{{ apply_pxe_payloads_pxe_root }}/v{{ item }}/override"
+    state: directory
+    owner: flax
+    group: users
+    mode: "0775"
+  loop: "{{ apply_pxe_payloads_override_vids }}"
+  tags: [pxe_files]
+
+- name: Symlink post.tgz -> ../post.tgz inside each /srv/pxe/v<vid>/ (single built tarball)
+  become: true
+  ansible.builtin.shell: |
+    set -eu; c=
+    for v in {{ apply_pxe_payloads_vids | join(' ') }}; do
+      l={{ apply_pxe_payloads_pxe_root }}/v$v/post.tgz
+      if [ "$(readlink "$l" 2>/dev/null)" != ../post.tgz ]; then
+        c=1; [ "$DRY" = True ] || ln -sfn ../post.tgz "$l"
+      fi
+    done
+    [ -z "$c" ] || echo CHANGED
+  environment: { DRY: "{{ ansible_check_mode }}" }
+  check_mode: false
+  register: _post_tgz_links
+  changed_when: "'CHANGED' in _post_tgz_links.stdout"
+  tags: [post_tgz, pxe_files]
+
+# --- TFTP NBPs: BUILT from files/ipxe/ (pinned iPXE commit + patches + embedded chain
+# script) on ONE builder bang, fetched to the controller, installed on every target.
+# No binary is committed (operator 2026-11-04). The previous file is kept by `backup`.
+# Off unless apply_pxe_payloads_ipxe_{build,install} (`reaper ipxe`): the build is not byte-
+# reproducible, so a deploy that rebuilt replaced ipxe.efi every time (operator 2026-11-10).
+- name: Copy the iPXE build recipe to the builder bang
+  ansible.builtin.copy:
+    src: ipxe/
+    dest: "{{ apply_pxe_payloads_ipxe_recipe_dir }}/"
+    mode: preserve
+  delegate_to: "{{ apply_pxe_payloads_ipxe_builder }}"
+  remote_user: "{{ apply_pxe_payloads_ipxe_builder_user }}"
+  run_once: true
+  when: apply_pxe_payloads_ipxe_build | bool
+  tags: [tftp]
+
+- name: Build ipxe.efi + undionly.kpxe on the builder bang
+  ansible.builtin.command:
+    argv: [sh, "{{ apply_pxe_payloads_ipxe_recipe_dir }}/build-ipxe.sh",
+           "{{ apply_pxe_payloads_ipxe_work_dir }}"]
+  delegate_to: "{{ apply_pxe_payloads_ipxe_builder }}"
+  remote_user: "{{ apply_pxe_payloads_ipxe_builder_user }}"
+  run_once: true
+  changed_when: false
+  register: _ipxe_build
+  when: apply_pxe_payloads_ipxe_build | bool
+  tags: [tftp]
+
+- name: Show the built NBPs' md5s
+  ansible.builtin.debug:
+    msg: "{{ _ipxe_build.stdout_lines[-2:] }}"
+  run_once: true
+  when: apply_pxe_payloads_ipxe_build | bool
+  tags: [tftp]
+
+- name: Fetch the built NBPs to the controller (outside any repo)
+  ansible.builtin.fetch:
+    src: "{{ apply_pxe_payloads_ipxe_work_dir }}/out/{{ item }}"
+    dest: "{{ apply_pxe_payloads_ipxe_fetch_dir }}/{{ item }}"
+    flat: true
+  loop:
+    - bios/undionly.kpxe
+    - efi64/ipxe.efi
+  delegate_to: "{{ apply_pxe_payloads_ipxe_builder }}"
+  remote_user: "{{ apply_pxe_payloads_ipxe_builder_user }}"
+  run_once: true
+  when: apply_pxe_payloads_ipxe_build | bool
+  tags: [tftp]
+
+- name: The NBPs to install are on the controller (built by this run or an earlier one)
+  ansible.builtin.stat:
+    path: "{{ apply_pxe_payloads_ipxe_fetch_dir }}/{{ item }}"
+  loop:
+    - bios/undionly.kpxe
+    - efi64/ipxe.efi
+  delegate_to: localhost
+  run_once: true
+  register: _ipxe_local
+  failed_when: not _ipxe_local.stat.exists
+  when: apply_pxe_payloads_ipxe_install | bool
+  tags: [tftp]
+
+- name: Install the TFTP NBPs (custom iPXE with embedded chain to http://bang/menu.ipxe)
+  become: true
+  ansible.builtin.copy:
+    src: "{{ apply_pxe_payloads_ipxe_fetch_dir }}/{{ item }}"
+    dest: "{{ apply_pxe_payloads_tftp_root }}/{{ item }}"
+    owner: dnsmasq
+    group: dnsmasq
+    mode: "0644"
+    backup: true
+  loop:
+    - bios/undionly.kpxe
+    - efi64/ipxe.efi
+  when: apply_pxe_payloads_ipxe_install | bool
+  tags: [tftp]

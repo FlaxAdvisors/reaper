@@ -1,0 +1,25 @@
+# Lavergne site model: our infrastructure only (spec 2026-11-09-site-health-board-design).
+# The howlin rack is ours (rabbit-howlin). rabbit-muddy has no connected devices yet;
+# rabbit-c2g is down (offline: grey, no alert).
+# NOT here, ever: DUT blades, the mezz-flash station, switch DUTs (W400), customer racks.
+site: lavergne
+devices:
+  - {name: bang-rhythm, kind: bang, mgmt_ip: 192.168.88.21, bmc_ip: 192.168.88.23}
+  - {name: bang-blues, kind: bang, mgmt_ip: 192.168.88.22, bmc_ip: 192.168.88.24}
+  - {name: turtle-rhythm, kind: switch, vendor: cumulus, mgmt_ip: 192.168.88.33, note: "Cumulus 3.3.1 · mgmt/OOB"}
+  - {name: rabbit-rhythm, kind: switch, vendor: arista, mgmt_ip: 192.168.88.31, note: "Wedge100S · triage core"}
+  - {name: rabbit-blues, kind: switch, vendor: arista, mgmt_ip: 192.168.88.32, note: "Wedge100S · post rack"}
+  - {name: rabbit-howlin, kind: switch, vendor: arista, mgmt_ip: 192.168.88.34, note: "howlin rack"}
+  - {name: rabbit-muddy, kind: switch, vendor: arista, mgmt_ip: 192.168.88.37, note: "no connected devices yet"}
+  - {name: rabbit-c2g, kind: switch, vendor: arista, mgmt_ip: 192.168.88.35, state: offline, note: "down"}
+  - {name: corp, kind: uplink, note: "USLVQSW1201-4 · customer LAN (primary)"}
+links:
+  - {a: "turtle-rhythm:swp48", b: "corp:port 28", speed: 1G, note: "access 2"}
+  - {a: "bang-rhythm:mgmt", b: "turtle-rhythm:swp1", speed: 1G, note: "native 4, tagged 2,26,27"}
+  - {a: "bang-blues:mgmt", b: "turtle-rhythm:swp2", speed: 1G, note: "native 4, tagged 2,26,27"}
+  - {a: "bang-rhythm:mezz", b: "rabbit-rhythm:Et1/1", speed: 25G, note: "native 4 (bang BMC NC-SI), tagged 16-25, 28-33"}
+  - {a: "bang-blues:mezz", b: "rabbit-rhythm:Et1/2", speed: 25G, note: "native 4 (bang BMC NC-SI), tagged 16-25, 28-33"}
+  - {a: "turtle-rhythm:swp49", b: "rabbit-rhythm:Et32/1", speed: 10G, note: "tagged 2,4,26,27,31"}
+  - {a: "rabbit-rhythm:Et3/1", b: "rabbit-blues:Et32/1", speed: 100G, note: "tagged 4, 24-30"}
+  - {a: "rabbit-rhythm:Et2/1", b: "rabbit-howlin:Et32/1", speed: 100G, note: "access 31"}
+  - {a: "rabbit-rhythm:Et28/1", b: "rabbit-muddy:Et32/1", speed: 100G, note: "access 33"}

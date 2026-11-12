@@ -1,0 +1,54 @@
+# KEPT, not rendered: rework for Harvester 1.9/1.10 at the next Rancher deploy (operator 2026-11-10)
+schemeversion: 1
+server_url: https://192.168.12.18
+token: {{ vault_install_secrets.harvester_token }}
+os:
+  sshauthorizedkeys:
+{% for k in vault_install_authorized_keys %}
+  - {{ k }}
+{% endfor %}
+  writefiles: []
+  # hostname: uhostn # use hostname from DHCP
+  modules:
+  - kvm
+  - vhost_net
+  - nvme
+  sysctls:
+    kernel.kptr_restrict: "1"
+    kernel.printk: 4 4 1 7
+  ntpservers:
+  - 0.pool.ntp.org
+  - 1.pool.ntp.org
+  - 2.pool.ntp.org
+  dnsnameservers:
+  - 192.168.12.1
+  - 8.8.8.8
+  wifi: []
+  password: {{ vault_install_secrets.harvester_os_hash }}
+  environment: {}
+  labels: {}
+install:
+  skipchecks: true
+  automatic: true
+  mode: join
+  managementinterface:
+    interfaces:
+    -  name: enp94s0np0 # wiwynn-tp-ami
+    #-  name: ens2np0  # monnoiom
+    method: dhcp
+    bondoptions:
+      miimon: "100"
+      mode: active-backup
+    vlanid: 0
+  vip: 192.168.12.18
+  viphwaddr: ""
+  vipmode: static
+  tty: ttyS1,115200n8
+  device: /dev/nvme0n1
+  datadisk: /dev/sda
+  isourl: http://bang/isos/suse/harvester/harvester-v1.6.0-rc6-amd64.iso
+  silent: false
+  poweroff: false
+  noformat: false
+  debug: true
+  webhooks: []

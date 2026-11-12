@@ -1,0 +1,16 @@
+
+FRU Information           : IOM
+---------------           : ------------------
+Board Mfg Date            : Mon Dec  2 10:21:00 2019
+Board Mfg                 : Wiwynn
+Board Product             : BCIOM001
+Board Serial              : J49110C3ZB1
+Board Part Number         : B81.00Y10.0002
+Board FRU ID              : FRUID-1.0
+Board Custom Data 1       : 03-000123
+Product Manufacturer      : Wiwynn
+Product Name              : BCIOM001
+Product Part Number       : N/A
+Product Version           : N/A
+Product Serial            : N/A
+Product Asset Tag         : N/A

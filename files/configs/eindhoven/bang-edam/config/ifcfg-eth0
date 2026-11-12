@@ -1,0 +1,5 @@
+IPADDR='192.168.88.22/24'
+BOOTPROTO='static'
+STARTMODE='auto'
+ZONE='internal'
+#VLAN_ID='4' ## native for port

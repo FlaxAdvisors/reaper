@@ -1,0 +1,42 @@
+---
+- name: Ensure /etc/flax/flax-switch-sense exists
+  become: true
+  ansible.builtin.file:
+    path: /etc/flax/flax-switch-sense
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Deploy flax-switch-sense.env
+  become: true
+  ansible.builtin.template:
+    src: flax-switch-sense.env.j2
+    dest: /etc/flax/flax-switch-sense/flax-switch-sense.env
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart flax-switch-sense
+
+- name: Deploy flax-switch-sense.service unit
+  become: true
+  ansible.builtin.template:
+    src: flax-switch-sense.service.j2
+    dest: /etc/systemd/system/flax-switch-sense.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-switch-sense
+
+- name: Enable flax-switch-sense (start via VIP-gate handler / notify_master)
+  become: true
+  ansible.builtin.systemd:
+    name: flax-switch-sense.service
+    # VIP-exclusive — see project_keepalived_failback_trap. MUST be enabled:false:
+    # enabled:true autostarts on a cold boot into BACKUP (notify_backup only fires
+    # on transition, not at boot) -> two bangs both polling switches -> split-brain.
+    # The Restart handler (on config change, VIP-gated by ExecStartPre) + notify_master
+    # start it on the master.
+    enabled: false
+    daemon_reload: true

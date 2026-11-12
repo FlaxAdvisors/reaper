@@ -1,0 +1,679 @@
+{
+  "lldp": {
+    "interface": [
+      {
+        "eth0": {
+          "via": "LLDP",
+          "rid": "2",
+          "age": "4 days, 21:01:33",
+          "chassis": {
+            "turtle-gouda.ehv.lab": {
+              "id": {
+                "type": "mac",
+                "value": "1c:df:0f:4e:71:80"
+              },
+              "descr": "Cisco IOS Software, C3750E Software (C3750E-UNIVERSALK9-M), Version 15.2(4)E10, RELEASE SOFTWARE (fc2)\nTechnical Support: http://www.cisco.com/techsupport\nCopyright (c) 1986-2020 by Cisco Systems, Inc.\nCompiled Tue 31-Mar-20 13:22 by prod_rel_team",
+              "mgmt-ip": "172.26.0.5",
+              "capability": [
+                {
+                  "type": "Bridge",
+                  "enabled": true
+                },
+                {
+                  "type": "Router",
+                  "enabled": false
+                }
+              ]
+            }
+          },
+          "port": {
+            "id": {
+              "type": "ifname",
+              "value": "Gi1/0/19"
+            },
+            "descr": "Zone E switch DUTs (W100S x4) - OOB mgmt",
+            "ttl": "120",
+            "auto-negotiation": {
+              "supported": true,
+              "enabled": true,
+              "advertised": [
+                {
+                  "type": "10Base-T",
+                  "hd": true,
+                  "fd": true
+                },
+                {
+                  "type": "100Base-TX",
+                  "hd": true,
+                  "fd": true
+                },
+                {
+                  "type": "1000Base-T",
+                  "hd": false,
+                  "fd": true
+                }
+              ],
+              "current": "1000BaseTFD - Four-pair Category 5 UTP, full duplex mode"
+            }
+          },
+          "vlan": {
+            "vlan-id": "26",
+            "pvid": true
+          }
+        }
+      },
+      {
+        "Ethernet0": {
+          "via": "LLDP",
+          "rid": "2",
+          "age": "4 days, 21:01:44",
+          "chassis": {
+            "turtle-gouda.ehv.lab": {
+              "id": {
+                "type": "mac",
+                "value": "1c:df:0f:4e:71:80"
+              },
+              "descr": "Cisco IOS Software, C3750E Software (C3750E-UNIVERSALK9-M), Version 15.2(4)E10, RELEASE SOFTWARE (fc2)\nTechnical Support: http://www.cisco.com/techsupport\nCopyright (c) 1986-2020 by Cisco Systems, Inc.\nCompiled Tue 31-Mar-20 13:22 by prod_rel_team",
+              "mgmt-ip": "172.26.0.5",
+              "capability": [
+                {
+                  "type": "Bridge",
+                  "enabled": true
+                },
+                {
+                  "type": "Router",
+                  "enabled": false
+                }
+              ]
+            }
+          },
+          "port": {
+            "id": {
+              "type": "ifname",
+              "value": "Gi1/0/21"
+            },
+            "descr": "F4 rack E1050 uplink (swp25) - post vlan 32",
+            "ttl": "120",
+            "auto-negotiation": {
+              "supported": true,
+              "enabled": true,
+              "advertised": [
+                {
+                  "type": "10Base-T",
+                  "hd": true,
+                  "fd": true
+                },
+                {
+                  "type": "100Base-TX",
+                  "hd": true,
+                  "fd": true
+                },
+                {
+                  "type": "1000Base-T",
+                  "hd": false,
+                  "fd": true
+                }
+              ],
+              "current": "1000BaseTFD - Four-pair Category 5 UTP, full duplex mode"
+            }
+          },
+          "vlan": {
+            "vlan-id": "32",
+            "pvid": true
+          }
+        }
+      },
+      {
+        "Ethernet4": {
+          "via": "LLDP",
+          "rid": "262",
+          "age": "1 day, 04:31:14",
+          "chassis": {
+            "tiogapass": {
+              "id": {
+                "type": "mac",
+                "value": "b8:59:9f:ac:1e:a8"
+              },
+              "descr": "Phosphor OpenBMC (Phosphor OpenBMC Project Reference Distro) flax-onetree-1.1.4 Linux 6.6.47-1760371-dirty-a975d97-00281-ga975d972dc50 #1 Mon Aug 19 23:51:40 UTC 2024 armv6l",
+              "mgmt-ip": [
+                "172.32.5.11",
+                "fd00:32::f03d"
+              ],
+              "mgmt-iface": [
+                "2",
+                "2"
+              ],
+              "capability": [
+                {
+                  "type": "Bridge",
+                  "enabled": false
+                },
+                {
+                  "type": "Router",
+                  "enabled": false
+                },
+                {
+                  "type": "Wlan",
+                  "enabled": false
+                },
+                {
+                  "type": "Station",
+                  "enabled": true
+                }
+              ]
+            }
+          },
+          "port": {
+            "id": {
+              "type": "mac",
+              "value": "b8:59:9f:ac:1e:a8"
+            },
+            "descr": "eth0",
+            "ttl": "120"
+          }
+        }
+      },
+      {
+        "Ethernet4": {
+          "via": "LLDP",
+          "rid": "323",
+          "age": "0 day, 16:01:49",
+          "chassis": {
+            "rr101-l05": {
+              "id": {
+                "type": "mac",
+                "value": "02:00:00:aa:bb:02"
+              },
+              "descr": "Ubuntu 24.04.5 LTS Linux 6.8.0-147-generic #147-Ubuntu SMP PREEMPT_DYNAMIC Thu Sep 24 11:33:16 UTC 2026 x86_64",
+              "mgmt-ip": [
+                "172.32.5.1",
+                "fd00:32::f091"
+              ],
+              "mgmt-iface": [
+                "5",
+                "5"
+              ],
+              "capability": [
+                {
+                  "type": "Bridge",
+                  "enabled": false
+                },
+                {
+                  "type": "Router",
+                  "enabled": false
+                },
+                {
+                  "type": "Wlan",
+                  "enabled": false
+                },
+                {
+                  "type": "Station",
+                  "enabled": true
+                }
+              ]
+            }
+          },
+          "port": {
+            "id": {
+              "type": "mac",
+              "value": "b8:59:9f:ac:1e:a6"
+            },
+            "descr": "enp94s0np0",
+            "ttl": "120",
+            "auto-negotiation": {
+              "supported": true,
+              "enabled": true,
+              "advertised": {
+                "type": "1000Base-X",
+                "hd": false,
+                "fd": true
+              },
+              "current": "1000BaseTFD - Four-pair Category 5 UTP, full duplex mode"
+            }
+          }
+        }
+      },
+      {
+        "Ethernet6": {
+          "via": "LLDP",
+          "rid": "314",
+          "age": "0 day, 17:04:12",
+          "chassis": {
+            "tiogapass": {
+              "id": {
+                "type": "mac",
+                "value": "0c:42:a1:e1:6b:52"
+              },
+              "descr": "Phosphor OpenBMC (Phosphor OpenBMC Project Reference Distro) flax-onetree-1.1.4 Linux 6.6.47-1760371-dirty-a975d97-00281-ga975d972dc50 #1 Mon Aug 19 23:51:40 UTC 2024 armv6l",
+              "mgmt-ip": [
+                "172.32.37.11",
+                "fd00:32::f06f"
+              ],
+              "mgmt-iface": [
+                "2",
+                "2"
+              ],
+              "capability": [
+                {
+                  "type": "Bridge",
+                  "enabled": false
+                },
+                {
+                  "type": "Router",
+                  "enabled": false
+                },
+                {
+                  "type": "Wlan",
+                  "enabled": false
+                },
+                {
+                  "type": "Station",
+                  "enabled": true
+                }
+              ]
+            }
+          },
+          "port": {
+            "id": {
+              "type": "mac",
+              "value": "0c:42:a1:e1:6b:52"
+            },
+            "descr": "eth0",
+            "ttl": "120"
+          }
+        }
+      },
+      {
+        "Ethernet6": {
+          "via": "LLDP",
+          "rid": "321",
+          "age": "0 day, 16:02:20",
+          "chassis": {
+            "rr101-l37": {
+              "id": {
+                "type": "mac",
+                "value": "88:e9:a4:77:de:38"
+              },
+              "descr": "Ubuntu 24.04.5 LTS Linux 6.8.0-147-generic #147-Ubuntu SMP PREEMPT_DYNAMIC Thu Sep 24 11:33:16 UTC 2026 x86_64",
+              "mgmt-ip": [
+                "10.201.37.1",
+                "fd00:32::f095"
+              ],
+              "mgmt-iface": [
+                "6",
+                "4"
+              ],
+              "capability": [
+                {
+                  "type": "Bridge",
+                  "enabled": false
+                },
+                {
+                  "type": "Router",
+                  "enabled": false
+                },
+                {
+                  "type": "Wlan",
+                  "enabled": false
+                },
+                {
+                  "type": "Station",
+                  "enabled": true
+                }
+              ]
+            }
+          },
+          "port": {
+            "id": {
+              "type": "mac",
+              "value": "0c:42:a1:e1:6b:50"
+            },
+            "descr": "enp94s0np0",
+            "ttl": "120",
+            "auto-negotiation": {
+              "supported": true,
+              "enabled": true,
+              "advertised": {
+                "type": "1000Base-X",
+                "hd": false,
+                "fd": true
+              },
+              "current": "1000BaseTFD - Four-pair Category 5 UTP, full duplex mode"
+            }
+          }
+        }
+      },
+      {
+        "Ethernet7": {
+          "via": "LLDP",
+          "rid": "258",
+          "age": "1 day, 09:12:13",
+          "chassis": {
+            "tiogapass": {
+              "id": {
+                "type": "mac",
+                "value": "82:55:c7:4a:1a:fb"
+              },
+              "descr": "Phosphor OpenBMC (Phosphor OpenBMC Project Reference Distro) flax-onetree-1.1.4 Linux 6.6.47-1760371-dirty-a975d97-00281-ga975d972dc50 #1 Mon Aug 19 23:51:40 UTC 2024 armv6l",
+              "mgmt-ip": [
+                "10.199.199.1",
+                "fd00:32::f041"
+              ],
+              "mgmt-iface": [
+                "3",
+                "2"
+              ],
+              "capability": [
+                {
+                  "type": "Bridge",
+                  "enabled": false
+                },
+                {
+                  "type": "Router",
+                  "enabled": false
+                },
+                {
+                  "type": "Wlan",
+                  "enabled": false
+                },
+                {
+                  "type": "Station",
+                  "enabled": true
+                }
+              ]
+            }
+          },
+          "port": {
+            "id": {
+              "type": "mac",
+              "value": "b8:59:9f:b8:47:84"
+            },
+            "descr": "eth0",
+            "ttl": "120"
+          }
+        }
+      },
+      {
+        "Ethernet7": {
+          "via": "LLDP",
+          "rid": "320",
+          "age": "0 day, 16:02:22",
+          "chassis": {
+            "rr101-c37": {
+              "id": {
+                "type": "mac",
+                "value": "88:e9:a4:79:f9:a8"
+              },
+              "descr": "Ubuntu 24.04.5 LTS Linux 6.8.0-147-generic #147-Ubuntu SMP PREEMPT_DYNAMIC Thu Sep 24 11:33:16 UTC 2026 x86_64",
+              "mgmt-ip": [
+                "10.201.37.51",
+                "fd00:32::f08d"
+              ],
+              "mgmt-iface": [
+                "6",
+                "4"
+              ],
+              "capability": [
+                {
+                  "type": "Bridge",
+                  "enabled": false
+                },
+                {
+                  "type": "Router",
+                  "enabled": false
+                },
+                {
+                  "type": "Wlan",
+                  "enabled": false
+                },
+                {
+                  "type": "Station",
+                  "enabled": true
+                }
+              ]
+            }
+          },
+          "port": {
+            "id": {
+              "type": "mac",
+              "value": "b8:59:9f:b8:47:82"
+            },
+            "descr": "enp94s0np0",
+            "ttl": "120",
+            "auto-negotiation": {
+              "supported": true,
+              "enabled": true,
+              "advertised": {
+                "type": "1000Base-X",
+                "hd": false,
+                "fd": true
+              },
+              "current": "1000BaseTFD - Four-pair Category 5 UTP, full duplex mode"
+            }
+          }
+        }
+      },
+      {
+        "Ethernet40": {
+          "via": "LLDP",
+          "rid": "249",
+          "age": "1 day, 12:16:51",
+          "chassis": {
+            "tiogapass": {
+              "id": {
+                "type": "mac",
+                "value": "a2:54:02:05:cb:2b"
+              },
+              "descr": "Phosphor OpenBMC (Phosphor OpenBMC Project Reference Distro) flax-onetree-1.1.4 Linux 6.6.47-1760371-dirty-a975d97-00281-ga975d972dc50 #1 Mon Aug 19 23:51:40 UTC 2024 armv6l",
+              "mgmt-ip": [
+                "10.199.199.1",
+                "fd00:32::f061"
+              ],
+              "mgmt-iface": [
+                "3",
+                "2"
+              ],
+              "capability": [
+                {
+                  "type": "Bridge",
+                  "enabled": false
+                },
+                {
+                  "type": "Router",
+                  "enabled": false
+                },
+                {
+                  "type": "Wlan",
+                  "enabled": false
+                },
+                {
+                  "type": "Station",
+                  "enabled": true
+                }
+              ]
+            }
+          },
+          "port": {
+            "id": {
+              "type": "mac",
+              "value": "b8:59:9f:b8:5e:fc"
+            },
+            "descr": "eth0",
+            "ttl": "120"
+          }
+        }
+      },
+      {
+        "Ethernet40": {
+          "via": "LLDP",
+          "rid": "319",
+          "age": "0 day, 16:02:22",
+          "chassis": {
+            "rr101-r37": {
+              "id": {
+                "type": "mac",
+                "value": "88:e9:a4:73:a4:90"
+              },
+              "descr": "Ubuntu 24.04.5 LTS Linux 6.8.0-147-generic #147-Ubuntu SMP PREEMPT_DYNAMIC Thu Sep 24 11:33:16 UTC 2026 x86_64",
+              "mgmt-ip": [
+                "10.201.37.101",
+                "fd00:32::f08f"
+              ],
+              "mgmt-iface": [
+                "6",
+                "4"
+              ],
+              "capability": [
+                {
+                  "type": "Bridge",
+                  "enabled": false
+                },
+                {
+                  "type": "Router",
+                  "enabled": false
+                },
+                {
+                  "type": "Wlan",
+                  "enabled": false
+                },
+                {
+                  "type": "Station",
+                  "enabled": true
+                }
+              ]
+            }
+          },
+          "port": {
+            "id": {
+              "type": "mac",
+              "value": "b8:59:9f:b8:5e:fa"
+            },
+            "descr": "enp94s0np0",
+            "ttl": "120",
+            "auto-negotiation": {
+              "supported": true,
+              "enabled": true,
+              "advertised": {
+                "type": "1000Base-X",
+                "hd": false,
+                "fd": true
+              },
+              "current": "1000BaseTFD - Four-pair Category 5 UTP, full duplex mode"
+            }
+          }
+        }
+      },
+      {
+        "Ethernet42": {
+          "via": "LLDP",
+          "rid": "274",
+          "age": "1 day, 03:07:23",
+          "chassis": {
+            "tiogapass": {
+              "id": {
+                "type": "mac",
+                "value": "b8:59:9f:ac:19:e6"
+              },
+              "descr": "Phosphor OpenBMC (Phosphor OpenBMC Project Reference Distro) flax-onetree-1.1.4 Linux 6.6.47-1760371-dirty-a975d97-00281-ga975d972dc50 #1 Mon Aug 19 23:51:40 UTC 2024 armv6l",
+              "mgmt-ip": [
+                "172.32.5.111",
+                "fd00:32::f07e"
+              ],
+              "mgmt-iface": [
+                "2",
+                "2"
+              ],
+              "capability": [
+                {
+                  "type": "Bridge",
+                  "enabled": false
+                },
+                {
+                  "type": "Router",
+                  "enabled": false
+                },
+                {
+                  "type": "Wlan",
+                  "enabled": false
+                },
+                {
+                  "type": "Station",
+                  "enabled": true
+                }
+              ]
+            }
+          },
+          "port": {
+            "id": {
+              "type": "mac",
+              "value": "b8:59:9f:ac:19:e6"
+            },
+            "descr": "eth0",
+            "ttl": "120"
+          }
+        }
+      },
+      {
+        "Ethernet42": {
+          "via": "LLDP",
+          "rid": "322",
+          "age": "0 day, 16:01:56",
+          "chassis": {
+            "rr101-r05": {
+              "id": {
+                "type": "mac",
+                "value": "88:e9:a4:03:0c:80"
+              },
+              "descr": "Ubuntu 24.04.5 LTS Linux 6.8.0-147-generic #147-Ubuntu SMP PREEMPT_DYNAMIC Thu Sep 24 11:33:16 UTC 2026 x86_64",
+              "mgmt-ip": [
+                "10.201.5.101",
+                "fd00:32::f093"
+              ],
+              "mgmt-iface": [
+                "6",
+                "4"
+              ],
+              "capability": [
+                {
+                  "type": "Bridge",
+                  "enabled": false
+                },
+                {
+                  "type": "Router",
+                  "enabled": false
+                },
+                {
+                  "type": "Wlan",
+                  "enabled": false
+                },
+                {
+                  "type": "Station",
+                  "enabled": true
+                }
+              ]
+            }
+          },
+          "port": {
+            "id": {
+              "type": "mac",
+              "value": "b8:59:9f:ac:19:e4"
+            },
+            "descr": "enp94s0np0",
+            "ttl": "120",
+            "auto-negotiation": {
+              "supported": true,
+              "enabled": true,
+              "advertised": {
+                "type": "1000Base-X",
+                "hd": false,
+                "fd": true
+              },
+              "current": "1000BaseTFD - Four-pair Category 5 UTP, full duplex mode"
+            }
+          }
+        }
+      }
+    ]
+  }
+}
+

@@ -1,0 +1,61 @@
+#cloud-config
+autoinstall:
+  version: 1
+  identity:
+    hostname: tempname
+    password: "<<ubuntu_identity_hash>>"
+    realname: pxadmin
+    username: pxadmin
+  keyboard:
+    layout: us
+    toggle: null
+    variant: ""
+  locale: en_us.UTF-8
+  apt:
+    geoip: false
+    primary:
+      - arches: [default]
+        uri: http://mirrors.edge.kernel.org/ubuntu
+    security:
+      - arches: [default]
+        uri: http://mirrors.edge.kernel.org/ubuntu
+  packages:
+    - stress-ng
+    - rasdaemon
+  ssh:
+    allow-pw: true
+    authorized-keys:
+      [
+        "<<KEY>>",
+      ]
+    install-server: true
+  late-commands:
+    - 'echo "pxadmin ALL=(ALL) NOPASSWD:ALL" > /target/etc/sudoers.d/pxadmin'
+    - chmod 440 /target/etc/sudoers.d/pxadmin
+    - rm /target/etc/hostname
+    - shutdown -h now
+
+  user-data:
+    disable_root: true
+    timezone: UTC
+    package_upgrade: false
+    users:
+      - name: flax
+        primary_group: users
+        groups: sudo
+        lock_passwd: false
+        passwd: "<<ubuntu_flax_hash>>"
+        shell: /bin/bash
+        ssh_authorized_keys:
+          - "<<KEY>>"
+        sudo: ALL=(ALL) NOPASSWD:ALL
+
+      - name: pxadmin
+        primary_group: users
+        groups: sudo
+        lock_passwd: false
+        passwd: "<<ubuntu_pxadmin_hash>>"
+        shell: /bin/bash
+        ssh_authorized_keys:
+          - "<<KEY>>"
+        sudo: ALL=(ALL) NOPASSWD:ALL

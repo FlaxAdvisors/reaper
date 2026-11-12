@@ -1,0 +1,22 @@
+# Eindhoven site model: our infrastructure only (spec 2026-11-09-site-health-board-design).
+# The one source for the site health board, its alerts and the physical diagram.
+# Ports as each device names them (short forms: Te1/1/1, Et29/3, Ma1, eth0).
+# NOT here, ever: DUT blades (triage/post sleds), switch DUTs (Zone E), customer racks (F4).
+site: eindhoven
+devices:
+  - {name: bang-gouda, kind: bang, mgmt_ip: 192.168.88.21, bmc_ip: 192.168.88.11}
+  - {name: bang-edam, kind: bang, mgmt_ip: 192.168.88.22, bmc_ip: 192.168.88.12}
+  - {name: turtle-gouda, kind: switch, vendor: cisco, mgmt_ip: 192.168.88.33, note: "Cisco WS-C3750X-48P · mgmt/OOB · MST root"}
+  - {name: rabbit-gouda, kind: switch, vendor: arista, mgmt_ip: 192.168.88.31, note: "Wedge100S · triage DUT switch"}
+  - {name: rabbit-edam, kind: switch, vendor: arista, mgmt_ip: 192.168.88.32, note: "Wedge100S · post DUT switch"}
+  - {name: corp, kind: uplink, note: "NLEHVSW2203-1 Meraki MS250-48F · customer WAN (primary)"}
+links:
+  - {a: "turtle-gouda:Gi1/0/48", b: "corp:port 1", speed: 1G, note: "access 2, bpdufilter"}
+  - {a: "bang-gouda:eth0", b: "turtle-gouda:Te1/1/1", speed: 10G, note: "native 4, tagged 2,26,27,32 (+ bang BMC NC-SI)"}
+  - {a: "bang-edam:eth0", b: "turtle-gouda:Te1/1/2", speed: 10G, note: "native 4, tagged 2,26,27,32 (+ bang BMC NC-SI)"}
+  - {a: "bang-gouda:eth1", b: "rabbit-gouda:Et29/3", speed: 25G, note: "tagged 16-25, 28-31"}
+  - {a: "bang-edam:eth1", b: "rabbit-gouda:Et29/4", speed: 25G, note: "tagged 16-25, 28-31"}
+  - {a: "rabbit-gouda:Et1/1", b: "rabbit-edam:Et1/1", speed: 100G, note: "tagged 16-31"}
+  - {a: "rabbit-gouda:Et2/1", b: "rabbit-edam:Et2/1", speed: 100G, expect: down, note: "vid 1, unconfigured, STP-blocked (edam side)"}
+  - {a: "turtle-gouda:Gi1/0/4", b: "rabbit-gouda:Ma1", speed: 1G, note: "rabbit mgmt, vid 4"}
+  - {a: "turtle-gouda:Gi1/0/6", b: "rabbit-edam:Ma1", speed: 1G, note: "rabbit mgmt, vid 4"}

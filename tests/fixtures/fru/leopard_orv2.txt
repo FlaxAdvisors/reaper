@@ -1,0 +1,28 @@
+FRU Device Description : Builtin FRU Device (ID 0)
+ Chassis Type          : Rack Mount Chassis
+ Chassis Serial        : QCFF0617260650
+ Chassis Extra         : M6WX581500880
+ Chassis Extra         : M6WX581500253
+ Chassis Area Checksum : OK
+ Board Mfg Date        : Thu 13 Apr 2017 02:11:00 PM UTC UTC
+ Board Mfg             : Quanta
+ Board Product         : Leopard ORv2-DDR4
+ Board Serial          : QTF5KQ71502560
+ Board Part Number     : 31F06MB00S0
+ Board Extra           : 02-000174
+ Board Area Checksum   : OK
+ Product Manufacturer  : Quanta
+ Product Name          : Leopard ORv2-DDR4
+ Product Part Number   : 1HY9U7Z0025
+ Product Asset Tag     : 3651879
+ Product Extra         : 01-002452
+ Product Extra         : MP
+ Product Extra         : 2017-06-30 00:31:11
+ Product Area Checksum : OK
+
+FRU Device Description : QAVABFRU (ID 1)
+ Device not present (Unknown (0x81))
+
+FRU Device Description : QAVATFRU (ID 2)
+ Device not present (Unknown (0x81))
+

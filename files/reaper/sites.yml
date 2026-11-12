@@ -1,0 +1,9 @@
+---
+# reaper sites (spec 2026-11-07 reaper-cli §5.1). Thin on purpose: the primary,
+# standby and everything else come from inventories/<site>/. A dormant host is
+# skipped by every command (--limit '!host'); a dormant site leaves the default scope.
+sites:
+  eindhoven:  { inventory: inventories/eindhoven, topology: files/configs/eindhoven/topology.yml, state: active }
+  lavergne:   { inventory: inventories/lavergne,  topology: files/configs/lavergne/topology.yml,  state: active }
+  braintree:  { inventory: inventories/braintree, topology: files/configs/braintree/topology.yml, state: active,
+                dormant_hosts: [bang-siesta] }   # CATERR since 2026-11

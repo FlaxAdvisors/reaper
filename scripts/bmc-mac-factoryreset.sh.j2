@@ -1,0 +1,302 @@
+#!/bin/bash
+# bmc-mac-factoryreset <bmc> [--force] [--dry-run] [--port <et6b1>] [--lock-ip <ipv4>]
+#
+# Clear a persistent [Link] MACAddress override on a Tioga Pass OpenBMC so eth0
+# follows the ME/NCSI permaddr again (removes a stale "+1" or pinned MAC). Runs
+# the OpenBMC network FactoryReset, then a VERIFIED reboot, then checks the
+# override is gone and the MAC is native.
+#
+#   <bmc> = IPv4, hostname, or zoned IPv6-LL (fe80::..%iface)
+#   --lock-ip <ipv4> = the BMC's IPv4, when <bmc> itself cannot be mapped to
+#     one (a zoned IPv6-LL with no pool lease -- a pinned-MAC BMC is exactly
+#     the case this tool exists for). Used only to key the per-BMC fw lock
+#     (skips the getent lookup below); the Redfish busy check and the reset
+#     itself still talk to <bmc>, the reachable address.
+#
+# Why the explicit reboot+verify: FactoryReset only DELETES the config files; the
+# running systemd-networkd keeps the old MAC until a real boot. And on
+# flax-onetree FW `ipmitool mc reset cold` is SOFT (it's a systemd reboot, not a
+# hard MC reinit) and can WEDGE (BMCState=NotReady, never reboots). So we force
+# `reboot -f` and confirm boot_id changed. A skipped/wedged reboot is the
+# suspected cause of past "FactoryReset did nothing -> we pinned" conclusions.
+#
+# Runbook: Persistent_MAC_on_BMC.md.  Open questions: TODO.md "FactoryReset MYSTERY".
+#
+# SAFETY: the host must be POWERED (KCS recovery path) -- these BMCs can come back
+# dark on the network. Refuses if the host is off unless --force.
+#
+# INTERLOCKS run FIRST -- before any BMC contact, including in --dry-run --
+# and --force does NOT bypass either of them:
+#   (a) the per-BMC fw lock (same lock file the fw-update bins take), keyed
+#       on the BMC's IPv4: --lock-ip if given, else <bmc> as-is when it is
+#       already a dotted IPv4, else resolved via getent. Unmappable (no
+#       --lock-ip and getent fails, e.g. a bare IPv6-LL) is a refusal, not a
+#       usage error -- pass --lock-ip.
+#   (b) a Redfish (bmcweb) UpdateService job live or ended < 60s ago (spec
+#       §6.1) -- always checked against <bmc> itself (the reachable
+#       address), never --lock-ip. A BMC whose bmcweb does not answer at all
+#       is refused too (tasks_unreadable) -- by design: an unreachable
+#       Redfish is not proof nothing is running.
+# Both print a readable reason on stderr and exit 4. A lock FILE that cannot
+# be opened/created (bad LOCK_DIR) is a separate error, exit 1.
+#
+# Exit: 0 clean (override gone, native MAC) | 1 error/safety | 2 usage |
+#       3 NOT clean (override regenerated / MAC still pinned -> see MYSTERY notes) |
+#       4 interlock refusal (fw lock held/unmappable, or a Redfish job live/recently ended/unreadable)
+
+set -uo pipefail
+
+# flax-forget-port lives alongside this bin (/opt/flax/bin); on a CLEAN result
+# (override gone, eth0 native) signal flax-observe to forget this port pre-reset
+# identity -- the eth0 MAC just changed (odd pin -> even native), so flax-classify
+# re-mints the BMC + host reservations on the new MAC immediately instead of
+# waiting out the de-latch debounce. Resolved next to $0, then PATH.
+SELF_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+FORGET_BIN="${FLAX_FORGET_BIN:-$SELF_DIR/flax-forget-port}"
+[ -x "$FORGET_BIN" ] || FORGET_BIN="$(command -v flax-forget-port 2>/dev/null || echo "$FORGET_BIN")"
+
+ru=root; rp={{ bmc_root_password | quote }}
+bmc=""; force=0; dry=0; port=""; want_port=0; lock_ip_opt=""; want_lock_ip=0
+for a in "$@"; do
+  if [ "$want_port" = 1 ]; then port="$a"; want_port=0; continue; fi
+  if [ "$want_lock_ip" = 1 ]; then lock_ip_opt="$a"; want_lock_ip=0; continue; fi
+  case "$a" in
+    --force)      force=1 ;;
+    --dry-run|-n) dry=1 ;;
+    --port)       want_port=1 ;;
+    --lock-ip)    want_lock_ip=1 ;;
+    -*)           echo "unknown option: $a" >&2; exit 2 ;;
+    *)            bmc="$a" ;;
+  esac
+done
+usage="usage: bmc-mac-factoryreset <bmc-ip-or-host> [--force] [--dry-run] [--port <et6b1>] [--lock-ip <ipv4>]"
+[ -z "$bmc" ] && { echo "$usage" >&2; exit 2; }
+
+is_ipv4() {   # is_ipv4 <str> -- 4 dot-separated 0-255 octets, nothing else
+  printf '%s' "$1" | awk -F. 'NF==4{for(i=1;i<=4;i++){if($i !~ /^[0-9]+$/ || $i+0>255){exit 1}}; exit 0} {exit 1}'
+}
+if [ -n "$lock_ip_opt" ] && ! is_ipv4 "$lock_ip_opt"; then
+  echo "$usage" >&2
+  echo "  --lock-ip must be a dotted IPv4 address, got: $lock_ip_opt" >&2
+  exit 2
+fi
+
+SSH=(sshpass -p "$rp" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+     -o ConnectTimeout=8 -o ServerAliveInterval=5 -o ServerAliveCountMax=2)
+bsh() { "${SSH[@]}" "$ru@$bmc" "$@"; }
+
+# ── interlocks (BEFORE any BMC contact; run in --dry-run too) ─────────────────
+#
+# (a) Per-BMC fw lock: same lock file the fw-update bins take
+# (BMC_FW_UPDATE_LOCK_DIR, default /run/flax), so a FactoryReset can never race
+# a flash/backup-write of the same BMC. Held for the whole run (fd 9 stays open
+# until this process exits).
+#
+# The lock is keyed on the BMC's IPv4 -- same key the reaper fw bins use
+# (fw-update-<ip>.lock) -- NOT on $bmc verbatim: this bin also accepts a
+# hostname or a zoned IPv6 LL address, and a lock keyed on either of those
+# would never collide with a concurrent flash of the same BMC invoked by IP.
+# --lock-ip (already validated above) wins outright and skips getent -- a
+# BMC that only has a link-local address (pinned MAC, no pool lease) has no
+# getent answer at all, and that is exactly the case this tool exists for.
+# Otherwise: dotted-quad <bmc> is used as-is; anything else is resolved via
+# `getent ahostsv4` (local resolver only -- no BMC contact).
+if [ -n "$lock_ip_opt" ]; then
+  lock_ip="$lock_ip_opt"
+elif is_ipv4 "$bmc"; then
+  lock_ip="$bmc"
+else
+  lock_ip=$(getent ahostsv4 "$bmc" 2>/dev/null | awk 'NR==1{print $1}')
+fi
+if [ -z "${lock_ip:-}" ]; then
+  echo "refusing: cannot map $bmc to the BMC's IPv4 for the firmware lock; pass --lock-ip <its IPv4> (the address the fw tools use)" >&2
+  exit 4
+fi
+
+LOCK_DIR="${BMC_FW_UPDATE_LOCK_DIR:-/run/flax}"
+LOCK_FILE="$LOCK_DIR/fw-update-${lock_ip}.lock"
+mkdir -p "$LOCK_DIR" 2>/dev/null
+# NOTE: `exec 9>file` (no command) is a *permanent* redirection for the rest
+# of this process -- never pair it with `2>/dev/null` here, or every later
+# stderr message (including our own refusals) silently vanishes.
+#
+# Two distinct failure modes, like Part 1's need_lock_dir/take_lock split:
+# cannot open/create the lock FILE (missing/unwritable LOCK_DIR -- an
+# operator/environment problem) is an error (exit 1); the file opens fine but
+# another run already holds it (flock -n fails) is the interlock refusal
+# (exit 4).
+if ! exec 9>"$LOCK_FILE"; then
+  echo "error: cannot open lock $LOCK_FILE" >&2
+  exit 1
+fi
+if ! flock -n 9; then
+  echo "refusing: another firmware update holds the lock for this BMC" >&2
+  exit 4
+fi
+
+# (b) Redfish job interlock (spec §6.1): refuse while an UpdateService task is
+# live or ended < 60s ago -- same logic/messages as bmc-backup-flash's
+# net_busy_check. RF_USER/the password reuse this script's existing BMC
+# credential vars ($ru/$rp, vault-rendered) -- no new literal. The netrc rides curl's
+# own stdin (no process substitution, no creds in argv). Seam: FLAX_REDFISH_EXEC.
+RF_USER="$ru"
+rf() {   # rf <ip> <METHOD> <path> -> body on stdout; nonzero on any failure
+  local ip="$1" method="$2" path="$3"
+  if [ -n "${FLAX_REDFISH_EXEC:-}" ]; then
+    "$FLAX_REDFISH_EXEC" "$method" "$path" 9>&-
+    return $?
+  fi
+  local out code
+  out=$(curl -sk --netrc-file /dev/stdin \
+      --connect-timeout 6 --max-time "${RF_MAX_TIME:-15}" -X "$method" \
+      -w '\nHTTP=%{http_code}' "https://${ip}${path}" \
+      <<<"machine $ip login $RF_USER password $rp" 9>&-) || return 1
+  code=$(printf '%s' "$out" | tail -n 1 | sed -n 's/^HTTP=//p')
+  [ "$code" = "200" ] || return 1
+  printf '%s' "$out" | sed '$d'
+}
+QUIET_S="${BMC_FW_QUIET_S:-60}"
+net_busy_check() {
+  local ip="$1" coll ids docs id d
+  coll=$(rf "$ip" GET /redfish/v1/TaskService/Tasks) || { echo tasks_unreadable; return 3; }
+  ids=$(printf '%s' "$coll" | python3 -c 'import sys,json
+try: print(" ".join(m["@odata.id"] for m in json.load(sys.stdin).get("Members",[])))
+except Exception: sys.exit(1)') || { echo tasks_unreadable; return 3; }
+  docs="["
+  for id in $ids; do
+    d=$(rf "$ip" GET "$id") || { echo tasks_unreadable; return 3; }
+    docs="$docs$d,"
+  done
+  docs="${docs%,}]"
+  printf '%s' "$docs" | QUIET="$QUIET_S" python3 -c 'import sys,json,os,time,datetime
+LIVE={"New","Starting","Running","Pending","Stopping","Suspended","Interrupted","Cancelling","Service"}
+try: tasks=json.load(sys.stdin)
+except Exception: print("tasks_unreadable"); sys.exit(3)
+for t in tasks:
+    if t.get("TaskState") in LIVE:
+        print("job_running %s %s %s" % (t.get("Id","?"), t.get("TaskState"), t.get("PercentComplete","?"))); sys.exit(3)
+ends=[]
+for t in tasks:
+    e=t.get("EndTime")
+    if e:
+        try: ends.append(datetime.datetime.fromisoformat(e.replace("Z","+00:00")).timestamp())
+        except ValueError: pass
+if ends and time.time()-max(ends) < float(os.environ["QUIET"]): print("quiet_window"); sys.exit(3)
+print("idle")'
+}
+
+busy=$(net_busy_check "$bmc"); brc=$?
+if [ "$brc" -ne 0 ]; then
+  case "$busy" in
+    job_running*) set -- $busy; echo "refusing: BMC FW update job $2 running ($3 $4%) on $bmc" >&2 ;;
+    *)            echo "refusing: $busy on $bmc" >&2 ;;
+  esac
+  exit 4
+fi
+
+# Echo ONLY the [Link] section's MACAddress (the eth0 override), or "none".
+# The .network file also carries a [Neighbor] MACAddress= (the gateway's MAC for
+# a static ARP entry) -- a plain grep would wrongly pick that up too, so parse
+# section-aware. (cat from the BMC, awk locally to avoid remote-quoting pain.)
+linkpin() {
+  local v
+  v=$(bsh "cat /etc/systemd/network/00-bmc-eth0.network 2>/dev/null" \
+        | awk -F= '/^\[/{s=$0} s=="[Link]" && $1=="MACAddress"{print $2; exit}')
+  [ -n "$v" ] && echo "$v" || echo none
+}
+
+# The native (ME/NCSI) MAC eth0 SHOULD follow. ncsi-util/ethtool are not on
+# these busybox BMCs, so there is no direct ME read; the driver latches the
+# NCSI permanent MAC at probe and `ip addr show eth0` exposes it as `permaddr`
+# whenever a software override (assign_type=3) diverges from it. With no
+# override (assign_type=0) the operational MAC already IS the native one.
+# (Read on the BMC, parse locally -- same pattern as linkpin.)
+native_mac() {
+  local assign="$1" cur="$2" perm
+  [ "$assign" = 0 ] && { echo "$cur"; return; }
+  perm=$(bsh "ip addr show eth0 2>/dev/null" \
+           | sed -n 's/.*permaddr \([0-9a-fA-F:]\{17\}\).*/\1/p' | head -n1)
+  [ -n "$perm" ] && echo "$perm" || echo "unknown (no permaddr; ncsi-util/ethtool absent)"
+}
+
+bsh true >/dev/null 2>&1 || { echo "FATAL: cannot ssh $ru@$bmc (BMC unreachable)" >&2; exit 1; }
+
+pstate=$(bsh "obmcutil state 2>/dev/null | sed -n 's/^CurrentPowerState.*PowerState\.//p'")
+echo "BMC:                $bmc"
+echo "host chassis power: ${pstate:-unknown}"
+if [ "$pstate" != "On" ] && [ "$force" -ne 1 ]; then
+  echo "REFUSING: host not powered On -> no KCS safety net if the BMC comes back dark." >&2
+  echo "          power the host first, or re-run with --force." >&2
+  exit 1
+fi
+
+echo "=== BEFORE ==="
+pre_mac=$(bsh "cat /sys/class/net/eth0/address 2>/dev/null")
+pre_boot=$(bsh "cat /proc/sys/kernel/random/boot_id 2>/dev/null")
+pre_assign=$(bsh "cat /sys/class/net/eth0/addr_assign_type 2>/dev/null")
+pre_pin=$(linkpin)
+pre_native=$(native_mac "$pre_assign" "$pre_mac")
+echo "eth0 MAC:      $pre_mac"
+echo "assign_type:   $pre_assign  (0=native/NCSI-ME, 3=software-set)"
+echo "native (ME) MAC: $pre_native"
+echo "eth0 [Link] pin: $pre_pin"
+[ "$pre_pin" = none ] && echo "note: no [Link] pin present; running anyway to verify a native boot."
+# boot_id is how we prove the reboot actually happened -- abort BEFORE the
+# (destructive) FactoryReset if we can't read it.
+[ -z "$pre_boot" ] && { echo "FATAL: cannot read boot_id (needed to verify the reboot); aborting before FactoryReset." >&2; exit 1; }
+
+if [ "$dry" -eq 1 ]; then
+  echo "DRY-RUN: would FactoryReset the network object and force a verified reboot. Stopping."
+  exit 0
+fi
+
+echo "=== FactoryReset.Reset (wipes the override .network) ==="
+bsh "busctl call xyz.openbmc_project.Network /xyz/openbmc_project/network xyz.openbmc_project.Common.FactoryReset Reset" \
+  || { echo "FATAL: FactoryReset call failed" >&2; exit 1; }
+echo "netdir after wipe: $(bsh "ls /etc/systemd/network/ 2>/dev/null | tr '\n' ' '")"
+
+echo "=== forced reboot (mc reset cold is soft/wedges on this FW) ==="
+# ServerAlive* (in $SSH) makes this RETURN ~10-15s after reboot -f drops the
+# link, instead of hanging on the dead socket.
+bsh "sync 2>/dev/null; reboot -f" >/dev/null 2>&1 || true
+
+# Race-free wait: poll until the BMC answers with a NEW boot_id (proof it really
+# rebooted). Handles fast reboots, slow returns, wedges (boot_id never changes),
+# and dark returns (never answers) -- all collapse to a clean timeout -> FATAL.
+echo "waiting for the BMC to reboot + return (boot_id must change; up to ~4min)..."
+rebooted=0
+for i in $(seq 1 48); do
+  sleep 5
+  nb=$(bsh "cat /proc/sys/kernel/random/boot_id 2>/dev/null" 2>/dev/null)
+  [ -n "$nb" ] && [ "$nb" != "$pre_boot" ] && { rebooted=1; break; }
+done
+[ "$rebooted" -eq 0 ] && { echo "FATAL: no boot_id change within ~4min -- BMC did not reboot (wedged?) or came back dark. Recover via host KCS." >&2; exit 1; }
+echo "reboot confirmed (boot_id changed)"
+
+echo "=== AFTER ==="
+post_mac=$(bsh "cat /sys/class/net/eth0/address 2>/dev/null")
+post_assign=$(bsh "cat /sys/class/net/eth0/addr_assign_type 2>/dev/null")
+post_netdir=$(bsh "ls /etc/systemd/network/ 2>/dev/null | tr '\n' ' '")
+post_pin=$(linkpin)
+echo "eth0 MAC:      $post_mac"
+echo "assign_type:   $post_assign"
+echo "netdir:        ${post_netdir:-<empty>}"
+echo "eth0 [Link] pin: $post_pin"
+
+if [ "$post_pin" = none ] && [ "$post_assign" = 0 ]; then
+  echo "RESULT: CLEAN -- override removed; eth0 follows the ME natively ($post_mac)."
+  # MAC just changed (odd pin -> even native). Forget this port pre-reset
+  # identity so flax re-discovers the new MAC + re-mints BMC/host reservations
+  # now, instead of waiting out the de-latch debounce. Best-effort; no-op if
+  # --port was not given. Mirrors bmc-fw-update.
+  if [ -n "$port" ] && [ -x "$FORGET_BIN" ]; then
+    echo "forget-port: clearing $port so flax re-discovers the new MAC"
+    "$FORGET_BIN" "$port" >&2 || true
+  fi
+  exit 0
+fi
+echo "RESULT: NOT CLEAN -- a [Link] override regenerated or the MAC is still pinned." >&2
+echo "  This is the open mystery (likely an ME-level +1, not an operator override)." >&2
+echo "  Do NOT blindly re-pin. See TODO.md 'FactoryReset MYSTERY' -- read the ME truth" >&2
+echo "  via ncsi-util before deciding." >&2
+exit 3

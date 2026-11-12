@@ -1,0 +1,53 @@
+---
+# lab-data zone target is ACCEPT (apply_bang_router), so no firewall port is opened.
+- name: Install iperf3 (SUSE package name is iperf)
+  become: true
+  ansible.builtin.package:
+    name: iperf
+    state: present
+  when: inventory_hostname == post_iperf_server
+
+- name: Deploy flax-iperf unit
+  become: true
+  ansible.builtin.template:
+    src: flax-iperf.service.j2
+    dest: "/etc/systemd/system/{{ apply_flax_iperf_unit }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-iperf
+  when: inventory_hostname == post_iperf_server
+
+- name: Enable + start flax-iperf
+  become: true
+  ansible.builtin.systemd:
+    name: "{{ apply_flax_iperf_unit }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: inventory_hostname == post_iperf_server
+
+- name: Check for a flax-iperf unit on a bang that is not the iperf server
+  ansible.builtin.stat:
+    path: "/etc/systemd/system/{{ apply_flax_iperf_unit }}"
+  register: apply_flax_iperf_stray
+  when: inventory_hostname != post_iperf_server
+
+- name: Stop + disable a stray flax-iperf
+  become: true
+  ansible.builtin.systemd:
+    name: "{{ apply_flax_iperf_unit }}"
+    enabled: false
+    state: stopped
+  when:
+    - inventory_hostname != post_iperf_server
+    - apply_flax_iperf_stray.stat.exists | default(false)
+
+- name: Remove a stray flax-iperf unit
+  become: true
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ apply_flax_iperf_unit }}"
+    state: absent
+  when:
+    - inventory_hostname != post_iperf_server
+    - apply_flax_iperf_stray.stat.exists | default(false)

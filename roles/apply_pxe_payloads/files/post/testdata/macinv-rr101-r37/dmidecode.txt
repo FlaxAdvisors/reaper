@@ -1,0 +1,1822 @@
+# dmidecode 3.6
+Getting SMBIOS data from sysfs.
+SMBIOS 3.2.0 present.
+Table at 0x6CAFC000.
+
+Handle 0x0000, DMI type 0, 26 bytes
+BIOS Information
+	Vendor: American Megatrends Inc.
+	Version: TPO_P26F
+	Release Date: 10/15/2020
+	Address: 0xF0000
+	Runtime Size: 64 kB
+	ROM Size: 32 MB
+	Characteristics:
+		PCI is supported
+		BIOS is upgradeable
+		BIOS shadowing is allowed
+		Boot from CD is supported
+		Selectable boot is supported
+		BIOS ROM is socketed
+		EDD is supported
+		5.25"/1.2 MB floppy services are supported (int 13h)
+		3.5"/720 kB floppy services are supported (int 13h)
+		3.5"/2.88 MB floppy services are supported (int 13h)
+		Print screen service is supported (int 5h)
+		Serial services are supported (int 14h)
+		Printer services are supported (int 17h)
+		ACPI is supported
+		USB legacy is supported
+		BIOS boot specification is supported
+		Targeted content distribution is supported
+		UEFI is supported
+	BIOS Revision: 5.14
+	Firmware Revision: 1.4
+
+Handle 0x0001, DMI type 1, 27 bytes
+System Information
+	Manufacturer: Wiwynn 
+	Product Name: SV7220G3
+	Version: MP
+	Serial Number: WTHFAKE0000P1
+	UUID: 00000000-0000-4000-8000-0000fa4e0037
+	Wake-up Type: Power Switch
+	SKU Number: Default string
+	Family: Server
+
+Handle 0x0002, DMI type 2, 15 bytes
+Base Board Information
+	Manufacturer: Wistron 
+	Product Name: Tioga Pass Single Side
+	Version: B91.00X10.0010
+	Serial Number: WTHFAKE0000B1
+	Asset Tag: 1234567
+	Features:
+		Board is a hosting board
+		Board is removable
+		Board is replaceable
+		Board is hot swappable
+	Location In Chassis: Default string
+	Chassis Handle: 0x0003
+	Type: Motherboard
+	Contained Object Handles: 0
+
+Handle 0x0003, DMI type 3, 22 bytes
+Chassis Information
+	Manufacturer: Wiwynn 
+	Type: Rack Mount Chassis
+	Lock: Not Present
+	Version: B60.00X1C.0001
+	Serial Number: C.M.B60.00X1C.000FAKE000000I
+	Asset Tag: 1234567
+	Boot-up State: Safe
+	Power Supply State: Safe
+	Thermal State: Safe
+	Security Status: None
+	OEM Information: 0x00000000
+	Height: Unspecified
+	Number Of Power Cords: 1
+	Contained Elements: 0
+	SKU Number: Default string
+
+Handle 0x0004, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J9B1
+	Internal Connector Type: None
+	External Reference Designator: USB-External Right-angle
+	External Connector Type: Access Bus (USB)
+	Port Type: USB
+
+Handle 0x0005, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: JA9G1
+	Internal Connector Type: None
+	External Reference Designator: LAN-Intel I210
+	External Connector Type: RJ-45
+	Port Type: Network Port
+
+Handle 0x0006, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J9A2
+	Internal Connector Type: None
+	External Reference Designator: BMC DEBUG HEADER
+	External Connector Type: Other
+	Port Type: Other
+
+Handle 0x0007, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J8B1:HFI-IO CONNECTOR
+	Internal Connector Type: Other
+	External Reference Designator: Not Specified
+	External Connector Type: None
+	Port Type: Other
+
+Handle 0x0008, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J2L1:SATA DOWN CONNECTOR
+	Internal Connector Type: SAS/SATA Plug Receptacle
+	External Reference Designator: Not Specified
+	External Connector Type: None
+	Port Type: SATA
+
+Handle 0x0009, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J2M1:SATA 6G CONNECTOR
+	Internal Connector Type: SAS/SATA Plug Receptacle
+	External Reference Designator: Not Specified
+	External Connector Type: None
+	Port Type: SATA
+
+Handle 0x000A, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J8A2:MINI-SAS CONN SSATA 2-5
+	Internal Connector Type: SAS/SATA Plug Receptacle
+	External Reference Designator: Not Specified
+	External Connector Type: None
+	Port Type: SAS
+
+Handle 0x000B, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J8A1:VERTICAL MINI-SAS CONN SATA
+	Internal Connector Type: SAS/SATA Plug Receptacle
+	External Reference Designator: Not Specified
+	External Connector Type: None
+	Port Type: SAS
+
+Handle 0x000C, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J1F1:AIRMAX 1X8 MID-PLANE CONNECTOR A
+	Internal Connector Type: Other
+	External Reference Designator: Not Specified
+	External Connector Type: None
+	Port Type: Other
+
+Handle 0x000D, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J1C1:AIRMAX 1X8 MID-PLANE CONNECTOR B
+	Internal Connector Type: Other
+	External Reference Designator: Not Specified
+	External Connector Type: None
+	Port Type: Other
+
+Handle 0x000E, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J8E1:SPI TPM CONNECTOR
+	Internal Connector Type: Other
+	External Reference Designator: Not Specified
+	External Connector Type: None
+	Port Type: Other
+
+Handle 0x000F, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J8F1:M.2 CONNECTOR
+	Internal Connector Type: SAS/SATA Plug Receptacle
+	External Reference Designator: Not Specified
+	External Connector Type: None
+	Port Type: SATA
+
+Handle 0x0010, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J9B3:OCP MODULE CONN A
+	Internal Connector Type: Other
+	External Reference Designator: Not Specified
+	External Connector Type: None
+	Port Type: Other
+
+Handle 0x0011, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J8E3:OCP MODULE CONN B
+	Internal Connector Type: Other
+	External Reference Designator: Not Specified
+	External Connector Type: None
+	Port Type: Other
+
+Handle 0x0012, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J1E1:POWER CONN: 40AMAX
+	Internal Connector Type: Other
+	External Reference Designator: Not Specified
+	External Connector Type: None
+	Port Type: Other
+
+Handle 0x0013, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J1D1:POWER CONN: 40AMAX
+	Internal Connector Type: Other
+	External Reference Designator: Not Specified
+	External Connector Type: None
+	Port Type: Other
+
+Handle 0x0014, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: RM1E1:GUIDE PIN
+	Internal Connector Type: Other
+	External Reference Designator: Not Specified
+	External Connector Type: None
+	Port Type: Other
+
+Handle 0x0015, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J8G1:X24 SLOT
+	Internal Connector Type: Other
+	External Reference Designator: Not Specified
+	External Connector Type: None
+	Port Type: Other
+
+Handle 0x0016, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J9A3:CPU & PCH XDP HEADER
+	Internal Connector Type: Other
+	External Reference Designator: Not Specified
+	External Connector Type: None
+	Port Type: Other
+
+Handle 0x0017, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J8D4:VR DONGLE HEADER
+	Internal Connector Type: Other
+	External Reference Designator: Not Specified
+	External Connector Type: None
+	Port Type: Other
+
+Handle 0x0018, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J9A1:SATA RAID KEY
+	Internal Connector Type: Other
+	External Reference Designator: Not Specified
+	External Connector Type: None
+	Port Type: Other
+
+Handle 0x0019, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J9G1:BMCINRESET-CLRRTC-SMBUSUART
+	Internal Connector Type: Other
+	External Reference Designator: Not Specified
+	External Connector Type: None
+	Port Type: Other
+
+Handle 0x001A, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J8G2:BMCINRESET-IEDIS-UARTCHLOCK-ADR_DLY
+	Internal Connector Type: Other
+	External Reference Designator: Not Specified
+	External Connector Type: None
+	Port Type: Other
+
+Handle 0x001B, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J8G3:MEUPD-USBRCVY-PASSCLR-BIOSRCVY
+	Internal Connector Type: Other
+	External Reference Designator: Not Specified
+	External Connector Type: None
+	Port Type: Other
+
+Handle 0x001C, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J8E4:BIOS RECOVERY/TOP-SWAP
+	Internal Connector Type: Other
+	External Reference Designator: Not Specified
+	External Connector Type: None
+	Port Type: Other
+
+Handle 0x001D, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J1B3:OCP OPTION
+	Internal Connector Type: Other
+	External Reference Designator: Not Specified
+	External Connector Type: None
+	Port Type: Other
+
+Handle 0x001E, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J8C1:ME DEBUG HEADER
+	Internal Connector Type: Other
+	External Reference Designator: Not Specified
+	External Connector Type: None
+	Port Type: Other
+
+Handle 0x001F, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J9B2:BMC DEBUG HEADER
+	Internal Connector Type: Other
+	External Reference Designator: Not Specified
+	External Connector Type: None
+	Port Type: Other
+
+Handle 0x0020, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J1B2:FAN HEADER 1
+	Internal Connector Type: Other
+	External Reference Designator: Not Specified
+	External Connector Type: None
+	Port Type: Other
+
+Handle 0x0021, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J1F2:FAN HEADER 2
+	Internal Connector Type: Other
+	External Reference Designator: Not Specified
+	External Connector Type: None
+	Port Type: Other
+
+Handle 0x0022, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J7G2:BMC JTAG HEADER
+	Internal Connector Type: Other
+	External Reference Designator: Not Specified
+	External Connector Type: None
+	Port Type: Other
+
+Handle 0x0023, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J4B2:MCP CPU1 VRM
+	Internal Connector Type: Other
+	External Reference Designator: Not Specified
+	External Connector Type: None
+	Port Type: Other
+
+Handle 0x0024, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J4E1:MCP CPU1 VRM
+	Internal Connector Type: Other
+	External Reference Designator: Not Specified
+	External Connector Type: None
+	Port Type: Other
+
+Handle 0x0025, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J6B1:MCP CPU0 VRM
+	Internal Connector Type: Other
+	External Reference Designator: Not Specified
+	External Connector Type: None
+	Port Type: Other
+
+Handle 0x0026, DMI type 8, 9 bytes
+Port Connector Information
+	Internal Reference Designator: J6E1:MCP CPU0 VRM
+	Internal Connector Type: Other
+	External Reference Designator: Not Specified
+	External Connector Type: None
+	Port Type: Other
+
+Handle 0x0027, DMI type 10, 6 bytes
+On Board Device Information
+	Type: Ethernet
+	Status: Enabled
+	Description:    Intel I210
+
+Handle 0x0028, DMI type 11, 5 bytes
+OEM Strings
+	String 1: 02-000243
+	String 2: 01-003037
+	String 3: 2018-10-06 05:23:50+02:00
+	String 4: To be filled by O.E.M.
+	String 5: 22b2b667f821df31
+	String 6: 7e18b6675235027f
+	String 7: LBG-1G
+	String 8: To be filled by O.E.M.
+	String 9: To be filled by O.E.M.
+	String 10: To be filled by O.E.M.
+	String 11: To be filled by O.E.M.
+	String 12: To be filled by O.E.M.
+	String 13: To be filled by O.E.M.
+	String 14: To be filled by O.E.M.
+	String 15: To be filled by O.E.M.
+	String 16: To be filled by O.E.M.
+
+Handle 0x0029, DMI type 32, 20 bytes
+System Boot Information
+	Status: No errors detected
+
+Handle 0x002A, DMI type 41, 11 bytes
+Onboard Device
+	Reference Designation:  Intel I210
+	Type: Ethernet
+	Status: Enabled
+	Type Instance: 1
+	Bus Address: 0000:04:00.0
+
+Handle 0x002B, DMI type 38, 18 bytes
+IPMI Device Information
+	Interface Type: KCS (Keyboard Control Style)
+	Specification Version: 2.0
+	I2C Slave Address: 0x10
+	NV Storage Device: Not Present
+	Base Address: 0x0000000000000CA8 (I/O)
+	Register Spacing: 32-bit Boundaries
+
+Handle 0x002C, DMI type 42, 12 bytes
+Management Controller Host Interface
+
+Handle 0x0048, DMI type 43, 31 bytes
+TPM Device
+	Vendor ID: 
+	Specification Version: 2.0
+	Firmware Revision: 7.66
+	Description: INFINEON
+	Characteristics:
+		Family configurable via platform software support
+	OEM-specific Information: 0x00000000
+
+Handle 0x0049, DMI type 16, 23 bytes
+Physical Memory Array
+	Location: System Board Or Motherboard
+	Use: System Memory
+	Error Correction Type: Single-bit ECC
+	Maximum Capacity: 1536 GB
+	Error Information Handle: Not Provided
+	Number Of Devices: 12
+
+Handle 0x004A, DMI type 17, 40 bytes
+Memory Device
+	Array Handle: 0x0049
+	Error Information Handle: Not Provided
+	Total Width: 72 bits
+	Data Width: 64 bits
+	Size: 32 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM A0
+	Bank Locator: _Node0_Channel0_Dimm0
+	Type: DDR4
+	Type Detail: Synchronous
+	Speed: 2666 MT/s
+	Manufacturer: Micron
+	Serial Number: FA4E0001
+	Asset Tag: DIMM A0_AssetTag
+	Part Number: 36ASF4G72PZ-2G6D1   
+	Rank: 2
+	Configured Memory Speed: 2666 MT/s
+	Minimum Voltage: 1.2 V
+	Maximum Voltage: 1.2 V
+	Configured Voltage: 1.2 V
+
+Handle 0x004B, DMI type 17, 40 bytes
+Memory Device
+	Array Handle: 0x0049
+	Error Information Handle: Not Provided
+	Total Width: 72 bits
+	Data Width: 64 bits
+	Size: 32 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM A1
+	Bank Locator: _Node0_Channel1_Dimm0
+	Type: DDR4
+	Type Detail: Synchronous
+	Speed: 2666 MT/s
+	Manufacturer: Micron
+	Serial Number: FA4E0002
+	Asset Tag: DIMM A1_AssetTag
+	Part Number: 36ASF4G72PZ-2G6D1   
+	Rank: 2
+	Configured Memory Speed: 2666 MT/s
+	Minimum Voltage: 1.2 V
+	Maximum Voltage: 1.2 V
+	Configured Voltage: 1.2 V
+
+Handle 0x004C, DMI type 17, 40 bytes
+Memory Device
+	Array Handle: 0x0049
+	Error Information Handle: Not Provided
+	Total Width: Unknown
+	Data Width: Unknown
+	Size: No Module Installed
+	Form Factor: Unknown
+	Set: None
+	Locator: DIMM A2
+	Bank Locator: _Node0_Channel2_Dimm0
+	Type: Unknown
+	Type Detail: Unknown
+
+Handle 0x004D, DMI type 17, 40 bytes
+Memory Device
+	Array Handle: 0x0049
+	Error Information Handle: Not Provided
+	Total Width: Unknown
+	Data Width: Unknown
+	Size: No Module Installed
+	Form Factor: Unknown
+	Set: None
+	Locator: DIMM A3
+	Bank Locator: _Node0_Channel3_Dimm0
+	Type: Unknown
+	Type Detail: Unknown
+
+Handle 0x004E, DMI type 17, 40 bytes
+Memory Device
+	Array Handle: 0x0049
+	Error Information Handle: Not Provided
+	Total Width: Unknown
+	Data Width: Unknown
+	Size: No Module Installed
+	Form Factor: Unknown
+	Set: None
+	Locator: DIMM A4
+	Bank Locator: _Node0_Channel4_Dimm0
+	Type: Unknown
+	Type Detail: Unknown
+
+Handle 0x004F, DMI type 17, 40 bytes
+Memory Device
+	Array Handle: 0x0049
+	Error Information Handle: Not Provided
+	Total Width: Unknown
+	Data Width: Unknown
+	Size: No Module Installed
+	Form Factor: Unknown
+	Set: None
+	Locator: DIMM A5
+	Bank Locator: _Node0_Channel5_Dimm0
+	Type: Unknown
+	Type Detail: Unknown
+
+Handle 0x0050, DMI type 17, 40 bytes
+Memory Device
+	Array Handle: 0x0049
+	Error Information Handle: Not Provided
+	Total Width: 72 bits
+	Data Width: 64 bits
+	Size: 32 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM B0
+	Bank Locator: _Node1_Channel0_Dimm0
+	Type: DDR4
+	Type Detail: Synchronous
+	Speed: 2666 MT/s
+	Manufacturer: Micron
+	Serial Number: FA4E0003
+	Asset Tag: DIMM B0_AssetTag
+	Part Number: 36ASF4G72PZ-2G6D1   
+	Rank: 2
+	Configured Memory Speed: 2666 MT/s
+	Minimum Voltage: 1.2 V
+	Maximum Voltage: 1.2 V
+	Configured Voltage: 1.2 V
+
+Handle 0x0051, DMI type 17, 40 bytes
+Memory Device
+	Array Handle: 0x0049
+	Error Information Handle: Not Provided
+	Total Width: 72 bits
+	Data Width: 64 bits
+	Size: 32 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM B1
+	Bank Locator: _Node1_Channel1_Dimm0
+	Type: DDR4
+	Type Detail: Synchronous
+	Speed: 2666 MT/s
+	Manufacturer: Micron
+	Serial Number: FA4E0004
+	Asset Tag: DIMM B1_AssetTag
+	Part Number: 36ASF4G72PZ-2G6D1   
+	Rank: 2
+	Configured Memory Speed: 2666 MT/s
+	Minimum Voltage: 1.2 V
+	Maximum Voltage: 1.2 V
+	Configured Voltage: 1.2 V
+
+Handle 0x0052, DMI type 17, 40 bytes
+Memory Device
+	Array Handle: 0x0049
+	Error Information Handle: Not Provided
+	Total Width: Unknown
+	Data Width: Unknown
+	Size: No Module Installed
+	Form Factor: Unknown
+	Set: None
+	Locator: DIMM B2
+	Bank Locator: _Node1_Channel2_Dimm0
+	Type: Unknown
+	Type Detail: Unknown
+
+Handle 0x0053, DMI type 17, 40 bytes
+Memory Device
+	Array Handle: 0x0049
+	Error Information Handle: Not Provided
+	Total Width: Unknown
+	Data Width: Unknown
+	Size: No Module Installed
+	Form Factor: Unknown
+	Set: None
+	Locator: DIMM B3
+	Bank Locator: _Node1_Channel3_Dimm0
+	Type: Unknown
+	Type Detail: Unknown
+
+Handle 0x0054, DMI type 17, 40 bytes
+Memory Device
+	Array Handle: 0x0049
+	Error Information Handle: Not Provided
+	Total Width: Unknown
+	Data Width: Unknown
+	Size: No Module Installed
+	Form Factor: Unknown
+	Set: None
+	Locator: DIMM B4
+	Bank Locator: _Node1_Channel4_Dimm0
+	Type: Unknown
+	Type Detail: Unknown
+
+Handle 0x0055, DMI type 17, 40 bytes
+Memory Device
+	Array Handle: 0x0049
+	Error Information Handle: Not Provided
+	Total Width: Unknown
+	Data Width: Unknown
+	Size: No Module Installed
+	Form Factor: Unknown
+	Set: None
+	Locator: DIMM B5
+	Bank Locator: _Node1_Channel5_Dimm0
+	Type: Unknown
+	Type Detail: Unknown
+
+Handle 0x0056, DMI type 19, 31 bytes
+Memory Array Mapped Address
+	Starting Address: 0x00000000000
+	Ending Address: 0x0007FFFFFFF
+	Range Size: 2 GB
+	Physical Array Handle: 0x0049
+	Partition Width: 2
+
+Handle 0x0057, DMI type 19, 31 bytes
+Memory Array Mapped Address
+	Starting Address: 0x00100000000
+	Ending Address: 0x0107FFFFFFF
+	Range Size: 62 GB
+	Physical Array Handle: 0x0049
+	Partition Width: 2
+
+Handle 0x0058, DMI type 19, 31 bytes
+Memory Array Mapped Address
+	Starting Address: 0x01080000000
+	Ending Address: 0x0207FFFFFFF
+	Range Size: 64 GB
+	Physical Array Handle: 0x0049
+	Partition Width: 2
+
+Handle 0x0059, DMI type 133, 12 bytes
+OEM-specific Type
+	Header and Data:
+		85 0C 59 00 00 D0 DA 6A 00 40 00 00
+
+Handle 0x005A, DMI type 7, 27 bytes
+Cache Information
+	Socket Designation: L1-Cache
+	Configuration: Enabled, Not Socketed, Level 1
+	Operational Mode: Write Back
+	Location: Internal
+	Installed Size: 1280 kB
+	Maximum Size: 1280 kB
+	Supported SRAM Types:
+		Synchronous
+	Installed SRAM Type: Synchronous
+	Speed: Unknown
+	Error Correction Type: Single-bit ECC
+	System Type: Instruction
+	Associativity: 8-way Set-associative
+
+Handle 0x005B, DMI type 7, 27 bytes
+Cache Information
+	Socket Designation: L2-Cache
+	Configuration: Enabled, Not Socketed, Level 2
+	Operational Mode: Varies With Memory Address
+	Location: Internal
+	Installed Size: 20 MB
+	Maximum Size: 20 MB
+	Supported SRAM Types:
+		Synchronous
+	Installed SRAM Type: Synchronous
+	Speed: Unknown
+	Error Correction Type: Single-bit ECC
+	System Type: Unified
+	Associativity: 16-way Set-associative
+
+Handle 0x005C, DMI type 7, 27 bytes
+Cache Information
+	Socket Designation: L3-Cache
+	Configuration: Enabled, Not Socketed, Level 3
+	Operational Mode: Varies With Memory Address
+	Location: Internal
+	Installed Size: 28160 kB
+	Maximum Size: 28160 kB
+	Supported SRAM Types:
+		Synchronous
+	Installed SRAM Type: Synchronous
+	Speed: Unknown
+	Error Correction Type: Single-bit ECC
+	System Type: Unified
+	Associativity: Fully Associative
+
+Handle 0x005D, DMI type 4, 48 bytes
+Processor Information
+	Socket Designation: CPU0
+	Type: Central Processor
+	Family: Xeon
+	Manufacturer: Intel(R) Corporation
+	ID: 54 06 05 00 FF FB EB BF
+	Signature: Type 0, Family 6, Model 85, Stepping 4
+	Flags:
+		FPU (Floating-point unit on-chip)
+		VME (Virtual mode extension)
+		DE (Debugging extension)
+		PSE (Page size extension)
+		TSC (Time stamp counter)
+		MSR (Model specific registers)
+		PAE (Physical address extension)
+		MCE (Machine check exception)
+		CX8 (CMPXCHG8 instruction supported)
+		APIC (On-chip APIC hardware supported)
+		SEP (Fast system call)
+		MTRR (Memory type range registers)
+		PGE (Page global enable)
+		MCA (Machine check architecture)
+		CMOV (Conditional move instruction supported)
+		PAT (Page attribute table)
+		PSE-36 (36-bit page size extension)
+		CLFSH (CLFLUSH instruction supported)
+		DS (Debug store)
+		ACPI (ACPI supported)
+		MMX (MMX technology supported)
+		FXSR (FXSAVE and FXSTOR instructions supported)
+		SSE (Streaming SIMD extensions)
+		SSE2 (Streaming SIMD extensions 2)
+		SS (Self-snoop)
+		HTT (Multi-threading)
+		TM (Thermal monitor supported)
+		PBE (Pending break enabled)
+	Version: Intel(R) Xeon(R) Gold 6138 CPU @ 2.00GHz
+	Voltage: 1.6 V
+	External Clock: 100 MHz
+	Max Speed: 2000 MHz
+	Current Speed: 2000 MHz
+	Status: Populated, Enabled
+	Upgrade: Socket LGA3647-1
+	L1 Cache Handle: 0x005A
+	L2 Cache Handle: 0x005B
+	L3 Cache Handle: 0x005C
+	Serial Number: To be filled by O.E.M.
+	Asset Tag: UNKNOWN
+	Part Number: Not Specified
+	Core Count: 20
+	Core Enabled: 20
+	Thread Count: 40
+	Characteristics:
+		64-bit capable
+		Multi-Core
+		Hardware Thread
+		Execute Protection
+		Enhanced Virtualization
+		Power/Performance Control
+
+Handle 0x005E, DMI type 7, 27 bytes
+Cache Information
+	Socket Designation: L1-Cache
+	Configuration: Enabled, Not Socketed, Level 1
+	Operational Mode: Write Back
+	Location: Internal
+	Installed Size: 1280 kB
+	Maximum Size: 1280 kB
+	Supported SRAM Types:
+		Synchronous
+	Installed SRAM Type: Synchronous
+	Speed: Unknown
+	Error Correction Type: Single-bit ECC
+	System Type: Instruction
+	Associativity: 8-way Set-associative
+
+Handle 0x005F, DMI type 7, 27 bytes
+Cache Information
+	Socket Designation: L2-Cache
+	Configuration: Enabled, Not Socketed, Level 2
+	Operational Mode: Varies With Memory Address
+	Location: Internal
+	Installed Size: 20 MB
+	Maximum Size: 20 MB
+	Supported SRAM Types:
+		Synchronous
+	Installed SRAM Type: Synchronous
+	Speed: Unknown
+	Error Correction Type: Single-bit ECC
+	System Type: Unified
+	Associativity: 16-way Set-associative
+
+Handle 0x0060, DMI type 7, 27 bytes
+Cache Information
+	Socket Designation: L3-Cache
+	Configuration: Enabled, Not Socketed, Level 3
+	Operational Mode: Varies With Memory Address
+	Location: Internal
+	Installed Size: 28160 kB
+	Maximum Size: 28160 kB
+	Supported SRAM Types:
+		Synchronous
+	Installed SRAM Type: Synchronous
+	Speed: Unknown
+	Error Correction Type: Single-bit ECC
+	System Type: Unified
+	Associativity: Fully Associative
+
+Handle 0x0061, DMI type 4, 48 bytes
+Processor Information
+	Socket Designation: CPU1
+	Type: Central Processor
+	Family: Xeon
+	Manufacturer: Intel(R) Corporation
+	ID: 54 06 05 00 FF FB EB BF
+	Signature: Type 0, Family 6, Model 85, Stepping 4
+	Flags:
+		FPU (Floating-point unit on-chip)
+		VME (Virtual mode extension)
+		DE (Debugging extension)
+		PSE (Page size extension)
+		TSC (Time stamp counter)
+		MSR (Model specific registers)
+		PAE (Physical address extension)
+		MCE (Machine check exception)
+		CX8 (CMPXCHG8 instruction supported)
+		APIC (On-chip APIC hardware supported)
+		SEP (Fast system call)
+		MTRR (Memory type range registers)
+		PGE (Page global enable)
+		MCA (Machine check architecture)
+		CMOV (Conditional move instruction supported)
+		PAT (Page attribute table)
+		PSE-36 (36-bit page size extension)
+		CLFSH (CLFLUSH instruction supported)
+		DS (Debug store)
+		ACPI (ACPI supported)
+		MMX (MMX technology supported)
+		FXSR (FXSAVE and FXSTOR instructions supported)
+		SSE (Streaming SIMD extensions)
+		SSE2 (Streaming SIMD extensions 2)
+		SS (Self-snoop)
+		HTT (Multi-threading)
+		TM (Thermal monitor supported)
+		PBE (Pending break enabled)
+	Version: Intel(R) Xeon(R) Gold 6138 CPU @ 2.00GHz
+	Voltage: 1.6 V
+	External Clock: 100 MHz
+	Max Speed: 2000 MHz
+	Current Speed: 2000 MHz
+	Status: Populated, Enabled
+	Upgrade: Socket LGA3647-1
+	L1 Cache Handle: 0x005E
+	L2 Cache Handle: 0x005F
+	L3 Cache Handle: 0x0060
+	Serial Number: To be filled by O.E.M.
+	Asset Tag: UNKNOWN
+	Part Number: Not Specified
+	Core Count: 20
+	Core Enabled: 20
+	Thread Count: 40
+	Characteristics:
+		64-bit capable
+		Multi-Core
+		Hardware Thread
+		Execute Protection
+		Enhanced Virtualization
+		Power/Performance Control
+
+Handle 0x0068, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 68 00 06 FF FF 86 80 20 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x0069, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 69 00 08 FF FF 86 80 21 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x006A, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 6A 00 08 FF FF 86 80 21 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x006B, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 6B 00 08 FF FF 86 80 21 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x006C, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 6C 00 08 FF FF 86 80 21 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x006D, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 6D 00 08 FF FF 86 80 21 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x006E, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 6E 00 08 FF FF 86 80 21 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x006F, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 6F 00 08 FF FF 86 80 21 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x0070, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 70 00 08 FF FF 86 80 21 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x0071, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 71 00 08 FF FF 86 80 24 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x0072, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 72 00 08 FF FF 86 80 25 20 00 00 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x0073, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 73 00 08 FF FF 86 80 26 20 86 80 26 20 00
+		00 00 00 00 00 00 00
+
+Handle 0x0074, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 74 00 08 FF FF 86 80 14 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x0075, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 75 00 08 FF FF 86 80 16 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x0076, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 76 00 06 03 00 86 80 90 A1 86 80 70 72 03
+		00 00 00 04 00 00 00
+
+Handle 0x0077, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 77 00 01 03 00 B7 15 11 50 B7 15 11 50 03
+		00 00 00 04 00 00 00
+
+Handle 0x0078, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 78 00 06 00 00 86 80 94 A1 86 80 70 72 02
+		00 00 00 01 00 00 00
+
+Handle 0x0079, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 79 00 06 00 00 03 1A 50 11 03 1A 50 11 02
+		00 00 00 01 00 00 00
+
+Handle 0x007A, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 7A 00 06 FF FF 86 80 95 A1 86 80 70 72 01
+		00 00 00 00 00 00 00
+
+Handle 0x007B, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 7B 00 06 01 00 86 80 30 20 86 80 00 00 01
+		00 00 00 00 00 00 00
+
+Handle 0x007C, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 7C 00 06 FF FF 86 80 32 20 86 80 00 00 03
+		00 00 00 08 00 00 00
+
+Handle 0x007D, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 7D 00 02 FF FF B3 15 15 10 B3 15 03 00 03
+		00 00 00 08 00 00 00
+
+Handle 0x007E, DMI type 190, 58 bytes
+OEM-specific Type
+	Header and Data:
+		BE 3A 7E 00 02 FF FF B3 15 15 10 B3 15 03 00 18
+		F0 52 62 00 00 00 00 00 00 88 E9 A4 73 A4 90 00
+		00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+		00 00 00 00 00 00 00 00 00 00
+
+Handle 0x007F, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 7F 00 02 FF FF B3 15 15 10 B3 15 03 00 03
+		00 00 00 08 00 00 00
+
+Handle 0x0080, DMI type 190, 58 bytes
+OEM-specific Type
+	Header and Data:
+		BE 3A 80 00 02 FF FF B3 15 15 10 B3 15 03 00 98
+		F5 52 62 00 00 00 00 00 00 88 E9 A4 73 A4 91 00
+		00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+		00 00 00 00 00 00 00 00 00 00
+
+Handle 0x0081, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 81 00 08 FF FF 86 80 34 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x0082, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 82 00 08 FF FF 86 80 35 20 00 00 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x0083, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 83 00 08 FF FF 86 80 36 20 86 80 36 20 00
+		00 00 00 00 00 00 00
+
+Handle 0x0084, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 84 00 06 04 00 86 80 30 20 86 80 00 00 01
+		00 00 00 00 00 00 00
+
+Handle 0x0085, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 85 00 08 FF FF 86 80 34 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x0086, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 86 00 08 FF FF 86 80 35 20 00 00 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x0087, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 87 00 08 FF FF 86 80 36 20 86 80 36 20 00
+		00 00 00 00 00 00 00
+
+Handle 0x0088, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 88 00 08 FF FF 86 80 66 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x0089, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 89 00 08 FF FF 86 80 66 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x008A, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 8A 00 08 FF FF 86 80 40 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x008B, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 8B 00 08 FF FF 86 80 41 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x008C, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 8C 00 08 FF FF 86 80 42 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x008D, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 8D 00 08 FF FF 86 80 43 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x008E, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 8E 00 08 FF FF 86 80 44 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x008F, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 8F 00 08 FF FF 86 80 45 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x0090, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 90 00 08 FF FF 86 80 46 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x0091, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 91 00 08 FF FF 86 80 47 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x0092, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 92 00 08 FF FF 86 80 48 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x0093, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 93 00 08 FF FF 86 80 49 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x0094, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 94 00 08 FF FF 86 80 4A 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x0095, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 95 00 08 FF FF 86 80 4B 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x0096, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 96 00 08 FF FF 86 80 40 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x0097, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 97 00 08 FF FF 86 80 41 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x0098, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 98 00 08 FF FF 86 80 42 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x0099, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 99 00 08 FF FF 86 80 43 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x009A, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 9A 00 08 FF FF 86 80 44 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x009B, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 9B 00 08 FF FF 86 80 45 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x009C, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 9C 00 08 FF FF 86 80 46 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x009D, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 9D 00 08 FF FF 86 80 47 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x009E, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 9E 00 08 FF FF 86 80 48 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x009F, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 9F 00 08 FF FF 86 80 49 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00A0, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 A0 00 08 FF FF 86 80 4A 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00A1, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 A1 00 08 FF FF 86 80 4B 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00A2, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 A2 00 06 07 00 86 80 30 20 86 80 00 00 03
+		00 00 00 08 00 00 00
+
+Handle 0x00A3, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 A3 00 02 07 00 B3 15 15 10 B3 15 20 00 03
+		00 00 00 08 00 00 00
+
+Handle 0x00A4, DMI type 190, 58 bytes
+OEM-specific Type
+	Header and Data:
+		BE 3A A4 00 02 07 00 B3 15 15 10 B3 15 20 00 98
+		7B 4F 62 00 00 00 00 00 00 B8 59 9F B8 5E FA 00
+		00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+		00 00 00 00 00 00 00 00 00 00
+
+Handle 0x00A5, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 A5 00 08 FF FF 86 80 34 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00A6, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 A6 00 08 FF FF 86 80 35 20 00 00 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00A7, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 A7 00 08 FF FF 86 80 36 20 86 80 36 20 00
+		00 00 00 00 00 00 00
+
+Handle 0x00A8, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 A8 00 11 FF FF 86 80 58 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00A9, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 A9 00 08 FF FF 86 80 59 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00AA, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 AA 00 11 FF FF 86 80 58 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00AB, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 AB 00 08 FF FF 86 80 59 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00AC, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 AC 00 11 FF FF 86 80 58 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00AD, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 AD 00 08 FF FF 86 80 59 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00AE, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 AE 00 11 FF FF 86 80 4C 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00AF, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 AF 00 11 FF FF 86 80 4C 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00B0, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 B0 00 08 FF FF 86 80 21 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00B1, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 B1 00 08 FF FF 86 80 21 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00B2, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 B2 00 08 FF FF 86 80 21 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00B3, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 B3 00 08 FF FF 86 80 21 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00B4, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 B4 00 08 FF FF 86 80 21 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00B5, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 B5 00 08 FF FF 86 80 21 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00B6, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 B6 00 08 FF FF 86 80 21 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00B7, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 B7 00 08 FF FF 86 80 21 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00B8, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 B8 00 08 FF FF 86 80 24 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00B9, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 B9 00 08 FF FF 86 80 25 20 00 00 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00BA, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 BA 00 08 FF FF 86 80 26 20 86 80 26 20 00
+		00 00 00 00 00 00 00
+
+Handle 0x00BB, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 BB 00 08 FF FF 86 80 14 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00BC, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 BC 00 08 FF FF 86 80 16 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00BD, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 BD 00 08 FF FF 86 80 34 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00BE, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 BE 00 08 FF FF 86 80 35 20 00 00 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00BF, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 BF 00 08 FF FF 86 80 36 20 86 80 36 20 00
+		00 00 00 00 00 00 00
+
+Handle 0x00C0, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 C0 00 08 FF FF 86 80 34 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00C1, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 C1 00 08 FF FF 86 80 35 20 00 00 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00C2, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 C2 00 08 FF FF 86 80 36 20 86 80 36 20 00
+		00 00 00 00 00 00 00
+
+Handle 0x00C3, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 C3 00 08 FF FF 86 80 66 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00C4, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 C4 00 08 FF FF 86 80 66 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00C5, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 C5 00 08 FF FF 86 80 40 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00C6, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 C6 00 08 FF FF 86 80 41 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00C7, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 C7 00 08 FF FF 86 80 42 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00C8, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 C8 00 08 FF FF 86 80 43 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00C9, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 C9 00 08 FF FF 86 80 44 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00CA, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 CA 00 08 FF FF 86 80 45 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00CB, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 CB 00 08 FF FF 86 80 46 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00CC, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 CC 00 08 FF FF 86 80 47 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00CD, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 CD 00 08 FF FF 86 80 48 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00CE, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 CE 00 08 FF FF 86 80 49 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00CF, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 CF 00 08 FF FF 86 80 4A 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00D0, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 D0 00 08 FF FF 86 80 4B 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00D1, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 D1 00 08 FF FF 86 80 40 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00D2, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 D2 00 08 FF FF 86 80 41 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00D3, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 D3 00 08 FF FF 86 80 42 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00D4, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 D4 00 08 FF FF 86 80 43 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00D5, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 D5 00 08 FF FF 86 80 44 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00D6, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 D6 00 08 FF FF 86 80 45 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00D7, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 D7 00 08 FF FF 86 80 46 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00D8, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 D8 00 08 FF FF 86 80 47 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00D9, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 D9 00 08 FF FF 86 80 48 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00DA, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 DA 00 08 FF FF 86 80 49 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00DB, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 DB 00 08 FF FF 86 80 4A 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00DC, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 DC 00 08 FF FF 86 80 4B 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00DD, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 DD 00 06 08 00 86 80 30 20 86 80 00 00 01
+		00 00 00 00 00 00 00
+
+Handle 0x00DE, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 DE 00 08 FF FF 86 80 34 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00DF, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 DF 00 08 FF FF 86 80 35 20 00 00 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00E0, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 E0 00 08 FF FF 86 80 36 20 86 80 36 20 00
+		00 00 00 00 00 00 00
+
+Handle 0x00E1, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 E1 00 11 FF FF 86 80 58 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00E2, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 E2 00 08 FF FF 86 80 59 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00E3, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 E3 00 11 FF FF 86 80 58 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00E4, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 E4 00 08 FF FF 86 80 59 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00E5, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 E5 00 11 FF FF 86 80 58 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00E6, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 E6 00 08 FF FF 86 80 59 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00E7, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 E7 00 11 FF FF 86 80 4C 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00E8, DMI type 192, 23 bytes
+OEM-specific Type
+	Header and Data:
+		C0 17 E8 00 11 FF FF 86 80 4C 20 86 80 00 00 00
+		00 00 00 00 00 00 00
+
+Handle 0x00E9, DMI type 193, 230 bytes
+OEM-specific Type
+	Header and Data:
+		C1 E6 E9 00 01 01 16 00 00 00 47 65 6E 75 6E 74
+		65 6C 69 6E 65 49 54 06 05 00 00 08 40 00 FF FB
+		FE 77 FF FB EB BF 01 63 03 76 FF B5 F0 00 00 00
+		00 00 00 00 C3 00 00 00 00 00 00 00 00 00 00 00
+		00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+		00 00 00 00 00 00 40 00 00 00 40 00 00 00 03 00
+		00 00 20 20 00 00 F7 0E 00 00 02 00 00 00 09 00
+		00 00 00 00 00 00 00 00 00 00 FB FF 9F D3 08 00
+		00 00 00 24 00 9C 00 00 00 00 00 00 00 00 00 00
+		00 00 00 00 00 00 04 04 30 07 00 00 00 00 00 00
+		00 00 03 06 00 00 01 00 00 00 02 00 00 00 00 01
+		00 00 00 00 00 00 FF 02 00 00 80 0A 00 00 88 0A
+		00 00 00 00 00 00 00 00 00 00 9F 00 00 00 00 00
+		00 00 02 00 00 00 00 00 00 00 0A 00 00 00 00 00
+		00 00 00 00 00 00
+	Strings:
+		Socket 0
+
+Handle 0x00EA, DMI type 193, 246 bytes
+OEM-specific Type
+	Header and Data:
+		C1 F6 EA 00 01 02 01 00 00 00 0F 00 00 00 07 00
+		00 00 00 00 00 00 02 00 00 00 A0 00 00 00 00 00
+		00 00 00 00 00 00 D0 07 00 00 74 0E 00 00 64 00
+		00 00 00 00 00 00 D0 07 00 00 74 0E 00 00 64 00
+		00 00 00 00 00 00 D0 07 00 00 74 0E 00 00 64 00
+		00 00 00 00 00 00 D0 07 00 00 74 0E 00 00 64 00
+		00 00 00 00 00 00 D0 07 00 00 74 0E 00 00 64 00
+		00 00 00 00 00 00 08 00 00 80 00 00 00 00 00 00
+		00 00 00 00 00 00 00 00 00 00 00 00 00 00 21 01
+		00 00 00 08 10 2C 49 6E 74 65 6C 28 52 29 20 58
+		65 6F 6E 28 52 29 20 47 6F 6C 64 20 36 31 33 38
+		20 43 50 55 20 40 20 32 2E 30 30 47 48 7A 00 00
+		00 00 00 00 00 00 00 00 00 00 00 00 00 00 40 60
+		00 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+		00 00 00 01 00 00 2E 30 00 00 00 00 00 00 00 00
+		00 00 00 00 00 00
+	Strings:
+		Socket 0
+
+Handle 0x00EB, DMI type 193, 230 bytes
+OEM-specific Type
+	Header and Data:
+		C1 E6 EB 00 01 01 16 00 00 00 47 65 6E 75 6E 74
+		65 6C 69 6E 65 49 54 06 05 00 00 08 40 40 FF FB
+		FE 77 FF FB EB BF 01 63 03 76 FF B5 F0 00 00 00
+		00 00 00 00 C3 00 00 00 00 00 00 00 00 00 00 00
+		00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+		00 00 00 00 00 00 40 00 00 00 40 00 00 00 03 00
+		00 00 20 20 00 00 F7 0E 00 00 02 00 00 00 09 00
+		00 00 00 00 00 00 00 00 00 00 FB FF 9F D3 08 00
+		00 00 00 24 00 9C 00 00 00 00 00 00 00 00 00 00
+		00 00 00 00 00 00 04 04 30 07 00 00 00 00 00 00
+		00 00 03 06 00 00 01 00 00 00 02 00 00 00 00 01
+		00 00 40 00 00 00 FF 02 00 00 80 0A 00 00 88 0A
+		00 00 00 00 00 00 00 00 00 00 9F 00 00 00 00 00
+		00 00 02 00 00 00 00 00 00 00 0A 00 00 00 00 00
+		00 00 00 00 00 00
+	Strings:
+		Socket 1
+
+Handle 0x00EC, DMI type 193, 246 bytes
+OEM-specific Type
+	Header and Data:
+		C1 F6 EC 00 01 02 01 00 00 00 0F 00 00 00 07 00
+		00 00 00 00 00 00 02 00 00 00 A0 00 00 00 00 00
+		00 00 00 00 00 00 D0 07 00 00 74 0E 00 00 64 00
+		00 00 00 00 00 00 D0 07 00 00 74 0E 00 00 64 00
+		00 00 00 00 00 00 D0 07 00 00 74 0E 00 00 64 00
+		00 00 00 00 00 00 D0 07 00 00 74 0E 00 00 64 00
+		00 00 00 00 00 00 D0 07 00 00 74 0E 00 00 64 00
+		00 00 00 00 00 00 08 00 00 80 00 00 00 00 00 00
+		00 00 00 00 00 00 00 00 00 00 00 00 00 00 21 01
+		00 00 00 08 10 2C 49 6E 74 65 6C 28 52 29 20 58
+		65 6F 6E 28 52 29 20 47 6F 6C 64 20 36 31 33 38
+		20 43 50 55 20 40 20 32 2E 30 30 47 48 7A 00 00
+		00 00 00 00 00 00 00 00 00 00 00 00 00 00 40 60
+		00 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+		00 00 00 01 00 00 2E 30 00 00 00 00 00 00 00 00
+		00 00 00 00 00 00
+	Strings:
+		Socket 1
+
+Handle 0x00ED, DMI type 194, 27 bytes
+OEM-specific Type
+	Header and Data:
+		C2 1B ED 00 01 00 03 03 02 00 01 00 00 00 00 02
+		03 01 B7 15 11 50 B7 15 11 50 04
+	Strings:
+		NVMe NameSpace 1
+		WD PC SN810 SDCQNRY-256G-1006
+		00000FAKE001
+		HPS2T
+
+Handle 0x00EE, DMI type 195, 7 bytes
+OEM-specific Type
+	Header and Data:
+		C3 07 EE 00 01 01 01
+	Strings:
+		TPM 2.0
+
+Handle 0x00EF, DMI type 196, 5 bytes
+OEM-specific Type
+	Header and Data:
+		C4 05 EF 00 01
+
+Handle 0x00F0, DMI type 13, 22 bytes
+BIOS Language Information
+	Language Description Format: Long
+	Installable Languages: 1
+		en|US|iso8859-1
+	Currently Installed Language: en|US|iso8859-1
+
+Handle 0x00F3, DMI type 9, 17 bytes
+System Slot Information
+	Designation: Mezz 2.0 Connector
+	Type: PCI Express 3
+	Data Bus Width: 16x or x16
+	Current Usage: In Use
+	Length: Other
+	ID: 7
+	Characteristics:
+		3.3 V is provided
+		PME signal is supported
+	Bus Address: 0000:5d:00.0
+
+Handle 0x00F5, DMI type 9, 17 bytes
+System Slot Information
+	Designation: RiserSlot02
+	Type: PCI Express 3
+	Data Bus Width: 8x or x8
+	Current Usage: In Use
+	Length: Other
+	ID: 0
+	Characteristics:
+		3.3 V is provided
+		PME signal is supported
+	Bus Address: 0000:17:00.0
+
+Handle 0x00F7, DMI type 9, 17 bytes
+System Slot Information
+	Designation: RiserSlot03
+	Type: PCI Express 3
+	Data Bus Width: 16x or x16
+	Current Usage: Available
+	Length: Other
+	ID: 4
+	Characteristics:
+		3.3 V is provided
+		PME signal is supported
+	Bus Address: 0000:3a:00.0
+
+Handle 0x00F9, DMI type 127, 4 bytes
+End Of Table
+

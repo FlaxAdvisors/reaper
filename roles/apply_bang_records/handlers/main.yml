@@ -1,0 +1,10 @@
+---
+# journald reads Storage= only at start; the flush then moves what is in RAM
+# (/run/log/journal) onto disk, so nothing collected so far is lost.
+- name: Persist the journal
+  become: true
+  ansible.builtin.shell: |
+    systemd-tmpfiles --create --prefix /var/log/journal
+    systemctl restart systemd-journald
+    journalctl --flush
+  changed_when: true

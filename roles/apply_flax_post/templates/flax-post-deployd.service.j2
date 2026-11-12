@@ -1,0 +1,26 @@
+{# roles/apply_flax_post/templates/flax-post-deployd.service.j2 #}
+[Unit]
+Description=flax-post-deployd — Loose Post Deploy (Ubuntu install, flax_user, iperf, stress)
+After=network-online.target flax-stack.service
+Wants=network-online.target
+Requires=flax-stack.service
+
+[Service]
+Type=simple
+User=root
+# host-side on purpose: /srv/pxe/ipxe, /export/install, the dnsmasq/nginx logs,
+# ansible-playbook + /opt/flax/ansible, ipmitool, sshpass (what rackpost's Deploy needs)
+EnvironmentFile=/etc/flax/flax-post/flax-post.env
+# VIP-gate — only the master bang deploys (sole writer of post_state.vars.deploy).
+ExecStartPre=/bin/bash -c '. /etc/flax/site.env && ip -o -4 addr | grep -qE " $${MGMT_VIP}/"'
+Environment=PYTHONPATH={{ apply_flax_post_deployd_dir }}:{{ apply_flax_post_deployd_vendor_dir }}
+Environment=FLAX_POST_DEPLOY_IPERF_SERVER={{ post_iperf_server }}
+Environment=FLAX_POST_DEPLOY_PLATFORMS={{ apply_flax_post_deploy_platforms }}
+Environment=FLAX_POST_DEPLOY_MAX_PARALLEL={{ apply_flax_post_deploy_max_parallel }}
+Environment=FLAX_POST_DEPLOY_DIMMERR={{ apply_flax_post_deployd_dir }}/dimmerr.sh
+ExecStart=/usr/bin/{{ apply_flax_post_deployd_python }} -m flax_post.deployd
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

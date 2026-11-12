@@ -1,0 +1,20 @@
+TlvInfo Header:
+   Id String:    TlvInfo
+   Version:      1
+   Total Length: 143
+TLV Name          Code      Len  Value
+----------------  ------  -----  ---------------------------
+Product Name      0x21       12  WEDGE100S12V
+Part Number       0x22        9  20-001688
+Serial Number     0x23       10  AI34020882
+Base MAC Address  0x24        6  B8:6A:97:19:C8:FE
+Manufacture Date  0x25       19  08/29/2018 00:00:00
+Device Version    0x26        1  1
+Platform Name     0x28       27  x86_64-accton_wedge100s_32x
+ONIE Version      0x29       15  master-03161713
+MAC Addresses     0x2A        2  128
+Manufacturer      0x2B        7  Joytech
+Service Tag       0x2F        7  4620745
+CRC-32            0xFE        4  0x711189C1
+
+(checksum valid)

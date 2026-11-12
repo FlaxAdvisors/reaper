@@ -1,0 +1,29 @@
+latest inventory in post-98039ba8f1ea is from 2026-06-03T12:38:26Z (36 days 12:19:30 ago)
+==========
+BMC Version:  
+BIOS Version: TPC_P26C, Release Date: 10/15/2020, BIOS Revision: 5.14, Firmware Revision: 0.0
+System Mfg: Wiwynn, Product Name: TiogaPass, UUID: 03000200-0400-0500-0006-000700080009
+Base Board Serial: Default string
+Chassis Serial: Default string
+Processor Version: Intel(R) Xeon(R) Gold 6138 CPU @ 2.00GHz, Serial: To be filled by O.E.M.
+Processor Version: Intel(R) Xeon(R) Gold 6138 CPU @ 2.00GHz, Serial: To be filled by O.E.M.
+Memory: 32 GB, DIMM A0, _Node0_Channel0_Dimm0, 2666 MT/s, Samsung, 154E7F74, M393A4K40BB2-CTD
+Memory: 32 GB, DIMM A1, _Node0_Channel1_Dimm0, 2666 MT/s, Samsung, 234359D6, M393A4K40BB2-CTD
+Memory: 32 GB, DIMM A3, _Node0_Channel3_Dimm0, 2666 MT/s, Samsung, 3676092D, M393A4K40BB2-CTD
+Memory: 32 GB, DIMM A4, _Node0_Channel4_Dimm0, 2666 MT/s, Samsung, 367D91FC, M393A4K40BB2-CTD
+Memory: 32 GB, DIMM B0, _Node1_Channel0_Dimm0, 2666 MT/s, Samsung, 23FCC92A, M393A4K40BB2-CTD
+Memory: 32 GB, DIMM B1, _Node1_Channel1_Dimm0, 2666 MT/s, Samsung, 2540ECA5, M393A4K40BB2-CTD
+Memory: 32 GB, DIMM B3, _Node1_Channel3_Dimm0, 2666 MT/s, Samsung, 18A7C7F4, M393A4K40BB2-CTD
+Memory: 32 GB, DIMM B4, _Node1_Channel4_Dimm0, 2666 MT/s, Samsung, 368C1A4D, M393A4K40BB2-CTD
+BusID: 5e:00.0, Eth MAC: 98:03:9b:a8:f1:ea, Model: "Mellanox MCX4411A-ACQN, ConnectX-4 Lx EN OCP, 1x25Gb", SubVendor: pci 0x15b3 "Mellanox Technologies", SubDevice: pci 0x0020 "MCX4411A-ACQN, ConnectX-4 Lx EN OCP, 1x25Gb", Interface: pxedev
+BusID: 5e:00.0, firmware-version: 14.32.1010 (MT_2450112034)
+BusID: 5e:00.0, [SN] Serial number: MT1905X03089
+Interface: pxedev, ChassisID: mac 00:90:fb:6b:a9:ec
+Handle_: 92, BusID: 00:17.0, Model: "Intel C620 Series Chipset Family SATA Controller [AHCI mode]", SubVendor: pci 0x8086 "Intel Corporation", SubDevice: pci 0x7270 , Driver: "ahci"
+Handle_: 93, BusID: 3b:00.0, Model: "Broadcom / LSI MegaRAID SAS 9380-8e", SubVendor: pci 0x1000 "Broadcom / LSI", SubDevice: pci 0x9380 "MegaRAID SAS 9380-8e", Driver: "megaraid_sas"
+Handle_: 117, BusID: 00:11.5, Model: "Intel C620 Series Chipset Family SSATA Controller [AHCI mode]", SubVendor: pci 0x8086 "Intel Corporation", SubDevice: pci 0x7270 , Driver: "ahci"
+Handler: 93, BusID: 0:0:92:0, Model: "HITACHI H5H72121 EMC12T0", Revision: "D614", Serial ID: "D5GNP0KM", Capacity: 11176 GB
+Handler: 93, BusID: 0:0:93:0, Model: "HITACHI H5H72121 EMC12T0", Revision: "D614", Serial ID: "D5GNR78M", Capacity: 11176 GB
+Handler: 190, BusID: nvme0, Model: "Realtek CS1030 250GB SSD", SubVendor: pci 0x10ec "Realtek Semiconductor Co., Ltd.", SubDevice: pci 0x5765 , Serial ID: "PNH02263039780200696", Capacity: 232 GB
+Handler: 353, BusID: 15:0:0:0, Model: "Virtual USB Slot_2", Capacity: 2 GB
+

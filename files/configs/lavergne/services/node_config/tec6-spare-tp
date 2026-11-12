@@ -1,0 +1,7 @@
+'BIOS Version: TPO_P26F'
+'Chassis Serial: (C\.M\.B60\.00X1C|QTFC|QCFF)'
+'Board Mfg: [^,]*, Product: Tioga ?Pass'
+'2 Processor.*Intel.*Gold 6138.*2.00GHz'
+'Memory Size: 32 GB'
+'^1 Model: "[^"]*", SubVendor: pci .*Capacity: 23[2-9] GB'
+'^1 Model:.*MCX4411A-ACQN'

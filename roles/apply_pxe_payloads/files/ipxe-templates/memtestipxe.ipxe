@@ -1,0 +1,12 @@
+#!ipxe
+echo
+echo Boot Live ISO for debug
+echo if http://bang/post.tgz is present, or not, we just hang out
+
+# reduce the pause to 1s (instead of default 10s)
+set menu-timeout 1000
+set submenu-timeout 1000
+
+set menu-default menu-memtest
+set submenu-default memtest-ipxe
+chain --replace --autofree ${boot-url}

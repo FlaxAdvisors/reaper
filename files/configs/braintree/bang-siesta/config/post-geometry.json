@@ -1,0 +1,263 @@
+{
+  "racks": [
+    {
+      "switch": "rabbit-lorax",
+      "tag": "",
+      "label": "Braintree Post"
+    }
+  ],
+  "slots": [
+    {
+      "port": "et5b1",
+      "switch": "rabbit-lorax",
+      "bottom_ou": 1,
+      "height": 2,
+      "width": 3,
+      "pos": "1:3",
+      "chassis": 1
+    },
+    {
+      "port": "et5b2",
+      "switch": "rabbit-lorax",
+      "bottom_ou": 3,
+      "height": 2,
+      "width": 3,
+      "pos": "1:3",
+      "chassis": 1
+    },
+    {
+      "port": "et5b3",
+      "switch": "rabbit-lorax",
+      "bottom_ou": 5,
+      "height": 2,
+      "width": 3,
+      "pos": "1:3",
+      "chassis": 1
+    },
+    {
+      "port": "et5b4",
+      "switch": "rabbit-lorax",
+      "bottom_ou": 7,
+      "height": 2,
+      "width": 3,
+      "pos": "1:3",
+      "chassis": 1
+    },
+    {
+      "port": "et9b1",
+      "switch": "rabbit-lorax",
+      "bottom_ou": 1,
+      "height": 2,
+      "width": 3,
+      "pos": "2:3",
+      "chassis": 1
+    },
+    {
+      "port": "et9b2",
+      "switch": "rabbit-lorax",
+      "bottom_ou": 3,
+      "height": 2,
+      "width": 3,
+      "pos": "2:3",
+      "chassis": 1
+    },
+    {
+      "port": "et9b3",
+      "switch": "rabbit-lorax",
+      "bottom_ou": 5,
+      "height": 2,
+      "width": 3,
+      "pos": "2:3",
+      "chassis": 1
+    },
+    {
+      "port": "et9b4",
+      "switch": "rabbit-lorax",
+      "bottom_ou": 7,
+      "height": 2,
+      "width": 3,
+      "pos": "2:3",
+      "chassis": 1
+    },
+    {
+      "port": "et28b1",
+      "switch": "rabbit-lorax",
+      "bottom_ou": 12,
+      "height": 2,
+      "width": 3,
+      "pos": "3:3",
+      "chassis": 2
+    },
+    {
+      "port": "et28b2",
+      "switch": "rabbit-lorax",
+      "bottom_ou": 14,
+      "height": 2,
+      "width": 3,
+      "pos": "3:3",
+      "chassis": 2
+    },
+    {
+      "port": "et28b3",
+      "switch": "rabbit-lorax",
+      "bottom_ou": 16,
+      "height": 2,
+      "width": 3,
+      "pos": "3:3",
+      "chassis": 2
+    },
+    {
+      "port": "et28b4",
+      "switch": "rabbit-lorax",
+      "bottom_ou": 18,
+      "height": 2,
+      "width": 3,
+      "pos": "3:3",
+      "chassis": 2
+    },
+    {
+      "port": "et10b1",
+      "switch": "rabbit-lorax",
+      "bottom_ou": 20,
+      "height": 2,
+      "width": 3,
+      "pos": "2:3",
+      "chassis": 3
+    },
+    {
+      "port": "et10b2",
+      "switch": "rabbit-lorax",
+      "bottom_ou": 22,
+      "height": 2,
+      "width": 3,
+      "pos": "2:3",
+      "chassis": 3
+    },
+    {
+      "port": "et10b3",
+      "switch": "rabbit-lorax",
+      "bottom_ou": 24,
+      "height": 2,
+      "width": 3,
+      "pos": "2:3",
+      "chassis": 3
+    },
+    {
+      "port": "et10b4",
+      "switch": "rabbit-lorax",
+      "bottom_ou": 26,
+      "height": 2,
+      "width": 3,
+      "pos": "2:3",
+      "chassis": 3
+    },
+    {
+      "port": "et25b1",
+      "switch": "rabbit-lorax",
+      "bottom_ou": 20,
+      "height": 2,
+      "width": 3,
+      "pos": "3:3",
+      "chassis": 3
+    },
+    {
+      "port": "et25b2",
+      "switch": "rabbit-lorax",
+      "bottom_ou": 22,
+      "height": 2,
+      "width": 3,
+      "pos": "3:3",
+      "chassis": 3
+    },
+    {
+      "port": "et25b3",
+      "switch": "rabbit-lorax",
+      "bottom_ou": 24,
+      "height": 2,
+      "width": 3,
+      "pos": "3:3",
+      "chassis": 3
+    },
+    {
+      "port": "et25b4",
+      "switch": "rabbit-lorax",
+      "bottom_ou": 26,
+      "height": 2,
+      "width": 3,
+      "pos": "3:3",
+      "chassis": 3
+    },
+    {
+      "port": "et24b1",
+      "switch": "rabbit-lorax",
+      "bottom_ou": 31,
+      "height": 2,
+      "width": 3,
+      "pos": "2:3",
+      "chassis": 4
+    },
+    {
+      "port": "et24b2",
+      "switch": "rabbit-lorax",
+      "bottom_ou": 33,
+      "height": 2,
+      "width": 3,
+      "pos": "2:3",
+      "chassis": 4
+    },
+    {
+      "port": "et24b3",
+      "switch": "rabbit-lorax",
+      "bottom_ou": 35,
+      "height": 2,
+      "width": 3,
+      "pos": "2:3",
+      "chassis": 4
+    },
+    {
+      "port": "et24b4",
+      "switch": "rabbit-lorax",
+      "bottom_ou": 37,
+      "height": 2,
+      "width": 3,
+      "pos": "2:3",
+      "chassis": 4
+    },
+    {
+      "port": "et23b1",
+      "switch": "rabbit-lorax",
+      "bottom_ou": 12,
+      "height": 2,
+      "width": 3,
+      "pos": "2:3",
+      "chassis": 2
+    },
+    {
+      "port": "et23b2",
+      "switch": "rabbit-lorax",
+      "bottom_ou": 14,
+      "height": 2,
+      "width": 3,
+      "pos": "2:3",
+      "chassis": 2
+    },
+    {
+      "port": "et23b3",
+      "switch": "rabbit-lorax",
+      "bottom_ou": 16,
+      "height": 2,
+      "width": 3,
+      "pos": "2:3",
+      "chassis": 2
+    },
+    {
+      "port": "et23b4",
+      "switch": "rabbit-lorax",
+      "bottom_ou": 18,
+      "height": 2,
+      "width": 3,
+      "pos": "2:3",
+      "chassis": 2
+    }
+  ]
+}

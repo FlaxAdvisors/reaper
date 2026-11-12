@@ -1,0 +1,8 @@
+'BIOS Version: TPO_P26F'
+'Chassis Serial: (C\.M\.B60\.00X1C|QTFC|QCFF)'
+'Board Mfg: [^,]*, Product: Tioga ?Pass'
+'2 Processor.*Intel.*Gold 6138.*2.00GHz'
+'(Board Mfg|Addon FRU): [^,]*, Product: Ava-M.2-SSD-Adapter'
+'12 Memory Size: 64 GB'
+'1 Model: "Mellanox'
+'2 Model:.*Mellanox'

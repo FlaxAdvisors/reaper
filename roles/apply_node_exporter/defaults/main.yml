@@ -1,0 +1,12 @@
+---
+# Per-bang host metrics exporter. Lives on the host (not in compose)
+# because node_exporter needs unshared PID/net/mount namespaces.
+
+apply_node_exporter_textfile_dir: /var/lib/node_exporter/textfile_collector
+apply_node_exporter_port: 9100
+apply_node_exporter_firewalld_zone: external
+
+# Every unit reaper deploys (components.yml) plus the base ones, so the site health
+# board sees each one's state. Generated on the controller; the override template doubles
+# its backslashes for systemd.
+apply_node_exporter_unit_include: "{{ lookup('ansible.builtin.pipe', ansible_playbook_python ~ ' ' ~ playbook_dir ~ '/../scripts/health_board.py --unit-include') }}"

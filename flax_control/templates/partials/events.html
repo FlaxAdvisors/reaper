@@ -1,0 +1,9 @@
+<div class="feed" id="eventfeed">
+  {% for e in recent_events %}
+  <div class="ev">
+    <span class="t mono">{{ e.ts }}</span>
+    <span class="svc mono">{{ e.service }}</span>
+    <span class="msg">{{ e.kind }} {% if e.mac %}<a class="tgt mono" href="/devices/{{ e.mac }}">{{ e.mac }}</a>{% elif e.switch %}<a class="tgt mono" href="/switches/{{ e.switch }}">{{ e.switch }}</a>{% endif %}</span>
+  </div>
+  {% endfor %}
+</div>

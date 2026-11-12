@@ -1,0 +1,462 @@
+"""Per-step detail for the tile's step modal (ruling 2026-09-12): not a
+pass/fail word but the DATA an operator needs to see why a step failed, or the
+good numbers behind a pass. Pure: `detail(record, row, phase, step)` reads the
+blade record (blades.build_slots output) plus the raw post_state row (the
+agent's per-stage summaries and timings live only there) and returns
+
+    {"phase", "step", "status", "headline", "rows": [[label, value], ...],
+     "notes": [text, ...]}
+
+plus, for the fio step, "table" {"cols", "rows", "row_cls"} (the same sorted table
+with expected / check columns as rackpost's fio rung, flax_rungs.fio.summarize) when
+`get_artifact(stage, name)` is given, and "flag": True when a drive is outside its
+range (blades step_flags; the status stays `done`).
+
+rendered generically by rack.html. Rows are short label/value pairs; notes
+are sentences (fault reasons, provenance, what a status means here).
+"""
+import datetime
+import time
+
+from flax_rungs import fio as fio_rung
+
+from . import blades, fio_judge
+
+_STATUS_WORD = {"done": "passed", "cur": "in progress", "pending": "not reached",
+                "fault": "FAILED", "skip": "skipped (not applicable)",
+                "unknown": "no evidence collected"}
+
+
+def _t(epoch) -> str:
+    """UTC wall-clock for an epoch, '' for None."""
+    if not epoch:
+        return ""
+    return time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime(epoch))
+
+
+def _dur(a, b) -> str:
+    if not a or not b:
+        return ""
+    s = int(round(b - a))
+    return "%dm%02ds" % divmod(s, 60) if s >= 60 else "%ds" % s
+
+
+def _yn(v) -> str:
+    return "yes" if v else "no"
+
+
+def _fw_rows(slice_, frozen_state):
+    s = slice_ or {}
+    rows = [["current", s.get("current") or s.get("current_version") or "not read"],
+            ["target", s.get("target") or s.get("target_version") or "unknown"],
+            ["daemon phase", s.get("phase") or "not evaluated"],
+            ["mode", s.get("mode") or "detect"]]
+    if s.get("fault_reason"):
+        rows.append(["reason", s["fault_reason"]])
+    return rows
+
+
+_PHASE_MEANING = {
+    "up_to_date": "current version equals the manifest target: nothing to flash",
+    "done": "flashed this run and re-read at the target version",
+    "needs_update": "current version differs from the target; in detect mode nothing is flashed, so this step stays open until triage flashes it",
+    "checking": "version read in progress",
+    "flashing": "flash in progress", "monitoring": "flash in progress (monitoring)",
+    "activating": "new image activating (BMC reboot)",
+    "fault": "the daemon recorded a fault (see reason)",
+    "unreachable": "the daemon could not reach the device on its last pass (BMC off the network, or the host is off)",
+    "unknown": "version unreadable on either side",
+    "oem": "OEM board: firmware is not flax-managed",
+    "unsupported": "platform not in the manifest: nothing to compare against",
+}
+
+
+def _discover(rec, row, step, status):
+    lad = rec.get("ladder") or {}
+    lv = rec.get("ladder_view") or {}
+    marks = lv.get("marks") or {}
+    p_on = lv.get("power_on_at")
+    rows, notes = [], []
+    if step == "switchportlink":
+        rows = [["link", rec.get("link") or "unknown"], ["switch port", "%s %s" % (rec.get("switch"), rec.get("port"))],
+                ["MACs on wire", ", ".join(rec.get("macs_seen") or []) or "none"]]
+    elif step in ("bmc-mac-seen", "host-mac-seen"):
+        kind = step.split("-")[0]
+        mac = rec.get(kind + "_mac")
+        rows = [[kind.upper() + " MAC", mac or "unknown"],
+                ["seen on this port", _yn(mac and mac.lower() in (rec.get("macs_seen") or []))],
+                ["MACs on wire", ", ".join(rec.get("macs_seen") or []) or "none"]]
+    elif step in ("bmc-reserved", "host-reserved"):
+        kind = step.split("-")[0]
+        rows = [[kind.upper() + " MAC", rec.get(kind + "_mac") or "unknown"],
+                ["reservation IP", rec.get(kind + "_ip") or "none"]]
+        notes.append("a DHCP reservation is written by reconcile once the MAC is seen on a post port")
+    elif step in ("bmc-leased", "host-leased"):
+        kind = step.split("-")[0]
+        rows = [[kind.upper() + " IP", rec.get(kind + "_ip") or "none"],
+                ["active lease", _yn(rec.get(kind + "_leased"))]]
+        if kind == "host" and status in ("cur", "pending"):
+            notes.append("the host lease appears only while the live ISO is up; it expires after power-off")
+    elif step == "bmc-pinged":
+        rows = [["BMC IP", rec.get("bmc_ip") or "none"], ["ping", _yn(rec.get("bmc_pinged"))],
+                ["chassis power", rec.get("power_on") or "unreadable"], ["draw", rec.get("watts") or "n/a"]]
+    elif step == "serial":
+        rows = [["serial", rec.get("serial") or "not read"]]
+        notes.append("product serial from the BMC FRU (ipmitool fru); read by the IPMI lane once the BMC answers")
+    elif step == "power-on":
+        rows = [["chassis power", rec.get("power_on") or "unreadable"],
+                ["engine power-on at", _t(p_on) or "not issued"],
+                ["last attempt", _t(lad.get("last_power_attempt")) or "none"],
+                ["awaiting power reading", _yn(lad.get("power_on_pending"))]]
+        if lad.get("human_power_on"):
+            notes.append("powered on by an operator (the lane saw off to on without an engine request)")
+        if status == "cur" and rec.get("verdict"):
+            notes.append("a latched blade is not powered on again by the engine; power it on by hand to re-run")
+    elif step in blades.BOOT_MARKER_RUNGS:
+        key = {"tftp-seen": "tftp", "ipxe-seen": "ipxe", "live-iso-seen": "iso"}[step]
+        src = {"tftp": "dnsmasq log (TFTP request from the host IP)",
+               "ipxe": "nginx access log (iPXE fetched its script)",
+               "iso": "nginx access log (live ISO fetched)"}[key]
+        mark = marks.get(key)
+        rows = [["seen at", _t(mark) or "not seen"],
+                ["after power-on", ("+" + _dur(p_on, mark)) if (mark and p_on and mark >= p_on) else ""],
+                ["evidence", src], ["budget", "%s s" % blades.ladder_budget_s(step)]]
+        if status == "unknown":
+            notes.append("the blade was already on when the worker first looked (observe restart, fault cleared by hand, "
+                         "or an operator power-on): this boot's markers were never collected. Power-cycle to collect them.")
+        elif mark and marks.get("kernel"):
+            notes.append("the blade was already on when the worker first looked; this boot was proven at ssh: the host "
+                         "kernel booted at %s, between the iPXE and ISO fetches seen after the ladder started"
+                         % _t(marks["kernel"]))
+    elif step == "bmc-ready":
+        fru = lad.get("bmc_fru") or {}
+        mark = marks.get("bmcready")
+        state = fru.get("state")
+        field = fru.get("serial_field") or "Product Serial"
+        fru0 = {"ok": "ok", "no_serial": "no ship serial",
+                "absent": "not present: %s" % (fru.get("reason") or "no FRU 0")}.get(state)
+        if fru0 is None:
+            fru0 = "read" if fru else "not read"
+        board = ("%s %s" % (fru.get("board_mfg") or "", fru.get("board_product") or fru.get("product") or "")).strip()
+        rows = [["BMC IP", rec.get("bmc_ip") or "none"], ["BMC ping", _yn(rec.get("bmc_pinged"))],
+                ["data read at", _t(mark) or "not yet"],
+                ["after power-on", ("+" + _dur(p_on, mark)) if (mark and p_on) else ""],
+                ["board", board or "not read"],
+                ["FRU 0", fru0],
+                ["serial (%s)" % field, fru.get("serial") or ("empty" if state == "no_serial" else "not read")],
+                ["family", fru.get("family") or ("unknown" if state in ("ok", "no_serial") else "")],
+                ["budget", "%s s" % blades.bmc_ready_budget_s(len(lad.get("bmc_ready_attempts") or []))],
+                ["retries", "%d of %d" % (len(lad.get("bmc_ready_attempts") or []),
+                                          len(blades.bmc_ready_retry_budgets()))]]
+        notes.append("the BMC goes dark for 60-100 s after the chassis power-on and comes back in stages (ping before IPMI); "
+                     "nothing that reads it (firmware probe, the agent's FRU/SEL/SDR stages, the population rules) starts before "
+                     "it answers `ipmitool fru print 0` with the blade's own FRU (ID 0); the NIC and M.2 FRU devices never count")
+        if state == "absent":
+            notes.insert(0, "the BMC answers but has no FRU 0 (%s): it is read again until the retries run out, then the rung faults"
+                         % (fru.get("reason") or "no FRU 0 block"))
+        elif state == "no_serial":
+            notes.insert(0, "FRU 0 has no %s: the run continues, and the population check fails it (do not ship)" % field)
+    elif step in ("host-pinged", "host-ssh"):
+        key = "ping" if step == "host-pinged" else "ssh"
+        mark = marks.get(key)
+        rows = [["host IP", rec.get("host_ip") or "none"], ["seen at", _t(mark) or "not yet"],
+                ["after power-on", ("+" + _dur(p_on, mark)) if (mark and p_on) else ""],
+                ["budget", "%s s" % blades.ladder_budget_s(step)]]
+        if step == "host-ssh":
+            notes.append("ssh as the live ISO's host user; iPXE answers ping long before the kernel, so this budget is the long one")
+    rows = [r for r in rows if r[1] != ""]
+    if lv.get("rung"):
+        rows.append(["ladder", "%s since %s" % (lv["rung"], _t(lv.get("since")))])
+    return rows, notes
+
+
+def _firmware(rec, row, step, status):
+    fw = rec.get("fw") or {}
+    key = {"bmc": "bmc", "bios": "bios", "mlx": "nic"}[step.split("-")[0]]
+    s = fw.get(key) or {}
+    rows, notes = [], []
+    if key == "nic":
+        devs = s.get("devices") or []
+        rows = [["daemon phase", s.get("phase") or "not evaluated"], ["mode", s.get("mode") or "detect"],
+                ["cards", str(len(devs))]]
+        for d in devs:
+            rows.append(["card %s" % d.get("pci", "?"),
+                         "%s  %s -> %s  [%s]" % (d.get("psid", "?"), d.get("current") or "?",
+                                               d.get("target") or "?", d.get("phase") or "?")])
+        if s.get("fault_reason"):
+            rows.append(["reason", s["fault_reason"]])
+    else:
+        rows = _fw_rows(s, status)
+    meaning = _PHASE_MEANING.get(s.get("phase"))
+    if meaning:
+        notes.append(meaning)
+    probe = ((rec.get("ladder") or {}).get("probe_calls") or {}).get({"bmc": "fwd", "bios": "biosd", "nic": "nicd"}[key])
+    if probe:
+        rows.append(["last on-demand probe", _t(probe)])
+    frozen = ((row.get("done") or {}).get("steps") or {}).get("Firmware") if rec.get("verdict") else None
+    if frozen is not None:
+        notes.append("status frozen with the verdict (the live daemon row above may have moved since; e.g. `unreachable` after power-off)")
+    return rows, notes
+
+
+# summary keys the fio branch renders itself (table / outside-range rows), not as k=v
+_FIO_OWN = ("judge", "flagged", "devices", "smart_excluded")
+
+
+def _fio(qs, get_artifact):
+    """(table | None, rows, notes, flagged-who) of the fio step: the artifact's per-device
+    table judged with the run's stored summary.judge (host_qual._judge_fio)."""
+    summ = qs.get("summary") or {}
+    judged = summ.get("judge")
+    rows, notes, who = [], [], []
+    for dev in summ.get("flagged") or []:
+        j = (judged or {}).get(dev) or {}
+        name = "%s (%s)" % (j["serial"], dev) if j.get("serial") else dev
+        rows.append(["outside range", "%s: %s" % (name, "; ".join(j.get("reasons") or []))])
+        who.append("%s %s" % (name, " ".join(dict.fromkeys(
+            r.split(" ", 1)[0] for r in j.get("reasons") or []))))
+    table = None
+    nb = fio_judge.no_baseline_fragment(judged)
+    text = get_artifact("fio", "fio") if get_artifact else None
+    if text:
+        sm = fio_rung.summarize(text, summ.get("devices"), get_artifact("inventory", "alldisks"),
+                                get_artifact("inventory", "lsblk"),
+                                excluded=summ.get("smart_excluded") or {}, judged=judged)
+        table = sm["table"]
+        rows = sm["rows"] + rows
+        notes += sm["notes"]
+    if judged is not None:
+        notes.append(fio_judge.note())
+    return table, rows, notes, who, nb
+
+
+def _qualify(rec, row, step, status, get_artifact=None):
+    q = row.get("qual") or {}
+    qs = (q.get("steps") or {}).get(step) or {}
+    rows, notes = [], []
+    if step == "agent-reachable":
+        ag = q.get("agent") or {}
+        rows = [["host IP", rec.get("host_ip") or "none"], ["agent reachable", _yn(ag.get("reachable"))],
+                ["agent version", ag.get("ver") or "unknown"], ["run", q.get("run_id") or "none"],
+                ["launched at", _t(rec.get("launch_at")) or "not launched"]]
+        notes.append("the engine ssh-starts the agent (post.sh postautomate) once the firmware gate passes; it must answer /health within %s s" % blades.ladder_budget_s("agent-reachable"))
+        return rows, notes
+    if step == "population-check":
+        pop = row.get("pop") or {}
+        rows = [["profile", pop.get("profile") or "none in effect"], ["verdict", pop.get("verdict") or "not evaluated"]]
+        for r in pop.get("failed_rules") or []:
+            label = "BLOCKED" if r.startswith("blocked DIMM") else (
+                "NO SHIP" if r.startswith("no ship serial") else "missing")
+            rows.append([label, r])
+        notes.append("rules are matched against this run's inventory digest (macinv count form); the POP button shows the full rule list")
+        if pop.get("blocked_dimms"):
+            notes.insert(0, "a blocked part is installed: %d DIMM(s) match a known-bad SPD identity; the node must not ship" % len(pop["blocked_dimms"]))
+        if pop.get("no_ship_serial"):
+            notes.insert(0, "the blade has no ship serial in FRU 0: the node must not ship")
+        if pop.get("verdict") == "red":
+            notes.append("a red population fails the run: the blade goes back to triage, the profile is not relaxed")
+        return rows, notes
+    if step in ("smbios-serial", "tpm-state"):
+        return _ship_check(row, step)
+    if step == "console":
+        rows = [["capture", "sol.txt artifact for this run" if status == "done" else "none"]]
+        if qs.get("summary", {}).get("reason"):
+            rows.append(["reason", qs["summary"]["reason"]])
+        notes.append("SOL capture from the power-on mark to the verdict; the SOL button shows it live")
+        return rows, notes
+    rows = [["agent status", qs.get("status") or "not reported"]]
+    if qs.get("started"):
+        rows += [["started", _t(qs["started"])], ["ended", _t(qs.get("ended")) or "running"],
+                 ["duration", _dur(qs["started"], qs.get("ended"))]]
+    fio_extra = _fio(qs, get_artifact) if step == "fio" and status != "skip" else None
+    for k, v in (qs.get("summary") or {}).items():
+        if fio_extra is not None and k in _FIO_OWN:
+            continue
+        if isinstance(v, (list, tuple)):
+            v = ", ".join(str(x) for x in v) or "none"
+        elif isinstance(v, dict):
+            v = ", ".join("%s=%s" % kv for kv in v.items()) or "none"
+        rows.append([str(k), str(v)])
+    rows = [r for r in rows if r[1] != ""]
+    hint = _QUAL_HINTS.get(step)
+    if hint:
+        notes.append(hint)
+    arts = [a.get("name") for a in (qs.get("artifacts") or []) if a.get("name")]
+    if arts:
+        rows.append(["artifacts", ", ".join(arts)])
+    if fio_extra is not None:
+        table, frows, fnotes, who, nb = fio_extra
+        rows += frows
+        notes += fnotes
+        return rows, notes, {"table": table, "who": who, "no_baseline": nb}
+    return rows, notes
+
+
+_ONOFF = {"1": "on", "0": "off"}
+_YNQ = {"1": "yes", "0": "no"}
+
+
+def _ship_check(row, step):
+    """smbios-serial / tpm-state: the engine's verdict from row["checks"]."""
+    c = (row.get("checks") or {}).get(step)
+    if not c:
+        return [["result", "not judged yet"]], []
+    if step == "smbios-serial":
+        dmi = c.get("dmi_serials") or {}
+        rows = [["FRU 0 serial", ", ".join(c.get("fru0_serials") or []) or "none"],
+                ["SMBIOS system", dmi.get("System") or "none"],
+                ["SMBIOS chassis", dmi.get("Chassis") or "none"],
+                ["SMBIOS base board", dmi.get("Base Board") or "none"]]
+        notes = ["the BIOS must copy the FRU 0 ship serial into SMBIOS; Post only checks -- a fail goes back to triage"]
+    else:
+        f = c.get("fields") or {}
+        dev = c.get("device")
+        rows = [["TPM device", "present" if dev else ("absent" if dev is False else "unknown")],
+                ["version", c.get("version") or ""], ["owned", _YNQ.get(f.get("owned"), f.get("owned") or "")]]
+        if c.get("version") == "1.2":
+            rows += [["enabled", _YNQ.get(f.get("enabled"), f.get("enabled") or "")],
+                     ["active", _YNQ.get(f.get("active"), f.get("active") or "")]]
+        elif c.get("version") == "2.0":
+            rows += [["storage hierarchy", _ONOFF.get(f.get("shEnable"), "unread")],
+                     ["endorsement hierarchy", _ONOFF.get(f.get("ehEnable"), "unread")]]
+        rows.append(["state line", c.get("raw") or ""])
+        notes = ["Post only checks; a fail goes back to triage, whose wipe pass turns the TPM on, enables it and clears it"]
+    if c.get("reason"):
+        rows.append(["reason", c["reason"]])
+    rows.append(["checked by", c.get("checker") or ""])
+    return [r for r in rows if r[1] != ""], notes
+
+
+_QUAL_HINTS = {
+    "sdr-pre": "sensor readings and thresholds before stress; `lines` is the SDR row count (compare with sdr-post)",
+    "sdr-post": "sensor readings after stress; the SDR button shows both captures side by side",
+    "sel-pre": "SEL before the run; fails only on CATERR. `unique_msgs` is the count of distinct event texts",
+    "sel-clear": "the SEL is cleared so sel-post only sees this run's events",
+    "sel-post": "SEL after stress; CATERR here fails the run. Expect `unique_msgs` near 1 (the clear marker)",
+    "tooling": "the battery's tools are present on the live ISO",
+    "inventory": "macinv/dmidecode/lspci/... dumps; `tools` is the number of artifacts captured",
+    "smart-health": "SMART health of every disk fio reads (Triage's rules); one failed disk fails it and fio leaves that disk out; warn passes",
+    "fio": "disk exercise on physical media; skipped with `no storage` on a diskless blade",
+    "iperf": "network throughput against the bang's iperf server; `attempts` counts server-busy retries",
+    "mem-pre": "EDAC correctable/uncorrectable error counters before stress (ce/ue must be 0)",
+    "cpu-mem-stress": "stress on every core plus most of RAM for the configured timeout; fails on a non-zero exit",
+    "mem-post": "EDAC counters after stress; any new ce/ue here is a DIMM fault",
+}
+
+
+_DEPLOY_DESC = {
+    "install": "wipe the system disk and install Ubuntu 24.04 by PXE (the family's autoinstall); "
+               "kept when post installed this blade before (same BMC MAC + serial)",
+    "plan": "pick the family's Deploy platform, its autoinstall and system disk, and find that disk in the Qualify inventory (absent: Deploy skips)",
+    "firstboot": "boot from disk and prove the installed OS as flax (24.04, not PXE, not USB, host MAC)",
+    "flax-user": "flax_user.yml against the installed OS",
+    "deploy-iperf": "the installed OS against the site's post iperf server, both directions, each >= 0.8 x link speed",
+    "deploy-stress": "stress-ng on the installed OS; fails on a new non-benign SEL entry, an irregular SDR sensor, "
+                     "any DIMM ce/ue increase (dimmerr), an MCE/EDAC/thermal dmesg line, or stress-ng rc != 0",
+}
+
+
+def _deploy(rec, row, step, status):
+    dep = row.get("deploy") or {}
+    s = (dep.get("steps") or {}).get(step) or {}
+    rows = [list(r) for r in (s.get("rows") or []) if isinstance(r, (list, tuple)) and len(r) == 2]
+    head = [["mode", dep.get("mode") or "—"], ["platform", dep.get("platform") or "—"],
+            ["disk", dep.get("storage") or dep.get("disk") or "—"]] if step in ("plan", "install") else []
+    if step == "plan":
+        head.insert(2, ["autoinstall", dep.get("autoinstall") or "—"])
+    if step == "firstboot" and dep.get("override_cleared"):
+        head.append(["boot override cleared", dep["override_cleared"]])
+    for k in ("started", "ended"):
+        if s.get(k):
+            head.append([k, datetime.datetime.fromtimestamp(s[k], datetime.timezone.utc)
+                         .strftime("%Y-%m-%d %H:%M:%S UTC")])
+    notes = [_DEPLOY_DESC.get(step, "")]
+    if s.get("reason") and status not in ("fault",):
+        notes.insert(0, s["reason"])
+    return head + rows, [n for n in notes if n]
+
+
+def _done(rec, row, step, status):
+    d = row.get("done") or {}
+    if (d.get("deploy") == "pending" and (row.get("deploy") or {}).get("run_id")
+            == (row.get("qual") or {}).get("run_id")):
+        d = dict(d, **((row.get("deploy") or {}).get("tail") or {}))
+    rows, notes = [], []
+    if step == "identify":
+        rows = [["result", d.get("identify") or "not run"]]
+        notes.append("chassis identify LED forced on: the blade is finished, pull it")
+    elif step == "power-off":
+        rows = [["result", d.get("power_off") or "not run"], ["chassis power now", rec.get("power_on") or "unreadable"]]
+        if d.get("power_off_reason"):
+            rows.append(["reason", d["power_off_reason"]])
+        notes.append("the engine powers the blade off and reads the chassis back for up to 30 s; only a read `off` passes")
+    elif step == "done":
+        holes = rec.get("holes") or {}
+        ov = (row.get("qual") or {}).get("overall") or {}
+        rows = [["verdict", d.get("verdict") or "none"], ["run", (row.get("qual") or {}).get("run_id") or "none"],
+                ["run clean", _yn(rec.get("clean"))]]
+        if ov:
+            rows.append(["battery", "%s, %s/%s stages, node verdict %s" % (
+                ov.get("status") or "?", ov.get("done_n", "?"), ov.get("total_n", "?"), ov.get("verdict") or "none")])
+        cut = (rec.get("ladder") or {}).get("collection")
+        if cut:
+            notes.append(cut)
+        if d.get("verdict") == "fail" and ov.get("status") == "running":
+            notes.append("the population check failed; the battery is still running on the node and every later stage's result and artifacts are being collected")
+        elif d.get("verdict") == "fail" and ov.get("status") == "done":
+            notes.append("the population check failed; the battery ran to the end and every stage's result is recorded above")
+        for p, names in holes.items():
+            rows.append(["open in " + p, ", ".join(names)])
+        notes.append("the clean mark: completes only when identify and power-off succeeded AND every earlier step passed or was legitimately skipped; "
+                     "a pass with open steps is finished but NOT ready to ship (re-run, or triage)")
+        notes.append("a pass records the run into post_node (fleet viewer node page); a fail leaves the blade powered for inspection")
+    return rows, notes
+
+
+def detail(rec: dict, row: dict, phase: str, step: str, get_artifact=None) -> dict:
+    """get_artifact(stage, name) -> text | None: this run's stored artifacts (the fio
+    step's table reads them on click); None = no table."""
+    steps = (rec.get("steps") or {}).get(phase) or {}
+    status = steps.get(step, "pending")
+    fn = {"Discover": _discover, "Firmware": _firmware, "Qualify": _qualify, "Deploy": _deploy,
+          "Done": _done}.get(phase)
+    extra = {}
+    if phase == "Qualify":
+        out = _qualify(rec, row or {}, step, status, get_artifact)
+        rows, notes = out[0], out[1]
+        extra = out[2] if len(out) > 2 else {}
+    else:
+        rows, notes = fn(rec, row or {}, step, status) if fn else ([], [])
+    note = (rec.get("fault_notes") or {}).get(step)
+    if note and status == "fault":
+        notes.insert(0, note)
+    elif note:
+        notes.append(note)
+    sn = (rec.get("step_notes") or {}).get(step)
+    if sn == "added since this run":
+        notes.insert(0, "this step was added to the pipeline after this run was recorded, so it has no result here; "
+                        "the next power-on runs the whole pipeline including it")
+    elif sn:
+        notes.insert(0, sn)
+    word = _STATUS_WORD.get(status, status)
+    if phase == "Firmware" and step.endswith("-updated") and status == "cur":
+        key = {"bmc": "bmc", "bios": "bios", "mlx": "nic"}[step.split("-")[0]]
+        fw = ((rec.get("fw") or {}).get(key) or {})
+        if fw.get("phase") == "needs_update" and (fw.get("mode") or "detect") != "enforce":
+            # nothing is flashing: the update is NEEDED, not in progress
+            word = "needed"
+    headline = "%s: %s" % (step, word)
+    flag = (rec.get("step_flags") or {}).get(step)
+    if flag and extra.get("who"):
+        n = len(extra["who"])
+        headline += " · %d drive%s outside range: %s" % (n, "" if n == 1 else "s",
+                                                         ", ".join(extra["who"]))
+    if status == "done" and extra.get("no_baseline"):
+        headline += extra["no_baseline"]  # a label only: no flag, no amber
+    out = {"phase": phase, "step": step, "status": status, "status_word": word,
+           "headline": headline, "rows": rows, "notes": notes}
+    if flag:
+        out["flag"] = True
+    if extra.get("table"):
+        out["table"] = extra["table"]
+    return out

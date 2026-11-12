@@ -1,0 +1,5 @@
+# apply the leopard settings (defaults)
+set node-setting leopard
+set com-default com2s
+set com-setting ${ttys1s}
+

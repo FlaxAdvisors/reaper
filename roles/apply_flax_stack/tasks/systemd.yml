@@ -1,0 +1,84 @@
+---
+- name: Deploy provision_roles.sh
+  become: true
+  ansible.builtin.copy:
+    src: provision_roles.sh
+    dest: /opt/flax/sbin/flax-provision-roles
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Deploy flax-stack.service unit
+  become: true
+  ansible.builtin.template:
+    src: flax-stack.service.j2
+    dest: /etc/systemd/system/flax-stack.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-stack
+
+- name: Enable + start flax-stack
+  become: true
+  ansible.builtin.systemd:
+    name: flax-stack.service
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Wait for Postgres to be healthy
+  become: true
+  ansible.builtin.command: >
+    docker compose -f {{ apply_flax_stack_compose_path }}
+      exec -T postgres pg_isready -U postgres -d flax
+  register: pg_ready
+  retries: 30
+  delay: 2
+  until: pg_ready.rc == 0
+  changed_when: false
+
+- name: Run alembic migrations (head)
+  become: true
+  ansible.builtin.command: >
+    docker compose --env-file {{ apply_flax_stack_env_path }}
+      -f {{ apply_flax_stack_compose_path }} run --rm --no-deps
+      -e PGUSER=postgres
+      -e PGPASSWORD={{ apply_flax_stack_postgres_superuser_password }}
+      -e PGHOST=127.0.0.1
+      -e PGPORT=5432
+      -e PGDATABASE=flax
+      -w /app/schema
+      flax-control
+      python -m alembic upgrade head
+  register: alembic_run
+  changed_when: alembic_run.stdout is search('Running upgrade')
+  # Primary only: a standby is read-only (in recovery) — alembic would fail.
+  # The standby receives schema via physical replication, not alembic.
+  when: apply_flax_stack_is_primary | default(true)
+  # no_log dropped — alembic failures need to be visible. Passwords are passed
+  # via -e on the docker compose command line, which is logged; that's an
+  # accepted trade-off for first-deploy debuggability. Rotate vault passwords
+  # after the initial bring-up if process listings are a concern.
+
+- name: Provision per-service role passwords
+  become: true
+  ansible.builtin.command: /opt/flax/sbin/flax-provision-roles
+  environment:
+    POSTGRES_SUPERUSER_PASSWORD: "{{ apply_flax_stack_postgres_superuser_password }}"
+    FLAX_CONTROL_DB_PASSWORD: "{{ apply_flax_stack_db_passwords.flax_control | default('') }}"
+    FLAX_SWITCH_SENSE_DB_PASSWORD: "{{ apply_flax_stack_db_passwords.flax_switch_sense | default('') }}"
+    FLAX_DISCOVER_DB_PASSWORD: "{{ apply_flax_stack_db_passwords.flax_discover | default('') }}"
+    FLAX_CLASSIFY_DB_PASSWORD: "{{ apply_flax_stack_db_passwords.flax_classify | default('') }}"
+    FLAX_RECONCILE_DB_PASSWORD: "{{ apply_flax_stack_db_passwords.flax_reconcile | default('') }}"
+    FLAX_OBSERVE_DB_PASSWORD: "{{ apply_flax_stack_db_passwords.flax_observe | default('') }}"
+    FLAX_POST_DB_PASSWORD: "{{ apply_flax_stack_db_passwords.flax_post | default('') }}"
+    FLAX_KEA_HOOK_DB_PASSWORD: "{{ apply_flax_stack_db_passwords.flax_kea_hook | default('') }}"
+    KEA_DB_PASSWORD: "{{ apply_flax_stack_db_passwords.kea | default('') }}"
+    # Replication role — only set when peers are configured (HA). Empty on
+    # standalone sites so provision_roles.sh skips the replicator entirely.
+    REPLICATOR_PASSWORD: "{{ apply_flax_stack_db_passwords.replicator | default('') if (apply_flax_stack_peers | default([]) | length > 0) else '' }}"
+  changed_when: false  # idempotent; ALTER ROLE always succeeds
+  no_log: true
+  # Primary only: ALTER/CREATE ROLE writes to pg_authid — fails on a read-only
+  # standby. Roles + passwords reach the standby via physical replication.
+  when: apply_flax_stack_is_primary | default(true)

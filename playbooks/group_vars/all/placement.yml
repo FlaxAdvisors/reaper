@@ -1,0 +1,26 @@
+---
+# Where the per-site singleton services land, derived once from the HA pair that
+# every site already declares (apply_keepalived_master_host + the jumphosts group).
+#
+# Precedence: this file (playbook group_vars/all) BEATS inventories/<site>/group_vars/all,
+# so a site that needs a different placement overrides in
+# inventories/<site>/group_vars/jumphosts/ (which beats this file), never in all/.
+# Ad-hoc `ansible`/`ansible-inventory` only see these with --playbook-dir playbooks.
+
+site_primary_bang: "{{ apply_keepalived_master_host }}"
+site_bangs: "{{ groups['jumphosts'] }}"
+site_standby_bangs: "{{ groups['jumphosts'] | difference([apply_keepalived_master_host]) }}"
+
+# iperf3 serializer for the post qual agent + Loose Post Deploy: the standby, so
+# bandwidth tests never load the bang running the pipeline (primary on a lone-bang site).
+post_iperf_server: "{{ site_standby_bangs | first | default(site_primary_bang) }}"
+
+# Rack post order server: the primary only (order dirs are not synced to the standby).
+apply_rackpost_hosts: "{{ [site_primary_bang] }}"
+
+# Post fleet viewer: both bangs (the standby reads the order archive from its replica).
+apply_post_fleet_viewer_hosts: "{{ site_bangs }}"
+
+# Self-hosted kroki diagram renderer: none by default; a site opts in by naming a
+# bang in inventories/<site>/group_vars/jumphosts/ (eindhoven: bang-gouda).
+apply_kroki_hosts: []

@@ -1,0 +1,62 @@
+# promtool test rules for roles/apply_health_compose/files/prometheus/rules/system-disk.yml
+# (FOLLOWUP-2026-11-08-health-noise §2, §4). No promtool here: run it in a bang's
+# prometheus container, see tests/promtool/README.
+rule_files: [system-disk.yml]
+evaluation_interval: 1m
+tests:
+  # §4: btrfs subvolumes of one device are ONE low-disk alert, per device not per mount
+  - interval: 1m
+    input_series:
+      - series: 'node_filesystem_avail_bytes{device="/dev/sda2",mountpoint="/",bang="bang-fiesta",instance="a:9100"}'
+        values: '5e9x30'
+      - series: 'node_filesystem_avail_bytes{device="/dev/sda2",mountpoint="/var",bang="bang-fiesta",instance="a:9100"}'
+        values: '5e9x30'
+      - series: 'node_filesystem_size_bytes{device="/dev/sda2",mountpoint="/",bang="bang-fiesta",instance="a:9100"}'
+        values: '100e9x30'
+      - series: 'node_filesystem_size_bytes{device="/dev/sda2",mountpoint="/var",bang="bang-fiesta",instance="a:9100"}'
+        values: '100e9x30'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: DiskCapacityLow
+        exp_alerts:
+          - exp_labels: {severity: warning, bang: bang-fiesta, device: /dev/sda2}
+            exp_annotations: {summary: "Disk <10GB free on bang-fiesta:/dev/sda2"}
+      - eval_time: 15m
+        alertname: DiskCapacityCritical
+        exp_alerts: []
+
+  # §2: an exporter that sees a disk but returns no SMART data alerts; one with data does not
+  - interval: 1m
+    input_series:
+      - series: 'smartctl_devices{bang="bang-gouda",instance="g:9633",job="smartctl"}'
+        values: '1x30'
+      - series: 'smartctl_devices{bang="bang-edam",instance="e:9633",job="smartctl"}'
+        values: '1x30'
+      - series: 'smartctl_device_smart_status{bang="bang-edam",device="sda",instance="e:9633",job="smartctl"}'
+        values: '1x30'
+      - series: 'smartctl_devices{bang="bang-blues",instance="b:9633",job="smartctl"}'
+        values: '0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SmartDataMissing
+        exp_alerts:
+          - exp_labels: {severity: warning, bang: bang-gouda, instance: "g:9633", job: smartctl}
+            exp_annotations: {summary: "No SMART data from bang-gouda: disk health is unmonitored"}
+          - exp_labels: {severity: warning, bang: bang-blues, instance: "b:9633", job: smartctl}
+            exp_annotations: {summary: "No SMART data from bang-blues: disk health is unmonitored"}
+
+  # §2: reallocated sectors rising is judged on the raw count only (one alert, not one per row)
+  - interval: 1h
+    input_series:
+      - series: 'smartctl_device_attribute{attribute_name="Reallocated_Sector_Ct",attribute_value_type="raw",bang="bang-gouda",device="sda"}'
+        values: '2 2 2 3 3'
+      - series: 'smartctl_device_attribute{attribute_name="Reallocated_Sector_Ct",attribute_value_type="value",bang="bang-gouda",device="sda"}'
+        values: '99 99 100 100 100'
+      - series: 'smartctl_device_attribute{attribute_name="Reallocated_Sector_Ct",attribute_value_type="thresh",bang="bang-gouda",device="sda"}'
+        values: '0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 4h
+        alertname: SmartReallocatedSectorsRising
+        exp_alerts:
+          - exp_labels: {severity: warning, attribute_name: Reallocated_Sector_Ct, attribute_value_type: raw, bang: bang-gouda, device: sda}
+            exp_annotations: {summary: "Reallocated sectors rising on bang-gouda:sda"}

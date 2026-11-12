@@ -1,0 +1,724 @@
+[{
+        "mac": "a8:2b:b5:2e:f6:81",
+        "dev": "swp1",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:82",
+        "dev": "swp2",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:b8:01:d4",
+        "dev": "swp2",
+        "vlan": 2,
+        "master": "bridge"
+    },{
+        "mac": "00:90:fb:5f:d8:af",
+        "dev": "swp2",
+        "vlan": 2,
+        "master": "bridge"
+    },{
+        "mac": "a8:2b:b5:2e:f6:80",
+        "dev": "swp3",
+        "vlan": 2,
+        "master": "bridge"
+    },{
+        "mac": "a8:2b:b5:2e:f6:83",
+        "dev": "swp3",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:84",
+        "dev": "swp4",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:85",
+        "dev": "swp5",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a0:36:9f:d6:51:7c",
+        "dev": "swp5",
+        "vlan": 2,
+        "master": "bridge"
+    },{
+        "mac": "a8:2b:b5:2e:f6:86",
+        "dev": "swp6",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "08:02:8e:fe:1d:49",
+        "dev": "swp6",
+        "vlan": 4,
+        "master": "bridge"
+    },{
+        "mac": "a8:2b:b5:2e:f6:87",
+        "dev": "swp7",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "00:13:3b:5a:c6:08",
+        "dev": "swp8",
+        "vlan": 2,
+        "master": "bridge"
+    },{
+        "mac": "a8:2b:b5:2e:f6:88",
+        "dev": "swp8",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:89",
+        "dev": "swp9",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:8a",
+        "dev": "swp10",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:8b",
+        "dev": "swp11",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:8c",
+        "dev": "swp12",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:8d",
+        "dev": "swp13",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:8e",
+        "dev": "swp14",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:8f",
+        "dev": "swp15",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:90",
+        "dev": "swp16",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:91",
+        "dev": "swp17",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:92",
+        "dev": "swp18",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:93",
+        "dev": "swp19",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:94",
+        "dev": "swp20",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:95",
+        "dev": "swp21",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:96",
+        "dev": "swp22",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "00:90:fb:61:da:a0",
+        "dev": "swp23",
+        "vlan": 26,
+        "master": "bridge"
+    },{
+        "mac": "a8:2b:b5:2e:f6:97",
+        "dev": "swp23",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "3c:2c:99:58:9d:02",
+        "dev": "swp23",
+        "vlan": 26,
+        "master": "bridge"
+    },{
+        "mac": "a8:2b:b5:2e:f6:98",
+        "dev": "swp24",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:99",
+        "dev": "swp25",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:9a",
+        "dev": "swp26",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:9b",
+        "dev": "swp27",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:9c",
+        "dev": "swp28",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:9d",
+        "dev": "swp29",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:9e",
+        "dev": "swp30",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:9f",
+        "dev": "swp31",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:a0",
+        "dev": "swp32",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:a1",
+        "dev": "swp33",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:a2",
+        "dev": "swp34",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:a3",
+        "dev": "swp35",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:a4",
+        "dev": "swp36",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:a5",
+        "dev": "swp37",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:a6",
+        "dev": "swp38",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:a7",
+        "dev": "swp39",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:a8",
+        "dev": "swp40",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:a9",
+        "dev": "swp41",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:aa",
+        "dev": "swp42",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:ab",
+        "dev": "swp43",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:ac",
+        "dev": "swp44",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "4c:38:d5:1e:ef:e6",
+        "dev": "swp44",
+        "vlan": 24,
+        "master": "bridge"
+    },{
+        "mac": "a8:2b:b5:2e:f6:ad",
+        "dev": "swp45",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:ae",
+        "dev": "swp46",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:af",
+        "dev": "swp47",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:b0",
+        "dev": "swp48",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:b1",
+        "dev": "swp49",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:b2",
+        "dev": "swp50",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:b3",
+        "dev": "swp51",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "98:03:9b:90:7c:3e",
+        "dev": "swp52",
+        "vlan": 16,
+        "master": "bridge"
+    },{
+        "mac": "0c:42:a1:19:ac:c2",
+        "dev": "swp52",
+        "vlan": 18,
+        "master": "bridge"
+    },{
+        "mac": "0c:42:a1:19:ac:c2",
+        "dev": "swp52",
+        "vlan": 23,
+        "master": "bridge"
+    },{
+        "mac": "0c:42:a1:19:ac:c2",
+        "dev": "swp52",
+        "vlan": 24,
+        "master": "bridge"
+    },{
+        "mac": "08:c0:eb:24:e1:44",
+        "dev": "swp52",
+        "vlan": 24,
+        "master": "bridge"
+    },{
+        "mac": "b8:ce:f6:d7:e7:f8",
+        "dev": "swp52",
+        "vlan": 27,
+        "master": "bridge"
+    },{
+        "mac": "08:c0:eb:d1:8d:c8",
+        "dev": "swp52",
+        "vlan": 16,
+        "master": "bridge"
+    },{
+        "mac": "0c:42:a1:19:ac:c2",
+        "dev": "swp52",
+        "vlan": 22,
+        "master": "bridge"
+    },{
+        "mac": "b8:ce:f6:d7:e7:f8",
+        "dev": "swp52",
+        "vlan": 17,
+        "master": "bridge"
+    },{
+        "mac": "0c:42:a1:7b:e4:2d",
+        "dev": "swp52",
+        "vlan": 25,
+        "master": "bridge"
+    },{
+        "mac": "08:00:27:6f:7f:18",
+        "dev": "swp52",
+        "vlan": 16,
+        "master": "bridge"
+    },{
+        "mac": "b8:ce:f6:d7:e7:f8",
+        "dev": "swp52",
+        "vlan": 22,
+        "master": "bridge"
+    },{
+        "mac": "b8:ce:f6:d7:e7:f8",
+        "dev": "swp52",
+        "vlan": 19,
+        "master": "bridge"
+    },{
+        "mac": "a8:2b:b5:b8:02:50",
+        "dev": "swp52",
+        "vlan": 1,
+        "master": "bridge"
+    },{
+        "mac": "0c:42:a1:19:ac:c2",
+        "dev": "swp52",
+        "vlan": 26,
+        "master": "bridge"
+    },{
+        "mac": "b8:ce:f6:d7:e7:f8",
+        "dev": "swp52",
+        "vlan": 24,
+        "master": "bridge"
+    },{
+        "mac": "0c:42:a1:19:9d:0c",
+        "dev": "swp52",
+        "vlan": 24,
+        "master": "bridge"
+    },{
+        "mac": "98:03:9b:97:e4:06",
+        "dev": "swp52",
+        "vlan": 16,
+        "master": "bridge"
+    },{
+        "mac": "0c:42:a1:19:ac:c2",
+        "dev": "swp52",
+        "vlan": 8,
+        "master": "bridge"
+    },{
+        "mac": "0c:42:a1:19:93:74",
+        "dev": "swp52",
+        "vlan": 24,
+        "master": "bridge"
+    },{
+        "mac": "98:03:9b:86:cb:20",
+        "dev": "swp52",
+        "vlan": 17,
+        "master": "bridge"
+    },{
+        "mac": "0c:42:a1:19:ac:c2",
+        "dev": "swp52",
+        "vlan": 19,
+        "master": "bridge"
+    },{
+        "mac": "0c:42:a1:19:ac:c2",
+        "dev": "swp52",
+        "vlan": 27,
+        "master": "bridge"
+    },{
+        "mac": "0c:42:a1:19:ac:c2",
+        "dev": "swp52",
+        "vlan": 16,
+        "master": "bridge"
+    },{
+        "mac": "b8:ce:f6:d7:e7:f8",
+        "dev": "swp52",
+        "vlan": 8,
+        "master": "bridge"
+    },{
+        "mac": "0c:42:a1:19:ac:c2",
+        "dev": "swp52",
+        "vlan": 28,
+        "master": "bridge"
+    },{
+        "mac": "0c:42:a1:19:ac:c2",
+        "dev": "swp52",
+        "vlan": 29,
+        "master": "bridge"
+    },{
+        "mac": "0c:42:a1:19:93:72",
+        "dev": "swp52",
+        "vlan": 24,
+        "master": "bridge"
+    },{
+        "mac": "0c:42:a1:19:ac:c2",
+        "dev": "swp52",
+        "vlan": 31,
+        "master": "bridge"
+    },{
+        "mac": "0c:42:a1:19:ac:c2",
+        "dev": "swp52",
+        "vlan": 30,
+        "master": "bridge"
+    },{
+        "mac": "0c:42:a1:19:ac:c2",
+        "dev": "swp52",
+        "vlan": 17,
+        "master": "bridge"
+    },{
+        "mac": "0c:42:a1:19:9b:5c",
+        "dev": "swp52",
+        "vlan": 24,
+        "master": "bridge"
+    },{
+        "mac": "b8:ce:f6:d7:e7:f8",
+        "dev": "swp52",
+        "vlan": 30,
+        "master": "bridge"
+    },{
+        "mac": "b8:ce:f6:d7:e7:f8",
+        "dev": "swp52",
+        "vlan": 20,
+        "master": "bridge"
+    },{
+        "mac": "0c:42:a1:19:ac:c2",
+        "dev": "swp52",
+        "vlan": 21,
+        "master": "bridge"
+    },{
+        "mac": "0c:42:a1:19:99:dc",
+        "dev": "swp52",
+        "vlan": 16,
+        "master": "bridge"
+    },{
+        "mac": "08:c0:eb:d6:03:18",
+        "dev": "swp52",
+        "vlan": 24,
+        "master": "bridge"
+    },{
+        "mac": "1c:34:da:7f:b3:a4",
+        "dev": "swp52",
+        "vlan": 16,
+        "master": "bridge"
+    },{
+        "mac": "b8:ce:f6:3e:55:8c",
+        "dev": "swp52",
+        "vlan": 17,
+        "master": "bridge"
+    },{
+        "mac": "b8:ce:f6:fe:8a:ee",
+        "dev": "swp52",
+        "vlan": 16,
+        "master": "bridge"
+    },{
+        "mac": "b8:ce:f6:d7:e7:f8",
+        "dev": "swp52",
+        "vlan": 18,
+        "master": "bridge"
+    },{
+        "mac": "0c:42:a1:19:93:1c",
+        "dev": "swp52",
+        "vlan": 16,
+        "master": "bridge"
+    },{
+        "mac": "b8:ce:f6:d7:e7:f8",
+        "dev": "swp52",
+        "vlan": 21,
+        "master": "bridge"
+    },{
+        "mac": "b8:ce:f6:d7:e7:f8",
+        "dev": "swp52",
+        "vlan": 23,
+        "master": "bridge"
+    },{
+        "mac": "b8:ce:f6:d7:e7:f8",
+        "dev": "swp52",
+        "vlan": 16,
+        "master": "bridge"
+    },{
+        "mac": "08:c0:eb:24:e1:42",
+        "dev": "swp52",
+        "vlan": 24,
+        "master": "bridge"
+    },{
+        "mac": "0c:42:a1:19:a9:8a",
+        "dev": "swp52",
+        "vlan": 25,
+        "master": "bridge"
+    },{
+        "mac": "b8:ce:f6:3e:55:8a",
+        "dev": "swp52",
+        "vlan": 17,
+        "master": "bridge"
+    },{
+        "mac": "a8:2b:b5:2e:f6:b4",
+        "dev": "swp52",
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "b8:ce:f6:d7:e7:f8",
+        "dev": "swp52",
+        "vlan": 26,
+        "master": "bridge"
+    },{
+        "mac": "0c:42:a1:19:a9:8c",
+        "dev": "swp52",
+        "vlan": 25,
+        "master": "bridge"
+    },{
+        "mac": "0c:42:a1:19:ac:c2",
+        "dev": "swp52",
+        "vlan": 25,
+        "master": "bridge"
+    },{
+        "mac": "98:03:9b:97:e4:08",
+        "dev": "swp52",
+        "vlan": 16,
+        "master": "bridge"
+    },{
+        "mac": "98:03:9b:86:cb:1e",
+        "dev": "swp52",
+        "vlan": 17,
+        "master": "bridge"
+    },{
+        "mac": "1c:34:da:7f:9d:6c",
+        "dev": "swp52",
+        "vlan": 17,
+        "master": "bridge"
+    },{
+        "mac": "b8:ce:f6:d7:e7:f8",
+        "dev": "swp52",
+        "vlan": 25,
+        "master": "bridge"
+    },{
+        "mac": "b8:ce:f6:d7:e7:f8",
+        "dev": "swp52",
+        "vlan": 28,
+        "master": "bridge"
+    },{
+        "mac": "b8:ce:f6:d7:e7:fa",
+        "dev": "swp52",
+        "vlan": 2,
+        "master": "bridge"
+    },{
+        "mac": "0c:42:a1:19:9b:5a",
+        "dev": "swp52",
+        "vlan": 24,
+        "master": "bridge"
+    },{
+        "mac": "b8:ce:f6:d7:e7:f8",
+        "dev": "swp52",
+        "vlan": 29,
+        "master": "bridge"
+    },{
+        "mac": "b8:ce:f6:d7:e7:f8",
+        "dev": "swp52",
+        "vlan": 31,
+        "master": "bridge"
+    },{
+        "mac": "0c:42:a1:19:ac:c4",
+        "dev": "swp52",
+        "vlan": 2,
+        "master": "bridge"
+    },{
+        "mac": "1c:34:da:7f:9d:34",
+        "dev": "swp52",
+        "vlan": 16,
+        "master": "bridge"
+    },{
+        "mac": "0c:42:a1:19:ac:c2",
+        "dev": "swp52",
+        "vlan": 20,
+        "master": "bridge"
+    },{
+        "mac": "a8:2b:b5:2e:f6:81",
+        "dev": "bridge",
+        "vlan": 30,
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:81",
+        "dev": "bridge",
+        "vlan": 25,
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:81",
+        "dev": "bridge",
+        "vlan": 19,
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:81",
+        "dev": "bridge",
+        "vlan": 29,
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:81",
+        "dev": "bridge",
+        "vlan": 21,
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:81",
+        "dev": "bridge",
+        "vlan": 31,
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:81",
+        "dev": "bridge",
+        "vlan": 20,
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:81",
+        "dev": "bridge",
+        "vlan": 24,
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:81",
+        "dev": "bridge",
+        "vlan": 18,
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:81",
+        "dev": "bridge",
+        "vlan": 28,
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:81",
+        "dev": "bridge",
+        "vlan": 27,
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:81",
+        "dev": "bridge",
+        "vlan": 26,
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:81",
+        "dev": "bridge",
+        "vlan": 22,
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:81",
+        "dev": "bridge",
+        "vlan": 17,
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:81",
+        "dev": "bridge",
+        "vlan": 23,
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:81",
+        "dev": "bridge",
+        "vlan": 8,
+        "master": "bridge",
+        "state": "permanent"
+    },{
+        "mac": "a8:2b:b5:2e:f6:81",
+        "dev": "bridge",
+        "vlan": 16,
+        "master": "bridge",
+        "state": "permanent"
+    }
+]

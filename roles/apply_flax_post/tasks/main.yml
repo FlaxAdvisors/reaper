@@ -1,0 +1,28 @@
+---
+- name: Assert flax-post DB password is wired
+  ansible.builtin.assert:
+    that:
+      - apply_flax_post_db_password | length > 0
+    fail_msg: |
+      apply_flax_post_db_password is empty. Wire it from the vault:
+        all/vars.yml: apply_flax_post_db_password:
+                        "{{ vault_flax_stack_db_passwords.flax_post }}"
+  no_log: true
+
+- name: Deploy post-geometry.json to /etc/flax
+  become: true
+  ansible.builtin.copy:
+    src: "{{ config_output_dir }}/{{ site_name }}/services/post-geometry.json"
+    dest: /etc/flax/post-geometry.json
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Restart flax-post
+    - Restart flax-post-observe
+
+- name: Apply systemd unit + env
+  ansible.builtin.import_tasks: systemd.yml
+
+- name: Apply firewalld rule
+  ansible.builtin.import_tasks: firewall.yml

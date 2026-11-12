@@ -1,0 +1,9 @@
+[Unit]
+Description=Health-dashboard textfile-collector hook: %i
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/flax/sbin/health_hooks/%i.sh
+User=root
+Group=root

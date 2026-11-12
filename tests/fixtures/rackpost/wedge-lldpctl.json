@@ -1,0 +1,312 @@
+{
+  "lldp": {
+    "interface": [
+      {
+        "Ethernet31": {
+          "via": "LLDP",
+          "rid": "83",
+          "age": "0 day, 16:02:06",
+          "chassis": {
+            "rr101-l37": {
+              "id": {
+                "type": "mac",
+                "value": "88:e9:a4:77:de:38"
+              },
+              "descr": "Ubuntu 24.04.5 LTS Linux 6.8.0-147-generic #147-Ubuntu SMP PREEMPT_DYNAMIC Thu Sep 24 11:33:16 UTC 2026 x86_64",
+              "mgmt-ip": [
+                "10.201.37.1",
+                "fd00:32::f095"
+              ],
+              "mgmt-iface": [
+                "6",
+                "4"
+              ],
+              "capability": [
+                {
+                  "type": "Bridge",
+                  "enabled": false
+                },
+                {
+                  "type": "Router",
+                  "enabled": false
+                },
+                {
+                  "type": "Wlan",
+                  "enabled": false
+                },
+                {
+                  "type": "Station",
+                  "enabled": true
+                }
+              ]
+            }
+          },
+          "port": {
+            "id": {
+              "type": "mac",
+              "value": "88:e9:a4:77:de:38"
+            },
+            "descr": "enp25s0f0np0",
+            "ttl": "120",
+            "aggregation": "6",
+            "auto-negotiation": {
+              "supported": true,
+              "enabled": true,
+              "advertised": {
+                "type": "1000Base-X",
+                "hd": false,
+                "fd": true
+              },
+              "current": "25GbaseCR - 25GBASE-R PCS/PMA over shielded balanced copper cable"
+            }
+          }
+        }
+      },
+      {
+        "Ethernet95": {
+          "via": "LLDP",
+          "rid": "82",
+          "age": "0 day, 16:02:06",
+          "chassis": {
+            "rr101-c37": {
+              "id": {
+                "type": "mac",
+                "value": "88:e9:a4:79:f9:a8"
+              },
+              "descr": "Ubuntu 24.04.5 LTS Linux 6.8.0-147-generic #147-Ubuntu SMP PREEMPT_DYNAMIC Thu Sep 24 11:33:16 UTC 2026 x86_64",
+              "mgmt-ip": [
+                "10.201.37.51",
+                "fd00:32::f08d"
+              ],
+              "mgmt-iface": [
+                "6",
+                "4"
+              ],
+              "capability": [
+                {
+                  "type": "Bridge",
+                  "enabled": false
+                },
+                {
+                  "type": "Router",
+                  "enabled": false
+                },
+                {
+                  "type": "Wlan",
+                  "enabled": false
+                },
+                {
+                  "type": "Station",
+                  "enabled": true
+                }
+              ]
+            }
+          },
+          "port": {
+            "id": {
+              "type": "mac",
+              "value": "88:e9:a4:79:f9:a8"
+            },
+            "descr": "enp25s0f0np0",
+            "ttl": "120",
+            "aggregation": "6",
+            "auto-negotiation": {
+              "supported": true,
+              "enabled": true,
+              "advertised": {
+                "type": "1000Base-X",
+                "hd": false,
+                "fd": true
+              },
+              "current": "25GbaseCR - 25GBASE-R PCS/PMA over shielded balanced copper cable"
+            }
+          }
+        }
+      },
+      {
+        "Ethernet103": {
+          "via": "LLDP",
+          "rid": "81",
+          "age": "0 day, 16:02:06",
+          "chassis": {
+            "rr101-r37": {
+              "id": {
+                "type": "mac",
+                "value": "88:e9:a4:73:a4:90"
+              },
+              "descr": "Ubuntu 24.04.5 LTS Linux 6.8.0-147-generic #147-Ubuntu SMP PREEMPT_DYNAMIC Thu Sep 24 11:33:16 UTC 2026 x86_64",
+              "mgmt-ip": [
+                "10.201.37.101",
+                "fd00:32::f08f"
+              ],
+              "mgmt-iface": [
+                "6",
+                "4"
+              ],
+              "capability": [
+                {
+                  "type": "Bridge",
+                  "enabled": false
+                },
+                {
+                  "type": "Router",
+                  "enabled": false
+                },
+                {
+                  "type": "Wlan",
+                  "enabled": false
+                },
+                {
+                  "type": "Station",
+                  "enabled": true
+                }
+              ]
+            }
+          },
+          "port": {
+            "id": {
+              "type": "mac",
+              "value": "88:e9:a4:73:a4:90"
+            },
+            "descr": "enp25s0f0np0",
+            "ttl": "120",
+            "aggregation": "6",
+            "auto-negotiation": {
+              "supported": true,
+              "enabled": true,
+              "advertised": {
+                "type": "1000Base-X",
+                "hd": false,
+                "fd": true
+              },
+              "current": "25GbaseCR - 25GBASE-R PCS/PMA over shielded balanced copper cable"
+            }
+          }
+        }
+      },
+      {
+        "Ethernet108": {
+          "via": "LLDP",
+          "rid": "85",
+          "age": "0 day, 16:01:36",
+          "chassis": {
+            "rr101-l05": {
+              "id": {
+                "type": "mac",
+                "value": "02:00:00:aa:bb:02"
+              },
+              "descr": "Ubuntu 24.04.5 LTS Linux 6.8.0-147-generic #147-Ubuntu SMP PREEMPT_DYNAMIC Thu Sep 24 11:33:16 UTC 2026 x86_64",
+              "mgmt-ip": [
+                "172.32.5.1",
+                "fd00:32::f091"
+              ],
+              "mgmt-iface": [
+                "5",
+                "5"
+              ],
+              "capability": [
+                {
+                  "type": "Bridge",
+                  "enabled": false
+                },
+                {
+                  "type": "Router",
+                  "enabled": false
+                },
+                {
+                  "type": "Wlan",
+                  "enabled": false
+                },
+                {
+                  "type": "Station",
+                  "enabled": true
+                }
+              ]
+            }
+          },
+          "port": {
+            "id": {
+              "type": "mac",
+              "value": "88:e9:a4:03:15:70"
+            },
+            "descr": "enp25s0f0np0",
+            "ttl": "120",
+            "aggregation": "6",
+            "auto-negotiation": {
+              "supported": true,
+              "enabled": true,
+              "advertised": {
+                "type": "1000Base-X",
+                "hd": false,
+                "fd": true
+              },
+              "current": "25GbaseCR - 25GBASE-R PCS/PMA over shielded balanced copper cable"
+            }
+          }
+        }
+      },
+      {
+        "Ethernet109": {
+          "via": "LLDP",
+          "rid": "86",
+          "age": "0 day, 16:02:06",
+          "chassis": {
+            "rr101-r05": {
+              "id": {
+                "type": "mac",
+                "value": "88:e9:a4:03:0c:80"
+              },
+              "descr": "Ubuntu 24.04.5 LTS Linux 6.8.0-147-generic #147-Ubuntu SMP PREEMPT_DYNAMIC Thu Sep 24 11:33:16 UTC 2026 x86_64",
+              "mgmt-ip": [
+                "10.201.5.101",
+                "fd00:32::f093"
+              ],
+              "mgmt-iface": [
+                "6",
+                "4"
+              ],
+              "capability": [
+                {
+                  "type": "Bridge",
+                  "enabled": false
+                },
+                {
+                  "type": "Router",
+                  "enabled": false
+                },
+                {
+                  "type": "Wlan",
+                  "enabled": false
+                },
+                {
+                  "type": "Station",
+                  "enabled": true
+                }
+              ]
+            }
+          },
+          "port": {
+            "id": {
+              "type": "mac",
+              "value": "88:e9:a4:03:0c:81"
+            },
+            "descr": "enp25s0f1np1",
+            "ttl": "120",
+            "aggregation": "6",
+            "auto-negotiation": {
+              "supported": true,
+              "enabled": true,
+              "advertised": {
+                "type": "1000Base-X",
+                "hd": false,
+                "fd": true
+              },
+              "current": "25GbaseCR - 25GBASE-R PCS/PMA over shielded balanced copper cable"
+            }
+          }
+        }
+      }
+    ]
+  }
+}
+

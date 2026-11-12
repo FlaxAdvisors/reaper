@@ -1,0 +1,49 @@
+# KEPT, not rendered: Harvester section of bang-gouda's hand-edited, unserved /srv/pxe/boot.ipxe (2026-10-27).
+# Fold into templates/v/boot.ipxe.j2 in the Harvester 1.9/1.10 rework (operator 2026-11-10).
+:menu-harvest
+menu Install Harvester
+item --gap --             ----- Create
+item --key c H_C1.5.1       C) Harvester 1.5.1 Create mode
+item
+item --gap --             ----- Join
+item --key j H_J1.5.1       J) Harvester 1.5.1 Join mode
+item
+item --gap --             ----- Live
+item --key l H_L1.5.1       L) Harvester 1.5.1 Live boot
+item --key 0x08 back Back to top menu...
+iseq ${menu-default} menu-harvest && isset ${submenu-default} && goto menu-harvest-timed ||
+choose selected && goto ${selected} || goto start
+:menu-harvest-timed
+choose --timeout ${submenu-timeout} --default ${submenu-default} selected && goto ${selected} || goto start
+
+:H_C1.5.1
+set install ${install-url}suse/harvester/1.6.0
+#set args harvester.install.automatic=true harvester.install.config_url=${install}/${hostname}-config-create.yml
+set args harvester.install.automatic=true harvester.install.config_url=${install}/uhostn-config-create-${node-setting}.yml harvester.install.skipchecks=true
+goto common-harvest
+
+:H_J1.5.1
+set install ${install-url}suse/harvester/1.6.0
+#set args harvester.install.automatic=true harvester.install.config_url=${install}/${hostname}-config-join.yml
+set args harvester.install.automatic=true harvester.install.config_url=${install}/uhostn-config-join-${node-setting}.yml harvester.install.skipchecks=true
+goto common-harvest
+
+:H_L1.5.1
+set install ${install-url}suse/harvester/1.6.0
+set args harvester.install.skipchecks=true
+goto common-harvest
+
+:common-harvest
+set console console=${com-setting} earlyprintk=serial,${com-setting}
+echo Fetching kernel...
+kernel ${install}/iso/boot/kernel initrd=initrd ip=dhcp net.ifnames=1 rd.cos.disable rd.noverifyssl ${console} root=live:${install}/iso/rootfs.squashfs ${args}
+sleep 3
+echo Fetching initrd...
+initrd ${install}/iso/boot/initrd
+sleep 3
+echo Booting with ${install}/iso/boot/kernel initrd=initrd ip=dhcp net.ifnames=1 rd.cos.disable rd.noverifyssl ${console} root=live:${install}/iso/rootfs.squashfs ${args}
+imgstat
+sleep 3
+boot || goto failed
+
+###################### REDHAT MENU #############################

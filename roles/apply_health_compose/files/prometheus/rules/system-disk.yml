@@ -1,0 +1,48 @@
+groups:
+  - name: system-disk
+    rules:
+      - alert: DiskCapacityLow
+        # per device: btrfs subvolumes of one filesystem are one alert, not one per mount
+        expr: |
+          min by (bang, device) (node_filesystem_avail_bytes{device=~"/dev/sd[ab].*"}) < 10e9
+          AND ON (bang, device) max by (bang, device) (node_filesystem_size_bytes{device=~"/dev/sd[ab].*"}) > 1e9
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Disk <10GB free on {{ $labels.bang }}:{{ $labels.device }}"
+
+      - alert: DiskCapacityCritical
+        # per device: btrfs subvolumes of one filesystem are one alert, not one per mount
+        expr: |
+          min by (bang, device) (node_filesystem_avail_bytes{device=~"/dev/sd[ab].*"}) < 2e9
+          AND ON (bang, device) max by (bang, device) (node_filesystem_size_bytes{device=~"/dev/sd[ab].*"}) > 1e9
+        for: 10m
+        labels: { severity: critical }
+        annotations:
+          summary: "Disk <2GB free on {{ $labels.bang }}:{{ $labels.device }}"
+
+      - alert: InodeUsageHigh
+        expr: |
+          (1 - node_filesystem_files_free{device=~"/dev/sd[ab].*"} / node_filesystem_files{device=~"/dev/sd[ab].*"}) * 100 > 85
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Inodes >85% on {{ $labels.bang }}:{{ $labels.mountpoint }}"
+
+      - alert: SmartReallocatedSectorsRising
+        expr: increase(smartctl_device_attribute{attribute_name="Reallocated_Sector_Ct",attribute_value_type="raw"}[24h]) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "Reallocated sectors rising on {{ $labels.bang }}:{{ $labels.device }}"
+
+      # The exporter answers up=1 even when every SMART read fails (it ran as nobody until
+      # 2026-11-09 and exported nothing for months): no smart_status for any disk it sees,
+      # or no disk at all, means disk health is unmonitored.
+      - alert: SmartDataMissing
+        expr: |
+          smartctl_devices == 0
+          or (smartctl_devices unless on (bang) count by (bang) (smartctl_device_smart_status))
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "No SMART data from {{ $labels.bang }}: disk health is unmonitored"

@@ -1,0 +1,156 @@
+# Managed by apply_bang_services. On-site (lab mgmt VLAN) name-based HTTP
+# entry points for the operator UIs, next to the PXE default_server on :80.
+#
+#   http://triage.{{ inventory_hostname }}.{{ bang_lab_domain }}  -> triage API + UI (:5555) and its SOL/power relay (:5559)
+#   http://post.{{ inventory_hostname }}.{{ bang_lab_domain }}    -> post rack viewer (:8446) and its SOL relay (:8448);
+#                                                                 rackpost order server (:8452) at /<prefix>/ and /rackpost/
+#   http://view.{{ inventory_hostname }}.{{ bang_lab_domain }}    -> post fleet viewer (:8799, loopback-only)
+#   http://console.{{ inventory_hostname }}.{{ bang_lab_domain }} -> flax-control console (:8000)
+#   http://health.{{ inventory_hostname }}.{{ bang_lab_domain }}  -> 301 to https:// (the flax-stack :443
+#                                                                 vhost fronts the health board's Grafana)
+#   ...and the same four under the VRRP name: http://<svc>.bang.{{ bang_lab_domain }}
+#   (follows the master; triage only runs on one bang, post/view are master-only)
+#
+# Plain HTTP on purpose: this is the lab-internal counterpart of the TLS
+# vhosts apply_flax_stack renders for *.{{ inventory_hostname }}.<bang_domain>
+# (same upstreams, same location blocks). The names are dnsmasq CNAMEs
+# (see dnsmasq.conf.j2): the per-bang ones onto the bang's fixed mgmt A
+# record, the `bang` ones onto the VRRP name, which is the preferred form.
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name triage.{{ inventory_hostname }}.{{ bang_lab_domain }}
+                triage.bang.{{ bang_lab_domain }};
+
+    location / {
+        proxy_pass         http://127.0.0.1:5555;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto http;
+        proxy_read_timeout 30s;
+    }
+    location /socket.io/ {
+        proxy_pass         http://127.0.0.1:5559;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade $http_upgrade;
+        proxy_set_header   Connection "upgrade";
+        proxy_set_header   Host $host;
+        proxy_read_timeout 3600s;
+    }
+    location /power/ {
+        proxy_pass         http://127.0.0.1:5559;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto http;
+        proxy_read_timeout 30s;
+    }
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name post.{{ inventory_hostname }}.{{ bang_lab_domain }}
+                post.bang.{{ bang_lab_domain }};
+
+    location / {
+        proxy_pass         http://127.0.0.1:8446;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto http;
+        proxy_read_timeout 30s;
+    }
+    # flax-post-sol — Socket.IO SOL console relay (websocket upgrade).
+    location /socket.io/ {
+        proxy_pass         http://127.0.0.1:8448;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade $http_upgrade;
+        proxy_set_header   Connection "upgrade";
+        proxy_set_header   Host $host;
+        proxy_read_timeout 3600s;
+    }
+
+    # rackpost order server: per-rack pages /<prefix>/ (e.g. /rr101/) and /rackpost/.
+    location ~ "^/[a-z]{2}[0-9]{3}[a-z]?/" {
+        proxy_pass         http://127.0.0.1:8452;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto http;
+        proxy_read_timeout 30s;
+    }
+{% if rackpost_lab_prefixes | default([]) %}
+    # rackpost lab racks, by name (/howlin/): rackpost_lab_prefixes in the site group_vars
+    location ~ "^/({{ rackpost_lab_prefixes | join('|') }})/" {
+        proxy_pass         http://127.0.0.1:8452;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto http;
+        proxy_read_timeout 30s;
+    }
+{% endif %}
+    location /rackpost/ {
+        proxy_pass         http://127.0.0.1:8452;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto http;
+        proxy_read_timeout 30s;
+    }
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name view.{{ inventory_hostname }}.{{ bang_lab_domain }}
+                view.bang.{{ bang_lab_domain }};
+
+    location / {
+        proxy_pass         http://127.0.0.1:8799;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto http;
+        proxy_read_timeout 30s;
+    }
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name console.{{ inventory_hostname }}.{{ bang_lab_domain }}
+                console.bang.{{ bang_lab_domain }};
+
+    location / {
+        proxy_pass         http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto http;
+        proxy_read_timeout 30s;
+    }
+}
+
+# The site health board is HTTPS-only (operator 2026-11-09): the fleet-CA leaf
+# carries *.<host>.<lab_domain> and *.bang.<lab_domain>, and apply_flax_stack's
+# health vhost answers these names on :443.
+server {
+    listen 80;
+    listen [::]:80;
+    server_name health.{{ inventory_hostname }}.{{ bang_lab_domain }}
+                health.bang.{{ bang_lab_domain }};
+
+    return 301 https://$host$request_uri;
+}

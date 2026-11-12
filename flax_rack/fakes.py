@@ -1,0 +1,1358 @@
+"""Fake order context for the headless UI check (`RACKPOST_FAKE=1 python -m flax_rack serve`).
+
+Never used in production. The real run_discover (discover_ladder) runs against
+FakeRungs' Discover stand-ins: a canned mgmt-switch FDB synthesised from the geometry
+(locally-administered 02:... MACs, BMC = host+2; a powered-off node shows only its
+BMC), an in-memory Kea whose leases follow its reservations, BMCs that power their
+node on, and a virtual clock on which a power-on is followed by tftp/iPXE/ISO log
+marks and a fresh live boot. LIVE_POS is already in the live image (no power action;
+its boot proven at ssh). C37's host MAC is held by a "manual" Kea row, so C37 fails
+bmc-reserved and the rest of its ladder skips. The switches get site_ports on a fake
+turtle (wedges: SONiC + BMC MAC, the Dell: SONiC) with dynamic leases; each wedge BMC
+answers weutil + /etc/issue + cpld_rev (artifacts too), each SONiC side a syseeprom
+with part/product/base MAC, and each JBOD IOM fruid-util + fw-util (one part NA).
+One stray MAC sits on the first mgmt port no slot or uplink claims, so the
+unexpected-MAC alert renders too.
+
+Qualify runs against FakeRungs (below): every node live-boots and passes each phase's
+battery, population-check (profiles written to a temp dir matching the canned macinv)
+and the ship checks (canned FRU 0 serial = SMBIOS serial, a cleared TPM 2.0); its SOL
+capture is the real flax_rungs.sol over a fake relay dir (the mark writes a few canned
+console lines; install and first boot append more, line by line in the served fake). LLDP shows
+every pcieN port where the geometry cables it, and C37's wedge-B iperf is slow. (C37's
+failed reserve also stops Qualify booting it -- pxe-live "discover first" -- so in the UI
+the Qualify fault shown is that gate.) Each agent phase takes a few seconds and R05 is
+slower than the rest, so the header's phase/barrier indicator can be watched walking
+boot -> inventory -> storage -> burn -> network. The fixture's wedges get fake mgmt_ips
+so their LLDP can be "read".
+
+Firmware (detect only) runs the real fwcheck readers against FakeRungs' manifests, a
+fake Redfish BMC and canned dmidecode/mstflint output: R05's BMC and R37's BIOS are
+off target, L37's Mellanox card has its UEFI ROM off; the rest are at target. In the
+served fake (fake_context_factory) R05's host stops answering ssh for the firmware
+reads (FW_HOST_DOWN), so its bios/mlx pairs render grey "not measured". The backup
+BMC chip reads the target everywhere (so R05's differs from its active 1.1.3); in the
+served fake L37's backup read fails (FW_BACKUP_ERR: grey, no version). A host up on
+its installed OS answers ethtool -i for the installed-OS NIC read. One
+FakeRungs lives per rack for the server's life, so Discover's boots carry over.
+
+Deploy runs against FakeRungs' install/firstboot/flax_user/bond_config/ha_test stand-ins
+(the real solscan reads the canned console the install appends to the SOL file). In the
+served fake R05's inventory lacks the Mellanox line (POP_FAIL), so its population-check
+is red and Deploy needs a recorded waiver for it; R37's install console carries a
+"Buffer I/O error" line (SOL_FINDINGS), so its install-console fails (it never gates).
+Knobs for tests: install_fail, firstboot_fail, sol_findings, bond_fail, hatest_fail.
+Deploy's iperf runs FakeRungs' mesh (bond0 at 25G) after a host_run that answers the
+installed OS's `ip -o -4 addr`; its stress runs the REAL flax_rungs.stress.run against
+StressHosts (a fake ssh + ipmitool runner: stress-ng's output, its exit code, the kernel
+log, SEL/SDR before and after). Knobs on stress_hosts: sel_bad (a correctable-ECC SEL
+entry during the run), transient (a fan Asserted/Deasserted pair 6 s apart), mce (a
+`mce:` dmesg line), lost (no ssh after the launch), rc ({pos: rc}).
+
+Done runs against FakeRungs' end_summary (canned SDR + SEL judged by the real
+BENIGN_SEL rule; the in-band captures only when Done passes a host IP), pxe_remove (a
+real pxeboot.remove under pxe_dir when set, else recorded only) and clear_override. In
+the served fake R37's SEL holds a correctable-ECC entry (SEL_NONBENIGN): its end-summary
+is red. Knobs: sel_nonbenign, sel_unread (SEL not read: unmeasured), override_fail,
+pxe_first (the installed BootOrder starts with a PXE entry), pxe_dir.
+
+The drawer's PWR / IDNT run against FakeRungs' node_power (on / cycle / reset boot the
+node, off drops it) and identify (answers the identify state a real BMC would report);
+in the served fake the BMC poller reads FakeRungs' ping + power_status too, so the
+tiles' power chips follow them.
+"""
+import json
+import subprocess
+from pathlib import Path
+
+from .creds import Creds
+from .kea_client import KeaConflict
+from .stages import OrderContext
+
+FAIL_POS = "C37"
+FW_HOST_DOWN = {"R05"}               # served fake only: ssh gone for the firmware reads
+FW_BACKUP_ERR = {"L37": "reader_canary_failed"}   # served fake: backup BMC chip not read
+LIVE_POS = "L05"                     # already in the live image when Discover starts
+POP_FAIL = {"R05"}                   # served fake: POP red (Deploy needs a recorded waiver)
+SOL_FINDINGS = {"R37"}               # served fake: an I/O error line in its install console
+SEL_NONBENIGN = {"R37"}              # served fake: a correctable-ECC entry in its Done SEL
+SITE_PORTS = {"A": "Gi1/0/18", "B": "Gi1/0/17", "C": "Gi1/0/19"}
+
+
+def _mac(ou: int, col, n: int) -> str:
+    return f"02:fa:{ou:02x}:{col or 0:02x}:00:{n:02x}"
+
+
+def canned_fdb(g, hosts_up=None) -> tuple[str, set[str]]:
+    """(SONiC `show mac` text, MACs the fake Kea refuses). hosts_up: the positions whose
+    host MAC is on the wire (None = every one); the rest show only their BMC."""
+    mgmt = {s.id for s in g.switches if s.role == "mgmt"}
+    rows, refuse = [], set()
+    for d in g.devices:
+        for name, l in sorted(d.links.items()):
+            if l.switch not in mgmt:
+                continue
+            if name == "mezz0":
+                host, bmc = _mac(d.ou, d.col, 0x10), _mac(d.ou, d.col, 0x12)
+                rows += [(host, l.port)] if hosts_up is None or d.pos in hosts_up else []
+                rows += [(bmc, l.port)]
+                if d.pos == FAIL_POS:
+                    refuse.add(host.replace(":", ""))
+            elif name.startswith("iom"):
+                rows.append((_mac(d.ou, d.col, 0x20 + int(name[3:])), l.port))
+    claimed = {l.port for d in g.devices for l in d.links.values() if l.switch in mgmt}
+    claimed |= {p for s in g.switches if s.id in mgmt for p in s.uplink_ports}
+    stray = next((p for p in range(1, 49) if p not in claimed), None)
+    if stray is not None:
+        rows.append(("02:fa:ff:ff:00:01", stray))
+    lines = ["  No.    Vlan  MacAddress         Port        Type",
+             "-----  ------  -----------------  ----------  -------"]
+    for i, (mac, port) in enumerate(rows, 1):
+        lines.append(f"{i:5d}    1000  {mac.upper()}  Ethernet{port - 1:<4d} Dynamic")
+    lines.append(f"Total number of entries {len(rows)}")
+    return "\n".join(lines) + "\n", refuse
+
+
+class FakeKea:
+    """Reservations in memory; a reserved MAC's lease is its reservation (the device
+    renewed), `dyn` holds the dynamic leases (the switches on the site pool)."""
+
+    def __init__(self, refuse=(), dyn=None):
+        self.rows: dict[str, dict] = {}
+        self.refuse = set(refuse)
+        self.dyn = dict(dyn or {})
+        self.archives: dict[tuple, dict] = {}      # (order_id, rack) -> the last payload
+
+    def archive(self, payload):
+        self.archives[(payload["order_id"], payload["rack"])] = payload
+        return {k: len(payload[k]) for k in ("devices", "components", "macs", "rungs")}
+
+    def leases(self, macs):
+        out = {}
+        for m in macs:
+            if m in self.rows:
+                out[m] = {"ip": self.rows[m]["ipv4"], "expire": None, "state": 0,
+                          "subnet_id": self.rows[m]["vid"], "hostname": self.rows[m]["hostname"]}
+            elif m in self.dyn:
+                out[m] = {"ip": self.dyn[m], "expire": None, "state": 0, "subnet_id": 26,
+                          "hostname": ""}
+        return out
+
+    def upsert(self, source, mac, ipv4, hostname, vid):
+        if mac in self.refuse:
+            raise KeaConflict("mac held by a non-order (manual) row")
+        self.rows[mac] = {"source": source, "ipv4": ipv4, "hostname": hostname, "vid": vid}
+
+    def delete_source(self, source):
+        gone = [m for m, r in self.rows.items() if r["source"] == source]
+        for m in gone:
+            del self.rows[m]
+        return len(gone)
+
+    def list(self, source):
+        return [dict(r, mac=m) for m, r in self.rows.items() if r["source"] == source]
+
+
+_KEAS: dict[str, FakeKea] = {}
+_RUNGS: dict[str, "FakeRungs"] = {}
+
+
+_PROFILE_DIR = None
+
+
+_SOL_DIR = None
+
+
+def _fake_sol_dir() -> str:
+    global _SOL_DIR
+    import tempfile
+    _SOL_DIR = tempfile.mkdtemp(prefix="rackpost-fake-sol-")
+    return _SOL_DIR
+
+
+def fake_context_factory(rack_dir, g, db) -> OrderContext:
+    global _PROFILE_DIR
+    from flax_post import population
+    import tempfile
+    g = with_site_ports(g)
+    _text, refuse = canned_fdb(g)
+    # one FakeRungs per rack for the server's life: a node Discover booted is still in
+    # the live image when Firmware (or Qualify) runs next
+    rungs = _RUNGS.get(g.kea_source)
+    if rungs is None:
+        # the wedges' fake mgmt IPs too: read_lldp finds its switch by them
+        rungs = _RUNGS[g.kea_source] = FakeRungs(with_wedge_ips(g), delay_s=0.5, poll_delay_s=2.5,
+                                                 slow={"R05": 2.5}, live={LIVE_POS},
+                                                 pop_fail=POP_FAIL)
+        rungs.fw_host_down = set(FW_HOST_DOWN)
+        rungs.fw_backup_err = dict(FW_BACKUP_ERR)
+        rungs.sol_findings = set(SOL_FINDINGS)
+        rungs.sel_nonbenign = set(SEL_NONBENIGN)
+        rungs.pull_file = Path(rack_dir) / ".fake-pull"
+        # every rack's fake relay writes where the server's live console viewer reads
+        from flax_rungs import sol
+        rungs.sol_dir = sol.CAPTURE_DIR = _SOL_DIR or _fake_sol_dir()
+        rungs.sol_drip_s = 1.0
+        rungs.stress_pause_s = 4.0
+    kea = _KEAS.setdefault(g.kea_source, FakeKea(refuse))
+    kea.dyn.update(rungs.switch_leases())
+    if _PROFILE_DIR is None:
+        _PROFILE_DIR = tempfile.mkdtemp(prefix="rackpost-fake-profiles-")
+        population.PROFILE_DIR = _PROFILE_DIR
+    write_profiles(_PROFILE_DIR, g)
+    g = with_wedge_ips(g)
+
+    def runner(argv, **kw):               # every rung is a FakeRungs stand-in
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    return OrderContext(rack_dir, g, db, kea,
+                        Creds({"sonicuser": "u", "sonicpass": "p", "cisco_user": "u",
+                               "cisco_pass": "p"}, [("u", "p")], ("flax", "p"), [("u", "p")],
+                              ("u", "p")), runner, rungs)
+
+
+# ---------------------------------------------------------------- canned Qualify
+IPERF_FAIL = {"C37": "B"}            # C37's wedge-B iperf is slow: the one Qualify fault
+_IFN = {"pcie0": "ens3f0np0", "pcie1": "ens3f1np1"}
+_MACINV = ("2 Processor Version: Intel(R) Xeon(R) Gold 6138 CPU @ 2.00GHz\n"
+           "12 Memory Size: 32 GB, Type: DDR4\n"
+           "2 Ethernet controller: Mellanox Technologies MT27710 Family [ConnectX-4 Lx]\n")
+
+
+def _macinv_v(sn: str, n: int, nic: bool = True) -> str:
+    """`macinv -v` detail text (the components Done lists): 2 CPUs, 2 DIMMs, the
+    Mellanox (dropped with POP_FAIL), 2 NVMe disks, the BMC VGA."""
+    return (f"Board Mfg: Wiwynn, Product: Tioga Pass Single Side, Serial: B{sn}, "
+            f"Product Serial: {sn}, Chassis Serial: C{sn}\n"
+            + "".join("Processor Version: Intel(R) Xeon(R) Gold 6138 CPU @ 2.00GHz, "
+                      "Serial: To be filled by O.E.M.\n" for _ in range(2))
+            + "".join(f"Memory: 32 GB, DIMM {s}, _Node{k}_Channel0_Dimm0, 2666 MT/s, Samsung, "
+                      f"{0xF00D0000 + n * 16 + k:08X}, M393A4K40CB2-CTD\n"
+                      for k, s in enumerate(("A0", "D0")))
+            + (f'BusID: 5e:00.0, Eth MAC: 02:00:00:00:{n:02x}:01, Model: "Mellanox MCX4411A-ACQN, '
+               'ConnectX-4 Lx EN OCP, 1x25Gb", SubVendor: pci 0x15b3 "Mellanox Technologies", '
+               "Interface: pxedev\n"
+               f"BusID: 5e:00.0, [SN] Serial number: MT{n:04d}X0{n:04d}\n" if nic else "")
+            + "".join(f'Handler: {190 + k}, BusID: nvme{k}, Model: "Sandisk WD Black SN850", '
+                      'SubVendor: pci 0x15b7 "Sandisk Corp", SubDevice: pci 0x5011 , '
+                      f'Serial ID: "2228158{n:03d}{k:02d}", Capacity: 1863 GB\n' for k in range(2))
+            + 'BusID: 03:00.0, Model: "ASPEED AST1000/2000", Device: pci 0x2000 "AST1000/2000", '
+              "SubDevice: pci 0x2000 , Revision: 0x41\n")
+
+
+# plain `lsblk` as the inventory captures it: two unmounted NVMe disks for fio
+_LSBLK = ("NAME        MAJ:MIN RM   SIZE RO TYPE MOUNTPOINTS\n"
+          "loop0         7:0    0 850.2M  1 loop /run/overlay/squashfs_container\n"
+          "nvme0n1     259:0    0   1.7T  0 disk \n"
+          "nvme1n1     259:1    0   1.7T  0 disk \n"
+          "└─nvme1n1p1 259:2    0   1.7T  0 part \n")
+# `blkid` as the inventory captures it: the live image's loops; nvme0n1 (the install
+# disk) blank
+_BLKID = ('/dev/loop0: TYPE="squashfs"\n'
+          '/dev/nvme1n1p1: UUID="0f1e2d3c" TYPE="ext4" PARTUUID="a1b2c3d4-01"\n')
+_LSBLK_USED = _LSBLK.replace("nvme0n1     259:0    0   1.7T  0 disk \n",
+                             "nvme0n1     259:0    0   1.7T  0 disk \n"
+                             "└─nvme0n1p1 259:3    0   1.7T  0 part \n")
+_BLKID_USED = _BLKID + '/dev/nvme0n1p1: UUID="4e5f" TYPE="ntfs" PARTUUID="d00d-01"\n'
+# `alldisks` (the inventory's collect script) and the agent's fio artifact in its real
+# format (qual_battery._fio: fio's default output per device + job); values made up
+_ALLDISKS = ("/dev/nvme0n1      [nvme0] 8224       nvme         non-rotational   1920.4    none "
+             "GDC5602Q  SAMSUNG_MZQL21T9HCJR-00A07 S64GNE0R700123\n"
+             "/dev/nvme1n1      [nvme1] 8224       nvme         non-rotational   1920.4    none "
+             "GDC5602Q  SAMSUNG_MZQL21T9HCJR-00A07 S64GNE0R700124\n")
+
+
+def _fio_job(dev, job, rw, bs, qd, iops, bw_mib, bw_mb, lat, lat_unit, p99, p_unit):
+    name = {"bw": "raw-read", "lat": "readlatency", "iops": "iops"}[job]
+    return (f"== {dev} {job} ==\n{name}: (g=0): rw={rw}, bs=(R) {bs}-{bs}, (W) {bs}-{bs}, "
+            f"(T) {bs}-{bs}, ioengine=libaio, iodepth={qd}\n...\nfio-3.37\nStarting 4 processes\n\n"
+            f"{name}: (groupid=0, jobs=4): err= 0: pid=4612: Sat Oct 31 00:01:34 2026\n"
+            f"  read: IOPS={iops}, BW={bw_mib}MiB/s ({bw_mb}MB/s)(73.4GiB/30007msec)\n"
+            f"    slat (usec): min=6, max=588, avg=11.93, stdev= 5.60\n"
+            f"    clat ({lat_unit}): min=165, max=14331, avg={lat}, stdev=238.66\n"
+            f"     lat ({lat_unit}): min=173, max=14339, avg={lat}, stdev=238.45\n"
+            f"    clat percentiles ({p_unit}):\n"
+            f"     |  1.00th=[ 5735],  5.00th=[ 6325], 10.00th=[ 6325], 20.00th=[ 6390],\n"
+            f"     | 99.00th=[{p99:5d}], 99.50th=[ 7308], 99.90th=[ 8848], 99.95th=[10159],\n"
+            f"     | 99.99th=[10552]\n"
+            f"   bw (  MiB/s): min= 2429, max= 2649, per=100.00%, avg={bw_mib}, stdev= 5.74, samples=240\n"
+            f"  lat (msec)   : 2=0.01%, 4=0.13%, 10=99.79%, 20=0.06%\n\n"
+            f"Run status group 0 (all jobs):\n   READ: bw={bw_mib}MiB/s ({bw_mb}MB/s), io=73.4GiB (78.9GB)\n\n"
+            f"Disk stats (read/write):\n  {dev}: ios=1198723/0, util=99.72%\n")
+
+
+_FIO = "\n".join(_fio_job(dev, *j) for dev in ("nvme0n1", "nvme1n1") for j in (
+    ("bw", "read", "64.0KiB", 64, "50.1k", 3131, 3283, "5100.20", "usec", 5145, "usec"),
+    ("lat", "randread", "4096B", 1, "131k", 512, 537, "29.84", "usec", 46400, "nsec"),
+    ("iops", "read", "4096B", 256, "812k", 3172, 3326, "1258.31", "usec", 1450, "usec")))
+_DIMMSUM = "  32 GB  DIMM A0  _Node0_Channel0_Dimm0  2666   Samsung  0000F00D  M393A4K40CB2-CTD\n"
+_TPMSTATE = "device=present\nowned=0 phEnable=1 shEnable=1 ehEnable=1 phEnableNV=1 disableClear=0\n"
+FAKE_PROFILE_RULES = ("2 Processor Version: .*Gold 6138", "12 Memory Size: 32 GB",
+                      "Ethernet controller: Mellanox.*ConnectX-4 Lx")
+
+
+def write_profiles(profile_dir, g) -> None:
+    """Every POP profile this rack names, matching the canned macinv (fake mode/tests)."""
+    from .qualify import pop_default
+    import os
+    os.makedirs(profile_dir, exist_ok=True)
+    for d in g.devices:
+        with open(os.path.join(profile_dir, pop_default(g, d)), "w") as f:
+            f.write("\n".join(FAKE_PROFILE_RULES) + "\n")
+
+
+def with_site_ports(g, ports=None):
+    """Give each switch its turtle port (fake mode/tests; Task 7 sets the real ones)."""
+    import dataclasses
+    ports = SITE_PORTS if ports is None else ports
+    sw = [dataclasses.replace(s, site_port={"switch": "turtle-gouda", "port": ports[s.id]})
+          if s.site_port is None and s.id in ports else s for s in g.switches]
+    return dataclasses.replace(g, switches=sw)
+
+
+def with_wedge_ips(g):
+    """The fixture's wedges carry no mgmt_ip yet; give fake ones so LLDP can be 'read'."""
+    import dataclasses
+    sw = [s if s.mgmt_ip or s.role != "tor" else dataclasses.replace(s, mgmt_ip=f"fake-wedge-{s.id}")
+          for s in g.switches]
+    return dataclasses.replace(g, switches=sw)
+
+
+class FakeRungs:
+    """Stand-ins for flax_rack.qualify.real_rungs(): every node boots, every battery
+    stage passes, LLDP shows each pcieN port where the geometry cables it. poll returns
+    the stages the last launch on that host asked for (FLAX_QUAL_STAGES); a host in
+    poll_timeout times out once cpu-mem-stress is among them (the burn phase)."""
+
+    def __init__(self, g, *, fail_pxe=(), iperf_fail=None, delay_s=0.0, wrong_host=(),
+                 poll_timeout=(), stop_fail=(), poll_delay_s=0.0, slow=None, sol_fail=(),
+                 live=(), fdb_runner=False, pop_fail=()):
+        from .addressing import plan_addresses
+        self.g, self.fail_pxe, self.delay_s = g, set(fail_pxe), delay_s
+        self.wrong_host, self.poll_timeout = set(wrong_host), set(poll_timeout)
+        self.stop_fail, self.sol_fail = set(stop_fail), set(sol_fail)
+        self.poll_delay_s, self.slow = poll_delay_s, dict(slow or {})
+        self.stages_of: dict[str, list[str]] = {}
+        self.iperf_fail = IPERF_FAIL if iperf_fail is None else iperf_fail
+        self.pos_of = {a.ip: a.pos for a in plan_addresses(g)}
+        self.calls = []
+        # a driver runner(cmd) -> text: the FDB is read through the real switches.read_fdb
+        # (SonicDriver) on that output (e.g. the RRORD-101 Dell fixture)
+        self.fdb_runner = fdb_runner
+        self.host_macs: dict[str, str] = {}    # pos -> host MAC12 (BOOTIF), else canned
+        # Firmware: R05's BMC and R37's BIOS are off target, L37's NIC has its UEFI ROM off
+        self.fw_bmc_ver = {"R05": "flax-onetree-1.1.3"}
+        self.fw_bios_ver = {"R37": "TPC_P26C"}
+        self.fw_nic_uefi_off = {"L37"}
+        self.fw_host_down: set[str] = set()   # hosts whose firmware-read ssh times out
+        self.fw_backup_ver: dict[str, str] = {}   # pos -> backup chip version (else target)
+        self.fw_backup_err: dict[str, str] = {}   # pos -> bmc-backup-flash's error
+        self.pop_fail = set(pop_fail)          # inventory lacks the Mellanox line: POP red
+        self.disk_used: set[str] = set()       # the live image sees partitions on nvme0n1
+        self.disk_unread: set[str] = set()     # the inventory has no blkid capture
+        # Deploy: installs that never power off, first boots refused, SOL error lines,
+        # bonds that do not come up, nodes whose ha-test fails
+        self.install_fail: set[str] = set()
+        self.firstboot_fail: set[str] = set()
+        self.sol_findings: set[str] = set()
+        self.bond_fail: set[str] = set()
+        self.hatest_fail: set[str] = set()
+        self.installed: set[str] = set()       # up on its installed OS (after a first boot)
+        self.sudo_prompt: set[str] = set()     # host_run with sudo asks for a password
+        self.fabric_down: set[str] = set()     # fabric ports admin-down (no LLDP) until fabric_up
+        # Done: a non-benign SEL entry, a BMC whose SEL cannot be read, a Redfish that
+        # refuses the override clear; pxe_dir = where pxe_remove really unlinks (None:
+        # recorded only)
+        self.sel_nonbenign: set[str] = set()
+        self.sel_unread: set[str] = set()
+        self.override_fail: set[str] = set()
+        self.pxe_first: set[str] = set()        # efibootmgr BootOrder starts with PXE
+        self.pxe_dir = None
+        self.ident: dict[str, str] = {}         # pos -> the identify state chassis status reports
+        self.stress_hosts = StressHosts(self.pos_of)   # Deploy stress: its knobs
+        self.stress_pause_s = 0.0              # real pause per stress wait + Deploy mesh (served fake)
+        self.sol_dir = None                    # the fake relay's capture dir (relay_dir())
+        self.sol_live: set[str] = set()        # BMC ips whose capture is running
+        self.sol_drip_s = 0.0                  # pause after each relay console line
+        import threading
+        self._sol_mu = threading.Lock()
+        self._discover_init(live)
+
+    def _pause(self):
+        if self.delay_s:
+            import time
+            time.sleep(self.delay_s)
+
+    def _macs(self, pos):
+        d = self.g.device(pos)
+        out = {"eno1": _mac(d.ou, d.col, 0x10)}
+        for k, (link, ifn) in enumerate(sorted(_IFN.items()), 1):
+            if link in d.links:
+                out[ifn] = f"02:fb:{d.ou:02x}:{d.col or 0:02x}:00:{k:02x}"
+        return out
+
+    # ------------------------------------------------------------ Discover stand-ins
+    def _discover_init(self, live):
+        import threading
+        import time
+        from .addressing import plan_addresses
+        self.mu = threading.Lock()
+        self.t = time.time()                   # the virtual clock (sleep advances it)
+        self.ip_role = {a.ip: (a.pos, a.role) for a in plan_addresses(self.g)}
+        self.power = {d.pos: "off" for d in self.g.devices if d.endpoints.get("bmc")}
+        self.boots: dict[str, dict] = {}       # pos -> {boot_id, kernel, tftp, ipxe, iso}
+        self.down: set[str] = set()            # IPs that never answer ping
+        self.no_marks: set[str] = set()        # positions whose boots leave no log marks
+        self.nboot = 0
+        self.sw_macs: dict[str, dict] = {}     # switch id -> {role: mac12}
+        for i, s in enumerate(self.g.switches):
+            ep = s.endpoints
+            self.sw_macs[s.id] = {r: f"02fc{s.ou:02x}0000{k:02x}"
+                                  for k, r in enumerate(("sonic", "bmc"), 1) if ep.get(r)}
+        for pos in live:
+            self.power[pos] = "on"
+            self._new_boot(pos, self.t - 3600)
+
+    def switch_leases(self) -> dict[str, str]:
+        out, n = {}, 50
+        for s in self.g.switches:
+            for _r, m in sorted(self.sw_macs.get(s.id, {}).items()):
+                out[m] = f"172.26.0.{n}"
+                n += 1
+        return out
+
+    def _new_boot(self, pos, at):
+        with self.mu:
+            self.nboot += 1
+            n = self.nboot
+        self.boots[pos] = {"boot_id": f"00000000-0000-4000-8000-{n:012x}", "kernel": at + 150,
+                           "tftp": at + 20, "ipxe": at + 90, "iso": at + 160}
+        self.installed.discard(pos)            # a PXE boot: the live image again
+
+    def forget_boots(self):
+        """Every live node rebooted since Discover (new boot_ids, nothing else changes)."""
+        for pos, b in list(self.boots.items()):
+            self._new_boot(pos, b["kernel"] - 150)
+
+    def wall(self):
+        return self.t
+
+    clock = wall
+
+    def sleep(self, s):
+        with self.mu:
+            self.t += s
+
+    def site_switches(self):
+        return {"turtle-gouda": {"name": "turtle-gouda", "driver": "ios", "host": "fake-turtle"}}
+
+    def read_fdb(self, host, nos, cred, *, runner=None):
+        from .switches import FdbEntry, read_fdb
+        self.calls.append(("read_fdb", host))
+        if self.fdb_runner:                    # e.g. the RRORD-101 Dell fixture
+            from .discover import match
+            r = read_fdb(host, nos, cred, runner=self.fdb_runner)
+            if r.verdict == "pass":
+                sw = next(s.id for s in self.g.switches if s.mgmt_ip == host)
+                m = match(self.g, [FdbEntry(**e) for e in r.detail["fdb"]], sw)
+                self.host_macs.update({p: x.host_mac for p, x in m.devices.items() if x.host_mac})
+            return r
+        text, _ = canned_fdb(self.g, hosts_up={p for p, b in self.boots.items()
+                                               if b["kernel"] <= self.t})
+        return read_fdb(host, "sonic", {}, runner=lambda cmd: text)
+
+    def read_ifstatus(self, host, nos, cred, *, runner=None):
+        from flax_rungs.result import RungResult
+        st = {f"Ethernet{p}": {"oper": "up", "admin": "up", "speed": "1G"} for p in range(52)}
+        return RungResult("pass", {"status": st, "count": len(st)})
+
+    def mac_table(self, host, nos, cred, ports, *, ping_ips=(), runner=None):
+        from flax_rungs.result import RungResult
+        self.calls.append(("mac_table", host, tuple(ports)))
+        got = {}
+        for p in ports:
+            s = next((s for s in self.g.switches if (s.site_port or {}).get("port") == p), None)
+            got[p] = sorted(self.sw_macs.get(s.id, {}).values()) if s else []
+        rows = [[p, ", ".join(v) or "no MAC"] for p, v in got.items()]
+        empty = [p for p, v in got.items() if not v]
+        det = {"ports": got, "pinged": {}, "reread": False, "rows": rows, "notes": [],
+               "headline": f"{sum(map(len, got.values()))} MAC(s)"}
+        if empty:
+            det["error"] = det["headline"] = f"no MAC on {', '.join(empty)}"
+            return RungResult("fail", det)
+        return RungResult("pass", det, {"show-mac.txt": "fake turtle\n"})
+
+    def ping(self, ip, *, runner=None):
+        if ip in self.down:
+            return False
+        pos, role = self.ip_role.get(ip, (None, None))
+        if role == "host":
+            b = self.boots.get(pos)
+            return bool(b and b["kernel"] <= self.t)
+        return True
+
+    def power_status(self, ip, creds, *, info=None, runner=None):
+        pos, _ = self.ip_role.get(ip, (None, None))
+        if info is not None:
+            info.update(user="u", cipher=17)
+        return self.power.get(pos)
+
+    def power_action(self, ip, creds, action, *, info=None, runner=None):
+        pos, _ = self.ip_role.get(ip, (None, None))
+        self.calls.append(("power_action", pos, action))
+        self.power[pos] = "on"
+        self._new_boot(pos, self.t)
+        self.sleep(240)                        # the boot happens
+        return True
+
+    # the drawer's PWR / IDNT (flax_rack.nodeact): off drops the boot, on / cycle / reset
+    # start a fresh one; identify answers like a BMC that reports its identify state
+    def node_power(self, ip, creds, action, *, info=None, runner=None):
+        pos, _ = self.ip_role.get(ip, (None, None))
+        self.calls.append(("node_power", pos, action))
+        if info is not None:
+            info.update(user="u", cipher=17)
+        if action == "off":
+            self.power[pos] = "off"
+            self.boots.pop(pos, None)
+        else:
+            self.power[pos] = "on"
+            self._new_boot(pos, self.t)
+        return True
+
+    def identify(self, ip, creds, arg, *, info=None, runner=None):
+        pos, _ = self.ip_role.get(ip, (None, None))
+        self.calls.append(("identify", pos, arg))
+        if info is not None:
+            info.update(user="u", cipher=17)
+        state = {"0": "Off", "force": "Indefinite(On)"}.get(arg, "Temporary(On)")
+        self.ident[pos] = state
+        return {"ok": True, "ident": state, "error": None}
+
+    def chassis_status(self, ip, creds, *, runner=None):
+        pos, _ = self.ip_role.get(ip, (None, None))
+        return {"power": self.power.get(pos), "ident": self.ident.get(pos)}
+
+    def set_boot_pxe(self, ip, creds, *, enable=True, ipmi_creds=None, runner=None):
+        from flax_rungs.result import RungResult
+        self.calls.append(("set_boot_pxe", self.ip_role.get(ip, (None,))[0]))
+        return RungResult("pass", {"method": "redfish", "enable": enable})
+
+    def boot_marks(self, host_ip, since):
+        pos, _ = self.ip_role.get(host_ip, (None, None))
+        b = self.boots.get(pos) if pos not in self.no_marks else None
+        out = {k: ([b[k]] if b and b[k] >= since and b[k] <= self.t else [])
+               for k in ("tftp", "ipxe", "iso")}
+        out.update(sources={"tftp": ["/var/log/dnsmasq/dnsmasq.log"],
+                            "ipxe": ["/var/log/nginx/access.log"],
+                            "iso": ["/var/log/nginx/access.log"]},
+                   rotated_tftp=[], readable={})
+        return out
+
+    def _fru0(self, pos):
+        d = self.g.device(pos)
+        return ("FRU Device Description : Builtin FRU Device (ID 0)\n Product Name          : "
+                f"Tioga Pass Single Side\n Product Serial        : FAKE{d.ou:02d}{d.col or 0}\n\n")
+
+    def tp_fru(self, ip, creds, *, runner=None):
+        from flax_rungs.identity import _tp_result
+        pos, _ = self.ip_role.get(ip, (None, None))
+        self.calls.append(("tp_fru", pos))
+        return _tp_result(self._fru0(pos), "u", 17)
+
+    def iom(self, ip, user, pw, *, runner=None):
+        from flax_rungs.result import RungResult
+        pos, role = self.ip_role.get(ip, (None, None))
+        sn = f"J49FAKE{role[3:]}"
+        text = (f"Board Mfg            : Mitac\nBoard Product        : BCIOM001\n"
+                f"Board Serial         : {sn}\nBoard Part Number    : 33S5BCI0000\n"
+                "Product Serial       : N/A\n")
+        vers = {"BMC Version": "fbttn-v2019.52.0", "ROM Version": "fbttn-v2.0",
+                "TPM Version": "133.33", "Fan Speed Controller Version": "0x0c",
+                "Mellanox NIC firmware version": "14.20.1202", "Expander Version": "0.3.6"}
+        absent = {"SCC Version": "Server Power-off"}
+        fwu = "".join(f"{k}: {v}\n" for k, v in vers.items()) + "SCC Version: NA (Server Power-off)\n"
+        side, sku = ("A", "17 (00010001)") if role == "iom1" else ("B", "33 (00100001)")
+        pal = f"System: Type5\nIOM Location: Side {side}\nPlatform SKU: {sku}\n"
+        return RungResult("pass", {
+            "serial": sn, "serial_field": "Board Serial", "phase": "unsupported",
+            "board_product": "BCIOM001", "part_number": "33S5BCI0000",
+            "versions": vers, "not_present": absent, "errors": {}, "side": side, "sku": sku,
+            "headline": f"SN {sn} · Side {side} · BMC fbttn-v2019.52.0",
+            "rows": [["Board Serial", sn], ["Board Product", "BCIOM001"],
+                     ["Board Part Number", "33S5BCI0000"], ["IOM Location", f"Side {side}"],
+                     ["Platform SKU", sku], *([k, v] for k, v in vers.items()),
+                     *([k, f"not present ({w})"] for k, w in absent.items())],
+            "notes": ["identity is the IOM's Board Serial (its Product Serial is N/A)"]},
+            {"fruid-util-iom.txt": text, "fw-util-bmc.txt": fwu, "fw-util-all.txt": fwu,
+             "check_pal_sku.txt": pal})
+
+    def _sw_of(self, ip):
+        leases = self.switch_leases()
+        for s in self.g.switches:
+            for r, m in self.sw_macs.get(s.id, {}).items():
+                if leases.get(m) == ip:
+                    return s, r, m
+        return None, None, None
+
+    def wedge_bmc(self, ip, user, pw, *, syseeprom=None, runner=None):
+        from flax_rungs.result import RungResult
+        s, role, m = self._sw_of(ip)
+        if role != "bmc":
+            return RungResult("fail", {"error": "weutil: rc=127 command not found",
+                                       "headline": f"wedge BMC {ip} not read", "rows": [],
+                                       "notes": []})
+        sn = f"AIFAKE{s.id}"
+        mac = ":".join(m[i:i + 2] for i in range(0, 12, 2))
+        sonic = self.sw_macs[s.id].get("sonic") or ""
+        ext = ":".join(sonic[i:i + 2] for i in range(0, 12, 2))
+        vers = {"OpenBMC": "wedge100-v29", "CPLD": "6.101"}
+        rows = [["Product Serial Number", sn], ["Product Name", "WEDGE100S12V"],
+                ["Local MAC (BMC)", mac], ["Extended MAC Base", ext],
+                ["Product Asset Tag", f"FAKEASSET{s.id}"], *([k, v] for k, v in vers.items())]
+        if syseeprom is not None:
+            rows.append(["SONiC syseeprom serial", f"{syseeprom.get('serial')} (matches)"])
+        return RungResult("pass", {
+            "serial": sn, "serial_field": "Product Serial Number", "product_name": "WEDGE100S12V",
+            "local_mac": mac, "ext_mac_base": ext, "asset_tag": f"FAKEASSET{s.id}",
+            "versions": vers, "errors": {}, "phase": "unsupported",
+            "syseeprom_serial": (syseeprom or {}).get("serial"),
+            "headline": f"SN {sn} · wedge100-v29", "rows": rows,
+            "notes": ["no firmware manifest exists for Facebook OpenBMC wedges: versions are "
+                      "report only"]},
+            {"weutil.txt": f"Product Name: WEDGE100S12V\nProduct Serial Number: {sn}\n"
+                           f"Local MAC: {mac}\nExtended MAC Base: {ext}\n",
+             "issue.txt": "OpenBMC Release wedge100-v29\n", "cpld.txt": "6.101\n"})
+
+    def read_syseeprom(self, ip, nos, cred, *, runner=None):
+        from flax_rungs.result import RungResult
+        s, role, _m = self._sw_of(ip)
+        if role != "sonic":
+            return RungResult("fail", {"error": "rc=255 permission denied", "headline": "x",
+                                       "rows": [], "notes": []})
+        sn = f"AIFAKE{s.id}" if s.model == "wedge100s" else "CNFAKE0C"
+        name, part = (("WEDGE100S12V", "20-001784") if s.model == "wedge100s"
+                      else ("N3248TE-ON", "0F2XYZ"))
+        base = ":".join(_m[i:i + 2] for i in range(0, 12, 2))
+        return RungResult("pass", {
+            "serial": sn, "service_tag": "FAKETAG", "base_mac": base, "product_name": name,
+            "part_number": part, "headline": f"SN {sn}",
+            "rows": [["Serial Number", sn], ["Service Tag", "FAKETAG"], ["Product Name", name],
+                     ["Part Number", part], ["Base MAC Address", base]],
+            "notes": ["read with `show platform syseeprom` (TlvInfo EEPROM)"]},
+            {"syseeprom.txt": f"Product Name 0x21 {len(name)} {name}\n"
+                              f"Part Number 0x22 {len(part)} {part}\n"
+                              f"Serial Number 0x23 10 {sn}\nBase MAC Address 0x24 6 {base}\n"})
+
+    def _probe_out(self, pos, host_ip):
+        b = self.boots.get(pos)
+        if not b or b["kernel"] > self.t:
+            return None
+        d = self.g.device(pos)
+        h = self.host_macs.get(pos) or _mac(d.ou, d.col, 0x10).replace(":", "")
+        mac = "-".join(h[i:i + 2] for i in range(0, 12, 2))
+        if pos in self.wrong_host:
+            mac = "02-fa-ff-ff-00-99"
+        if pos in self.installed:
+            return (f"{b['boot_id']}\n{self.t - b['kernel']:.2f}\n"
+                    "BOOT_IMAGE=/vmlinuz-6.8.0-45-generic root=/dev/mapper/vg0-root ro\n")
+        return (f"{b['boot_id']}\n{self.t - b['kernel']:.2f}\n"
+                f"BOOT_IMAGE=/vmlinuz BOOTIF=01-{mac} pxeaddr={host_ip} rd.live\n")
+
+    # ------------------------------------------------------------ Qualify stand-ins
+    def boot_live(self, bmc_ip, host_ip, creds, *, expect_mac=None, deadline_s=None,
+                  runner=None):
+        from flax_rungs.result import RungResult
+        pos = self.pos_of.get(host_ip)
+        self.calls.append(("boot_live", pos, expect_mac))
+        if pos in self.power and pos not in self.wrong_host and pos not in self.fail_pxe:
+            self._new_boot(pos, self.t - 240)  # a fresh boot (its kernel already up)
+            self.power[pos] = "on"
+        self._pause()
+        if not expect_mac:
+            return RungResult("fail", {"error": "no discovered host MAC (discover first)"})
+        if pos in self.wrong_host:
+            return RungResult("fail", {"error": f"wrong host at {host_ip}: BOOTIF "
+                                                f"02:fa:ff:ff:00:99 != discovered {expect_mac}"})
+        if pos in self.fail_pxe:
+            return RungResult("fail", {"error": "no ssh within 900s",
+                                       "last": {"power": "on", "ping": False, "ssh": "rc=255"}})
+        return RungResult("pass", {"override": "redfish", "power_action": "cycle",
+                                   "ssh_after_s": 212, "cmdline_ok": True})
+
+    def launch(self, host_ip, user, pw, *, stages=None, runner=None):
+        from flax_rungs.agent import ORDER_STAGES
+        from flax_rungs.result import RungResult
+        pos = self.pos_of.get(host_ip)
+        stages = stages or ORDER_STAGES
+        self.calls.append(("launch", pos, stages))
+        self.stages_of[pos] = stages.split(",")
+        return RungResult("pass", {"mode": "fresh", "stages": stages, "rows": [
+            ["ssh", f"{user}@{host_ip} ok · up 212 s"],
+            ["fetch", "http://bang/post.tgz -> 172.32.0.1, 1 tries, 0 s"],
+            ["unpack", "post.tgz unpacked"],
+            ["launch", "post.sh postautomate started, flax-qual-agent active"],
+            ["agent port", "8087 answered after 2 s"]]})
+
+    def stop_agent(self, host_ip, user, pw, *, runner=None):
+        from flax_rungs.result import RungResult
+        pos = self.pos_of.get(host_ip)
+        self.calls.append(("stop_agent", pos))
+        if pos in self.stop_fail:
+            return RungResult("fail", {"error": "agent stop rc=255"})
+        return RungResult("pass", {"stopped": True})
+
+    def poll(self, host_ip, *, deadline_s):
+        from flax_rungs.agent import ORDER_STAGES
+        from flax_rungs.result import RungResult
+        pos = self.pos_of[host_ip]
+        stages = self.stages_of.get(pos) or ORDER_STAGES.split(",")
+        self.calls.append(("poll", pos, deadline_s, ",".join(stages)))
+        self._pause()
+        if self.poll_delay_s or pos in self.slow:
+            import time
+            time.sleep(self.poll_delay_s + self.slow.get(pos, 0.0))
+        if pos in self.poll_timeout and "cpu-mem-stress" in stages:   # stress still running
+            d = self.g.device(pos)
+            out = {}
+            for n in stages:
+                done = n == "mem-pre"
+                out[n] = RungResult("pass" if done else "fail",
+                                    {"stage": n, "run_id": f"fake{d.ou:02d}{d.col or 0}",
+                                     **({} if done else {"error": "timeout"})})
+            return out
+        d = self.g.device(pos)
+        run_id = f"fake{d.ou:02d}{d.col or 0}"
+        head = d.kind.startswith("bc-head")
+        macs = self._macs(pos)
+        link = "".join(f"{i}: {n}: <BROADCAST,MULTICAST,UP> mtu 1500\n    link/ether {m} brd ff:ff:ff:ff:ff:ff\n"
+                       for i, (n, m) in enumerate(macs.items(), 2))
+        addr = (f"2: eno1: <BROADCAST,MULTICAST,UP> mtu 1500\n    link/ether {macs['eno1']}\n"
+                f"    inet {host_ip}/16 brd 172.{self.g.vid}.255.255 scope global eno1\n")
+        sn = f"FAKE{d.ou:02d}{d.col or 0}"
+        dmi = ("Handle 0x0000, DMI type 0, 26 bytes\nBIOS Information\n\tVendor: American Megatrends Inc.\n"
+               f"\tVersion: {'F09_3A20' if head else 'F09_3A23'}\n\tRelease Date: "
+               f"{'03/11/2020' if head else '07/29/2021'}\n\n"
+               f"Handle 0x0001, DMI type 1, 27 bytes\nSystem Information\n\tSerial Number: {sn}\n\n")
+        fru = ("FRU Device Description : Builtin FRU Device (ID 0)\n Product Name          : "
+               f"Tioga Pass Single Side\n Product Serial        : {sn}\n\n")
+        out = {}
+        for n in stages:
+            macinv = _MACINV if pos not in self.pop_fail else "".join(
+                ln + "\n" for ln in _MACINV.splitlines() if "Mellanox" not in ln)
+            arts = {"macinv": macinv, "macinv-v": _macinv_v(sn, d.ou * 4 + (d.col or 0),
+                                                          pos not in self.pop_fail),
+                    "dmidecode": dmi, "ip-d-link": link, "lsblk": _LSBLK_USED if pos in self.disk_used else _LSBLK,
+                    "blkid": _BLKID_USED if pos in self.disk_used else _BLKID,
+                    "ip-d-address": addr, "ipmitool-fru": fru, "dimmsum": _DIMMSUM,
+                    "tpmstate": _TPMSTATE, "alldisks": _ALLDISKS} if n == "inventory" \
+                else {"fio": _FIO} if n == "fio" else {f"{n}": f"{n}: ok\n"}
+            if n == "inventory" and pos in self.disk_unread:
+                del arts["blkid"]
+            out[n] = RungResult("pass", {"stage": n, "run_id": run_id, "summary": {
+                "devices": ["nvme0n1", "nvme1n1"]} if n == "fio" else {}}, arts)
+        return out
+
+    def read_lldp(self, ip, nos, cred, *, runner=None):
+        from dataclasses import asdict
+        from flax_rungs.result import RungResult
+        from .switches import LldpEntry, wedge_iface
+        sw = next(s.id for s in self.g.switches if s.mgmt_ip == ip)
+        self.calls.append(("read_lldp", sw))
+        rows = []
+        for d in self.g.devices:
+            for name, l in sorted(d.links.items()):
+                if name in _IFN and l.switch == sw:
+                    rows.append(LldpEntry(wedge_iface(l.port, l.lane),
+                                          f"{self.g.prefix}{d.pos.lower()}",
+                                          self._macs(d.pos)[_IFN[name]], _IFN[name]))
+        text = "".join(f"{e.local_iface:12s} {e.remote_device:15s} {e.remote_port}  R  "
+                       f"{e.remote_descr}\n" for e in rows)
+        return RungResult("pass", {"lldp": [asdict(e) for e in rows], "count": len(rows)},
+                          {"show-lldp-table.txt": text})
+
+    def read_live(self, host, nos, cred, *, runner=None):
+        """The live link monitor's one-session read. Mgmt switch: the canned FDB (a
+        booted host shows its host MAC too), a port up when it carries a MAC or is an
+        uplink. Wedge: a geometry pcieN lane is up (with an LLDP row naming the first
+        booted device cabled there) once that device has booted, else down. Each switch's
+        eth0 sees its site_port turtle over LLDP. A switch id in live_down does not answer
+        (unmeasured); a "<switch id> <iface>" in `pulled` (or a line of pull_file: the
+        served fake's cable pull, <order dir>/.fake-pull) is down."""
+        from flax_rungs.result import UNMEASURED, RungResult
+        from .switches import FdbEntry, IfStatus, LldpEntry, read_fdb, wedge_iface
+        s = next(s for s in self.g.switches if s.mgmt_ip == host)
+        self.calls.append(("read_live", s.id))
+        if s.id in getattr(self, "live_down", ()):
+            return RungResult(UNMEASURED, {"headline": f"{host} did not answer ssh"})
+        booted = {p for p, b in self.boots.items() if b["kernel"] <= self.t}
+        ifaces, lldp, fdb = {}, [], []
+        if s.role == "mgmt":
+            text = canned_fdb(self.g, hosts_up=booted)[0]
+            fdb = [FdbEntry(**e) for e in read_fdb(host, "sonic", {},
+                                                   runner=lambda cmd: text).detail["fdb"]]
+            busy = {e.iface for e in fdb} | {f"Ethernet{p - 1}" for p in s.uplink_ports}
+            ifaces = {f"Ethernet{p}": IfStatus("up" if f"Ethernet{p}" in busy else "down",
+                                               "up", "1G") for p in range(52)}
+        else:
+            ifaces = {f"Ethernet{n}": IfStatus("down", "up", "25G") for n in range(128)}
+            for d in self.g.devices:
+                for name, l in sorted(d.links.items()):
+                    if name not in _IFN or l.switch != s.id or d.pos not in booted \
+                            or d.pos in self.fabric_down:
+                        continue
+                    ifn = wedge_iface(l.port, l.lane)
+                    if ifaces[ifn].oper == "up":
+                        continue                   # one neighbour per lane
+                    ifaces[ifn] = IfStatus("up", "up", "25G")
+                    lldp.append(LldpEntry(ifn, f"{self.g.prefix}{d.pos.lower()}",
+                                          self._macs(d.pos)[_IFN[name]], _IFN[name]))
+        if s.site_port:
+            lldp.append(LldpEntry("eth0", f"{s.site_port['switch']}.ehv.lab",
+                                  s.site_port["port"], s.site_port["port"]))
+        pulled = set(getattr(self, "pulled", ()))
+        pf = getattr(self, "pull_file", None)
+        if pf is not None and pf.exists():
+            pulled |= {tuple(x.split()[:2]) for x in pf.read_text().splitlines() if x.strip()}
+        for sid, ifn in pulled:
+            if sid == s.id and ifn in ifaces:
+                ifaces[ifn] = IfStatus("down", "up", ifaces[ifn].speed)
+                lldp = [e for e in lldp if e.local_iface != ifn]
+                fdb = [e for e in fdb if e.iface != ifn]
+        return RungResult("pass", {"ifaces": ifaces, "lldp": lldp, "fdb": fdb})
+
+    def apply_fabric(self, host_ip, user, pw, assigns, *, runner=None):
+        from flax_rungs.result import RungResult
+        self.calls.append(("apply_fabric", self.pos_of.get(host_ip), dict(assigns)))
+        if not assigns:
+            return RungResult("fail", {"error": "no fabric ports to address"})
+        return RungResult("pass", dict(assigns))
+
+    def mesh(self, server, clients, *, user, pw, runner=None):
+        from flax_rungs.result import RungResult
+        self.calls.append(("mesh", server["pos"], server["host_ip"], [c["pos"] for c in clients]))
+        self._pause()
+        if self.stress_pause_s and any("bond" in c["ifaces"] for c in clients):
+            import time
+            time.sleep(self.stress_pause_s)     # Deploy's iperf: the served fake's phase shows
+        out = {}
+        for c in clients:
+            nets, errs = {}, []
+            for net in c["ifaces"]:
+                speed = 1e9 if net == "mgmt" else 25e9
+                bps = 0.94 * speed
+                if self.iperf_fail.get(c["pos"]) == net:
+                    bps = 0.36 * speed
+                    errs.append(f"{net}: tx {round(bps / 1e6)} / rx {round(bps / 1e6)} Mbit/s < "
+                                f"{round(0.8 * speed / 1e6)} (0.8 x {round(speed / 1e6)})")
+                nets[net] = {"tx_bps": bps, "rx_bps": bps, "speed_bps": speed,
+                             "ok": self.iperf_fail.get(c["pos"]) != net}
+            raw = {f"iperf-{n}-{d}": json.dumps({"end": {"sum_received": {
+                       "bits_per_second": v["rx_bps" if d == "rx" else "tx_bps"]}}})
+                   for n, v in nets.items() for d in ("tx", "rx")}
+            out[c["pos"]] = RungResult("fail" if errs else "pass",
+                                       {**nets, **({"error": "; ".join(errs)} if errs else {})},
+                                       raw)
+        out[server["pos"]] = RungResult("pass", {"served": [c["pos"] for c in clients]})
+        return out
+
+    def host_run(self, host_ip, user, pw, script, *, timeout=None, sudo=True, runner=None):
+        from flax_rungs.install import _PROBE as install_probe
+        from flax_rungs.liveboot import _PROBE
+        self.calls.append(("host_run", self.pos_of.get(host_ip), script.split("\n")[0][:40]))
+        pos = self.pos_of.get(host_ip)
+        if sudo and pos in self.sudo_prompt:
+            return 1, "", "sudo: a password is required"
+        from .deploy import IPERF_PREP
+        if script == IPERF_PREP:
+            return 0, (f"1: lo    inet 127.0.0.1/8 scope host lo\n"
+                       f"2: eno1    inet {host_ip}/16 brd 172.{self.g.vid}.255.255 scope global eno1\n"), ""
+        if script == _PROBE:
+            out = self._probe_out(pos, host_ip)
+            return (0, out, "") if out else (255, "", "ssh: connect to host: No route to host")
+        if script == install_probe:
+            out = self._probe_out(pos, host_ip)
+            if not out:
+                return 255, "", "ssh: connect to host: No route to host"
+            if pos not in self.installed:
+                return 0, ("version_id=15.6\nroot=LiveOS_rootfs\ncmdline="
+                           + out.splitlines()[2] + "\n"), ""
+            d = self.g.device(pos)
+            macs = [self.host_macs.get(pos) or _mac(d.ou, d.col, 0x10).replace(":", ""),
+                    *(m.replace(":", "") for k, m in self._macs(pos).items() if k != "eno1")]
+            return 0, (f"boot_id={out.splitlines()[0]}\nuptime={out.splitlines()[1]}\n"
+                       f"cmdline={out.splitlines()[2]}\nversion_id=24.04\n"
+                       f"hostname=rr101-{pos.lower()}\nroot=/dev/mapper/vg0-root\n"
+                       f"macs={' '.join(macs)}\n"
+                       'blk=NAME="vg0-root" TYPE="lvm" TRAN="" RM="0"\n'
+                       'blk=NAME="nvme0n1" TYPE="disk" TRAN="nvme" RM="0"\n'), ""
+        fw = self._fw_host(pos, script)
+        if fw is not None:
+            if self._probe_out(pos, host_ip) is None or pos in self.fw_host_down:
+                return 255, "", "ssh: connect to host: No route to host"
+            return 0, fw, ""
+        return 0, "", ""
+
+    # ------------------------------------------------------------ Firmware stand-ins
+    # the loose-node manifests (fixture-sized); the real readers run against them
+    FW_BMC_TARGET = "flax-onetree-1.1.4"
+    FW_BIOS_TARGET = "TPC_P26F"
+    FW_NIC = ("MT_2420110034", "14.32.1912")
+
+    def fw_manifests(self):
+        import re
+        from types import SimpleNamespace
+        from flax_post.biosd.manifest import BiosMatcher
+        from flax_post.fwd.manifest import PostMatcher
+        from flax_post.nicd.manifest import NicMatcher
+        bmc = {"tiogapass-openbmc": {
+            "match": {"product_name": ["(?i)tioga"], "bmc_kind": "openbmc"},
+            "target_version": self.FW_BMC_TARGET,
+            "check": {"method": "redfish-firmware-inventory", "id": "bmc_active"},
+            "flash": {"method": "redfish-update-multipart", "artifact": "x.mtd.tar"}}}
+        bios = [{"family": "tiogapass", "target": self.FW_BIOS_TARGET,
+                 "afulnx_url": "http://bang/x/afulnx", "bin_url": "http://bang/x/b.zip",
+                 "flags": "/p /b /n /x /k /l /me"}]
+        psid, ver = self.FW_NIC
+        nic = {psid: {"dir": "CX4-Lx", "bin": "fw-ConnectX4Lx", "target_version": ver,
+                      "target_psid": psid}}
+        fm = {"tiogapass": [re.compile("SV7220G3"), re.compile("Tioga Pass")]}
+        return SimpleNamespace(bmc=PostMatcher(bmc), bios=BiosMatcher(bios, family_map=lambda: fm),
+                               nic=NicMatcher(nic),
+                               sources={"bmc": ("/etc/flax/bmc-firmware-versions.json", True),
+                                        "bios": ("/etc/flax/bios-firmware-versions.json", True),
+                                        "nic": ("/etc/flax/nic-firmware-versions.json", True)})
+
+    def fw_bmc(self, bmc_ip, creds, matcher):
+        from flax_rungs import fwcheck
+        self.calls.append(("fw_bmc", self.pos_of.get(bmc_ip)))
+        return fwcheck.tp_bmc(bmc_ip, creds, matcher,
+                              client_factory=lambda ip, c: _FakeRedfish(self, ip))
+
+    def fw_bios(self, host_ip, user, pw, matcher, *, run=None, runner=None):
+        from flax_rungs import fwcheck
+        return fwcheck.bios(host_ip, user, pw, matcher, run=run or self.host_run, runner=runner)
+
+    def fw_nic(self, host_ip, user, pw, matcher, *, run=None, runner=None):
+        from flax_rungs import fwcheck
+        return fwcheck.nic(host_ip, user, pw, matcher, run=run or self.host_run, runner=runner)
+
+    def fw_nic_installed(self, host_ip, user, pw, matcher, macs, *, run=None, runner=None):
+        from flax_rungs import fwcheck
+        return fwcheck.nic_installed(host_ip, user, pw, matcher, macs,
+                                     run=run or self.host_run, runner=runner)
+
+    def fw_backup(self, bmc_ip, *, runner=None):
+        """The real bmc_backup over a canned `bmc-backup-flash version` JSON line."""
+        import json
+        from flax_rungs import fwcheck
+        pos = self.pos_of.get(bmc_ip)
+        self.calls.append(("fw_backup", pos))
+        active = self.fw_bmc_ver.get(pos, self.FW_BMC_TARGET)
+        err = self.fw_backup_err.get(pos)
+        j = {"backup_version": None if err else self.fw_backup_ver.get(pos, self.FW_BMC_TARGET),
+             "active_version": active, "net_file": "present", "net_pin": "none",
+             "net_mtime": 1793119281, **({"error": err} if err else {})}
+
+        def run(argv, **kw):
+            return subprocess.CompletedProcess(argv, 1 if err else 0, json.dumps(j) + "\n", "")
+        return fwcheck.bmc_backup(bmc_ip, runner=run)
+
+    def _fw_host(self, pos, script):
+        """Canned dmidecode / mstflint output for fwcheck's host scripts (None: another)."""
+        from flax_post.nicd.driver import QUERY_SCRIPT
+        from flax_rungs import fwcheck
+        if pos is None:
+            return None
+        if script.startswith("dmidecode -t system"):
+            return ("# dmidecode 3.4\nHandle 0x0001, DMI type 1, 27 bytes\nSystem Information\n"
+                    "\tManufacturer: Wiwynn\n\tProduct Name: SV7220G3\n\tSerial Number: "
+                    f"{self._fru0(pos).split('Product Serial')[1].split(':')[1].strip()}\n")
+        if script.startswith("dmidecode -t bios"):
+            v = self.fw_bios_ver.get(pos, self.FW_BIOS_TARGET)
+            return ("Handle 0x0000, DMI type 0, 26 bytes\nBIOS Information\n\tVendor: American "
+                    f"Megatrends Inc.\n\tVersion: {v}\n\tRelease Date: 02/23/2021\n")
+        if script == fwcheck.ETHTOOL_SCRIPT:
+            psid, ver = self.FW_NIC
+            d = self.g.device(pos)
+            ports = {"enp94s0np0": self.host_macs.get(pos) or _mac(d.ou, d.col, 0x10),
+                     **{k: m for k, m in self._macs(pos).items() if k != "eno1"}}
+            return "".join(
+                f"===IF {ifn}===\naddress: {m}\nPermanent address: {m}\ndriver: mlx5_core\n"
+                f"version: 6.8.0-45-generic\nfirmware-version: {ver} ({psid})\n"
+                f"bus-info: 0000:{'5e' if ifn.startswith('enp94') else '3b'}:00.{k}\n"
+                for k, (ifn, m) in enumerate(ports.items()))
+        if script == QUERY_SCRIPT:
+            psid, ver = self.FW_NIC
+            uefi = "False(0)" if pos in self.fw_nic_uefi_off else "True(1)"
+            return (f"===CARD 5e:00.0===\nImage type:            FS3\nFW Version:            {ver}\n"
+                    f"PSID:                  {psid}\nSecurity Attributes:   N/A\n"
+                    f"===UEFI 5e:00.0===\n         EXP_ROM_UEFI_x86_ENABLE             {uefi}\n")
+        return None
+
+    # ------------------------------------------------------------ SOL (a fake relay)
+    def relay_dir(self) -> str:
+        """The fake flax-post-sol capture dir (<bmc ip>.txt), made on first use."""
+        with self._sol_mu:                  # captures start in parallel threads
+            if self.sol_dir is None:
+                import tempfile
+                self.sol_dir = tempfile.mkdtemp(prefix="rackpost-fake-sol-")
+            return self.sol_dir
+
+    def sol_start(self, bmc_ip, path, *, reason="rackpost"):
+        """The real flax_rungs.sol capture over a fake relay: the mark rotates the
+        relay file and the "session" writes a canned console into it (the install and
+        first boot append more); sol_fail positions' relay never answers (no bytes)."""
+        from flax_rungs import sol
+        pos = self.pos_of.get(bmc_ip)
+        self.calls.append(("sol_start", pos))
+
+        def mark(ip, why):
+            if pos in self.sol_fail:
+                return {"ok": False, "reason": "connection refused"}
+            cur = Path(self.relay_dir()) / f"{ip}.txt"
+            if cur.exists():
+                cur.replace(cur.with_name(f"{ip}.prev.txt"))
+            cur.write_text(f"=== flax-post mark {why} ===\n[SOL {ip}] Booting `flax live`\n"
+                           "Welcome to openSUSE Leap\n")
+            self.sol_live.add(ip)
+            return {"ok": True, "ip": ip}
+        return sol.start(bmc_ip, path, reason=reason, capture_dir=self.relay_dir(), mark_fn=mark)
+
+    def sol_stop(self, cap):
+        from flax_rungs import sol
+        self.calls.append(("sol_stop", self.pos_of.get(cap.ip)))
+        self.sol_live.discard(cap.ip)
+        return sol.stop(cap)
+
+    def _sol_add(self, bmc_ip, text):
+        """The relay's session writing console lines while a capture runs (one line per
+        sol_drip_s: the served fake's 1 s lets the UI's live viewer be watched)."""
+        if bmc_ip not in self.sol_live:
+            return
+        import time
+        for line in text.splitlines(keepends=True):
+            with open(Path(self.relay_dir()) / f"{bmc_ip}.txt", "a") as f:
+                f.write(line)
+            if self.sol_drip_s:
+                time.sleep(self.sol_drip_s)
+
+
+    # ------------------------------------------------------------ Deploy stand-ins
+
+    def install(self, bmc_ip, host_ip, hostname, creds, *, sol_path=None, deadline_s=None,
+                runner=None):
+        from flax_rungs.result import RungResult
+        pos = self.pos_of.get(host_ip)
+        self.calls.append(("install", pos, hostname))
+        self._pause()
+        con = ("Booting `Install Ubuntu 24.04`\nsubiquity/Meta/status_GET: running\n"
+               "curtin command install\n")
+        if pos in self.sol_findings:
+            con += "[  612.204118] Buffer I/O error on dev sda, logical block 0, async page read\n"
+        rows = [["hostname file", f"/srv/pxe/ipxe/hostname-{hostname}.ipxe"],
+                ["boot override", "Pxe (redfish)"], ["power action", "cycle"],
+                ["tftp (iPXE binary)", "+20 s"], ["boot.ipxe fetched", "+31 s"],
+                ["hostname file fetched", "+32 s"], ["installer initrd", "+41 s"],
+                ["installer kernel", "+44 s"], ["installer ISO", "+70 s"],
+                ["autoinstall user-data", "+128 s"]]
+        arts = {f"hostname-{hostname}.ipxe": f"#!ipxe\n\n# {hostname} wiwynn-tp-hmc to do "
+                                             "ubuntu-24.04 created 20261030.020000\n"}
+        if pos in self.install_fail:
+            self._sol_add(bmc_ip, con + "Please enter the passphrase: \n")
+            why = (f"never powered off within {deadline_s} s (installer running; installer hung "
+                   "or waiting for input? see the SOL tail)")
+            return RungResult("fail", {
+                "headline": why, "error": why, "file_removed": True,
+                "rows": rows + [["powered off", "no"], ["hostname file removed", "yes"]],
+                "notes": [], "sol_tail": "Please enter the passphrase: "}, arts)
+        self._sol_add(bmc_ip, con + "reboot: Power down\n")
+        self.power[pos] = "off"
+        return RungResult("pass", {
+            "headline": "installed: powered off 912 s after power cycle", "off_after_s": 912,
+            "file_removed": True, "override": "Pxe (redfish)", "power_action": "cycle",
+            "rows": rows + [["powered off", "+912 s"], ["hostname file removed", "yes"]],
+            "notes": ["the autoinstall ends `shutdown -h now`: power off after the installer "
+                      "fetches = installed"]}, arts)
+
+    def firstboot(self, bmc_ip, host_ip, hostname, creds, *, expect_mac=None, sol_path=None,
+                  deadline_s=None, runner=None):
+        from flax_rungs.result import RungResult
+        pos = self.pos_of.get(host_ip)
+        self.calls.append(("firstboot", pos, expect_mac))
+        self._pause()
+        self.power[pos] = "on"
+        self._sol_add(bmc_ip, f"\nUbuntu 24.04.1 LTS {hostname} ttyS0\n\n{hostname} login: \n")
+        user = creds.host[0] if creds.host else "flax"
+        if pos in self.firstboot_fail:
+            why = (f"ssh as {user}@{host_ip} refused (password; the autoinstall's users differ "
+                   "from credentials-host.json?); no other user tried")
+            return RungResult("fail", {"headline": why, "error": why, "ssh_user": user,
+                                       "rows": [["ssh user", user], ["ssh after", "no answer"]],
+                                       "notes": []})
+        self.installed.add(pos)
+        return RungResult("pass", {
+            "headline": f"Ubuntu 24.04 up as {user} after 188 s, / on nvme0n1",
+            "ssh_user": user, "ssh_after_s": 188, "version_id": "24.04", "disk": "nvme0n1",
+            "rows": [["boot override", "Hdd (redfish)"], ["power action", "on"],
+                     ["ssh user", user], ["ssh after", "188 s"], ["VERSION_ID", "24.04"],
+                     ["cmdline", "BOOT_IMAGE=/vmlinuz-6.8.0-45-generic root=/dev/mapper/vg0-root"],
+                     ["root", "/dev/mapper/vg0-root"], ["root disk", "nvme0n1"],
+                     ["hostname", hostname]],
+            "notes": ["the installed OS must answer ssh as flax after a fresh boot from disk"]})
+
+    def sol_scan(self, path):
+        from flax_rungs.solscan import scan_file
+        return scan_file(path)
+
+    def flax_user(self, hosts, user, pw, workdir, *, timeout=None, runner=None):
+        from flax_rungs.result import RungResult
+        self.calls.append(("flax_user", sorted(hosts)))
+        self._pause()
+        recap = "PLAY RECAP *********\n" + "".join(
+            f"{ip:16s}: ok=9    changed=4    unreachable=0    failed=0    skipped=1\n"
+            for ip in hosts.values())
+        rows = [["ok", "9"], ["changed", "4"], ["unreachable", "0"], ["failed", "0"]]
+        return {p: RungResult("pass", {"host": ip, "headline": "ok=9 changed=4", "rows": rows,
+                                       "notes": [f"ansible-playbook flax_user.yml as {user}"]},
+                              {"ansible-playbook.txt": recap})
+                for p, ip in hosts.items()}
+
+    def bond_config(self, host_ip, user, pw, side, cidr, *, runner=None):
+        from flax_rungs.bond import HA_MODE
+        from flax_rungs.result import RungResult
+        pos = self.pos_of.get(host_ip)
+        self.calls.append(("bond_config", pos, cidr, side["A"]["mac"], side["B"]["mac"]))
+        self._pause()
+        rows = [["primary (wedge A)", f"enp25s0f0np0 {side['A']['mac']}"],
+                ["backup (wedge B)", f"enp25s0f1np1 {side['B']['mac']}"],
+                ["bond0", f"active-backup, miimon 100 ms, {cidr}"],
+                ["mgmt ping across apply", "max gap 0 ms, 0/41 lost"]]
+        if pos in self.bond_fail:
+            why = "bond0: enp25s0f1np1 (wedge B) MII down"
+            return RungResult("fail", {"ha_mode": HA_MODE, "headline": why, "error": why,
+                                       "rows": rows}, {"bond0.txt": "MII Status: down\n"})
+        return RungResult("pass", {"ha_mode": HA_MODE, "address": cidr,
+                                   "macs": {k: side[k]["mac"] for k in ("A", "B")},
+                                   "headline": f"bond0 {cidr} active enp25s0f0np0 (wedge A)",
+                                   "rows": rows + [["active slave", "enp25s0f0np0 (primary)"]]},
+                          {"60-bond0.network": f"# rackpost Deploy (ha-config)\n[Match]\nName=bond0\n"
+                                               f"\n[Network]\nAddress={cidr}\n",
+                           "bond0.txt": "Bonding Mode: fault-tolerance (active-backup)\n"})
+
+    def fabric_up(self, host_ip, user, pw, macs, *, runner=None):
+        pos = self.pos_of.get(host_ip)
+        self.calls.append(("fabric_up", pos, sorted(macs)))
+        self.fabric_down.discard(pos)
+        return {m: n for n, m in self._macs(pos).items() if m in macs}, None
+
+    def ha_test(self, nodes, server_pos, *, user, pw, runner=None):
+        from flax_rungs.bond import HA_MODE
+        from flax_rungs.hatest import NOTES
+        from flax_rungs.result import RungResult
+        self.calls.append(("ha_test", server_pos, sorted(n["pos"] for n in nodes)))
+        self._pause()
+        out = {}
+        for n in nodes:
+            srv = n["pos"] == server_pos
+            rows = [["cut A (enp25s0f0np0): active", "enp25s0f0np0 → enp25s0f1np1"],
+                    ["cut A: failover gap", "n/a (iperf server)" if srv else "≈200 ms (2/120 lost)"],
+                    ["cut A: iperf over bond0", "pass" if srv else "tx 23.1 / rx 23.0 Gbit/s"],
+                    ["A restored: active", "enp25s0f0np0"],
+                    ["cut B (enp25s0f1np1): active", "enp25s0f0np0 → enp25s0f0np0"],
+                    ["cut B: failover gap", "n/a (iperf server)" if srv else "≈0 ms (0/120 lost)"],
+                    ["B restored: active", "enp25s0f0np0"]]
+            det = {"ha_mode": HA_MODE, "rows": rows, "notes": list(NOTES)}
+            if n["pos"] in self.hatest_fail:
+                why = "cut A: failover gap 3400 ms (> 1000 ms)"
+                out[n["pos"]] = RungResult("fail", {**det, "headline": why, "error": why})
+            else:
+                out[n["pos"]] = RungResult("pass", {
+                    **det, "headline": ("iperf server" if srv else "failover gap ≤200 ms")
+                    + ", back on enp25s0f0np0"},
+                    {"ping-cut-A.txt": "120 packets transmitted, 118 received\n"} if not srv else {})
+        return out
+
+    def stress(self, nodes, *, user, pw, bmc_creds, deadline_s=None, runner=None,
+               cancelled=lambda: False):
+        """The real stress.run over StressHosts, on the virtual clock (stress_pause_s of
+        real time per wait so the served fake's phase can be watched)."""
+        import time
+        from flax_rungs import stress
+
+        def sleep(s):
+            self.sleep(s)
+            if self.stress_pause_s:
+                time.sleep(self.stress_pause_s)
+        self.calls.append(("stress", sorted(n["pos"] for n in nodes)))
+        return stress.run(nodes, user=user, pw=pw, bmc_creds=bmc_creds,
+                          deadline_s=deadline_s or stress.DEADLINE_S,
+                          runner=self.stress_hosts, sleep=sleep, clock=self.wall,
+                          cancelled=cancelled)
+
+    # ------------------------------------------------------------ Done stand-ins
+    def end_summary(self, host_ip, bmc_ip, *, host_user, host_pw, bmc_creds, runner=None):
+        """endsummary.collect's shape: canned SDR/SEL judged by the real BENIGN_SEL rule,
+        and the in-band captures only when a host IP is given."""
+        from flax_rungs.endsummary import nonbenign, transients
+        from flax_rungs.result import RungResult
+        pos = self.pos_of.get(bmc_ip)
+        self.calls.append(("end_summary", pos, host_ip))
+        self._pause()
+        sdr = ("Inlet Temp       | 01h | ok  |  7.1 | 24 degrees C\n"
+               "P0 Temp          | 02h | ok  |  3.0 | 41 degrees C\n"
+               "HSC Input Power  | 0Ah | ok  | 10.1 | 312 Watts\n")
+        sel = ("   1 | 10/30/2026 | 02:01:12 | Temperature Inlet Temp | Upper Critical going high | Asserted\n"
+               "   2 | 10/30/2026 | 02:14:40 | Power Unit #0x3b | Unknown Chassis Pwr Sts | Asserted\n"
+               "   3 | 10/30/2026 | 12:49:44 PM GMT | Fan MB FAN1 TACH | Lower Critical going low"
+               " | Asserted | Reading 0 < Threshold 500 RPM\n"
+               "   4 | 10/30/2026 | 12:49:50 PM GMT | Fan MB FAN1 TACH | Lower Critical going low"
+               " | Deasserted | Reading 4800 > Threshold 500 RPM\n")
+        if pos in self.sel_nonbenign:
+            sel += ("   5 | 10/30/2026 | 03:02:51 | Memory #0x02 | Correctable ECC | Asserted"
+                    " | DIMM_A3\n")
+        arts = {"sdr-elist.txt": sdr}
+        rows = [["BMC", f"{bmc_ip} as u, cipher 17"], ["sdr elist", "read"]]
+        if pos in self.sel_unread:
+            rows.append(["sel elist", "not read: timeout"])
+        else:
+            arts["sel-elist.txt"] = sel
+            rows.append(["sel elist", "read"])
+        inband = bool(host_ip)
+        if inband:
+            arts.update({"net.txt": "bond0  UP  02:fb:25:01:00:01\nbond0  UP  10.201.37.51/16\n",
+                         "disks.txt": "NAME     MODEL                SERIAL        SIZE TYPE\n"
+                                      "nvme0n1  WD_BLACK SN850X 1TB  222815805096  931.5G disk\n",
+                         "bootorder.txt": ("BootCurrent: 0003\nBootOrder: "
+                                           + ("0001,0003" if pos in self.pxe_first else "0003,0001")
+                                           + "\nBoot0001* UEFI: PXE IP4 Mellanox Network Adapter"
+                                             "\tPciRoot(0x0)/Pci(0x1,0x0)/MAC(98039b000001,1)/IPv4(0.0.0.0)\n"
+                                             "Boot0003* ubuntu\tHD(1,GPT,...)/File(\\EFI\\ubuntu\\shimx64.efi)\n"),
+                         "dimms.txt": "Memory Device\n\tSize: 32 GB\n\tLocator: DIMM A0\n"})
+            rows.append(["in-band", f"{host_ip}: net.txt, disks.txt, bootorder.txt, dimms.txt"])
+        else:
+            rows.append(["in-band", "skipped: no installed OS to reach"])
+        detail = {"inband": inband, "oob": True, "sel_nonbenign": [], "user": "u", "cipher": 17,
+                  "rows": rows}
+        if "sel-elist.txt" not in arts:
+            head = "SEL not read: sel elist failed: timeout"
+            return RungResult("unmeasured", {**detail, "headline": head, "reason": head}, arts)
+        bad, tr = nonbenign(sel), transients(sel)
+        n = sum("|" in ln for ln in sel.splitlines())
+        detail["sel_nonbenign"], detail["sel_transients"] = bad, tr
+        rows.append(["SEL", f"{n} entries, {len(bad)} non-benign, {len(tr)} transient"])
+        if bad:
+            head = f"SEL: {len(bad)} non-benign: {bad[0]}"
+            return RungResult("fail", {**detail, "headline": head, "error": head}, arts)
+        return RungResult("pass", {**detail, "headline": f"SEL clean ({n} benign)"
+                                   + ("" if inband else "; in-band not read")}, arts)
+
+    def pxe_remove(self, hostname):
+        self.calls.append(("pxe_remove", hostname))
+        if self.pxe_dir is None:
+            return True, None
+        from flax_rungs import pxeboot
+        return pxeboot.remove(hostname, pxe_dir=self.pxe_dir)
+
+    def clear_override(self, bmc_ip, creds, *, runner=None):
+        from flax_rungs.result import RungResult
+        pos = self.pos_of.get(bmc_ip)
+        self.calls.append(("clear_override", pos))
+        if pos in self.override_fail:
+            return RungResult("fail", {"error": "http 400", "target": "None"})
+        return RungResult("pass", {"method": "redfish", "user": "u", "target": "None"})
+
+
+class StressHosts:
+    """A subprocess runner for flax_rungs.stress: the nodes' ssh (sshpass ... bash -s, the
+    script on stdin) and their BMCs' ipmitool, keyed by IP (pos_of: ip -> pos). Knobs
+    (sets / dict of pos): sel_bad, transient, mce, lost, rc."""
+    SDR = "Inlet Temp       | 01h | ok  |  7.1 | 24 degrees C\nP0 Temp          | 02h | ok  |  3.0 | 41 degrees C\n"
+    SEL0 = ("   1 | 10/30/2026 | 02:01:12 | Temperature Inlet Temp | Upper Critical going high | Asserted\n"
+            "   2 | 10/30/2026 | 02:14:40 | Power Unit #0x3b | Unknown Chassis Pwr Sts | Asserted\n"
+            "   3 | 10/30/2026 | 03:02:51 | Memory #0x02 | Correctable ECC | Asserted | DIMM_A3\n")
+    DMESG0 = "[    0.000000] Linux version 6.8.0-45-generic\n[  900.100000] EDAC skx: ECC is enabled\n"
+
+    def __init__(self, pos_of):
+        self.pos_of = pos_of
+        self.sel_bad, self.transient, self.mce, self.lost = set(), set(), set(), set()
+        self.rc: dict[str, int] = {}
+        self.launched: set[str] = set()
+        self.scripts: list[tuple[str, str]] = []
+
+    def _sel(self, pos):
+        sel = self.SEL0
+        if pos in self.launched:
+            if pos in self.transient:
+                sel += ("   4 | 10/31/2026 | 01:10:02 | Fan MB FAN1 TACH | Lower Critical going low"
+                        " | Asserted | Reading 0 < Threshold 500 RPM\n"
+                        "   5 | 10/31/2026 | 01:10:08 | Fan MB FAN1 TACH | Lower Critical going low"
+                        " | Deasserted | Reading 4800 > Threshold 500 RPM\n")
+            if pos in self.sel_bad:
+                sel += "   6 | 10/31/2026 | 01:12:40 | Memory #0x02 | Correctable ECC | Asserted | DIMM_B1\n"
+        return sel
+
+    def _ssh(self, pos, script):
+        from flax_rungs import stress
+        if "/proc/uptime" in script:
+            return 0, "HAVE\nT0 1000.00\n"
+        if "setsid sh -c" in script:
+            self.launched.add(pos)
+            return 0, "STARTED\n"
+        if pos in self.lost and pos in self.launched:
+            return 255, ""
+        if script == stress._DONE:
+            return 0, "DONE\n"
+        if script == stress._KILL:
+            return 0, "KILLED\n"
+        if script == stress._COLLECT:
+            out = ("stress-ng: info:  [4242] setting to a 600 secs run per stressor\n"
+                   "stress-ng: info:  [4242] dispatching hogs: 64 cpu, 4 vm\n"
+                   "stress-ng: metrc: [4242] stressor       bogo ops real time  usr time  sys time   bogo ops/s\n"
+                   "stress-ng: metrc: [4242] cpu            9461234    600.02  38211.20     12.40     15768.20\n"
+                   "stress-ng: metrc: [4242] vm             1520933    600.05   2390.11    10.50      2534.67\n"
+                   "stress-ng: info:  [4242] successful run completed in 600.07 secs\n")
+            dm = self.DMESG0 + "[ 1210.500000] perf: interrupt took too long (2510 > 2500)\n"
+            if pos in self.mce:
+                dm += ("[ 1402.881233] mce: [Hardware Error]: Machine check events logged\n"
+                       "[ 1402.881240] EDAC skx MC1: HANDLING MCE MEMORY ERROR\n")
+            return 0, (f"{stress._MARK}out===\n{out}{stress._MARK}rc===\n{self.rc.get(pos, 0)}\n"
+                       f"{stress._MARK}dmesg===\n{dm}")
+        return 0, ""
+
+    def __call__(self, argv, **kw):
+        if argv[0] == "ipmitool":
+            pos = self.pos_of.get(argv[argv.index("-H") + 1])
+            args = argv[argv.index("-E") + 1:]
+            out = {"chassis": "Chassis Power is on\n", "sdr": self.SDR}.get(args[0]) \
+                or (self._sel(pos) if args[:2] == ["sel", "elist"] else "")
+            return subprocess.CompletedProcess(argv, 0, stdout=out, stderr="")
+        host = next(a for a in argv if "@" in a).split("@", 1)[1]
+        pos = self.pos_of.get(host)
+        self.scripts.append((pos, kw.get("input") or ""))
+        rc, out = self._ssh(pos, kw.get("input") or "")
+        return subprocess.CompletedProcess(argv, rc, stdout=out, stderr="" if rc != 255 else
+                                           "ssh: connect to host: No route to host")
+
+
+class _FakeRedfish:
+    """fwd.redfish.RedfishClient's reads for the fake rack: a Tioga Pass at its
+    FakeRungs.fw_bmc_ver version (else the target); a `down` BMC answers nothing.
+    Only the reads probe_one makes."""
+
+    def __init__(self, rungs, ip):
+        self.R, self.ip = rungs, ip
+        self.pos = rungs.pos_of.get(ip)
+
+    def get_product_name(self):
+        if self.ip in self.R.down:
+            return None, "GET /redfish/v1/Systems transport error: timed out"
+        return "Wiwynn Tioga Pass Single Side", "ok"
+
+    def get_fw_version(self, fw_id):
+        if self.ip in self.R.down:
+            return None, f"GET /redfish/v1/UpdateService/FirmwareInventory/{fw_id} transport error"
+        return self.R.fw_bmc_ver.get(self.pos, self.R.FW_BMC_TARGET), "ok"
+
+    def get_redfish_root(self):
+        return False, None, None

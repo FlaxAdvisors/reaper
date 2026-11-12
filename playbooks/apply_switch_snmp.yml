@@ -1,0 +1,49 @@
+---
+# Enable v2c read-only SNMP on every switch in the site so the bang-side
+# snmp_exporter (driven by apply_health_compose/templates/snmp/snmp.yml.j2 — auth:
+# site_v2) can walk ifTable + entity sensors.
+#
+# Phase 1 community-only. Move to v3 with USM creds when snmp.yml grows
+# per-target `auths:` blocks.
+#
+# Vault entries required (define in inventories/<site>/group_vars/all/vault.yml):
+#   vault_cfg_snmp_ro_community: "<ro community string>"   (the site vault)
+#   vault_snmp_contact:   "ops@example.com"
+#
+# Run: ansible-playbook -i inventories/<site> playbooks/apply_switch_snmp.yml
+# Check-mode dry run: append --check --diff
+
+- name: Apply SNMP config to Arista EOS
+  hosts: arista
+  gather_facts: false
+  tasks:
+    - ansible.builtin.import_role:
+        name: apply_switch_snmp
+        tasks_from: arista
+
+- name: Apply SNMP config to Cisco IOS
+  hosts: cisco
+  gather_facts: false
+  tasks:
+    - ansible.builtin.import_role:
+        name: apply_switch_snmp
+        tasks_from: cisco
+
+- name: Apply SNMP config to Cumulus Linux
+  hosts: cumulus
+  gather_facts: false
+  tasks:
+    - ansible.builtin.import_role:
+        name: apply_switch_snmp
+        tasks_from: cumulus
+
+# No site inventory lists a `sonic` host (customer rack switches are never a
+# managed set, operator ruling 2026-10-31), so this play matches nothing until
+# one is added deliberately.
+- name: Apply SNMP config to SONiC
+  hosts: sonic
+  gather_facts: false
+  tasks:
+    - ansible.builtin.import_role:
+        name: apply_switch_snmp
+        tasks_from: sonic

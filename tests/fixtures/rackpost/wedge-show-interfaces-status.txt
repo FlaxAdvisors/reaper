@@ -1,0 +1,70 @@
+  Interface            Lanes    Speed    MTU    FEC         Alias    Vlan    Oper    Admin    Type    Asym PFC
+-----------  ---------------  -------  -----  -----  ------------  ------  ------  -------  ------  ----------
+  Ethernet0  117,118,119,120     100G   9100     rs   Ethernet1/1   trunk    down       up     N/A         N/A
+  Ethernet4  113,114,115,116     100G   9100     rs   Ethernet2/1   trunk    down       up     N/A         N/A
+  Ethernet8  125,126,127,128     100G   9100     rs   Ethernet3/1   trunk    down       up     N/A         N/A
+ Ethernet12  121,122,123,124     100G   9100     rs   Ethernet4/1   trunk    down       up     N/A         N/A
+ Ethernet16                5      25G   9100    N/A   Ethernet5/1   trunk    down       up     N/A         N/A
+ Ethernet17                6      25G   9100    N/A   Ethernet5/2   trunk    down       up     N/A         N/A
+ Ethernet18                7      25G   9100    N/A   Ethernet5/3   trunk    down       up     N/A         N/A
+ Ethernet19                8      25G   9100    N/A   Ethernet5/4   trunk    down       up     N/A         N/A
+ Ethernet20                1      25G   9100    N/A   Ethernet6/1   trunk    down       up     N/A         N/A
+ Ethernet21                2      25G   9100    N/A   Ethernet6/2   trunk    down       up     N/A         N/A
+ Ethernet22                3      25G   9100    N/A   Ethernet6/3   trunk    down       up     N/A         N/A
+ Ethernet23                4      25G   9100    N/A   Ethernet6/4   trunk    down       up     N/A         N/A
+ Ethernet24               13      25G   9100    N/A   Ethernet7/1   trunk    down       up     N/A         N/A
+ Ethernet25               14      25G   9100    N/A   Ethernet7/2   trunk    down       up     N/A         N/A
+ Ethernet26               15      25G   9100    N/A   Ethernet7/3   trunk    down       up     N/A         N/A
+ Ethernet27               16      25G   9100    N/A   Ethernet7/4   trunk    down       up     N/A         N/A
+ Ethernet28                9      25G   9100    N/A   Ethernet8/1   trunk    down       up     N/A         N/A
+ Ethernet29               10      25G   9100    N/A   Ethernet8/2   trunk    down       up     N/A         N/A
+ Ethernet30               11      25G   9100    N/A   Ethernet8/3   trunk    down       up     N/A         N/A
+ Ethernet31               12      25G   9100    N/A   Ethernet8/4   trunk      up       up     N/A         N/A
+ Ethernet32               21      25G   9100    N/A   Ethernet9/1   trunk    down       up     N/A         N/A
+ Ethernet33               22      25G   9100    N/A   Ethernet9/2   trunk    down       up     N/A         N/A
+ Ethernet34               23      25G   9100    N/A   Ethernet9/3   trunk    down       up     N/A         N/A
+ Ethernet35               24      25G   9100    N/A   Ethernet9/4   trunk    down       up     N/A         N/A
+ Ethernet36               17      25G   9100    N/A  Ethernet10/1   trunk    down       up     N/A         N/A
+ Ethernet37               18      25G   9100    N/A  Ethernet10/2   trunk    down       up     N/A         N/A
+ Ethernet38               19      25G   9100    N/A  Ethernet10/3   trunk    down       up     N/A         N/A
+ Ethernet39               20      25G   9100    N/A  Ethernet10/4   trunk    down       up     N/A         N/A
+ Ethernet40      29,30,31,32     100G   9100     rs  Ethernet11/1   trunk    down       up     N/A         N/A
+ Ethernet44      25,26,27,28     100G   9100     rs  Ethernet12/1   trunk    down       up     N/A         N/A
+ Ethernet48      37,38,39,40     100G   9100     rs  Ethernet13/1   trunk    down       up     N/A         N/A
+ Ethernet52      33,34,35,36     100G   9100     rs  Ethernet14/1   trunk    down       up     N/A         N/A
+ Ethernet56      45,46,47,48     100G   9100     rs  Ethernet15/1   trunk    down       up     N/A         N/A
+ Ethernet60      41,42,43,44     100G   9100     rs  Ethernet16/1   trunk    down       up     N/A         N/A
+ Ethernet64      53,54,55,56     100G   9100     rs  Ethernet17/1   trunk    down       up     N/A         N/A
+ Ethernet68      49,50,51,52     100G   9100     rs  Ethernet18/1   trunk    down       up     N/A         N/A
+ Ethernet72      61,62,63,64     100G   9100     rs  Ethernet19/1   trunk    down       up     N/A         N/A
+ Ethernet76      57,58,59,60     100G   9100     rs  Ethernet20/1   trunk    down       up     N/A         N/A
+ Ethernet80      69,70,71,72     100G   9100     rs  Ethernet21/1   trunk    down       up     N/A         N/A
+ Ethernet84      65,66,67,68     100G   9100     rs  Ethernet22/1   trunk    down       up     N/A         N/A
+ Ethernet88               77      25G   9100    N/A  Ethernet23/1   trunk    down       up     N/A         N/A
+ Ethernet89               78      25G   9100    N/A  Ethernet23/2   trunk    down       up     N/A         N/A
+ Ethernet90               79      25G   9100    N/A  Ethernet23/3   trunk    down       up     N/A         N/A
+ Ethernet91               80      25G   9100    N/A  Ethernet23/4   trunk    down       up     N/A         N/A
+ Ethernet92               73      25G   9100    N/A  Ethernet24/1   trunk    down       up     N/A         N/A
+ Ethernet93               74      25G   9100    N/A  Ethernet24/2   trunk    down       up     N/A         N/A
+ Ethernet94               75      25G   9100    N/A  Ethernet24/3   trunk    down       up     N/A         N/A
+ Ethernet95               76      25G   9100    N/A  Ethernet24/4   trunk      up       up     N/A         N/A
+ Ethernet96               85      25G   9100    N/A  Ethernet25/1   trunk    down       up     N/A         N/A
+ Ethernet97               86      25G   9100    N/A  Ethernet25/2   trunk    down       up     N/A         N/A
+ Ethernet98               87      25G   9100    N/A  Ethernet25/3   trunk    down       up     N/A         N/A
+ Ethernet99               88      25G   9100    N/A  Ethernet25/4   trunk    down       up     N/A         N/A
+Ethernet100               81      25G   9100    N/A  Ethernet26/1   trunk    down       up     N/A         N/A
+Ethernet101               82      25G   9100    N/A  Ethernet26/2   trunk    down       up     N/A         N/A
+Ethernet102               83      25G   9100    N/A  Ethernet26/3   trunk    down       up     N/A         N/A
+Ethernet103               84      25G   9100    N/A  Ethernet26/4   trunk      up       up     N/A         N/A
+Ethernet104               93      25G   9100    N/A  Ethernet27/1   trunk    down       up     N/A         N/A
+Ethernet105               94      25G   9100    N/A  Ethernet27/2   trunk    down       up     N/A         N/A
+Ethernet106               95      25G   9100    N/A  Ethernet27/3   trunk    down       up     N/A         N/A
+Ethernet107               96      25G   9100    N/A  Ethernet27/4   trunk    down       up     N/A         N/A
+Ethernet108               89      25G   9100    N/A  Ethernet28/1   trunk      up       up     N/A         N/A
+Ethernet109               90      25G   9100    N/A  Ethernet28/2   trunk      up       up     N/A         N/A
+Ethernet110               91      25G   9100    N/A  Ethernet28/3   trunk    down       up     N/A         N/A
+Ethernet111               92      25G   9100    N/A  Ethernet28/4   trunk    down       up     N/A         N/A
+Ethernet112  101,102,103,104     100G   9100     rs  Ethernet29/1   trunk    down       up     N/A         N/A
+Ethernet116     97,98,99,100     100G   9100     rs  Ethernet30/1   trunk    down       up     N/A         N/A
+Ethernet120  109,110,111,112     100G   9100     rs  Ethernet31/1   trunk    down       up     N/A         N/A
+Ethernet124  105,106,107,108     100G   9100     rs  Ethernet32/1   trunk    down       up     N/A         N/A

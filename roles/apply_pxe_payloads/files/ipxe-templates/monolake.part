@@ -1,0 +1,4 @@
+# apply the monolake settings
+set com-default com1s
+set com-setting ${ttys0s}
+set node-setting monolake

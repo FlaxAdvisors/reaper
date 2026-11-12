@@ -1,0 +1,3 @@
+BOOTPROTO='static'
+STARTMODE='hotplug'
+ZONE=external

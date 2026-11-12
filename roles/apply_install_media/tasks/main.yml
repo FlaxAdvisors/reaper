@@ -1,0 +1,122 @@
+---
+# Every bang holds (sha256-verified) and loop-mounts the ISOs in files/install-media.yml.
+# flax-install-media does the files: a verified ISO is never touched; a missing or wrong one
+# is fetched (url) or copied from a peer (only one whose own cached checksum matches) into
+# <iso>.part, verified, then renamed. The mounts are systemd units, written only for verified
+# ISOs; a target is unmounted only when it is mounted from another file. One failed ISO never
+# blocks the others: the play fails at the end, naming it. Check mode writes nothing, needs
+# nothing installed, and reads the manifest from stdin.
+# Owner of these mount paths (was ghost's hourly mountisos). Spec 2026-11-10-install-files-into-reaper.
+- name: flax-install-media script
+  become: true
+  ansible.builtin.copy:
+    src: flax_install_media.py
+    dest: "{{ apply_install_media_script }}"
+    mode: "0755"
+  tags: [install_media]
+
+- name: Install-media manifest (JSON, for operators running the script by hand)
+  become: true
+  ansible.builtin.copy:
+    content: "{{ apply_install_media_manifest.isos | to_nice_json }}\n"
+    dest: "{{ apply_install_media_manifest_json }}"
+    mode: "0644"
+  tags: [install_media]
+
+- name: Is the script on the bang (check mode before the first deploy)
+  ansible.builtin.stat:
+    path: "{{ apply_install_media_script }}"
+  register: _media_script
+  tags: [install_media]
+
+# A missing ISO is GBs over the WAN; transfers abandon a stall themselves (curl speed limit,
+# ssh keepalives) and the task gives up after 3 h.
+- name: Fetch / verify the install ISOs
+  become: true
+  ansible.builtin.command:
+    argv: "{{ [apply_install_media_script, '--manifest', '-',
+               '--root', apply_install_media_isos_root, '--mount-root', apply_install_media_mount_root]
+              + (apply_install_media_peers | map('regex_replace', '^', '--peer=') | list)
+              + (['--check'] if ansible_check_mode else []) }}"
+    stdin: "{{ apply_install_media_manifest.isos | to_json }}"
+  when: not ansible_check_mode or _media_script.stat.exists
+  check_mode: false
+  timeout: 10800
+  register: _media
+  changed_when: (_media.stdout | from_json).status.values() | reject('in', ['present', 'would fetch']) | list | length > 0
+  failed_when: false
+  tags: [install_media]
+
+- name: Install-media result
+  ansible.builtin.set_fact:
+    _media_out: "{{ (_media.stdout | from_json) if (_media.stdout | default('')) else {'status': {}, 'remount': [], 'error': _media.stderr | default('flax-install-media not installed yet: check mode cannot verify')} }}"
+  tags: [install_media]
+
+- name: Verified ISOs that get a mount
+  ansible.builtin.set_fact:
+    _media_mounts: "{{ apply_install_media_manifest.isos | selectattr('mount')
+                       | selectattr('path', 'in', _media_ok) | list }}"
+  vars:
+    _media_ok: "{{ _media_out.status | dict2items | rejectattr('value', 'match', 'FAIL|would fetch')
+                   | map(attribute='key') | list }}"
+  tags: [install_media]
+
+- name: Show the install-media result
+  ansible.builtin.debug:
+    msg: "{{ _media_out }}"
+  tags: [install_media]
+
+- name: Mount unit names
+  ansible.builtin.command:
+    argv: [systemd-escape, --path, --suffix=mount, "{{ apply_install_media_mount_root }}/{{ item.mount }}"]
+  loop: "{{ _media_mounts }}"
+  loop_control:
+    label: "{{ item.mount }}"
+  check_mode: false
+  changed_when: false
+  register: _units
+  tags: [install_media]
+
+- name: Mount units
+  become: true
+  ansible.builtin.template:
+    src: install-media.mount.j2
+    dest: "{{ apply_install_media_unit_dir }}/{{ _units.results[idx].stdout }}"
+    mode: "0644"
+  loop: "{{ _media_mounts }}"
+  loop_control:
+    label: "{{ item.mount }}"
+    index_var: idx
+  register: _unitfiles
+  tags: [install_media]
+
+# Only a target mounted from a different file (old point release, ghost's old path) whose own
+# ISO is now verified is unmounted; a busy one fails this task with umount's message. Every
+# stacked mount goes: one umount over two would bare the older one, and systemd would take the
+# still-mounted path as already started.
+- name: Unmount targets that hold another ISO (remount list)
+  become: true
+  ansible.builtin.shell: |
+    while mountpoint -q "$T"; do umount "$T" || exit 1; done
+  environment:
+    T: "{{ apply_install_media_mount_root }}/{{ item }}"
+  loop: "{{ _media_out.remount | intersect(_media_mounts | map(attribute='mount') | list) }}"
+  tags: [install_media]
+
+- name: Enable + start the mounts
+  become: true
+  ansible.builtin.systemd:
+    name: "{{ item.stdout }}"
+    enabled: true
+    state: started
+    daemon_reload: "{{ _unitfiles is changed }}"
+  loop: "{{ _units.results }}"
+  loop_control:
+    label: "{{ item.stdout }}"
+  tags: [install_media]
+
+- name: Fail on any ISO that could not be verified (its mount was left alone)
+  ansible.builtin.fail:
+    msg: "{{ _media_out.status | dict2items | selectattr('value', 'match', 'FAIL') | items2dict }}"
+  when: _media_out.status | dict2items | selectattr('value', 'match', 'FAIL') | list | length > 0
+  tags: [install_media]

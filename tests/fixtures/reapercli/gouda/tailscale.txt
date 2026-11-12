@@ -1,0 +1,10 @@
+100.64.0.1       bang-gouda              ops@         linux    -
+100.64.0.2       bang-edam               ops@         linux    active; direct 192.0.2.10:41641, tx 16858032356 rx 9921230044
+100.64.0.3       bang-rhythm             ops@         linux    active; relay "dfw", tx 2956027716 rx 1120443920
+100.64.0.4       bang-blues              ops@         linux    active; relay "dfw", tx 2410582960 rx 870311204
+100.64.0.5       bang-fiesta             ops@         linux    active; direct 198.51.100.20:41641, tx 388272636 rx 120044710
+100.64.0.6       bang-siesta             ops@         linux    active; relay "nyc"; offline, last seen 2d ago, tx 1093312 rx 2004
+100.64.0.7       bang-lorax              ops@         linux    offline, last seen 191d ago
+100.64.0.8       bmc-bastion             tagged-devices linux  -
+100.64.0.9       laptop-1                ops@         macOS    active; direct 203.0.113.5:41641, tx 568485724 rx 22104433
+100.64.0.10      jumpbox                 tagged-devices linux  offline, last seen 1d ago

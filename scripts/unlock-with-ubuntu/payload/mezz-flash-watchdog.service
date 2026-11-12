@@ -1,0 +1,8 @@
+[Unit]
+Description=Un-stick the SOL console when its UART stops transmitting
+# See serial_watchdog.sh. Deliberately NOT StandardOutput=...+console: this
+# runs because the console is stuck, so writing to it is the last thing to do.
+
+[Service]
+Type=oneshot
+ExecStart=/opt/flax/mezzflash/serial_watchdog.sh

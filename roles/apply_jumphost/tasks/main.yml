@@ -1,0 +1,75 @@
+---
+# Applies jump host network config and authorized_keys (from the site vault).
+# --tags ssh_keys refreshes authorized_keys ONLY: no ifcfg, no network reload,
+# and the lavergne refusal below is skipped (keys are safe there).
+# Connects directly via Tailscale as flax user — no ProxyJump.
+
+# A site whose bang network must never be restarted wholesale sets
+# apply_jumphost_allowed: false (lavergne: wlan0 is bang-rhythm's only WAN and
+# tailscale path; `reaper push <site> <switch>` stages this role on the bangs).
+- name: Refuse where a whole-network restart is unsafe
+  ansible.builtin.assert:
+    that: apply_jumphost_allowed | default(true)
+    fail_msg: >-
+      apply_jumphost is disabled for {{ site_name }} (apply_jumphost_allowed: false):
+      it installs every ifcfg and restarts network, which drops wlan0/tailscale.
+      Bring bang interfaces up one at a time with wicked ifup; push switches with
+      playbooks/apply_config.yml, not `reaper push`.
+    quiet: true
+
+# ifroute-<iface> carries a static route wicked installs with that interface
+# (bang-siesta: default via bang-fiesta's mgmt).
+- name: Find local ifcfg-* / ifroute-* files to deploy (excluding -lo and *.bak)
+  delegate_to: localhost
+  ansible.builtin.find:
+    paths: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/config"
+    patterns: ["ifcfg-*", "ifroute-*"]
+    excludes:
+      - "ifcfg-lo"
+      - "*.bak"
+      - "*~"
+    file_type: file
+  register: apply_jumphost_local_ifcfg_files
+
+# template:, not copy: -- ifcfg-wlan* carries WIRELESS_WPA_PSK as a
+# {{ vault_cfg_wlan_wpa_psk }} placeholder (collect_jumphost redacts it on
+# fetch, RULE ZERO). Rendering here is what puts the real PSK on the bang.
+# Every other ifcfg-* is plain text with no Jinja, so templating them is a
+# no-op transform. no_log because the rendered content contains the PSK.
+- name: Deploy ifcfg-* / ifroute-* files
+  ansible.builtin.template:
+    src: "{{ item.path }}"
+    dest: "/etc/sysconfig/network/{{ item.path | basename }}"
+    owner: root
+    group: root
+    mode: "0600"
+  become: true
+  loop: "{{ apply_jumphost_local_ifcfg_files.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  no_log: true
+  notify: reload network
+
+- name: Deploy /etc/sysconfig/network/config (NETCONFIG_*) when present
+  ansible.builtin.copy:
+    src: "{{ config_output_dir }}/{{ site_name }}/{{ inventory_hostname }}/config/network-config"
+    dest: /etc/sysconfig/network/config
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  when: >
+    (config_output_dir + '/' + site_name + '/' + inventory_hostname + '/config/network-config')
+    is file
+  notify: reload netconfig
+
+# flax's authorized_keys come from the site vault (vault_flax_authorized_keys).
+- name: Deploy authorized_keys
+  tags: [ssh_keys]
+  ansible.builtin.copy:
+    content: "{{ vault_flax_authorized_keys | join('\n') }}\n"
+    dest: "~/.ssh/authorized_keys"
+    mode: "0600"
+
+- name: Flush handlers
+  ansible.builtin.meta: flush_handlers

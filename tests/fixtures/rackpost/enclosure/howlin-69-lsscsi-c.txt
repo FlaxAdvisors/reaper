@@ -1,0 +1,4 @@
+Attached devices: 
+Host: scsi4 Channel: 00 Target: 00 Lun: 00
+  Vendor: ATA      Model: INTEL SSDSCKKW12 Rev: 002C
+  Type:   Direct-Access                    ANSI SCSI revision: 05

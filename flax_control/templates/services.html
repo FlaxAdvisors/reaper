@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% import "_components.html" as c %}
+{% block title %}flax-control — services{% endblock %}
+{% block content %}
+{{ c.page_header('Services', "The five expected pipeline consumers and their latest-ack health (freshness-aware). A consumer is healthy when its latest action applied/noop'd cleanly within the freshness window.") }}
+
+<div class="side-card" style="margin-bottom:1rem;">
+  <h3>Related</h3>
+  {% set _v1 %}<a href="/roles">Registry →</a>{% endset %}
+  {{ c.kv('role definitions (roles.d) driving these consumers', _v1) }}
+  {% set _v2 %}<a href="/shadow">Materializer →</a>{% endset %}
+  {{ c.kv('convergence run this ledger is measuring', _v2) }}
+  {% set _v3 %}<a href="/lanes">Post lanes →</a>{% endset %}
+  {{ c.kv('per-role lane rollup', _v3) }}
+  {% set _v4 %}<a href="/ownership">Ownership ledger →</a>{% endset %}
+  {{ c.kv('mac roaming / handoff events', _v4) }}
+  {% set _v5 %}<a href="/bmc-fw">BMC firmware →</a>{% endset %}
+  {{ c.kv('firmware fleet driven by the same acks', _v5) }}
+  {% set _v6 %}<a href="/events">Events →</a>{% endset %}
+  {{ c.kv('full audit log behind every ack', _v6) }}
+</div>
+
+{% set _kind = {'healthy': 'g', 'stale': 'w', 'failed': 'c', 'missing': 'n'} %}
+<div class="section">
+  <h2>Consumer health</h2>
+  <div class="grid3">
+  {% for h in consumer_health %}
+    <div class="side-card">
+      <h3>{{ h.consumer }} {{ c.badge(h.state, _kind.get(h.state, 'n')) }}</h3>
+      {{ c.kv('source', h.source or "—") }}
+      {{ c.kv('generation', h.generation if h.generation is not none else "—") }}
+      {{ c.kv('consumed_at', h.consumed_at or "—") }}
+      {{ c.kv('detail', h.detail or "—") }}
+    </div>
+  {% endfor %}
+  </div>
+</div>
+
+<div class="section">
+  <h2>Raw ACK ledger</h2>
+  <p class="muted">One row per (consumer, source).</p>
+  {% if acks %}
+  <div class="filter-bar">
+    <label>filter <input class="table-filter" data-table="acks-tbl" type="search" placeholder="consumer, source…"></label>
+  </div>
+  <div class="table-scroll"><table class="data-table sortable" id="acks-tbl"><thead><tr>
+    <th>consumer</th><th>source</th><th>generation</th>
+    <th>action</th><th>consumed_at</th><th>detail</th>
+  </tr></thead><tbody>
+  {% for a in acks %}
+    {% set bad = a.action in ['error', 'failed', 'skip'] %}
+    <tr>
+      <td>{{ a.consumer }}</td>
+      <td>{{ a.source }}</td>
+      <td>{{ a.generation }}</td>
+      <td>{{ c.badge(a.action, 'c' if bad else 'g') }}</td>
+      <td class="muted mono">{{ a.consumed_at }}</td>
+      <td>{{ a.detail or "—" }}</td>
+    </tr>
+  {% endfor %}
+  </tbody></table></div>
+  {% else %}
+  <p class="empty">No consumer ACKs recorded yet.</p>
+  {% endif %}
+</div>
+{% endblock %}

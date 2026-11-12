@@ -1,0 +1,40 @@
+latest inventory in post-506b4bcd5e9a is from 2026-06-30T09:17:32Z (9 days 15:38:23 ago)
+==========
+BMC MAC1: 50:6b:4b:cd:5e:9c
+BMC Version:  0.08  Facebook, Inc.
+BIOS Version: TPC_P26C, Release Date: 10/15/2020, BIOS Revision: 5.14, Firmware Revision: 0.0
+System Mfg: Wiwynn , Product Name: SV7220G3, UUID: 7ac01905-8551-86d1-8b4d-79e433006ac9
+Base Board Serial: WTH19045MEZA1
+Chassis Serial: C.M.B60.00X1C.001150201803DV
+Board Mfg: Wistron, Product: Tioga Pass Single Side, Serial: WTH19045MEZA1, Part Number: B91.00X10.0012, Product Serial: WTH4908267M1A, Chassis Serial: C.M.B60.00X1C.001150201803DV
+Addon FRU: HPE, Product: HPE Eth 10/25Gb 2p 640SFP28 Adptr, Serial: ACA94501TS, Part Number: 840140-001, Product Serial: ACA94501TS
+Addon FRU: Quanta, Product: Ava-M.2-SSD-Adapter, Serial: VSP75200443, Part Number: 3YF08PB0000
+Processor Version: Intel(R) Xeon(R) Gold 6138 CPU @ 2.00GHz, Serial: To be filled by O.E.M.
+Processor Version: Intel(R) Xeon(R) Gold 6138 CPU @ 2.00GHz, Serial: To be filled by O.E.M.
+Memory: 64 GB, DIMM A0, _Node0_Channel0_Dimm0, 2666 MT/s, Micron, 1DF5606A, 72ASS8G72LZ-2G6D2
+Memory: 64 GB, DIMM A1, _Node0_Channel1_Dimm0, 2666 MT/s, Micron, 1DDE31E1, 72ASS8G72LZ-2G6D2
+Memory: 64 GB, DIMM A2, _Node0_Channel2_Dimm0, 2666 MT/s, Micron, 1DDE3198, 72ASS8G72LZ-2G6D2
+Memory: 64 GB, DIMM A3, _Node0_Channel3_Dimm0, 2666 MT/s, Micron, 1DF56068, 72ASS8G72LZ-2G6D2
+Memory: 64 GB, DIMM A4, _Node0_Channel4_Dimm0, 2666 MT/s, Micron, 1DF573E8, 72ASS8G72LZ-2G6D2
+Memory: 64 GB, DIMM A5, _Node0_Channel5_Dimm0, 2666 MT/s, Micron, 1DF57405, 72ASS8G72LZ-2G6D2
+Memory: 64 GB, DIMM B0, _Node1_Channel0_Dimm0, 2666 MT/s, Micron, 1DA4CAB3, 72ASS8G72LZ-2G6D2
+Memory: 64 GB, DIMM B1, _Node1_Channel1_Dimm0, 2666 MT/s, Micron, 1DDE31E5, 72ASS8G72LZ-2G6D2
+Memory: 64 GB, DIMM B2, _Node1_Channel2_Dimm0, 2666 MT/s, Micron, 1DDE30EE, 72ASS8G72LZ-2G6D2
+Memory: 64 GB, DIMM B3, _Node1_Channel3_Dimm0, 2666 MT/s, Micron, 1DA4CB29, 72ASS8G72LZ-2G6D2
+Memory: 64 GB, DIMM B4, _Node1_Channel4_Dimm0, 2666 MT/s, Micron, 1DDE31F4, 72ASS8G72LZ-2G6D2
+Memory: 64 GB, DIMM B5, _Node1_Channel5_Dimm0, 2666 MT/s, Micron, 1DDE31AE, 72ASS8G72LZ-2G6D2
+BusID: 5e:00.0, Eth MAC: 50:6b:4b:cd:5e:9a, Model: "Mellanox MCX4411A-ACQN, ConnectX-4 Lx EN OCP, 1x25Gb", SubVendor: pci 0x15b3 "Mellanox Technologies", SubDevice: pci 0x0020 "MCX4411A-ACQN, ConnectX-4 Lx EN OCP, 1x25Gb", Interface: pxedev
+BusID: 5e:00.0, firmware-version:14.32.1010 (MT_2450112034)
+BusID: 5e:00.0, [SN] Serial number: MT1820K25426
+BusID: 19:00.0, Eth MAC: b8:83:03:a1:1e:e0, Model: "Mellanox Stand-up ConnectX-4 Lx EN, 25GbE dual-port SFP28, PCIe3.0 x8, MCX4121A-ACAT", SubVendor: pci 0x15b3 "Mellanox Technologies", SubDevice: pci 0x0003 "Stand-up ConnectX-4 Lx EN, 25GbE dual-port SFP28, PCIe3.0 x8, MCX4121A-ACAT", Interface: lan0
+BusID: 19:00.0, firmware-version:14.32.1010 (MT_2420110034)
+BusID: 19:00.0, [SN] Serial number: ACA94501TS
+BusID: 19:00.1, Eth MAC: b8:83:03:a1:1e:e1, Model: "Mellanox Stand-up ConnectX-4 Lx EN, 25GbE dual-port SFP28, PCIe3.0 x8, MCX4121A-ACAT", SubVendor: pci 0x15b3 "Mellanox Technologies", SubDevice: pci 0x0003 "Stand-up ConnectX-4 Lx EN, 25GbE dual-port SFP28, PCIe3.0 x8, MCX4121A-ACAT", Interface: eth1
+BusID: 19:00.1, firmware-version: 14.32.1010 (MT_2420110034)
+BusID: 19:00.1, [SN] Serial number: ACA94501TS
+Interface: pxedev, ChassisID: mac 00:90:fb:6c:10:04, PortDescr: Rack 2 right+center DUT subport - default TiogaPass post (VLAN 25)
+BusID: 03:00.0, Model: "ASPEED AST1000/2000", Device: pci 0x2000 "AST1000/2000", SubDevice: pci 0x2000 , Revision: 0x41
+Handle_: 93, BusID: 00:17.0, Model: "Intel C620 Series Chipset Family SATA Controller [AHCI mode]", SubVendor: pci 0x8086 "Intel Corporation", SubDevice: pci 0x7270 , Driver: "ahci"
+Handle_: 118, BusID: 00:11.5, Model: "Intel C620 Series Chipset Family SSATA Controller [AHCI mode]", SubVendor: pci 0x8086 "Intel Corporation", SubDevice: pci 0x7270 , Driver: "ahci"
+
+

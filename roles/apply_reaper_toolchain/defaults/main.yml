@@ -1,0 +1,14 @@
+---
+# The bangs' shared reaper toolchain (spec 2026-11-07 reaper-cli §3.1): the same pinned
+# venv layout as a dev machine's ~/.venv-reaper-ansible. The reaper shim prefers it.
+apply_reaper_toolchain_venv: /opt/flax/venv/reaper-ansible
+apply_reaper_toolchain_src: /opt/flax/venv/.src    # the pins + builder, staged from this clone
+
+# The one interpreter reaper code runs on (bare python3 stays the distro's 3.6): python312,
+# the flax service image's runtime (python:3.12-slim, 3.12.13 at 0.9.209). It carries the
+# toolchain venv above, the host services (rackpost, flax-post-deployd, fleet viewer), the
+# host scripts and the reaper CLI's remote snippets. python311 is no longer installed by
+# reaper (2026-11-12); left on a bang it is unused (the distro's own ansible may pull it).
+apply_reaper_toolchain_pythons:
+  - python312
+  - python312-pip

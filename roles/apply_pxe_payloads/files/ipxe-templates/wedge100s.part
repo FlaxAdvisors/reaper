@@ -1,0 +1,4 @@
+# apply the wedge100s settings
+set node-setting wedge100s
+set com-default com1s
+set com-setting ${ttys0s}

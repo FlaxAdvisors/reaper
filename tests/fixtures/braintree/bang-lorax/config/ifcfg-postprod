@@ -1,0 +1,6 @@
+BOOTPROTO='dhcp'
+STARTMODE='auto'
+ETHERDEVICE=''
+VLAN_ID='1'
+VLAN='yes'
+NAME='postprod'

@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+[Unit]
+Description=flax post-qualify iperf3 serializer (qual agent + Loose Post Deploy dial this)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/iperf3 -s -p {{ apply_flax_iperf_port }}
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

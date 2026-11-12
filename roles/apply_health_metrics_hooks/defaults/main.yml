@@ -1,0 +1,19 @@
+---
+apply_health_metrics_hooks_install_dir: /opt/flax/sbin/health_hooks
+apply_health_metrics_hooks_textfile_dir: /var/lib/node_exporter/textfile_collector
+
+# Hooks retired with the kea/nginx rework (operator 2026-11-09: unused). The role
+# stops their timers and removes their scripts, drop-ins and textfiles from a bang.
+apply_health_metrics_hooks_retired: [dnsmasq_leases, reaper_leased_state, switchportrecon_state]
+
+# Mapping of hook script -> timer interval (used by the templated systemd timers).
+apply_health_metrics_hooks_timers:
+  - { name: vrrp_state, interval: 30s }
+  - { name: bang_hw, interval: 60s }
+  - { name: services, interval: 30s }
+  - { name: chk_services_metric, interval: 30s }
+  - { name: coredump_count, interval: 60s }
+  - { name: firewalld_zones, interval: 300s }
+
+# The controller-side output of scripts/health_board.py for this site (no secrets).
+apply_health_board_out: "/tmp/reaper-healthboard-{{ site_name }}"

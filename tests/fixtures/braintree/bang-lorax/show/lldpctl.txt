@@ -1,0 +1,5 @@
+lldp.postprod.via=LLDP
+lldp.postprod.rid=1
+lldp.postprod.chassis.mac=aa:bb:cc:dd:ee:ff
+lldp.postprod.chassis.name=turtle-lorax
+lldp.postprod.port.ifname=swp1

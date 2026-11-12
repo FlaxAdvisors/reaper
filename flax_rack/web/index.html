@@ -1,0 +1,750 @@
+<!-- flax_rack/web/index.html: rack-order console (rack-v3 layout). Served at /<prefix>/;
+     every URL below is relative, so one file serves every rack. -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>rackpost</title>
+  <link rel="icon" href="static/flax-logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="static/rack.css">
+  <link rel="stylesheet" href="static/rackpost.css">
+  <script src="static/petite-vue.iife.js" defer></script>
+  <script type="module" src="static/rackpost.js"></script>
+</head>
+<body>
+<div id="app" v-scope="App()" @vue:mounted="mounted()">
+
+  <!-- ================= header ================= -->
+  <div class="top">
+    <div class="toprow">
+      <div class="tl">
+        <img class="flogo" src="static/flax-logo.svg" alt="flax" onerror="this.style.display='none'">
+        <div class="metrics">
+          <div v-for="m in metricList" class="metric" :class="[m.key, {on: filter===m.key, lit: metricLit(m)}]" @click="toggle(m.key)"
+               :title="metricTitle(m)"><b>{{counts[m.key]}}</b><span>{{m.label}}</span></div>
+        </div>
+        <!-- stage launch buttons, in the count tiles' shape: ✓ = passed (this pass) for
+             every device the stage applies to, lit while it runs -->
+        <div class="metrics stagebtns" v-if="s.order">
+          <button v-for="b in stageBtns()" class="metric stagebtn" :class="[b.key, b.cls]"
+                  :disabled="s.stage_running || !!s.closed_at" @click="stageGo(b.key)" :title="b.title">
+            <b>{{b.label}}</b><span>{{b.cls==='ok' ? '✓ ' : ''}}{{b.sub}}</span></button>
+        </div>
+      </div>
+      <div class="tr">
+        <span class="live" :class="{off:live===false, wait:live===null}">
+          <i class="live-dot"></i><span>{{live ? 'live' : live===false ? 'offline' : 'connecting'}}</span><span class="live-ver mono" :title="buildTitle()">rackpost {{bootBuild || s.version || '?'}}{{buildPending() ? ' ↻' : ''}}</span>
+        </span>
+        <span class="title">{{s.prefix || '…'}} · {{s.customer || '?'}} rack{{s.rack ? ' ' + s.rack : ''}}</span>
+      </div>
+    </div>
+    <div class="toprow sub">
+      <div class="tl">
+        <div class="search">
+          <input name="rp-search" autocomplete="off" placeholder="search pos / MAC…" v-model="q">
+          <span class="hint" v-if="q">{{matchCount}} match{{matchCount===1?'':'es'}}</span>
+        </div>
+        <span class="ctx-at" :class="{run: s.stage_running}" :title="eventsTitle()">{{stageText()}}</span>
+        <span class="qphase" v-if="qprog" :title="qphaseTitle()">
+          <i v-for="p in (s.qualify_phases || [])" :class="qphaseCls(p)">{{p}}</i>
+          <b class="mono">{{qprog?.done}}/{{qprog?.devices}}</b>
+          <span class="qwait" v-if="(qprog?.waiting_on || []).length">· {{(qprog?.waiting_on || []).slice(0, 3).join(' ')}}{{(qprog?.waiting_on || []).length > 3 ? ' …' : ''}}</span>
+        </span>
+        <span class="qphase dphase" v-if="dprog" :title="dphaseTitle()">
+          <i v-for="p in (s.deploy_phases || [])" :class="dphaseCls(p)">{{p}}</i>
+          <b class="mono">{{dprog?.done}}/{{dprog?.devices}}</b>
+          <span class="qwait" v-if="(dprog?.waiting_on || []).length">· {{(dprog?.waiting_on || []).slice(0, 3).join(' ')}}{{(dprog?.waiting_on || []).length > 3 ? ' …' : ''}}</span>
+        </span>
+        <span class="lk hamode" v-if="haMode" :class="haMode?.missing?.length ? 'dev' : 'ok'" :title="haTitle()">{{haText()}}</span>
+      </div>
+      <div class="tr"><div class="ctx">
+        <label>Customer <span class="ro">{{s.customer || '—'}}</span></label>
+        <label>Order <span class="ro">{{s.order || '—'}}</span></label>
+        <label v-if="s.sales">Sales <span class="ro">{{s.sales}}</span></label>
+        <label>vid <span class="ro">{{s.vid || '—'}}</span></label>
+        <span class="csv-links" v-if="csvAt" :title="'customer CSVs written by Done ' + csvAt">CSV
+          <a v-for="c in csvLinks()" :href="'api/report/' + c.k + '.csv'" :download="c.name" :title="c.name + ' · ' + c.what">{{c.k}}</a></span>
+        <button class="closebtn cancelbtn" v-if="s.stage_running && s.stage" :disabled="s.cancelling" @click="cancelStage()"
+                :title="s.cancelling ? 'cancel requested: stopping after the steps now running' : 'stop the running ' + s.stage + ' between steps (a power action already sent finishes)'">{{s.cancelling ? 'Cancelling…' : 'Cancel ' + (runRunning ? 'run' : s.stage)}}</button>
+        <span class="hdr-msg" v-if="hdrMsg">{{hdrMsg}}</span>
+        <span class="pass-chip" v-if="(s.pass?.id || 1) > 1" :title="passTitle()">pass {{s.pass?.id}}</span>
+        <a class="rep-link" v-if="s.order" href="api/report/process.html" target="_blank" rel="noopener"
+           title="internal process report: every attempt of every pass (failures, waivers, restarts, cable pulls, SOL findings); written now, and again by Close">process report</a>
+        <button class="closebtn freshbtn" v-if="s.order && !s.closed_at" :disabled="s.stage_running" @click="openFresh()"
+                :title="s.stage_running ? 'a stage is running' : 'start a new pass: the runs, waivers and CSVs so far leave the tiles, gates and reports (kept as history in the process report; nothing is deleted, no power action, Kea unchanged)'">Start fresh…</button>
+        <span class="closed-chip" v-if="s.closed_at" :title="'closed ' + s.closed_at">closed</span>
+        <button class="closebtn" v-else-if="s.order && s.lab" @click="openClose()"
+                title="lab rack: archive this pass's record (process report, CSVs) and keep the rack open; no reservation is released">Snapshot…</button>
+        <button class="closebtn" v-else-if="s.order" @click="openClose()"
+                title="release this rack's reservations, mark the order closed">Close order…</button>
+      </div></div>
+    </div>
+  </div>
+
+  <!-- ================= Run strip (the current pass's latest Run) ================= -->
+  <div class="run-strip" v-if="s.run && !s.closed_at" :class="'rs-' + s.run.state" :title="runTitle()">
+    <span class="rs-main">run: {{runText()}}</span>
+    <span class="rs-held" v-for="x in runStrip()" :class="x.cls"><b>{{x.k}}</b> {{x.text}}</span>
+    <span class="rs-held out" v-for="(why, k) in (['done', 'running'].includes(s.run.state) ? (s.run.out || {}) : {})"
+          :class="{ok: (s.run.out_resolved || []).includes(k)}" :title="why"><b>{{k}}</b> {{(s.run.out_resolved || []).includes(k) ? 'deployed since' : 'left out: ' + why}}</span>
+    <span class="rs-held rs-fw" v-if="runFw().length" :title="runFwTitle()">firmware: {{runFw().length}} to note</span>
+    <button class="discbtn depbtn" v-if="s.run.can_continue" :disabled="s.stage_running" @click="openContinue()">Continue to Deploy…</button>
+    <button class="closebtn" v-if="s.run.can_continue && !s.stage_running" @click="endRun()" title="end this Run (nothing runs; the tiles keep every result)">End run</button>
+  </div>
+
+  <!-- ================= rack (populated OUs only) ================= -->
+  <div class="rack" :class="{withdrawer: !!selObj}">
+    <!-- MACs on mgmt ports no slot claims: the other half of a mis-cabled device's 'missing' -->
+    <div class="alert-box bad unexp" v-if="(s.unexpected || []).length">
+      <div class="ab-h">{{s.unexpected.length}} unexpected MAC{{s.unexpected.length===1?'':'s'}}<span class="ab-tag"> · !</span></div>
+      <div class="ab-b">on mgmt-switch ports no slot claims (a device cabled to the wrong port shows missing on its own slot):
+        <span class="lk bad" v-for="u in s.unexpected">port {{u.port}} · {{u.mac}}</span></div>
+    </div>
+    <!-- lab racks: hardware on the rack switch no BOM slot holds; the operator places it -->
+    <div class="alert-box unplaced" v-if="s.lab && (s.unplaced || []).length">
+      <div class="ab-h">{{s.unplaced.length}} unplaced<span class="ab-tag"> · place each into its BOM slot (on-site positions)</span></div>
+      <div class="ab-b">
+        <div class="up-row" v-for="u in s.unplaced" :key="u.port_label">
+          <span class="lk">{{u.port_label}}</span>
+          <span class="mono">{{u.product || 'no FRU answer'}}</span>
+          <span class="mono">{{u.serial || '—'}}</span>
+          <span class="lk" v-if="u.bmc_ip">BMC {{u.bmc_ip}}</span>
+          <span class="lk bad" v-if="u.on_slot" :title="'on the port placed for ' + u.on_slot + ' (its placed hardware is not there): unplace ' + u.on_slot + ' first'">on {{u.on_slot}}'s port</span>
+          <span class="d-place-in" v-if="u.bmc_mac">
+            <select class="popsel" v-model="placeSel[u.port_label]" :disabled="s.stage_running || busy">
+              <option value="">slot…</option>
+              <option v-for="d in absentSlots()" :value="d.pos">{{d.pos}} · {{d.kind}}{{placeNote(u, d)}}</option>
+            </select>
+            <button class="press" :disabled="!placeSel[u.port_label] || s.stage_running || busy" @click="place(u)">Place</button>
+          </span>
+          <span class="muted" v-if="!u.bmc_mac">cannot be placed until its BMC answers FRU</span>
+        </div>
+        <p class="action-msg" v-if="placeMsg">{{placeMsg}}</p>
+      </div>
+    </div>
+    <div v-for="g in layout" :key="g.key">
+      <div class="gap" v-if="g.gap">{{g.gap}}</div>
+      <div class="group">
+        <div class="group-h" :class="g.family" :style="g.style"><span class="g-range">{{g.range}}</span>
+          <span class="col-h" v-for="h in g.heads">{{h}}</span></div>
+        <div class="row" v-for="row in g.rows" :class="row.layout" :style="row.style || ''">
+          <span class="ou-label">{{row.label}}</span>
+
+          <!-- switch: the tile opens its drawer; a wedge's BMC chip opens the BMC's own -->
+          <div class="tile sw" v-if="row.sw" :class="{active: swSel(row.sw)}" @click="select('_sw-' + row.sw.id)">
+            <div class="t-head"><span class="t-port">SW {{row.sw.id}}</span>
+              <span class="kind">{{swKind(row.sw)}}</span>
+              <span class="watt" :class="row.sw.fdb_count!=null ? 'on' : 'unk'" v-if="row.sw.role==='mgmt' && row.sw.mgmt_ip"
+                    :title="'FDB entries seen by the last switch-fdb read'">fdb {{row.sw.fdb_count ?? '—'}}</span>
+              <span class="dot" :class="swDot(row.sw)" :style="row.sw.role==='mgmt' && row.sw.mgmt_ip ? '' : 'margin-left:auto'"></span></div>
+            <div class="sw-rows">
+              <div class="t-row"><span class="k">SN</span>
+                <span v-if="row.sw.serial" class="v">{{row.sw.serial}}</span><span v-else class="skel" style="width:40%"></span></div>
+              <div class="t-row" v-if="row.sw.sonic"><span class="k">MGMT</span><span class="v">{{epText(row.sw.sonic)}}</span></div>
+              <div class="t-row" v-if="row.sw.bmc"><span class="k">BMC</span>
+                <span class="v swbmc" :class="{on: sel==='_sw-' + row.sw.id + '.bmc'}" @click.stop="select('_sw-' + row.sw.id + '.bmc')"
+                      title="open this wedge's BMC (weutil, /etc/issue, cpld_rev)">{{epText(row.sw.bmc)}} ›</span></div>
+            </div>
+            <div class="links">
+              <span class="lk live" v-if="row.sw.mgmt_ip" :class="swLive(row.sw).cls" :title="swLive(row.sw).title">{{row.sw.mgmt_ip}}</span>
+              <span class="lk" v-for="c in swPills(row.sw)" :class="c.state" :title="c.title">{{c.label}}</span>
+            </div>
+            <div class="bars">
+              <div class="bar"><span class="seg" v-for="c in phaseSegs(swObj(row.sw))" :class="c"></span></div>
+              <div class="bar steps" :title="nowTitle(swObj(row.sw))"><span class="seg" v-for="c in stepSegs(swObj(row.sw))" :class="c"></span></div>
+            </div>
+          </div>
+
+          <!-- devices / IOMs / empty cubbies -->
+            <div class="tile" v-for="cell in (row.cells || [])" :class="wrapCls(cell)" :style="tileStyle(cell)" @click="open(cell)">
+              <div class="t-head">
+                <span class="pres" v-if="!cell.empty" :class="presence(cell).cls" :title="presence(cell).title"></span>
+                <span class="t-port">{{cell.label}}</span>
+                <span class="kind" v-if="cell.kindLabel">{{cell.kindLabel}}</span>
+                <span class="lk dev" v-if="!cell.empty && cell.dev?.deviation" :title="cell.dev.deviation">≠</span>
+                <span class="lk" v-if="!cell.empty && cell.dev?.absent" title="no hardware placed in this BOM slot yet">absent</span>
+                <span class="idm" v-if="!cell.empty && !cell.iom && identOn(cell.dev)" :title="identTitle(cell.dev)">ID</span>
+                <span class="flagm" v-if="!cell.empty && flaggedSteps(cellObj(cell)).length" :title="'flagged (passed): ' + flaggedSteps(cellObj(cell)).join(' · ')">⚑</span>
+                <span class="watt" v-if="!cell.empty && power(cell)" :class="power(cell).cls" :title="power(cell).title">{{power(cell).t}}</span>
+                <span class="dot" :class="cell.empty ? 'grey' : dotCls(cellObj(cell))"></span>
+              </div>
+              <div v-if="!cell.empty">
+                <div class="t-row" v-if="cell.dev?.via_head"><span class="k">via</span>
+                  <span class="v" :class="{bad: cell.dev.via_head.verdict==='fail'}"
+                        :title="'judged through its head ' + cell.dev.via_head.pos + ' (Qualify enclosure-check)'">{{cell.dev.via_head.pos}}: {{cell.dev.via_head.headline || 'not checked yet'}}</span></div>
+                <div class="t-row"><span class="k">MAC</span>
+                  <span v-if="cellMac(cell)" class="v">{{cellMac(cell)}}</span><span v-else class="skel"></span></div>
+                <div class="t-row"><span class="k">SN</span>
+                  <span v-if="cellSerial(cell)" class="v">{{cellSerial(cell)}}</span><span v-else class="skel" style="width:60%"></span>
+                  <span v-if="cell.iom" class="side" :class="iomSide(cell).cls" :title="iomSide(cell).title">{{iomSide(cell).t}}</span></div>
+                <div class="t-row"><span class="k">POP</span>
+                  <select class="popsel" :class="{ovr: cell.dev.pop_overridden}" :title="popTitle(cell.dev)"
+                          :disabled="!!s.closed_at" @click.stop @change="setPop(cell.dev, $event.target.value)">
+                    <option v-for="p in s.profiles" :value="p" :selected="p===cell.dev.pop">{{p}}</option>
+                  </select><span class="popv" :class="popMark(cell.dev).cls" :title="popMark(cell.dev).title"
+                          @click.stop="openPop(cell.dev)">{{popMark(cell.dev).t}}</span></div>
+                <div class="links">
+                  <span class="lk" v-for="c in chips(cell)" :class="c.state" :title="c.title">{{c.label}}</span>
+                  <span class="lk waived" v-if="!cell.iom && waiverChip(cell.dev)" :class="waiverChip(cell.dev)?.cls"
+                        :title="waiverChip(cell.dev)?.title">{{waiverChip(cell.dev)?.t}}</span>
+                </div>
+                <div class="bars">
+                  <div class="bar"><span class="seg" v-for="c in phaseSegs(cellObj(cell))" :class="c"></span></div>
+                  <div class="bar steps" :title="nowTitle(cellObj(cell))"><span class="seg" v-for="c in stepSegs(cellObj(cell))" :class="c"></span></div>
+                </div>
+              </div>
+            </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= detail drawer (docked, non-modal) =================
+       one drawer for a device, a JBOD IOM, a switch or a wedge's BMC (selKind);
+       every binding is null-safe: petite-vue evaluates them while v-if tears down -->
+  <div class="drawer" v-if="selObj">
+    <div class="d-head">
+      <span class="d-sn" :class="{bad: identOf(selObj) && !identOf(selObj)?.ok}"
+            :title="identOf(selObj)?.headline || 'Discover\'s serial step has not read one yet'">{{serialOf(selObj) || '— no serial yet —'}}</span>
+      <span class="d-status" :style="statusStyle(selObj)">{{statusText(selObj)}}</span>
+      <span class="lk waived" v-if="selKind==='dev' && waiverChip(selDev)" :class="waiverChip(selDev)?.cls"
+            :title="waiverChip(selDev)?.title">{{waiverChip(selDev)?.t}}</span>
+      <span class="x" @click="close()">✕</span>
+    </div>
+    <div class="d-sub">{{subLine(selObj)}}</div>
+
+    <div class="d-place" v-if="s.lab && selKind==='dev'">
+      <span class="d-place-in" v-if="selDev?.placement">
+        <span class="lk">{{selDev.placement.port_label}}</span>
+        <span class="mono">{{selDev.placement.product}} · {{selDev.placement.serial}}</span>
+        <span class="lk dev" v-if="selDev.deviation">{{selDev.deviation}}</span>
+        <button class="press" :disabled="s.stage_running || busy" @click="unplace(selDev.pos)"
+                title="take this hardware out of the slot (back to Unplaced)">Unplace</button>
+        <select class="popsel" v-model="moveTo" :disabled="s.stage_running || busy">
+          <option value="">move to…</option>
+          <option v-for="d in absentSlots()" :value="d.pos">{{d.pos}} · {{d.kind}}</option>
+        </select>
+        <button class="press" :disabled="!moveTo || s.stage_running || busy" @click="move(selDev.pos)">Move</button>
+      </span>
+      <span class="muted" v-if="!selDev?.placement">absent: no hardware placed in this slot yet</span>
+      <p class="action-msg" v-if="placeMsg">{{placeMsg}}</p>
+    </div>
+    <div class="actions" v-if="selKind==='dev'">
+      <button :class="pwrCls(selDev)" :disabled="!hostBmc(selDev) || !!s.closed_at" @click="openPwr(selDev)"
+              :title="!hostBmc(selDev) ? 'no host BMC' : 'power: ' + pwrTitle(selDev) + (s.closed_at ? ' · order is closed' : ' · on / off / cycle / reset')">PWR</button>
+      <button :class="{lit: identOn(selDev)}" :disabled="!hostBmc(selDev) || !!s.closed_at" @click="openIdnt(selDev)"
+              :title="!hostBmc(selDev) ? 'no host BMC' : identTitle(selDev) + (s.closed_at ? ' · order is closed' : '')">IDNT</button>
+      <button :disabled="!(selDev?.addrs || {}).bmc" @click="openSol(selDev)"
+              title="the live serial console: the flax-post-sol relay's session to this BMC (watching never opens a second SOL)">SOL</button>
+      <button :disabled="!invUrl(selDev)" @click="openInv(selDev)"
+              title="the inventory stage's macinv (detail form when present)">INV</button>
+      <button :disabled="!popRun(selDev)" @click="openPop(selDev)" title="POP rules of the last Qualify">POP</button>
+      <button :disabled="s.stage_running || !!s.closed_at || !(selDev?.qualify_rungs || []).length" @click="qualify(selDev?.pos)"
+              title="re-run Qualify for this node only (then the rack-level rungs)">QUAL</button>
+      <button :disabled="s.stage_running || !!s.closed_at || !(selDev?.deploy_rungs || []).length" @click="openDeployDev(selDev)"
+              :title="selDev?.deploy_gate ? 'Deploy gate: ' + selDev?.deploy_gate + ' (a waiver can be recorded)' : 'deploy this node: install Ubuntu 24.04 (wipes its disks), flax_user, bond0, HA test'">DEPLOY</button>
+      <button :disabled="s.stage_running || !!s.closed_at || !(selDev?.done_rungs || []).length" @click="doneDev(selDev?.pos)"
+              title="Done for this node: SDR/SEL + installed-OS summary, clear its boot override and hostname iPXE file (no power action), inventory; rewrites the customer CSVs">DONE</button>
+      <button :disabled="s.stage_running || !!s.closed_at" @click="firmware(selDev?.pos)"
+              title="read this device's firmware versions (detect only: never flashes)">FW</button>
+      <button :disabled="s.stage_running || !!s.closed_at" @click="retry(selDev?.pos)"
+              title="re-run Discover for this device only (asks first: it may power-cycle the node)">RETRY</button>
+    </div>
+    <div class="actions" v-else>
+      <button v-if="selKind==='swbmc'" @click="select('_sw-' + selObj?.sw?.id)" title="back to the switch">‹ SW {{selObj?.sw?.id}}</button>
+      <button v-if="selKind==='iom' && (selObj?.dev?.links || {})['iom' + (3 - selObj?.n)]" @click="select(selObj?.dev?.pos + '.iom' + (3 - selObj?.n))"
+              :title="'the other IOM of ' + selObj?.dev?.pos">IOM{{3 - selObj?.n}} ›</button>
+      <button :disabled="s.stage_running || !!s.closed_at" @click="firmware(fwTarget(selObj))"
+              :title="'read ' + fwTarget(selObj) + '\'s firmware versions (detect only: never flashes)'">FW</button>
+      <button :disabled="s.stage_running || !!s.closed_at" @click="retry(fwTarget(selObj))"
+              :title="'re-run Discover for ' + fwTarget(selObj) + ' only'">RETRY</button>
+    </div>
+    <p class="action-msg" v-if="actionMsg">{{actionMsg}}</p>
+
+    <!-- ---- device (TiogaPass host+BMC, JBOD roll-up) ---- -->
+    <div v-if="selKind==='dev'">
+      <div class="section-l">addresses</div>
+      <div class="facets">
+        <template v-for="a in addrRows(selDev)">
+          <span class="lbl">{{a.role}}</span><span class="mono" :title="a.name">{{a.mac || '⋯'}} · {{a.ip}}</span>
+          <span :class="a.cls">{{a.mark}}</span>
+        </template>
+        <span class="lbl">POP</span>
+        <span><select class="popsel" :class="{ovr: selDev?.pop_overridden}" :disabled="!!s.closed_at"
+                      @change="setPop(selDev, $event.target.value)">
+            <option v-for="p in s.profiles" :value="p" :selected="p===selDev?.pop">{{p}}</option></select>
+          <span class="note">default from BOM {{selDev?.part}}{{selDev?.pop_overridden ? ' = ' + selDev?.pop_default : ''}}</span></span>
+        <span class="no">{{selDev?.pop_overridden ? 'override' : ''}}</span>
+      </div>
+      <div v-if="selDev?.waiver">
+        <div class="section-l">deploy gate waiver{{selDev?.waiver?.active ? '' : ' (its rungs have passed since)'}}</div>
+        <div class="kv-grid">
+          <span class="lbl">rungs</span><span class="mono amb">{{(selDev?.waiver?.rungs || []).join(', ')}}</span>
+          <span class="lbl">reason</span><span>{{selDev?.waiver?.reason}}</span>
+          <span class="lbl">by</span><span class="mono">{{selDev?.waiver?.who}} · {{selDev?.waiver?.at}}</span>
+        </div>
+      </div>
+      <template v-if="Object.keys(selDev?.ioms || {}).length">
+        <div class="section-l">IOMs (each its own BMC)</div>
+        <div class="facets">
+          <template v-for="e in Object.entries(selDev?.ioms || {})">
+            <span class="lbl clk" @click="select(selDev?.pos + '.' + e[0])">{{e[0].toUpperCase()}} ›</span>
+            <span class="mono">{{e[1].mac || '⋯'}} · {{(selDev?.addrs || {})[e[0]]}}</span><span class="mono">{{e[1].serial || '—'}}</span>
+          </template>
+        </div>
+      </template>
+    </div>
+
+    <!-- ---- one JBOD IOM ---- -->
+    <div v-if="selKind==='iom'">
+      <div class="section-l">address</div>
+      <div class="facets">
+        <span class="lbl">{{selObj?.ep?.toUpperCase()}}</span>
+        <span class="mono" :title="(selObj?.dev?.names || {})[selObj?.ep]">{{selObj?.view?.mac || '⋯'}} · {{(selObj?.dev?.addrs || {})[selObj?.ep]}}</span>
+        <span :class="(selObj?.runs || {})['bmc-reserved']?.verdict==='pass' ? 'ok' : 'no'">{{(selObj?.runs || {})['bmc-reserved']?.verdict==='pass' ? '✓ reserved' : '—'}}</span>
+      </div>
+      <div class="section-l">link (BOM → live)</div>
+      <div class="ha" v-if="iomLink(selObj)">
+        <span class="h">port</span><span class="h">expected</span><span class="h">live</span>
+        <span>{{iomLink(selObj)?.name}}</span><span>{{iomLink(selObj)?.expected}}</span><span :class="iomLink(selObj)?.state" :title="iomLink(selObj)?.title">{{iomLink(selObj)?.seen}}</span>
+      </div>
+    </div>
+
+    <!-- ---- switch / wedge BMC ---- -->
+    <div v-if="selKind==='sw' || selKind==='swbmc'">
+      <div class="section-l">addresses (discovered on the site turtle port)</div>
+      <div class="facets">
+        <template v-for="a in swAddr(selObj)">
+          <span class="lbl" :class="{clk: a.key}" @click="a.key && select(a.key)">{{a.role}}{{a.key ? ' ›' : ''}}</span>
+          <span class="mono">{{a.mac || '⋯'}} · {{a.ip || '⋯'}}</span><span class="note">{{a.note}}</span>
+        </template>
+        <template v-if="!swAddr(selObj).length"><span class="lbl">—</span><span class="note">no endpoint found yet (Discover)</span><span></span></template>
+      </div>
+    </div>
+
+    <!-- ---- identity: every kind's own read (FRU 0 / fruid-util / weutil / syseeprom) ---- -->
+    <div v-if="identOf(selObj)">
+      <div class="section-l">identity · {{identOf(selObj)?.serial_field || 'serial'}}</div>
+      <div class="kv-grid">
+        <template v-for="r in identRows(selObj)"><span class="lbl">{{r.k}}</span><span class="mono">{{r.v}}</span></template>
+        <template v-for="r in identReadRows(selObj)"><span class="lbl">{{r[0]}}</span><span class="mono">{{r[1]}}</span></template>
+      </div>
+      <div class="arts-line" v-if="artList(identOf(selObj)).length"><span class="lbl">raw</span>
+        <span class="art" v-for="a in artList(identOf(selObj))" :title="a.url" @click="openArt(a)">{{a.name}}</span></div>
+    </div>
+
+    <!-- ---- firmware block (Firmware's reads, detect + report only; tiles carry none) ---- -->
+    <div v-if="verRows(selObj).length">
+      <div class="section-l" :title="'Firmware read (detect + report only): ' + (fwViewOf(selObj)?.headline || '')">firmware</div>
+      <div class="kv-grid">
+        <template v-for="r in verRows(selObj)"><span class="lbl">{{r.k}}</span><span class="mono" :class="r.cls" :title="r.title">{{r.v}}</span></template>
+        <template v-if="selKind==='sw'"><span class="lbl">NOS</span><span class="mono">{{selObj?.sw?.nos}} ({{selObj?.sw?.model}})</span></template>
+      </div>
+      <div class="arts-line" v-if="artList(fwViewOf(selObj)).length"><span class="lbl">raw</span>
+        <span class="art" v-for="a in artList(fwViewOf(selObj))" :title="a.url" @click="openArt(a)">{{a.name}}</span></div>
+    </div>
+
+    <div v-if="selKind==='dev'">
+      <div class="section-l">links (BOM → live)</div>
+      <div class="ha">
+        <span class="h">port</span><span class="h">expected</span><span class="h">live</span>
+        <template v-for="l in linkRows(selDev)">
+          <span>{{l.name}}</span><span>{{l.expected}}</span><span :class="l.state" :title="l.title">{{l.seen}}</span>
+        </template>
+      </div>
+    </div>
+
+    <!-- ---- switch: its own uplinks + site link, live ---- -->
+    <div v-if="selKind==='sw' && swLinkRows(selObj).length">
+      <div class="section-l">links (live)</div>
+      <div class="ha">
+        <span class="h">link</span><span class="h">expected</span><span class="h">live</span>
+        <template v-for="l in swLinkRows(selObj)">
+          <span>{{l.name}}</span><span>{{l.expected}}</span><span :class="l.state" :title="l.title">{{l.seen}}</span>
+        </template>
+      </div>
+    </div>
+
+    <!-- ---- switch ports: port -> seen (FDB MACs / LLDP) -> geometry device, link ---- -->
+    <div v-if="selKind==='sw'">
+      <div class="section-l">ports · {{selObj?.sw?.ports_from}}</div>
+      <table class="inv-tbl port-tbl" v-if="portRows(selObj).length">
+        <thead><tr><th>port</th><th>link</th><th>{{selObj?.sw?.role==='mgmt' ? 'MACs (FDB)' : 'LLDP neighbour'}}</th><th>device</th></tr></thead>
+        <tbody><tr v-for="p in portRows(selObj)" :class="{unexp: p.note==='unexpected MAC' || p.note.startsWith('neighbour')}">
+          <td class="mono" :title="p.iface">{{p.port || p.iface}}</td>
+          <td :class="p.oper==='up' ? 'ok' : p.oper ? 'bad' : 'dimv'">{{p.oper || '—'}}</td>
+          <td class="mono">{{(p.seen || []).join(' ') || '—'}}</td>
+          <td><span v-for="x in (p.devices || [])" class="lk clk" @click="select(x.sel)">{{x.pos}} {{x.link}}</span>
+            <span class="note" v-if="p.note">{{p.note}}</span></td></tr></tbody>
+      </table>
+      <p class="pending-note" v-else>no port read yet</p>
+    </div>
+
+    <!-- ---- console panel: the relay's capture tailed while a SOL capture runs; after,
+         the scan's findings (a finding fails the device) + the raw SOL ---- -->
+    <div v-if="selKind==='dev' && selDev?.console">
+      <div class="section-l con-h" :class="{bad: selDev?.console?.bad, live: selDev?.console?.live}" :title="conTitle(selDev)">{{conHead(selDev)}}</div>
+      <pre id="rp-contail" class="console con-live" v-if="conRung(selDev)">{{con && con.pos===selDev?.pos ? (con.text || '(nothing yet)') : 'reading…'}}</pre>
+      <div v-else>
+        <div class="con-find" v-for="f in (selDev?.console?.findings || [])" :title="f[1]"><span class="lbl mono">{{f[0]}}</span><span class="mono">{{f[1]}}</span></div>
+        <div class="arts-line" v-if="conArts(selDev).length"><span class="lbl">raw</span>
+          <span class="art" v-for="a in conArts(selDev)" :title="a.url" @click="openArt(a)">{{a.name}}</span></div>
+      </div>
+    </div>
+
+    <!-- ---- pipeline: Post's step names per phase; a step opens its evidence ---- -->
+    <div class="section-l">pipeline</div>
+    <div class="now-line" :class="{on: nowInfo(selObj).text.indexOf('now: idle') !== 0}" :title="nowTitle(selObj)">
+      <span class="mono">{{nowInfo(selObj).text}}</span><span class="now-next" v-if="nowInfo(selObj).next">{{nowInfo(selObj).next}}</span></div>
+    <div class="checklist">
+      <div class="phase" v-for="p in s.phases" :class="{bad: phaseState(selObj,p)==='fault', unm: phaseState(selObj,p)==='unmeasured', folded: phFolded(selObj,p)}">
+        <div class="phase-h" :class="{clk: phFinished(selObj,p)}" @click="togglePh(selObj,p)"
+             :title="phFinished(selObj,p) ? (phFolded(selObj,p) ? 'finished: click to show its steps' : 'click to fold') : ''"><span class="dot" :class="phaseDot(selObj,p)"></span>{{p}}<span class="ph-ok" v-if="phFolded(selObj,p)">{{phaseState(selObj,p)==='fwnote' ? '!' : '✓'}}</span>
+          <span class="pct">{{phasePct(selObj,p)}}</span><span class="caret" v-if="phFinished(selObj,p)">{{phFolded(selObj,p) ? '▸' : '▾'}}</span></div>
+        <div class="steps" v-if="phFolded(selObj,p)"></div>
+        <div class="steps" v-else-if="stepEntries(selObj,p).length">
+          <div class="step evable" v-for="st in stepEntries(selObj,p)" :class="[st.state, {flag: st.flag}]" :title="st.title" @click="openStep(selObj, p, st)">
+            <span class="si">{{stepIcon(st.flag ? 'flag' : st.state)}}</span>{{st.name}}<span class="note" v-if="st.note"> · {{st.note}}</span>
+            <span class="art" v-for="a in st.arts" :title="a.url" @click.stop="openStepArt(selObj, p, st, a)">{{a.name}}</span></div>
+        </div>
+        <div class="steps" v-else><div class="step pending"><span class="si">·</span>{{selKind==='dev' ? 'none for this device' : 'none for this endpoint'}}</div></div>
+        <div v-if="p==='firmware' && selKind==='dev' && !phFolded(selObj,p)"><div class="ep-fw" v-for="x in endpointFw(selDev)">
+          <div class="ep-h clk" @click="select(selDev?.pos + '.' + x.ep)">{{x.ep.toUpperCase()}} ›</div>
+          <div class="steps">
+            <div class="step evable" v-for="st in x.entries" :class="[st.state, {flag: st.flag}]" :title="st.title" @click="openStep(selDev, 'firmware ' + x.ep.toUpperCase(), st)">
+              <span class="si">{{stepIcon(st.flag ? 'flag' : st.state)}}</span>{{st.name}}<span class="note" v-if="st.note"> · {{st.note}}</span>
+              <span class="art" v-for="a in st.arts" :title="a.url" @click.stop="openStepArt(selDev, 'firmware ' + x.ep.toUpperCase(), st, a)">{{a.name}}</span></div>
+          </div>
+        </div></div>
+      </div>
+    </div>
+
+    <div class="section-l">alerts</div>
+    <div class="alert-grid">
+      <div class="alert-box clk" v-for="f in faults(selObj)" :class="{bad: f.bad}" title="click for the evidence"
+           @click="openStep(selObj, f.phase, f.st)">
+        <div class="ab-h">{{f.rung}}<span class="ab-tag" v-if="f.bad"> · !</span></div>
+        <div class="ab-b">{{f.text}}</div></div>
+      <div class="alert-box" v-if="!faults(selObj).length"><div class="ab-h">rungs</div>
+        <div class="ab-b pending-note">no faults</div></div>
+    </div>
+  </div>
+
+  <!-- ================= PWR modal (on: no confirm; off / cycle / reset: confirm naming the node) ================= -->
+  <div class="m-scrim" v-if="pwrM" @click="pwrM=null">
+    <div class="m-box" @click.stop>
+      <div class="m-h"><span class="m-title">Power {{pwrM?.pos}} · <span class="mono">{{pwrM?.ip}}</span></span>
+        <span class="x" @click="pwrM=null">✕</span></div>
+      <div class="m-b">
+        <p class="m-sub">power is <b :class="pwrCls(pwrDev)">{{pwrDev?.bmc_live?.power || 'unknown'}}</b>
+          <span class="dim">· {{pwrTitle(pwrDev)}}</span></p>
+        <p class="m-sub bad" v-if="pwrHeld(pwrDev)">refused while {{pwrHeld(pwrDev)}}</p>
+        <div class="radios">
+          <label v-for="a in ['on', 'off', 'cycle', 'reset']" :class="{on: pwrChoice===a}">
+            <input type="radio" name="rp-pwr" :value="a" v-model="pwrChoice"> {{a}}</label>
+        </div>
+        <button class="press" :disabled="!pwrChoice || !!pwrHeld(pwrDev) || busy" @click="pwrChoice==='on' ? doPower() : (pwrConfirm=true)">Activate</button>
+        <div class="confirm" v-if="pwrConfirm">Power <b>{{pwrChoice}}</b> {{pwrM?.pos}}?
+          <button class="yes" :disabled="busy" @click="doPower()">Yes</button><button class="no" @click="pwrConfirm=false">No</button></div>
+        <p class="action-msg" v-if="pwrM?.msg">{{pwrM?.msg}}</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= IDNT modal (chassis-identify LED) ================= -->
+  <div class="m-scrim" v-if="idntM" @click="idntM=null">
+    <div class="m-box" @click.stop>
+      <div class="m-h"><span class="m-title">Identify {{idntM?.pos}} · <span class="mono">{{idntM?.ip}}</span></span>
+        <span class="x" @click="idntM=null">✕</span></div>
+      <div class="m-b">
+        <p class="m-sub">{{identTitle(idntDev)}}</p>
+        <div class="radios">
+          <label :class="{on: idntMode==='on'}"><input type="radio" name="rp-idnt" value="on" v-model="idntMode"> on 240 s</label>
+          <label :class="{on: idntMode==='force'}"><input type="radio" name="rp-idnt" value="force" v-model="idntMode"> force</label>
+          <label :class="{on: idntMode==='off'}"><input type="radio" name="rp-idnt" value="off" v-model="idntMode"> off</label>
+        </div>
+        <button class="press" :disabled="busy" @click="doIdent()">Activate</button>
+        <p class="action-msg" v-if="idntM?.msg">{{idntM?.msg}}</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= POP rules modal ================= -->
+  <div class="m-scrim" v-if="popDev" @click="popOpen=null">
+    <div class="m-box" @click.stop>
+      <div class="m-h"><span class="m-title">POP {{popDev?.pos}} · {{popRun(popDev)?.detail?.profile}}</span>
+        <span class="x" @click="popOpen=null">✕</span></div>
+      <div class="m-b">
+        <p class="m-sub" v-if="popRun(popDev)?.detail?.error">{{popRun(popDev)?.detail?.error}}</p>
+        <p class="m-sub bad" v-for="x in (popRun(popDev)?.detail?.extra || [])">{{x}}</p>
+        <table class="inv-tbl pop-tbl" v-if="(popRun(popDev)?.detail?.results || []).length">
+          <tr v-for="r in (popRun(popDev)?.detail?.results || [])" :class="{blocked: !r.ok}">
+            <td class="mono">{{r.rule}}</td><td>{{r.ok ? '✓' : '✕'}}</td><td>{{r.found}}</td></tr>
+        </table>
+        <p class="m-sub" v-else>no rules evaluated</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= Run modal (typed confirm; reinstall chosen up front) ================= -->
+  <div class="m-scrim" v-if="running" @click="running=false">
+    <div class="m-box" @click.stop>
+      <div class="m-h"><span class="m-title">Run order {{s.order}}{{s.rack ? ' rack ' + s.rack : ''}}</span>
+        <span class="x" @click="running=false">✕</span></div>
+      <div class="m-b">
+        <p class="m-sub">The server runs Discover → Firmware → Qualify → Deploy → Done for the whole rack
+          (powers nodes on, power-cycles them into the live image, stress, then installs). Every device
+          passing: straight through to Done. Any failure (Discover, Qualify, the Deploy gate): the other
+          devices carry on, then the Run holds before Deploy and lists the blockers; Continue to Deploy
+          is one click from there. Firmware is report only: what it finds never holds the Run.</p>
+        <label class="m-sub"><input type="checkbox" v-model="runRein"> reinstall nodes already installed
+          <span class="dim">{{runInstalled().length ? '(' + runInstalled().join(', ') + ')' : '(none installed)'}}</span></label>
+        <p class="m-sub dim" v-if="!runRein">Installed nodes deploy from firstboot (their disks are kept); never-installed nodes are installed.</p>
+        <div v-if="runRein">
+          <p class="m-sub bad">Reinstall wipes the disks of every installed node. Type the order id again for the reinstall.</p>
+          <input class="confirm-in" name="rp-runrein" autocomplete="off" v-model="runReinText" :placeholder="s.order">
+        </div>
+        <p class="m-sub">Type the order id to start the Run.</p>
+        <input class="confirm-in" name="rp-runconfirm" autocomplete="off" v-model="runConfirm" :placeholder="s.order">
+        <button class="press danger" :disabled="runConfirm!==s.order || (runRein && runReinText!==s.order)" @click="doRun()">Run rack</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= Continue to Deploy modal (held Run: waivers, then one click) ================= -->
+  <div class="m-scrim" v-if="contM" @click="contM=null">
+    <div class="m-box" @click.stop>
+      <div class="m-h"><span class="m-title">Continue run {{s.run?.id}} to Deploy</span>
+        <span class="x" @click="contM=null">✕</span></div>
+      <div class="m-b">
+        <p class="m-sub" v-if="runResumes()">The Run was interrupted in {{s.run?.stage}}: Continue runs {{s.run?.stage}} again
+          and goes on as the Run would (held again before Deploy on any blocker).</p>
+        <p class="m-sub" v-else>Deploy then Done{{(s.run?.requalify || []).length ? ', after Firmware + Qualify for ' + s.run.requalify.join(', ') + ' (not qualified in this Run)' : ''}}.
+          The Deploy gate is read again at this click over this Run's results only{{s.run?.reinstall ? ' (reinstall chosen at the start)' : ': installed nodes deploy from firstboot, a node with no install record only onto a disk proven blank'}}.
+          A device still blocked then is left out of Deploy; Done covers the whole rack.</p>
+        <div v-for="k in contKeys()">
+          <p class="m-sub bad"><b class="mono">{{k}}</b> {{(runBlocked()[k] || []).join('; ')}}</p>
+          <label class="m-sub mono" v-for="r in Object.keys(contWaive[k] || {})"><input type="checkbox" v-model="contWaive[k][r]"> waive {{r}}</label>
+        </div>
+        <input class="confirm-in" name="rp-contreason" autocomplete="off" v-if="contWaived().length" v-model="contReason"
+               placeholder="reason for the waivers (recorded with who and when)">
+        <button class="press danger" :disabled="busy || (contWaived().length && !contReason.trim())" @click="doContinue()">Continue to Deploy</button>
+        <p class="action-msg" v-if="contM?.msg">{{contM?.msg}}</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= rack-wide Discover modal (typed confirm) ================= -->
+  <div class="m-scrim" v-if="discovering" @click="discovering=false">
+    <div class="m-box" @click.stop>
+      <div class="m-h"><span class="m-title">Discover order {{s.order}}{{s.rack ? ' rack ' + s.rack : ''}}</span>
+        <span class="x" @click="discovering=false">✕</span></div>
+      <div class="m-b">
+        <p class="m-sub">Walks every device and switch: turtle/mgmt ports, Kea reservations and leases,
+          then powers on every node that is off and power-cycles every node that is on but not in
+          this device's live image ({{discHosts().map((d) => d.pos).join(', ')}}) -- an OS someone is
+          using included. To re-run one device, use RETRY in its drawer. Type the order id to confirm.</p>
+        <input class="confirm-in" name="rp-dconfirm" autocomplete="off" v-model="discText" :placeholder="s.order">
+        <button class="press danger" :disabled="discText!==s.order" @click="doDiscover()">Discover rack</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= rack-wide Qualify modal (typed confirm) ================= -->
+  <div class="m-scrim" v-if="qualifying" @click="qualifying=false">
+    <div class="m-box" @click.stop>
+      <div class="m-h"><span class="m-title">Qualify order {{s.order}}{{s.rack ? ' rack ' + s.rack : ''}}</span>
+        <span class="x" @click="qualifying=false">✕</span></div>
+      <div class="m-b">
+        <p class="m-sub">Power-cycles all {{qualHosts().length}} host-bearing nodes into the live image
+          ({{qualHosts().map((d) => d.pos).join(', ')}}), clears their SELs and runs the stress battery,
+          then the iperf mesh. It holds this rack for hours; Cancel stops it at the next phase.
+          Only devices whose Discover passed are booted. Type the order id to confirm.</p>
+        <input class="confirm-in" name="rp-qconfirm" autocomplete="off" v-model="qualText" :placeholder="s.order">
+        <button class="press danger" :disabled="qualText!==s.order" @click="doQualify()">Qualify rack</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= rack-wide Deploy modal (typed confirm) ================= -->
+  <div class="m-scrim" v-if="deploying" @click="deploying=false">
+    <div class="m-box" @click.stop>
+      <div class="m-h"><span class="m-title">Deploy order {{s.order}}{{s.rack ? ' rack ' + s.rack : ''}}</span>
+        <span class="x" @click="deploying=false">✕</span></div>
+      <div class="m-b">
+        <p class="m-sub">Installs Ubuntu 24.04 on all {{depHosts().length}} host-bearing nodes
+          ({{depHosts().map((d) => d.pos).join(', ')}}) -- their disks are wiped -- with SOL captured,
+          boots the installed OS, runs flax_user, configures bond0 (active-backup) and runs the
+          whole-wedge HA test. Every node must have passed Qualify (a waiver is recorded per node
+          from its drawer's DEPLOY). Cancel stops it at the next phase.</p>
+        <p class="m-sub bad" v-for="d in (lateFrom(depFrom) ? [] : depHosts().filter((x) => x.deploy_gate))">{{d.pos}}: {{d.deploy_gate}}</p>
+        <label class="m-sub">start at
+          <select v-model="depFrom"><option v-for="f in (s.deploy_from || ['install'])" :value="f">{{f}}</option></select>
+          <span class="dim">{{fromNote(depFrom)}}</span></label>
+        <label class="m-sub" v-if="depFrom==='install' && depInstalled().length">
+          <input type="checkbox" v-model="depReinstall"> reinstall {{depInstalled().join(', ')}} (already installed: wipes their disks again)</label>
+        <input class="confirm-in" name="rp-depconfirm" autocomplete="off" v-model="depText" :placeholder="s.order">
+        <button class="press danger" :disabled="depText!==s.order" @click="doDeploy()">Deploy rack</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= rack-wide Done modal (typed confirm) ================= -->
+  <div class="m-scrim" v-if="finishing" @click="finishing=false">
+    <div class="m-box" @click.stop>
+      <div class="m-h"><span class="m-title">Done order {{s.order}}{{s.rack ? ' rack ' + s.rack : ''}}</span>
+        <span class="x" @click="finishing=false">✕</span></div>
+      <div class="m-b">
+        <p class="m-sub">For all {{doneHosts().length}} host-bearing nodes ({{doneHosts().map((d) => d.pos).join(', ')}}):
+          reads SDR + SEL out of band (a non-benign SEL entry is a fault) and the installed OS in band
+          (only where Deploy's first boot passed), removes the hostname iPXE file and clears the
+          Redfish boot override, and lists the components from the Qualify inventory. Then writes
+          the customer CSVs. No node is powered on or off. Type the order id to confirm.</p>
+        <input class="confirm-in" name="rp-doneconfirm" autocomplete="off" v-model="doneText" :placeholder="s.order">
+        <button class="press danger" :disabled="doneText!==s.order" @click="doDone()">Done rack</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= per-device Deploy modal (gate, waivers, confirm) ================= -->
+  <div class="m-scrim" v-if="depM" @click="depM=null">
+    <div class="m-box" @click.stop>
+      <div class="m-h"><span class="m-title">Deploy {{depM?.pos}}</span>
+        <span class="x" @click="depM=null">✕</span></div>
+      <div class="m-b">
+        <p class="m-sub" v-if="!lateFrom(devFrom)">Installs Ubuntu 24.04 on {{depM?.pos}} (its disks are wiped), then flax_user,
+          bond0 and the HA test (with the iperf server {{s.iperf_server || ''}} when it is deployed).</p>
+        <p class="m-sub ok" v-if="!lateFrom(devFrom) && !(depDev?.gate_blockers || []).length">Qualify passed: the gate is open.</p>
+        <div v-if="!lateFrom(devFrom) && (depDev?.gate_blockers || []).length">
+          <p class="m-sub bad">Deploy gate: {{depDev?.deploy_gate}}</p>
+          <p class="m-sub">Waive (recorded in order.db with the reason, who and when; any rung not ticked still blocks):</p>
+          <label class="m-sub mono" v-for="r in Object.keys(devWaive)"><input type="checkbox" v-model="devWaive[r]"> {{r}}
+            <span class="dim">{{depDev?.runs?.[r]?.detail?.error || depDev?.runs?.[r]?.detail?.headline || depDev?.runs?.[r]?.verdict || 'not run'}}</span></label>
+          <input class="confirm-in" name="rp-reason" autocomplete="off" v-if="depWaived().length" v-model="devReason"
+                 placeholder="reason (e.g. extra SATA SSD missing; operator approved install)">
+          <p class="m-sub bad" v-if="depLeft().length">still blocked by: {{depLeft().join(', ')}}</p>
+        </div>
+        <label class="m-sub">start at
+          <select v-model="devFrom"><option v-for="f in (s.deploy_from || ['install'])" :value="f">{{f}}</option></select>
+          <span class="dim">{{fromNote(devFrom)}}</span></label>
+        <div v-if="devFrom==='install' && installed(depDev)">
+          <p class="m-sub bad">{{depM?.pos}} is already installed: a reinstall wipes its disks again.
+            Type the order id to confirm.</p>
+          <input class="confirm-in" name="rp-devrein" autocomplete="off" v-model="devReinText" :placeholder="s.order">
+        </div>
+        <button class="press danger" :disabled="!depReady()" @click="doDeployDev()">Deploy {{depM?.pos}}</button>
+        <p class="action-msg" v-if="depM?.msg">{{depM?.msg}}</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= step evidence modal (Post's stepinfo; stepM?. — petite-vue evaluates during teardown) ================= -->
+  <div class="m-scrim" v-if="stepM && !artM" @click="stepM=null">
+    <div class="m-box" @click.stop>
+      <div class="m-h"><span class="m-title">{{stepM?.who}} · {{stepM?.phase}} · {{stepM?.name}}</span>
+        <span class="x" @click="stepM=null">✕</span></div>
+      <div class="m-b">
+        <p class="m-sub"><span class="pop-badge" :class="'st-' + (stepM?.state || 'pending')">{{stepM?.word}}</span>
+          <b class="step-head" v-if="stepM?.headline">{{stepM?.headline}}</b></p>
+        <p class="m-sub dim" v-if="stepM?.when">{{stepM?.when}}</p>
+        <p class="pending-note" v-if="!stepM?.ran">this step has not run yet</p>
+        <div class="kv-grid step-kv" v-if="(stepM?.rows || []).length">
+          <template v-for="r in (stepM?.rows || [])"><span class="lbl">{{r[0]}}</span><span class="mono">{{r[1]}}</span></template>
+        </div>
+        <table class="inv-tbl ev-tbl" :class="stepM?.table?.cls" v-if="(stepM?.table?.rows || []).length">
+          <tr><th v-for="c in (stepM?.table?.cols || [])">{{c}}</th></tr>
+          <tr v-for="(r, i) in (stepM?.table?.rows || [])" :class="stepM?.table?.row_cls?.[i]"><td v-for="c in r" class="mono">{{c}}</td></tr>
+        </table>
+        <p class="pending-note" v-for="n in (stepM?.notes || [])">{{n}}</p>
+        <div class="arts-line" v-if="(stepM?.arts || []).length"><span class="lbl">artifacts</span>
+          <span class="art" v-for="a in (stepM?.arts || [])" :title="a.url" @click="openArt(a, true)">{{a.name}}</span></div>
+        <p class="pending-note" v-if="stepM?.ran && !(stepM?.arts || []).length">no artifacts saved for this step</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= artifact viewer (in-page; artM?. — petite-vue evaluates during teardown) ================= -->
+  <div class="m-scrim" v-if="artM" @click="closeArt()">
+    <div class="m-box art-box" @click.stop>
+      <div class="m-h"><span class="m-title mono">{{artM?.name}}</span>
+        <span class="art-info">{{artInfo()}}</span>
+        <span class="x" @click="closeArt()">✕</span></div>
+      <div class="art-bar">
+        <button class="press" v-if="artM?.fromStep" @click="backArt()" title="back to the step's evidence">‹ Back</button>
+        <button class="press" :disabled="!artM?.text" @click="copyArt()">Copy</button>
+        <a class="press" :href="artM?.url || ''" :download="(artM?.url || '').split('/').pop()">Download</a>
+        <span class="art-copied" v-if="artM?.copied">{{artM?.copied}}</span>
+        <span class="art-path mono">{{artM?.url}}</span>
+      </div>
+      <p class="pending-note" v-if="artM?.loading">loading…</p>
+      <p class="m-sub bad" v-if="artM?.error">could not load: {{artM?.error}}</p>
+      <p class="m-sub amb" v-if="artM?.truncated">truncated — the first 2 MiB is shown; Download for the full file</p>
+      <pre class="console art-pre" v-if="!artM?.loading && !artM?.error">{{artM?.text || '(empty)'}}</pre>
+    </div>
+  </div>
+
+  <!-- ================= SOL terminal (the Post UI's sol.js over the relay's /socket.io/) ================= -->
+  <div class="m-scrim" v-if="solM" @click="closeSol()">
+    <div class="m-box m-sol" @click.stop>
+      <div class="m-h"><span class="m-title">{{solM?.pos}} · SOL console · <span class="mono">{{solM?.ip}}</span></span>
+        <span class="x" @click="closeSol()">✕</span></div>
+      <div class="m-b">
+        <p class="m-sub bad" v-if="solErr">{{solErr}}</p>
+        <div class="sol-controls">
+          <button class="sol-lock" :class="'lk-'+solLockState()" @click="solLock()">{{solLockLabel()}}</button>
+          <button class="sol-relaunch" @click="solRelaunch()">Relaunch</button>
+          <span class="sol-idle" v-if="solIdle !== null" :class="{stale: solIdle > 120}">last console byte {{solIdle}}s ago</span>
+          <span class="sol-client">Client: {{solClientId || '—'}}</span>
+        </div>
+        <div id="rp-solterm" class="sol-terminal"></div>
+        <div class="sol-log"><div v-for="m in solLog" class="sol-log-line">{{m}}</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= start-fresh modal (typed confirm + reason) ================= -->
+  <div class="m-scrim" v-if="freshing" @click="freshing=false">
+    <div class="m-box" @click.stop>
+      <div class="m-h"><span class="m-title">Start fresh: order {{s.order}}{{s.rack ? ' rack ' + s.rack : ''}}</span>
+        <span class="x" @click="freshing=false">✕</span></div>
+      <div class="m-b">
+        <p class="m-sub">Starts pass {{(s.pass?.id || 1) + 1}}. Every run, waiver and failure so far leaves the
+          tiles, the Deploy gate and the customer CSVs (those are kept as
+          <span class="mono">*.pass{{s.pass?.id || 1}}.csv</span>). Nothing is deleted: the process report
+          keeps every pass. No node is powered, Kea is unchanged. Type the order id and say why.</p>
+        <input class="confirm-in" name="rp-freshconfirm" autocomplete="off" v-model="freshText" :placeholder="s.order">
+        <textarea class="confirm-in" name="rp-freshreason" rows="3" v-model="freshReason" placeholder="reason (recorded)"></textarea>
+        <button class="press danger" :disabled="freshText!==s.order || !freshReason.trim() || busy" @click="doFresh()">Start pass {{(s.pass?.id || 1) + 1}}</button>
+        <p class="action-msg" v-if="freshMsg">{{freshMsg}}</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= close-order modal (typed confirm) ================= -->
+  <div class="m-scrim" v-if="closing" @click="closing=false">
+    <div class="m-box" @click.stop>
+      <div class="m-h"><span class="m-title">{{s.lab ? 'Snapshot' : 'Close order'}} {{s.order}}{{s.rack ? ' rack ' + s.rack : ''}}</span>
+        <span class="x" @click="closing=false">✕</span></div>
+      <div class="m-b" v-if="s.lab">
+        <p class="m-sub">Writes the internal process report, keeps it and the CSVs Done last wrote in
+          <span class="mono">snapshots/pass-{{(s.pass || {}).id || '?'}}/</span>, and archives this pass.
+          The rack stays open: no reservation is released, stages keep running; the next pass begins
+          with Start fresh. Type the rack id to confirm.</p>
+        <input class="confirm-in" name="rp-confirm" autocomplete="off" v-model="confirmText" :placeholder="s.order">
+        <button class="press" :disabled="confirmText!==s.order || busy" @click="doSnapshot()">Snapshot</button>
+        <p class="action-msg" v-if="closeMsg">{{closeMsg}}</p>
+      </div>
+      <div class="m-b" v-if="!s.lab">
+        <p class="m-sub">Writes the internal process report (every pass), then archives the order and
+          releases every Kea reservation of this rack (source
+          <span class="mono">order:{{s.order}}{{s.rack ? '/' + s.rack : ''}}</span>) and marks it closed.
+          Stages can no longer run. Type the order id to confirm.</p>
+        <input class="confirm-in" name="rp-confirm" autocomplete="off" v-model="confirmText" :placeholder="s.order">
+        <button class="press danger" :disabled="confirmText!==s.order || busy" @click="doClose()">Close order</button>
+        <p class="action-msg" v-if="closeMsg">{{closeMsg}}</p>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

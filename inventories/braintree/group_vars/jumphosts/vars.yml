@@ -1,0 +1,18 @@
+---
+ansible_connection: ansible.builtin.ssh
+ansible_user: flax
+ansible_ssh_common_args: >-
+  -o StrictHostKeyChecking=no
+  -o UserKnownHostsFile=/dev/null
+device_role: collect_jumphost
+
+# Braintree has a single WAN uplink (wlan0); the dual-WAN failover
+# daemon's primary/backup assertion would fail. Run only the wlan0
+# self-recovery watchdog from the jumphost_wan_failover role.
+jumphost_wan_failover_wan_failover_enabled: false
+
+# Dev site: no rack post order server and no post fleet viewer here (as before
+# placement.yml). Delete both lines to take the fleet default (rackpost on the
+# primary, viewer on both bangs).
+apply_rackpost_hosts: []
+apply_post_fleet_viewer_hosts: []

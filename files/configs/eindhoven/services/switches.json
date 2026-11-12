@@ -1,0 +1,5 @@
+[
+  {"name": "rabbit-gouda", "driver": "eos", "host": "rabbit-gouda", "credentials_key": "eos"},
+  {"name": "rabbit-edam",  "driver": "eos", "host": "rabbit-edam",  "credentials_key": "eos"},
+  {"name": "turtle-gouda", "driver": "ios", "host": "turtle-gouda", "credentials_key": "cisco"}
+]

@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% import "_components.html" as c %}
+{% block title %}flax-control — records{% endblock %}
+{% block content %}
+{{ c.page_header('Records', 'Append-only work-record store (dut / work_records, migration 031). Paste whatever you have — mac (any form), serial, dut id, order, customer.') }}
+
+<div class="section">
+  <form method="get" action="/records" class="filter-bar">
+    <input class="table-filter" type="search" name="q" value="{{ q or '' }}"
+           placeholder="mac, serial, dut id, order, customer…" autofocus>
+    <button type="submit" class="ds-btn">Search</button>
+  </form>
+</div>
+
+{% if search %}
+<div class="section">
+  <h2>Results for <code>{{ search.term }}</code></h2>
+  {% if not search.any %}
+    <p class="empty">No hits. Lenses tried: {{ search.tried | join(', ') }}.</p>
+  {% endif %}
+  {% if search.hits.duts %}
+  <div class="table-scroll"><table class="data-table"><thead><tr><th>dut</th><th>p0 mac</th><th>serial</th><th>last record</th></tr></thead><tbody>
+    {% for d in search.hits.duts %}
+    <tr>
+      <td><a href="/records?dut={{ d.dut_id }}">#{{ d.dut_id }}</a></td>
+      <td><a href="/devices/{{ d.p0_mac }}"><code>{{ d.p0_mac }}</code></a></td>
+      <td>{% if d.serial %}{{ d.serial }}{% else %}{{ c.badge('unreadable', 'w') }}{% endif %}</td>
+      <td class="muted">{{ d.last_record_at or '—' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody></table></div>
+  {% endif %}
+  {% for grp in search.hits.orders %}
+    <h3>order <code>{{ search.term }}</code> — {{ grp.duts | length }} DUTs
+      <a href="/records?order={{ search.term }}">open slice →</a></h3>
+  {% endfor %}
+  {% for grp in search.hits.customers %}
+    <h3>customer <code>{{ search.term }}</code> — {{ grp.duts | length }} DUTs
+      <a href="/records?customer={{ search.term }}">open slice →</a></h3>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if bio %}
+<div class="section">
+  <h2>DUT #{{ bio.dut.dut_id }}</h2>
+  <div class="grid3">
+    <div class="side-card"><h3>p0 mac</h3>
+      <div style="font-family:var(--mono); font-size:1rem;">
+        <a href="/devices/{{ bio.dut.p0_mac }}"><code>{{ bio.dut.p0_mac }}</code></a></div></div>
+    <div class="side-card"><h3>serial</h3>
+      <div style="font-size:1rem;">
+        {% if bio.serial_unreadable %}{{ c.badge('unreadable', 'w') }}
+        {% else %}{{ bio.dut.serial }}{% endif %}</div></div>
+    <div class="side-card"><h3>first seen</h3>
+      <div style="font-size:0.9rem;">{{ bio.dut.first_seen }}</div></div>
+  </div>
+  {% if bio.other_assemblies %}
+  <details style="margin-top:0.8rem;"><summary class="muted">this component's other lives
+    ({{ bio.other_assemblies | length }} assemblies)</summary>
+    <ul>{% for a in bio.other_assemblies %}
+      <li><a href="/records?dut={{ a.dut_id }}">#{{ a.dut_id }}</a>
+        serial {{ a.serial or 'unreadable' }} · last {{ a.last_record_at or '—' }}</li>
+    {% endfor %}</ul></details>
+  {% endif %}
+
+  <div class="filter-bar" style="margin-top:0.8rem;">
+    {% for k in bio.kinds %}
+      <a class="tag" href="/records?dut={{ bio.dut.dut_id }}&kind={{ k }}">{{ k }}</a>
+    {% endfor %}
+    {% if kind %}<a class="tag" href="/records?dut={{ bio.dut.dut_id }}">clear filter</a>{% endif %}
+  </div>
+  {% if bio.records %}
+  <div class="table-scroll"><table class="data-table"><thead><tr><th>at</th><th>kind</th><th>stage</th><th>keys</th><th>summary</th></tr></thead><tbody>
+    {% for r in bio.records %}
+    <tr>
+      <td class="muted">{{ r.at }}</td>
+      <td><span class="tag">{{ r.kind }}</span></td>
+      <td>{{ r.stage or '' }}</td>
+      <td>{% for k, v in (r['keys'] or {}).items() %}<span class="tag">{{ k }}={{ v }}</span>{% endfor %}</td>
+      <td>{{ r.summary }}
+        <details><summary class="muted">payload</summary>
+          {% if r.payload and r.payload.log %}<pre>{{ r.payload.log }}</pre>{% endif %}
+          <pre style="font-size:0.75rem;">{{ r.payload | tojson(indent=2) }}</pre>
+        </details></td>
+    </tr>
+    {% endfor %}
+  </tbody></table></div>
+  {% else %}<p class="empty">No records{% if kind %} of kind <code>{{ kind }}</code>{% endif %} for this DUT.</p>{% endif %}
+</div>
+{% endif %}
+
+{% if slice %}
+<div class="section">
+  <h2>{{ slice.key }} <code>{{ slice.value }}</code> — {{ slice.dut_count }} DUTs,
+    {{ slice.records | length }} records</h2>
+  <div class="table-scroll"><table class="data-table sortable" id="records-slice-tbl"><thead><tr><th>at</th><th>dut</th><th>p0 mac</th><th>serial</th><th>kind</th><th>summary</th></tr></thead><tbody>
+    {% for r in slice.records %}
+    <tr>
+      <td class="muted">{{ r.at }}</td>
+      <td><a href="/records?dut={{ r.dut_id }}">#{{ r.dut_id }}</a></td>
+      <td><a href="/devices/{{ r.p0_mac }}"><code>{{ r.p0_mac }}</code></a></td>
+      <td>{{ r.serial or 'unreadable' }}</td>
+      <td><span class="tag">{{ r.kind }}</span></td>
+      <td>{{ r.summary }}
+        <details><summary class="muted">payload</summary>
+          <pre style="font-size:0.75rem;">{{ r.payload | tojson(indent=2) }}</pre></details></td>
+    </tr>
+    {% endfor %}
+  </tbody></table></div>
+</div>
+{% endif %}
+
+{% if not search and not bio and not slice %}
+<p class="empty">Search above, or arrive via a Lanes / Ownership link.</p>
+{% endif %}
+
+{% endblock %}

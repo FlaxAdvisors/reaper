@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# reaper: thin shim; the CLI is the python package reapercli/ (spec 2026-11-07).
+set -euo pipefail
+# The pinned toolchain env (REAPER_ROOT, ansible.cfg, vault script, venv): one copy,
+# shared with tools that source it (VS Code's Ansible extension).
+# shellcheck source=scripts/toolchain-env.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/scripts/toolchain-env.sh"
+VENV="$REAPER_TOOLCHAIN"
+if [[ -n "$VENV" ]]; then
+  PY="${VENV}/bin/python"
+elif command -v python3.12 >/dev/null; then
+  PY=python3.12          # a bang without the shared venv: bare python3 there is 3.6
+else
+  PY=python3
+fi
+
+# reaper shell [cmd...]: enter (or run one command in) the same environment the CLI
+# uses. Leave with `exit`, Ctrl-D or `deactivate`.
+if [[ "${1:-}" == "shell" ]]; then
+  shift
+  if [[ -z "$VENV" ]]; then
+    echo "reaper shell: no toolchain venv. On your machine run ${REAPER_ROOT}/setup;" \
+         "on a bang: reaper deploy <site> reaper_toolchain (/opt/flax/venv/reaper-ansible)." >&2
+    exit 2
+  fi
+  export PATH="${VENV}/bin:${REAPER_ROOT}:${PATH#"${VENV}/bin:"}"
+  export REAPER_SHELL=1
+  if [[ $# -gt 0 ]]; then
+    exec "$@"
+  fi
+  rc="$(mktemp)"
+  cat > "$rc" <<'RC'
+[[ -f ~/.bashrc ]] && source ~/.bashrc
+rm -f "$REAPER_SHELL_RC"; unset REAPER_SHELL_RC
+PS1="(reaper) ${PS1-\$ }"
+deactivate() { exit "${1:-0}"; }
+echo "reaper toolchain: $VIRTUAL_ENV ($(ansible --version 2>/dev/null | head -n1)); leave with exit, Ctrl-D or deactivate"
+RC
+  export REAPER_SHELL_RC="$rc"
+  exec bash --rcfile "$rc" -i
+fi
+PYTHONPATH="${REAPER_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" exec "${PY}" -m reapercli "$@"

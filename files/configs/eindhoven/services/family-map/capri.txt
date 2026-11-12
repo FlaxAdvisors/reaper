@@ -1,0 +1,3 @@
+# capri product names. One regex per line.
+Capri2
+^Capri

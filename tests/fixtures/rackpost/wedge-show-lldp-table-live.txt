@@ -1,0 +1,10 @@
+Capability codes: (R) Router, (B) Bridge, (O) Other
+LocalPort    RemoteDevice    RemotePortID       Capability    RemotePortDescr
+-----------  --------------  -----------------  ------------  -----------------
+Ethernet31   rr101-l37       88:e9:a4:77:de:38  O             enp25s0f0np0
+Ethernet95   rr101-c37       88:e9:a4:79:f9:a8  O             enp25s0f0np0
+Ethernet103  rr101-r37       88:e9:a4:73:a4:90  O             enp25s0f0np0
+Ethernet108  rr101-l05       88:e9:a4:03:15:70  O             enp25s0f0np0
+Ethernet109  rr101-r05       88:e9:a4:03:0c:81  O             enp25s0f1np1
+--------------------------------------------------
+Total entries displayed:  5

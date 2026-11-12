@@ -1,0 +1,7 @@
+---
+- name: Restart flax-iperf
+  become: true
+  ansible.builtin.systemd:
+    name: "{{ apply_flax_iperf_unit }}"
+    state: restarted
+    daemon_reload: true

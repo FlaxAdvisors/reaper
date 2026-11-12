@@ -1,0 +1,38 @@
+---
+# Self-hosted kroki core. See defaults/main.yml for scope and placement.
+
+- name: Ensure {{ apply_kroki_path }} exists
+  become: true
+  ansible.builtin.file:
+    path: "{{ apply_kroki_path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Stage kroki compose file
+  become: true
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ apply_kroki_path }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Bring kroki up
+  become: true
+  ansible.builtin.command:
+    cmd: "docker compose -p {{ apply_kroki_project }} -f docker-compose.yml up -d"
+    chdir: "{{ apply_kroki_path }}"
+  register: apply_kroki_up
+  when: not ansible_check_mode
+  changed_when: "'Started' in apply_kroki_up.stderr or 'Recreated' in apply_kroki_up.stderr"
+
+- name: Wait for kroki health
+  ansible.builtin.uri:
+    url: "http://{{ apply_kroki_bind }}:{{ apply_kroki_port }}/health"
+  register: apply_kroki_health
+  until: apply_kroki_health.status == 200
+  retries: 20
+  delay: 3
+  when: not ansible_check_mode

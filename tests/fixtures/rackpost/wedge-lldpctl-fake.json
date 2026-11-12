@@ -1,0 +1,66 @@
+{
+  "lldp": {
+    "interface": [
+      {
+        "Ethernet31": {
+          "via": "LLDP",
+          "chassis": {
+            "rr101-l37": {
+              "id": {
+                "type": "mac",
+                "value": "88:e9:a4:00:00:01"
+              }
+            }
+          },
+          "port": {
+            "id": {
+              "type": "mac",
+              "value": "88:e9:a4:00:00:01"
+            },
+            "descr": "ens3f0np0"
+          }
+        }
+      },
+      {
+        "Ethernet108": {
+          "via": "LLDP",
+          "chassis": {
+            "localhost": {
+              "id": {
+                "type": "mac",
+                "value": "88:e9:a4:00:00:21"
+              }
+            }
+          },
+          "port": {
+            "id": {
+              "type": "mac",
+              "value": "88:e9:a4:00:00:21"
+            },
+            "descr": "ens3f0np0"
+          }
+        }
+      },
+      {
+        "Ethernet109": {
+          "via": "LLDP",
+          "chassis": {
+            "rr101-r05": {
+              "id": {
+                "type": "mac",
+                "value": "88:e9:a4:00:00:31"
+              }
+            }
+          },
+          "port": {
+            "id": {
+              "type": "mac",
+              "value": "88:e9:a4:00:00:31"
+            },
+            "descr": "ens3f0np0"
+          }
+        }
+      }
+    ]
+  }
+}

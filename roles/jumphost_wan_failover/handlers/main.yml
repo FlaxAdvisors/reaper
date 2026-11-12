@@ -1,0 +1,34 @@
+---
+- name: Restart wan-failover
+  become: true
+  ansible.builtin.systemd:
+    name: wan-failover.service
+    state: restarted
+    daemon_reload: true
+  listen: restart wan-failover
+
+- name: Restart wlan-watchdog timer
+  become: true
+  ansible.builtin.systemd:
+    name: wlan-watchdog.timer
+    state: restarted
+    daemon_reload: true
+  listen: restart wlan-watchdog timer
+
+- name: Reload sysctl
+  become: true
+  ansible.builtin.command: sysctl --system
+  changed_when: false
+  listen: reload sysctl
+
+- name: Apply tmpfiles wan-failover
+  become: true
+  ansible.builtin.command: systemd-tmpfiles --create /etc/tmpfiles.d/wan-failover.conf
+  changed_when: false
+  listen: apply tmpfiles wan-failover
+
+- name: Reload systemd after wan-failover teardown
+  become: true
+  ansible.builtin.systemd:
+    daemon_reload: true
+  listen: reload systemd after wan-failover teardown

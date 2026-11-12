@@ -1,0 +1,7 @@
+# Managed by apply_bang_router. Do not edit.
+[Unit]
+Description=Keep WAN default routes at their configured metric ({{ apply_bang_router_wan_route_metrics | join(' ') }})
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/bang-wan-route-guard {{ apply_bang_router_wan_route_metrics | join(' ') }}

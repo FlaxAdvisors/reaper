@@ -1,0 +1,8 @@
+---
+- name: Restart radvd
+  # VIP-exclusive: only the keepalived master runs radvd. Restart it only if it is
+  # already active, so a radvd.conf change lands on the master and a stopped radvd
+  # (standby) is never started here. Same as apply_kea's handlers.
+  become: true
+  ansible.builtin.shell: systemctl is-active --quiet radvd.service && systemctl restart radvd.service || true
+  changed_when: true

@@ -1,0 +1,82 @@
+---
+# Order server for customer racks. Loopback-only: reached via the post.* nginx
+# vhosts (apply_bang_services nginx-lab-ui + apply_flax_stack TLS vhost).
+apply_rackpost_bind: 127.0.0.1
+apply_rackpost_port: 8452
+apply_rackpost_root: /export/nodes
+apply_rackpost_dest_dir: /opt/flax/rackpost
+# the checkout being deployed (the controller's): the build id is computed from it
+apply_rackpost_repo: "{{ playbook_dir }}/.."
+apply_rackpost_wrapper: /opt/flax/bin/rackpost
+# A bang's system python3 is 3.6; every bang carries python3.12 (apply_reaper_toolchain).
+apply_rackpost_python: python3.12
+# Vendored pips are built for one interpreter (charset_normalizer ships cpython-3xx .so
+# files), so the dir is keyed by it: an interpreter change installs a fresh set.
+apply_rackpost_vendor_dir: "{{ apply_rackpost_dest_dir }}/vendor-{{ apply_rackpost_python }}"
+# Only these flax_post static files are shared with the post rack viewer.
+apply_rackpost_post_static:
+  - rack.css
+  - petite-vue.iife.js
+  - flax-logo.svg
+  # the drawer's SOL button: the Post UI's terminal over the flax-post-sol relay
+  - sol.js
+  - vendor/xterm.js
+  - vendor/xterm.css
+  - vendor/socket.io.min.js
+# flax_post modules the Qualify rungs import: the population judge, the qual
+# client, and Post's own Qualify judges (qualify_rules -> blocklist, shipchecks;
+# FRU 0 via observe/fru + the family map); the loose-node firmware detectors'
+# manifest/classify/driver modules (fwd, biosd, nicd, plus what they import) and
+# the IP-keyed boot evidence (observe/bootlog). All stdlib: never a module that
+# pulls psycopg (blades, observe/host_qual, observe/ladder, stepinfo, db, state)
+# or a daemon entry (service, bridge, store, __main__).
+apply_rackpost_post_modules:
+  - __init__.py
+  - version.py
+  - population.py
+  - inventory.py
+  - qualclient.py
+  - qualify_rules.py
+  - shipchecks.py
+  - blocklist.py
+  - fio_judge.py
+  - fio-baselines-v1.json
+  - observe/__init__.py
+  - observe/fru.py
+  - observe/family_map.py
+  - observe/family_map_live.py
+  - observe/bootlog.py
+  - fwd/__init__.py
+  - fwd/version.py
+  - fwd/manifest.py
+  - fwd/redfish.py
+  - fwd/entity_cache.py
+  - fwd/flasher.py
+  - fwd/enforce.py
+  - fwd/creds.py
+  - biosd/__init__.py
+  - biosd/version.py
+  - biosd/classify.py
+  - biosd/manifest.py
+  - biosd/driver.py
+  - biosd/creds.py
+  - nicd/__init__.py
+  - nicd/classify.py
+  - nicd/manifest.py
+  - nicd/driver.py
+# Vendored for the shared EOS read driver; the versions bang-gouda's python3.11
+# carried when this was written. Exact pins: the dist-info dir of each is the "already installed" marker.
+apply_rackpost_switch_driver_pips:
+  - requests==2.31.0
+  - urllib3==2.0.7
+# flax_switch_sense modules rackpost's switch reads import (flax_rack/switches.py ->
+# drivers.make_driver -> the four read drivers). drivers.py, not fetcher.py: the
+# fetcher is the daemon's psycopg side.
+apply_rackpost_switch_sense_modules:
+  - __init__.py
+  - version.py
+  - drivers.py
+  - driver_cumulus.py
+  - driver_eos.py
+  - driver_ios.py
+  - driver_sonic.py

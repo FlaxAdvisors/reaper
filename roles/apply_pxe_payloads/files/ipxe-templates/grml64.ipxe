@@ -1,0 +1,11 @@
+#!ipxe
+echo
+echo Boot Live GRML for Metal devel outside Metal
+
+# reduce the pause to 1s (instead of default 10s)
+set menu-timeout 1000
+set submenu-timeout 1000
+
+set menu-default menu-grml
+set submenu-default grml64
+chain --replace --autofree ${boot-url}

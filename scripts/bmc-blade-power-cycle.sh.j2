@@ -1,0 +1,749 @@
+#!/bin/bash
+# bmc-blade-power-cycle -- remote 12V power cycle of a sled's hot-swap
+# controller, to recover a node whose BMC accepts a power-on request but the
+# host never asserts power-good after a BIOS flash. Guide 8.5's remedy is a
+# full AC-cycle of the chassis (someone walks to the rack); this is the
+# remote equivalent, for the one path where the fallback is already
+# "send a human".
+#
+# RENDERED FROM THE SITE VAULT by roles/apply_bmc_scripts. The password below
+# is the BMC ROOT SHELL credential, NOT the credentials-bmc.json Redfish
+# entry -- Redfish creds fail for ssh. RULE ZERO: never echo it. sshpass -e
+# keeps it out of argv and out of ps.
+#
+# Design: docs/superpowers/specs/2026-09-03-blade-power-cycle-design.md
+#
+# THE DEVICE (measured 2026-09-03). /sys/bus/i2c/devices/7-0045 is an
+# ADM1275 hot-swap controller, adm1275 driver BOUND, gating 12V to the sled.
+# The BMC itself runs off the sled's standby rail through the SAME FET, so a
+# successful write takes the issuing ssh session down with it --
+# THERE IS NO CLEAN RETURN ON A SUCCESSFUL WRITE; a clean return means the
+# write did NOT do what we expect. `i2cset -f -y 7 0x45 0xd9 c` power-cycles
+# the output. `-f` is required BECAUSE the adm1275 driver owns the address;
+# without it the write is refused -- this is unavoidable, not an oversight
+# (design D5). Register 0xd9's datasheet meaning is NOT confirmed (it is in
+# the ADI manufacturer-specific block): behaviour over five runs is the
+# entire basis for trusting it (design S2, S8 open question 1).
+#
+#   cycle <bmc-ip>              -> {"cycled":true,"down_s":<n>,"up_s":<n>,"ip":"<ip>"}
+#   cycle <bmc-ip> --power-on   -> same, plus "power_on":"on|failed|rejected"
+#                                  (one Redfish On after the BMC is back)
+#   ... [--port <et6b1>]        (any order after <bmc-ip>) holds the manual
+#                                  claim /run/flax/bmc-fw-manual/<port> for the
+#                                  run and touches /run/flax/bmc-reboot/<port>
+#                                  once the 12V write is sent (2026-09-27)
+#                                  AND follows the blade to its CURRENT IP after
+#                                  the cut (flax feed, see wait_up; 2026-09-28)
+#   every success record also carries "ip":"<ip the BMC answered at>"
+#
+# Progress lines ("bmc-blade-power-cycle: [+Ns] ...") go to STDERR; stdout
+# carries only the one JSON record callers parse.
+#
+# Errors as {"error":"<code>"}: bmc_unreachable, identity_unavailable,
+# thermtrip_latched, thermtrip_unknown, no_effect, never_returned,
+# identity_changed, bmc_degraded (exit 1); interlock_busy with a "reason"
+# (exit 3 -- the write was NEVER sent: a BMC update job is live, ended
+# <60 s ago, the job list is unreadable, or the local lock is held).
+#
+# CONTRACT with biosfw.machine: no failure path may emit a "cycled" key -- a
+# caller takes the FIRST record carrying one, exactly as the rule
+# bmc-bios-chip-probe and bmc-backup-flash already follow.
+#
+# ONE ATTEMPT, EVER, PER CALL. This bin never retries the write internally --
+# a sled that does not return from one cycle will not return from three, and
+# each attempt is a hard 12V cut (design S6). The caller (biosfw) is what
+# enforces "never retried across calls, ever, per flash"; this bin's half of
+# that contract is simply that it never loops the write itself.
+set -u
+
+# Kill every descendant of $1: FREEZE the whole subtree first (SIGSTOP,
+# depth-first) so a still-running parent cannot spawn a new child while we
+# are mid-walk, then TERM + CONT each node, deepest first. Command
+# substitutions and pipelines run in subshells that a plain `kill $$` does
+# not reach; a killed bin must never leave an ssh or journal read behind
+# holding the per-BMC lock (et6b4 2026-09-27: >1 h).
+kill_tree() {
+    local c
+    [ "$1" != "$$" ] && kill -STOP "$1" 2>/dev/null
+    for c in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$c"; done
+    [ "$1" != "$$" ] && { kill -TERM "$1" 2>/dev/null; kill -CONT "$1" 2>/dev/null; }
+    return 0
+}
+# 2026-09-27 fix round 2 (Review Focus 2, N1/N2): this bin now runs as TWO
+# processes. The PARENT (the pid callers see, at the very bottom of this
+# file) parses argv, runs need_lock_dir, and -- for `cycle`, the only
+# subcommand that locks -- takes the per-BMC flock on fd 9 ITSELF, then
+# re-execs its own body as a CHILD (`FLAX_BIN_CHILD=1 setpriv --pdeathsig
+# KILL "$0" "$@" 9>&-`) that never sees fd 9 and never takes the lock
+# again. `on_signal` (PARENT only) freezes and kills the CHILD's whole
+# subtree; `--pdeathsig KILL` makes the kernel SIGKILL the child the
+# instant the PARENT dies for ANY reason, including a SIGKILL to the
+# PARENT itself, which no trap can catch. Round 1's `main "$@" & wait`
+# looked similar but forked a SUBSHELL of the SAME process (not a real
+# child), so SIGKILL of the bin pid left that subshell alive, holding the
+# lock, and it went on to send the 12 V cut ANYWAY after the caller had
+# already given up (N2 -- the worst possible regression for this bin: the
+# old, pre-round-1 bin never sent a cut on a SIGKILL). This design ties the
+# lock's fate to the PARENT process's own survival: fd 9 is only ever open
+# in the PARENT, so it closes the instant the PARENT exits, however that
+# happens -- and every command SUBSTITUTION the child itself forks
+# (identity(), the gpio read, busy_check) dies an orphan on the SAME
+# SIGKILL, unable to hand its result back to a child that no longer
+# exists, so the i2cset write (which lives further down the SAME
+# function, never inside a substitution) is never reached.
+on_signal() {
+    trap - TERM INT HUP
+    kill_tree "$CHILD"
+    # 2026-09-27 fix round 3, M1: wait (bounded) for the child to actually
+    # exit before this process does -- see bios-fw-update.sh.j2's on_signal
+    # for why (there, a race here let $ART survive in 3 of 6 runs; this
+    # bin has no equivalent state, but the same ordering discipline
+    # applies uniformly).
+    local w
+    for w in $(seq 1 20); do kill -0 "$CHILD" 2>/dev/null || break; sleep 0.1; done
+    hb_stop
+    claim_release   # Task 3: the manual claim goes with the lock
+    exit 143
+}
+
+# ── manual-run claim + BMC reboot marker (2026-09-27, part1 Task 3) ──────────
+# CLAIM. Reconcile defers every action on a port while a fw bin runs on it.
+# A bin's claim is /run/flax/bmc-fw-manual/<port> -- NOT bmc-fw-active/<port>,
+# which is bmc_fw's own (days-long) claim and which no bin ever touches. The
+# PARENT (the lock holder) writes it right after taking the per-BMC lock and
+# removes it on normal exit and on TERM/INT/HUP, so it lives and dies with
+# the lock. It is a HEARTBEAT: the PARENT re-touches it every HEARTBEAT_S
+# (60 s) from its wait loop while it lives, and reconcile honours it only
+# while now - mtime < 180 s -- so a flash of any length stays protected, and
+# a SIGKILLed bin's claim (which nothing can remove) goes stale within 3 min
+# because nothing is left to touch it. Content is "<parent pid>@<host>"; on exit a bin removes the
+# file only if it still holds its OWN token (two IPs mapping to one port can
+# race; the per-BMC lock serialises runs per IP only). A stale claim from a
+# dead run is simply overwritten.
+# (Every external command here closes fd 9: the PARENT holds the lock.)
+# REBOOT MARKER. /run/flax/bmc-reboot/<port>, touched by whichever process
+# sends a reboot-causing action; its mtime is the reboot time, from which
+# reconcile gives the port a boot-grace window (no switch_flap mid-boot).
+MANUAL_CLAIM_DIR="${FLAX_MANUAL_CLAIM_DIR:-/run/flax/bmc-fw-manual}"
+REBOOT_DIR="${FLAX_REBOOT_DIR:-/run/flax/bmc-reboot}"
+HEARTBEAT_S="${FLAX_CLAIM_HEARTBEAT_S:-60}"
+CLAIM_FILE=""; CLAIM_TOKEN=""; HB_PID=""
+# A port becomes a file name: accept only the internal port form's alphabet.
+port_ok() { [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; }
+# arg_port <argv...> -> the value of the LAST --port (the child's parser
+# also keeps the last, so claim and marker always name the same port); a
+# following token that starts with "--" is a flag, not a value -> "".
+arg_port() {
+    local v=""
+    while [ $# -gt 0 ]; do
+        if [ "$1" = --port ]; then
+            case "${2:-}" in --*|"") v="" ;; *) v="$2"; shift ;; esac
+        fi
+        shift
+    done
+    printf '%s' "$v"
+}
+claim_take() {   # claim_take <port> -- PARENT only, after take_lock
+    [ -n "${1:-}" ] || return 0
+    port_ok "$1" || { echo "claim: ignoring malformed port '$1'" >&2; return 0; }
+    mkdir -p "$MANUAL_CLAIM_DIR" 2>/dev/null 9>&- || { echo "claim: cannot create $MANUAL_CLAIM_DIR; running unclaimed" >&2; return 0; }
+    CLAIM_TOKEN="$$@${HOSTNAME:-$(cat /proc/sys/kernel/hostname 2>/dev/null)}"
+    if printf '%s\n' "$CLAIM_TOKEN" > "$MANUAL_CLAIM_DIR/$1" 2>/dev/null; then
+        CLAIM_FILE="$MANUAL_CLAIM_DIR/$1"
+    else
+        echo "claim: cannot write $MANUAL_CLAIM_DIR/$1; running unclaimed" >&2
+    fi
+    return 0
+}
+claim_release() {   # PARENT only; removes the claim only if it is still ours
+    [ -n "$CLAIM_FILE" ] || return 0
+    [ "$(cat "$CLAIM_FILE" 2>/dev/null 9>&-)" = "$CLAIM_TOKEN" ] && rm -f "$CLAIM_FILE" 9>&-
+    CLAIM_FILE=""
+    return 0
+}
+claim_heartbeat() {   # PARENT, from its wait loop: move the claim's mtime
+    [ -n "$CLAIM_FILE" ] || return 0
+    if [ -e "$CLAIM_FILE" ]; then touch -c "$CLAIM_FILE" 2>/dev/null 9>&-
+    else printf '%s\n' "$CLAIM_TOKEN" > "$CLAIM_FILE" 2>/dev/null; fi   # re-claim if another run's exit removed it
+    return 0
+}
+# The ticker that wakes the PARENT's `wait` every HEARTBEAT_S: a separate
+# process that sends this PARENT a (trapped, no-op) USR1. The PARENT does the
+# touching itself, so once the PARENT is gone nothing touches the claim. The
+# ticker dies with the PARENT (--pdeathsig KILL; its own $PPID check closes
+# the fork-to-prctl window exactly as the CHILD's marker check does), and
+# never holds fd 9 or the caller's stdout/stderr.
+hb_start() {   # PARENT only, after the CHILD is spawned
+    [ -n "$CLAIM_FILE" ] || return 0
+    trap ':' USR1   # before the ticker exists: an untrapped USR1 would kill us
+    # The sleep runs in the BACKGROUND under a TERM trap that kills it, so
+    # hb_stop never leaves an orphaned `sleep` (re-parented to PID 1 -- a
+    # zombie under a non-reaping init; cf. the 2026-09-25 pids-max incident).
+    FLAX_HB_PARENT=$$ setpriv --pdeathsig KILL bash -c \
+        'p=$FLAX_HB_PARENT; [ "$PPID" = "$p" ] || exit 0; s=""
+         trap '"'"'[ -n "$s" ] && kill "$s" 2>/dev/null; exit 0'"'"' TERM
+         while :; do sleep "$1" & s=$!; wait "$s" || exit 0; s=""; kill -USR1 "$p" 2>/dev/null || exit 0; done' _ "$HEARTBEAT_S" \
+        </dev/null >/dev/null 2>&1 9>&- &
+    HB_PID=$!
+}
+hb_stop() {   # belt and braces: the ticker's own sleep first, then the ticker
+    [ -n "$HB_PID" ] && { pkill -P "$HB_PID" 2>/dev/null 9>&-; kill "$HB_PID" 2>/dev/null; }
+    HB_PID=""; return 0
+}
+mark_reboot() {   # mark_reboot <port> -- touch, so an existing marker's mtime moves too
+    port_ok "${1:-}" || return 0
+    mkdir -p "$REBOOT_DIR" 2>/dev/null 9>&- && touch "$REBOOT_DIR/$1" 2>/dev/null 9>&-
+    return 0
+}
+
+# I7: NO surrounding quotes -- ansible's `quote` filter emits its own,
+# correctly, for any value. Hand-wrapping in single quotes breaks (or worse:
+# runs shell) the moment a vaulted password contains a single quote of its
+# own. RULE ZERO holds either way: the rendered value is never echoed.
+export SSHPASS={{ bmc_root_password | quote }}
+# ServerAlive*, UNLIKE the siblings: this bin's own write is EXPECTED to kill
+# the session mid-command (the BMC's standby rail is the same FET being
+# cycled), so noticing a dead connection promptly matters here in a way it
+# never does for a probe or a flash. Bounds a hung ssh call to a few seconds
+# instead of whatever the kernel's own TCP timeout would otherwise be.
+SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10 -o ServerAliveInterval=2 -o ServerAliveCountMax=1"
+
+# D4: was 300s, drawn from the measured WORST case of four nodes cycled
+# together (110-200s) plus margin. RAISED TO 480s on 2026-09-24: across the
+# fleet that day most cycles reported never_returned although the BMC HAD come
+# back. et25b1 (15:38) rebooted within ~1 min but did not answer ssh at its
+# reserved address until ~5 min (it takes a DHCP pool address first; bmc_fw
+# logged 172.17.0.x addresses right after cycles). 300s sat right on that
+# edge. A caller's own subprocess timeout must exceed this.
+# With --port (Task 4) one up-wait poll can take ~31 s worst case (feed curl
+# -m 5 + two ssh probes at ConnectTimeout 10 + ServerAlive 2, + the sleep), so
+# the cap can overshoot by that much: a caller's timeout must allow for it.
+BLADE_CYCLE_TIMEOUT="${BLADE_CYCLE_TIMEOUT:-480}"
+# Progress lines go to STDERR only (callers parse stdout JSON), one every
+# PROGRESS_EVERY seconds while waiting.
+PROGRESS_EVERY="${FLAX_PROGRESS_EVERY:-30}"
+
+# THE INTERLOCK (2026-09-24, same rules as bios-fw-update / bmc-fw-update):
+# no cut while any update job on the BMC is live, ended less than QUIET_S ago,
+# or the job list is unreadable; and not while another fw update / cycle for
+# this BMC holds the local lock. A 12V cut mid-flashcp leaves erased,
+# never-written blocks.
+QUIET_S="${FLAX_CYCLE_QUIET_S:-60}"
+LOCK_DIR="${FLAX_CYCLE_LOCK_DIR:-/run/flax}"
+RF_USER=root
+# How long to wait for the BMC to go DOWN before concluding the write did not
+# take (S4.1 step 4). Independent of BLADE_CYCLE_TIMEOUT: this bounds "did
+# anything happen at all", not the recovery itself -- a write that did
+# nothing must not cost the caller a 300s wait for a reboot that was never
+# coming.
+DOWN_WAIT="${FLAX_DOWN_WAIT:-30}"
+# Polling interval for both waits. Overridable so the test suite never
+# spends real wall-clock time anywhere near the 30s/300s caps.
+POLL_INTERVAL="${FLAX_POLL_INTERVAL:-2}"
+
+# --- review finding 2026-09-03: a single alive() sample can fabricate a
+# --- cycled:true for a BMC that never lost power. ssh has failure modes
+# --- ICMP does not -- session exhaustion (a documented quirk of this fleet,
+# --- see biosfw/worker.py's comments on it) and this bin's OWN
+# --- ServerAliveInterval=2/ServerAliveCountMax=1 dropping an established
+# --- session after a ~4s stall. ONE spurious probe failure on a BMC that
+# --- never went down would otherwise read as down -> up -> identity
+# --- matches -> a reported power cycle that never happened. Two
+# --- INDEPENDENT guards, because either alone is weak:
+
+# 1. DEBOUNCE: "down" is not declared on the first failed probe -- it takes
+#    DOWN_CONFIRM_N CONSECUTIVE failures. A single ssh hiccup that does not
+#    repeat on the very next poll never gets treated as "down" at all; it
+#    just resets the streak and wait_down keeps waiting (and, if the BMC
+#    genuinely never goes down, eventually reports no_effect off the
+#    DOWN_WAIT cap below, same as today).
+DOWN_CONFIRM_N="${FLAX_DOWN_CONFIRM_N:-2}"
+
+# 2. MINIMUM PLAUSIBLE DOWN DURATION: even a DEBOUNCED "down" can be a burst
+#    of unrelated ssh failures (a MaxStartups rejection storm, session
+#    exhaustion) rather than an actual 12V loss, if the BMC answers normally
+#    again moments later. No cycle measured across five runs has ever
+#    returned in under ~20s -- design S2's single-node figure (~20s) is the
+#    FASTEST any real cycle has taken, batch runs took 110-200s. An observed
+#    down-to-up span shorter than that floor is therefore stronger evidence
+#    of a probe glitch than of a completed cycle, and is reported exactly
+#    like never going down at all (no_effect) rather than as a success.
+MIN_DOWN_S="${FLAX_MIN_DOWN_S:-20}"
+
+# Remote executor. FLAX_BMC_REMOTE_EXEC lets the test suite point this at a
+# stub that answers each command shape against fixture state instead of a
+# real BMC; production always leaves it unset and goes over ssh. Same shape
+# as bmc-bios-chip-probe.sh.j2 / bmc-backup-flash.sh.j2's identical hook.
+bmc() {
+    # 9>&- (2026-09-27): ssh must never inherit the per-BMC lock fd -- a
+    # SIGKILL'd bin (or one whose ssh outlives it for any other reason)
+    # must not leave an orphan holding the flock.
+    if [ -n "${FLAX_BMC_REMOTE_EXEC:-}" ]; then
+        "$FLAX_BMC_REMOTE_EXEC" "$1" "$2" 9>&-
+        return $?
+    fi
+    sshpass -e ssh -n -T $SSH_OPTS "root@$1" "$2" 9>&-
+}
+
+json_err() { printf '{"error":"%s"}\n' "$1"; exit 1; }
+
+T_START=$(date +%s)
+say() { printf 'bmc-blade-power-cycle: [+%ss] %s\n' "$(( $(date +%s) - T_START ))" "$*" >&2; }
+
+# Redfish, for the interlock and --power-on. The credential reaches curl via a
+# netrc fed on stdin -- never argv, and no process-substitution child left for
+# PID 1 to reap. FLAX_REDFISH_EXEC is the test hook (same shape as
+# bios-fw-update's).
+rf() {   # rf <METHOD> <ip> <path> [curl args...] -> body, then HTTP=<code>
+    local method="$1" ip="$2" path="$3"; shift 3
+    if [ -n "${FLAX_REDFISH_EXEC:-}" ]; then
+        FLAX_RF_IP="$ip" "$FLAX_REDFISH_EXEC" "$method" "$path" "$@" 9>&-
+        return $?
+    fi
+    # No caller passes a request body on stdin (the Reset action's body is a
+    # literal -d string), so the netrc can safely ride curl's own stdin.
+    # 9>&- (2026-09-27): curl must never inherit the per-BMC lock fd either.
+    curl -sk --netrc-file /dev/stdin \
+        --connect-timeout 6 --max-time 15 -X "$method" \
+        -w '\nHTTP=%{http_code}' "https://${ip}${path}" "$@" \
+        <<<"machine $ip login $RF_USER password $SSHPASS" 9>&-
+}
+rf_body() { sed '$d'; }
+rf_code() { tail -n 1 | sed -n 's/^HTTP=//p'; }
+
+# Prints a reason; returns 0 idle, 3 busy. Unreadable = busy (fail closed).
+busy_check() {
+    local ip="$1" coll ids docs="[" first=1 id t
+    coll=$(rf GET "$ip" /redfish/v1/TaskService/Tasks)
+    [ "$(printf '%s' "$coll" | rf_code)" = "200" ] || { echo "tasks_unreadable"; return 3; }
+    ids=$(printf '%s' "$coll" | rf_body | python3 -c '
+import sys, json
+try:
+    for m in json.load(sys.stdin).get("Members", []):
+        print(m.get("@odata.id", "").rstrip("/").rsplit("/", 1)[-1])
+except Exception:
+    print("__UNREADABLE__")')
+    case "$ids" in *__UNREADABLE__*) echo "tasks_unreadable"; return 3;; esac
+    for id in $ids; do
+        t=$(rf GET "$ip" "/redfish/v1/TaskService/Tasks/$id")
+        [ "$(printf '%s' "$t" | rf_code)" = "200" ] || { echo "tasks_unreadable"; return 3; }
+        [ $first = 1 ] || docs="$docs,"; first=0
+        docs="$docs$(printf '%s' "$t" | rf_body)"
+    done
+    printf '%s]' "$docs" | QUIET="$QUIET_S" python3 -c '
+import sys, json, os, re, calendar, time
+quiet = float(os.environ["QUIET"]); now = time.time()
+LIVE = {"New", "Starting", "Running", "Pending", "Stopping", "Suspended",
+        "Interrupted", "Cancelling", "Service"}
+def epoch(s):
+    m = re.match(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.\d+)?(Z|[+-]\d\d:\d\d)?$", s or "")
+    if not m: return None
+    t = calendar.timegm(time.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S"))
+    tz = m.group(2)
+    if tz and tz != "Z":
+        t -= (1 if tz[0] == "+" else -1) * (int(tz[1:3]) * 3600 + int(tz[4:6]) * 60)
+    return t
+try: tasks = json.loads(sys.stdin.read())
+except Exception: print("tasks_unreadable"); sys.exit(3)
+for t in tasks:
+    if t.get("TaskState") in LIVE:
+        print("job_running task=%s state=%s" % (t.get("Id"), t.get("TaskState"))); sys.exit(3)
+ends = [e for e in (epoch(t.get("EndTime")) for t in tasks) if e is not None]
+if ends and now - max(ends) < quiet:
+    print("quiet_window ended_s_ago=%d" % int(now - max(ends))); sys.exit(3)
+print("idle")'
+}
+
+take_lock() {
+    local dir="$LOCK_DIR"
+    exec 9>"$dir/fw-update-${1}.lock" || return 1
+    flock -n 9
+}
+
+# ONE round trip returns BOTH halves of identity: the BMC's mgmt MAC (stable
+# across a reboot) and its /etc/os-release VERSION_ID (build identity). A
+# blank MAC means the round trip failed outright. Reused for THREE things: the
+# S4.1 step-1 preflight ("does the BMC answer right now"), the step-2
+# baseline, and the step-5-tail post-return comparison -- one command shape
+# to fixture in tests, not three.
+identity() {
+    bmc "$1" 'printf "MAC=%s\n" "$(cat /sys/class/net/eth0/address 2>/dev/null)"
+printf "OS=%s\n" "$(sed -n "s/^VERSION_ID=//p" /etc/os-release 2>/dev/null)"' 2>/dev/null | tr -d '\r"\\'
+}
+
+# Cheap liveness probe reused by BOTH the down-wait and the up-wait, so (as
+# with identity() above) the fixture stub only ever has to answer ONE command
+# shape for "is the BMC there right now" -- not a ping variant and a separate
+# ssh variant. A BMC that cannot even echo a literal string back is not up in
+# any sense this bin cares about.
+alive() {
+    [ -n "$(bmc "$1" 'echo alive' 2>/dev/null | tr -d '\r')" ]
+}
+
+now_s() { date +%s; }
+
+wait_down() {  # $1 = ip; 0 once DOWN_CONFIRM_N CONSECUTIVE probes fail, 1 on the DOWN_WAIT cap
+    local ip="$1" deadline=$(( $(now_s) + DOWN_WAIT )) streak=0
+    while :; do
+        if alive "$ip"; then
+            streak=0            # any single answer resets the streak --
+        else                    # the debounce requires CONSECUTIVE failures
+            streak=$((streak + 1))
+            [ "$streak" -ge "$DOWN_CONFIRM_N" ] && return 0
+        fi
+        [ "$(now_s)" -lt "$deadline" ] || return 1
+        sleep "$POLL_INTERVAL"
+    done
+}
+
+# FOLLOW THE BLADE (2026-09-28, part1 Task 4). After a 12V cut a BMC can come
+# back on a DHCP POOL address first and only regain its reserved IP minutes
+# later (2026-09-27: 172.17.0.50/.52, reserved IP back at +404/+483 s), so
+# polling only the IP we started with reported never_returned for a healthy
+# BMC. With --port, each up-wait poll also asks the flax feed for the port's
+# CURRENT ip and probes both. The feed is advisory: garbage, "unknown", a
+# non-IP string, a failed or slow call (curl -m 5) all yield "" and the poll
+# falls back to the original IP alone.
+# Fix round 1 (review I1, 2026-09-28): the feed is scoped to the triage
+# geometry and can be stale, so its IP may belong to a DIFFERENT live BMC (a
+# post blade given --port, a pool IP since re-leased). Accepting that on
+# `alive` alone turned a real cut into no_effect / identity_changed and left
+# the blade off. So, two filters:
+#  (1) the feed IP is used only when the feed row's `mac` equals our
+#      pre-cycle MAC (case- and separator-normalised); missing/unknown -> skip;
+#  (2) a feed IP that answers but whose MAC/OS is not our baseline is "not
+#      back yet": keep polling to the cap (it is never returned, never
+#      powered on).
+# A mismatch at the ORIGINAL IP is still identity_changed, as before; the
+# post-cycle identity check in cmd_cycle stays the final gate either way.
+FEED_URL="${FLAX_FEED_URL:-http://localhost:8000/api/v1/port}"
+feed_ip() {   # feed_ip <port> <mac0> -> the port's current BMC ip, only if the feed row's mac is mac0; else empty
+    local j
+    if [ -n "${FLAX_FEED_EXEC:-}" ]; then j=$("$FLAX_FEED_EXEC" "$1" 2>/dev/null 9>&-)
+    else j=$(curl -s -m 5 "$FEED_URL/$1" 2>/dev/null 9>&-); fi
+    printf '%s' "$j" | WANT_MAC="${2:-}" python3 -c 'import json, sys, os, ipaddress
+norm = lambda m: m.strip().lower().replace("-", ":") if isinstance(m, str) else ""
+try:
+    d = json.load(sys.stdin)
+    ip = d.get("ip") if isinstance(d, dict) else None
+    want = norm(os.environ.get("WANT_MAC"))
+    ok = want and norm(d.get("mac")) == want
+    print(ipaddress.ip_address(ip.strip()) if ok and isinstance(ip, str) else "")
+except Exception:
+    print("")' 2>/dev/null 9>&-
+}
+
+same_blade() {   # same_blade <ip>: its MAC/OS equal the pre-cycle baseline (mac0/os0)
+    local id m o
+    id=$(identity "$1")
+    m=$(printf '%s\n' "$id" | sed -n 's/^MAC=//p'); o=$(printf '%s\n' "$id" | sed -n 's/^OS=//p')
+    [ -n "$m" ] && [ "$m" = "$mac0" ] && [ "$o" = "$os0" ]
+}
+
+CUR_IP=""; TRIED_IPS=""
+wait_up() {  # wait_up <ip> [port]; 0 with CUR_IP set once the BMC answers, 1 on the BLADE_CYCLE_TIMEOUT cap
+    local ip="$1" port="${2:-}" deadline=$(( $(now_s) + BLADE_CYCLE_TIMEOUT )) next=$(( $(now_s) + PROGRESS_EVERY ))
+    local cand nip="" c warned=" "
+    TRIED_IPS="$ip"
+    while :; do
+        cand="$ip"
+        if [ -n "$port" ]; then
+            nip=$(feed_ip "$port" "$mac0")
+            [ -n "$nip" ] && [ "$nip" != "$ip" ] && cand="$ip $nip"
+        fi
+        for c in $cand; do
+            case " $TRIED_IPS " in *" $c "*) ;; *) TRIED_IPS="$TRIED_IPS $c" ;; esac
+            alive "$c" || continue
+            # (2) a FEED ip must prove it is our blade before it counts as "up"
+            if [ "$c" != "$ip" ] && ! same_blade "$c"; then
+                case "$warned" in *" $c "*) ;; *) say "feed IP $c answers but is not our blade at $c (identity != baseline); still waiting"; warned="$warned$c " ;; esac
+                continue
+            fi
+            CUR_IP="$c"; return 0
+        done
+        [ "$(now_s)" -lt "$deadline" ] || return 1
+        if [ "$(now_s)" -ge "$next" ]; then
+            say "BMC still not answering ssh at ${cand// / or } (cap ${BLADE_CYCLE_TIMEOUT}s)"
+            next=$(( $(now_s) + PROGRESS_EVERY ))
+        fi
+        sleep "$POLL_INTERVAL"
+    done
+}
+
+# --power-on: one Redfish On, then watch PowerState for POWER_ON_WAIT seconds.
+# Prints on | failed | rejected. Never retried.
+# (Task 4 review M4: the watch polls the IP the BMC answered at; a BMC that
+# regains its reserved IP inside this window -- after answering on a pool
+# IP -- reads as "failed" although the On was accepted.)
+POWER_ON_WAIT="${FLAX_POWER_ON_WAIT:-60}"
+power_on() {
+    local ip="$1" r st deadline
+    r=$(rf POST "$ip" /redfish/v1/Systems/system/Actions/ComputerSystem.Reset \
+           -H 'Content-Type: application/json' -d '{"ResetType":"On"}')
+    case "$(printf '%s' "$r" | rf_code)" in 200|202|204) ;; *) echo rejected; return;; esac
+    deadline=$(( $(now_s) + POWER_ON_WAIT ))
+    while :; do
+        st=$(rf GET "$ip" /redfish/v1/Systems/system | rf_body | python3 -c 'import sys, json
+try: print(json.load(sys.stdin).get("PowerState", ""))
+except Exception: print("")')
+        [ "$st" = "On" ] && { echo on; return; }
+        [ "$(now_s)" -lt "$deadline" ] || { echo failed; return; }
+        sleep "$POLL_INTERVAL"
+    done
+}
+
+# The lock lives in LOCK_DIR (/run/flax), shared by the agents' containers
+# (root) and operators on the bang host. An operator without write access
+# re-runs this bin under passwordless sudo. There is deliberately NO fallback
+# directory: a lock taken in a different directory is no lock at all.
+# (FLAX_SUDO is the test hook.)
+need_lock_dir() {
+    [ -w "$LOCK_DIR" ] && return 0
+    if [ "$(id -u)" != 0 ] && "${FLAX_SUDO:-sudo}" -n true 2>/dev/null; then
+        exec "${FLAX_SUDO:-sudo}" -n "$0" "$@"
+    fi
+    echo "$(basename "$0"): cannot write the lock directory $LOCK_DIR; run as root or with passwordless sudo" >&2
+    exit 2
+}
+
+cmd_cycle() {
+    IP="$1"
+    t0=$(now_s)
+
+    # 1+2. Preflight, and the identity baseline, in ONE round trip (S4.1
+    # steps 1-2). Cycling a sled we cannot reach converts an unknown state
+    # into a LONGER unknown state, and the postflight check would have no
+    # baseline to compare against either way.
+    #
+    # TWO DIFFERENT FAILURES, TWO DIFFERENT CODES (review finding 2026-09-03):
+    # a totally empty round trip means ssh never got a remote shell at all --
+    # THAT is bmc_unreachable. identity()'s remote script always emits the
+    # literal "MAC=" / "OS=" line prefixes once the remote shell runs, even
+    # when the value substituted in is empty, so a NON-empty $base with an
+    # EMPTY mac0 means the round trip worked but the identity read itself
+    # did not (e.g. the mgmt interface is not eth0 on this image). Collapsing
+    # that into bmc_unreachable would silently disable this feature on any
+    # fleet where the eth0 assumption is wrong -- a perfectly reachable BMC
+    # would report "unreachable" forever, indistinguishable from "nothing
+    # needed it". Confirmed eth0 is correct on the fleet today (four nodes,
+    # 2026-09-03); this split is what keeps a future wrong assumption from
+    # being silent.
+    base=$(identity "$IP")
+    [ -n "$base" ] || json_err bmc_unreachable
+    mac0=$(printf '%s\n' "$base" | sed -n 's/^MAC=//p')
+    os0=$(printf '%s\n' "$base"  | sed -n 's/^OS=//p')
+    [ -n "$mac0" ] || json_err identity_unavailable
+
+    # 3. THE THERMTRIP GUARD (design S6). Read BEFORE the write, always, no
+    # bypass -- this is the one guard the live investigation produced that
+    # was not obvious beforehand. A `lo` reading on EITHER CPU means the node
+    # is thermally tripped: cycling it clears the latch, the node powers on,
+    # and the CPU trips again ~25s later (design S2.2) -- that node wants a
+    # heatsink and a human, not a power cycle. `/sys/kernel/debug/gpio` lines
+    # read "gpio-NNN (LABEL...) dir val"; the value is the last
+    # whitespace-separated field.
+    gpio=$(bmc "$IP" 'cat /sys/kernel/debug/gpio 2>/dev/null' 2>/dev/null | tr -d '\r')
+    # EXTRACT POSITIONALLY, after the direction field -- NOT by last field.
+    # Live et23b4/et23b3 output (2026-09-04), verbatim:
+    #   gpio-612 (CPU0_THERMTRIP_LATCH|host-error-monitor  ) in  hi IRQ ACTIVE LOW
+    #   gpio-613 (CPU1_THERMTRIP_LATCH|host-error-monitor  ) in  lo IRQ ACTIVE LOW
+    # The label carries a "|consumer" suffix and internal padding, "in"/"out"
+    # is followed by variable spacing, and the value is trailed by IRQ/ACTIVE
+    # flags -- so "the value is the last whitespace-separated field" (the
+    # first version of this line) is FALSE on real hardware: it extracted
+    # "LOW", which is neither hi nor lo, so the fail-closed branch fired on
+    # every node and the feature never fired at all (first live run,
+    # et23b4). Anchored on the LAST ")" then the direction field instead --
+    # verified against both lines above. A line that does not match this
+    # shape at all passes through unsubstituted, which still is not "hi",
+    # so the fail-closed guard below still holds for a truly unrecognised
+    # format.
+    c0=$(printf '%s\n' "$gpio" | grep -E 'CPU0_THERMTRIP_LATCH\b' | sed -E 's/.*\) +(in|out) +(lo|hi).*/\2/' | head -n 1)
+    c1=$(printf '%s\n' "$gpio" | grep -E 'CPU1_THERMTRIP_LATCH\b' | sed -E 's/.*\) +(in|out) +(lo|hi).*/\2/' | head -n 1)
+    case "$c0" in lo) json_err thermtrip_latched ;; esac
+    case "$c1" in lo) json_err thermtrip_latched ;; esac
+    # FAIL CLOSED on anything that is not a confirmed "hi" either: an
+    # unreadable, truncated, or missing gpio line is not proof the node is
+    # SAFE, and this guard exists precisely so a node that cannot be vouched
+    # for is never cycled -- "not lo" must never be waved through as "hi".
+    case "$c0" in hi) ;; *) json_err thermtrip_unknown ;; esac
+    case "$c1" in hi) ;; *) json_err thermtrip_unknown ;; esac
+    say "preflight ok (mac $mac0, $os0); thermtrip latches clear"
+
+    # 3b. THE INTERLOCK (2026-09-24). Last check before the cut: the BMC's
+    # own job list. Exit 3, write never sent. (2026-09-27 fix round 2: the
+    # LOCAL lock -- another fw update / cycle for this BMC on this host --
+    # is now taken by the PARENT process before this CHILD was ever
+    # forked; see the bottom of this file. This function never calls
+    # take_lock() itself.)
+    why=$(busy_check "$IP"); brc=$?
+    if [ $brc -ne 0 ]; then
+        say "interlock: $why -- not cutting power"
+        printf '{"error":"interlock_busy","reason":"%s"}\n' "$why"; exit 3
+    fi
+    say "interlock clear (no BMC update job live or ended <${QUIET_S}s ago)"
+
+    # 4. Issue the write. FIRE AND FORGET: the session dying mid-command IS
+    # the expected outcome on success (S2 -- the BMC runs on the same
+    # standby rail this FET gates), so neither bmc()'s exit code nor its
+    # output is ever inspected here. A CLEAN RETURN IS NOT SUCCESS; see
+    # wait_down immediately below, which is what actually decides that.
+    # Task 3 (fix round 1 ruling): the reboot marker goes BEFORE the write.
+    # A SIGKILL in the ~4 s after the cut (the session dies with the BMC)
+    # must not leave a rebooting BMC with no marker; a write that turns out
+    # to be a no-op costs only a harmless 10-min no-flap window.
+    mark_reboot "${PORT:-}"
+    bmc "$IP" 'i2cset -f -y 7 0x45 0xd9 c' >/dev/null 2>&1 || :
+
+    # 5. Wait for DOWN (debounced -- see DOWN_CONFIRM_N above), capped at
+    # DOWN_WAIT. If the BMC never stops answering, the write did not do what
+    # we expect -- report it now and do NOT go on to wait
+    # BLADE_CYCLE_TIMEOUT for a reboot that was never coming.
+    say "12V cut sent (i2cset -f -y 7 0x45 0xd9 c); waiting for the BMC to drop"
+    wait_down "$IP" || { say "BMC never stopped answering within ${DOWN_WAIT}s"; json_err no_effect; }
+    down_s=$(( $(now_s) - t0 ))
+    say "BMC down at ${down_s}s; waiting for it to return (cap ${BLADE_CYCLE_TIMEOUT}s)"
+
+    # 6. Wait for RETURN, capped at BLADE_CYCLE_TIMEOUT (D4).
+    # Task 4: with --port, also probe the port's current IP from the feed;
+    # CUR_IP is whichever answered, and everything below talks to it.
+    wait_up "$IP" "${PORT:-}" || { say "BMC did not answer ssh at ${TRIED_IPS// / or } within ${BLADE_CYCLE_TIMEOUT}s"; json_err never_returned; }
+    up_s=$(( $(now_s) - t0 ))
+    if [ "$CUR_IP" = "$IP" ]; then say "BMC answering again at ${up_s}s"
+    else say "BMC answering again at ${up_s}s at $CUR_IP (moved from $IP; port ${PORT} per the flax feed) -- identity decides"; fi
+
+    # THE SECOND independent guard against a false cycled:true (review
+    # finding 2026-09-03; see MIN_DOWN_S above): even a DEBOUNCED "down" can
+    # be a burst of unrelated ssh failures rather than an actual 12V loss, if
+    # the BMC answers normally again moments later. down_s and up_s are both
+    # measured from the same t0, so their difference is exactly the observed
+    # down-to-up span -- shorter than the fastest cycle ever measured is not
+    # evidence of a completed cycle.
+    down_span=$((up_s - down_s))
+    [ "$down_span" -ge "$MIN_DOWN_S" ] || json_err no_effect
+
+    # ...then confirm the SAME machine answered -- a sled that returns as a
+    # DIFFERENT machine means the write did something other than what we
+    # think, and that is worse than not knowing. Same split as the preflight
+    # above: an empty mac1 means the identity READ failed (identity_unavailable),
+    # not that a different machine answered (identity_changed) -- alive()
+    # already proved a shell is there.
+    # Task 4: this is THE gate for a followed IP too -- a different blade at
+    # the feed's new IP fails here and is never powered on.
+    post=$(identity "$CUR_IP")
+    mac1=$(printf '%s\n' "$post" | sed -n 's/^MAC=//p')
+    os1=$(printf '%s\n' "$post"  | sed -n 's/^OS=//p')
+    [ -n "$mac1" ] || json_err identity_unavailable
+    if [ "$mac1" != "$mac0" ] || [ "$os1" != "$os0" ]; then
+        json_err identity_changed
+    fi
+
+    # 7. Verify power control. A read that fails here means the BMC answers
+    # (identity matched) but is not yet serving power-state queries -- up,
+    # but degraded.
+    state=$(bmc "$CUR_IP" 'obmcutil state 2>/dev/null | sed -n "s/.*CurrentPowerState *: *//p"' 2>/dev/null | tr -d '\r')
+    [ -n "$state" ] || json_err bmc_degraded
+    say "same machine back (identity matches), power state '$state'"
+
+    # 8. Optional: one Redfish power-on. The cycle itself already succeeded,
+    # so the record stays cycled:true whatever the power-on does.
+    if [ "${POWER_ON_AFTER:-no}" = yes ]; then
+        say "powering on (Redfish ResetType On), watching PowerState for ${POWER_ON_WAIT}s"
+        pon=$(power_on "$CUR_IP")
+        say "power-on: $pon"
+        printf '{"cycled":true,"down_s":%s,"up_s":%s,"ip":"%s","power_on":"%s"}\n' "$down_s" "$up_s" "$CUR_IP" "$pon"
+        return
+    fi
+    printf '{"cycled":true,"down_s":%s,"up_s":%s,"ip":"%s"}\n' "$down_s" "$up_s" "$CUR_IP"
+}
+
+USAGE="usage: bmc-blade-power-cycle cycle <bmc-ip> [--power-on] [--port <port>]"
+main() {
+    case "${1:-}" in
+        cycle)
+            # Task 3 (2026-09-27): --power-on and --port <port> in any order
+            # after <ip>. --port names the internal switch port (e.g. et6b1)
+            # for the manual claim and the reboot marker.
+            shift; IP="${1:-}"; shift || true; PORT=""
+            while [ $# -gt 0 ]; do case "$1" in
+                --power-on) POWER_ON_AFTER=yes; shift ;;
+                --port) port_ok "${2:-}" || { echo "$USAGE" >&2; exit 2; }; PORT="$2"; shift 2 ;;
+                *) echo "$USAGE" >&2; exit 2 ;;
+            esac; done
+            [ -n "$IP" ] || { echo "$USAGE" >&2; exit 2; }
+            cmd_cycle "$IP" ;;
+        *) echo "$USAGE" >&2; exit 2 ;;
+    esac
+}
+
+if [ -n "${FLAX_BIN_CHILD:-}" ]; then
+    # ── CHILD (2026-09-27 fix round 2; marker hardened round 3, I1/M3) ──
+    # $FLAX_BIN_CHILD carries the PARENT's own pid (not a literal "1") --
+    # see bios-fw-update.sh.j2's child branch for the full explanation:
+    # `setpriv` only arms --pdeathsig AFTER it execs, so a PARENT killed in
+    # the narrow window between fork and that exec leaves this process
+    # reparented with no signal ever coming and no lock held -- for THIS
+    # bin specifically, that meant the 12V cut could still be sent with no
+    # lock and no parent (measured: 1/550 natural runs, reproducible every
+    # time with a slowed `setpriv`). $PPID is set at this process's own
+    # startup, i.e. after the prctl, so a mismatch here means it was
+    # already orphaned before pdeathsig was armed.
+    [ "$PPID" = "$FLAX_BIN_CHILD" ] || exit 70
+    unset FLAX_BIN_CHILD
+    # The PARENT already holds the per-BMC lock and owns all TERM/INT/HUP
+    # handling via kill_tree; this process must not compete with it.
+    main "$@"
+    exit $?
+fi
+
+# ── PARENT (the pid callers see) ────────────────────────────────────────
+[ "${1:-}" = cycle ] && need_lock_dir "$@"
+if [ "${1:-}" = cycle ]; then
+    IP_FOR_LOCK="${2:-}"
+    if ! take_lock "$IP_FOR_LOCK"; then
+        say "interlock: another fw update or cycle for $IP_FOR_LOCK holds the local lock"
+        printf '{"error":"interlock_busy","reason":"local_lock"}\n'
+        exit 3
+    fi
+    # Task 3: the manual claim, taken only once the lock is ours. Until
+    # on_signal is armed below, a TERM/INT/HUP still removes it.
+    trap 'claim_release; exit 143' TERM INT HUP
+    claim_take "$(arg_port "$@")"
+fi
+# Re-exec the whole body as a CHILD that never sees fd 9 (2026-09-27 fix
+# round 2, N2): a command-substitution subshell inherits an open fd across
+# a fork, so nothing short of a SEPARATE process with fd 9 closed at its
+# own exec keeps the lock's fate tied to THIS process alone.
+# `--pdeathsig KILL` (util-linux setpriv) makes the kernel SIGKILL the
+# child the instant this PARENT dies for ANY reason -- including a SIGKILL
+# to this process, which no trap can catch -- so a killed bin can never go
+# on to cut 12 V power after its caller has given up on it. The marker is
+# THIS process's own pid (I1), and `readlink -f` resolves `$0` to an
+# absolute path (M2) so setpriv's execvp() never falls through to a PATH
+# search, which could otherwise run some OTHER same-named binary as the
+# child while this process still holds the lock.
+FLAX_BIN_CHILD=$$ setpriv --pdeathsig KILL "$(readlink -f -- "$0")" "$@" 9>&- &
+CHILD=$!
+trap on_signal TERM INT HUP
+hb_start   # Task 3: claim heartbeat (no-op without a claim)
+# Only re-wait while the child is actually still alive (2026-09-27 fix
+# round 2, N1): bash keeps the SAVED exit status of an already-reaped pid,
+# so `wait "$CHILD"` after the child is gone returns that same status
+# forever -- a naive `while [ "$rc" -gt 128 ]` loop (round 1) spun at 100%
+# CPU whenever the child ended above 128 for a reason unrelated to a
+# signal THIS process received. `kill -0` distinguishes "wait was itself
+# interrupted, child still alive, wait again" from "the child is actually
+# dead", so this exits promptly either way.
+# Task 3: the heartbeat ticker's USR1 also interrupts `wait` -- same
+# "child still alive -> wait again" path, touching the claim on the way.
+# After the loop, one more `wait` reads the child's REAL status (a USR1 that
+# lands just as the child exits would otherwise leave rc=138).
+while :; do
+    wait "$CHILD"; rc=$?
+    kill -0 "$CHILD" 2>/dev/null || break
+    claim_heartbeat
+done
+hb_stop
+wait "$CHILD"; rc=$?
+claim_release
+exit "$rc"

@@ -1,0 +1,256 @@
+/* flax_rack/web/rackpost.css: rack-order additions on top of flax_post's rack.css
+   (loaded unmodified before this file). Layout per mockup rack-v3. */
+:root{--cyan:#39c5cf}
+.metric.deploy b{color:var(--cyan)} .dot.deploy{background:var(--cyan)}
+.seg.cur.deploy{background:var(--cyan)}
+
+/* rows: switches / full-width devices span the rack; a JBOD row holds one tile per IOM */
+.row.full{grid-template-columns:46px 1fr}
+.row.two{grid-template-columns:46px 1fr 1fr}
+.group-h.sw{grid-template-columns:46px 1fr}
+.tile.sw{min-height:auto;cursor:default}
+a.tile{display:block;color:inherit;text-decoration:none}
+.kind{font-size:.66rem;text-transform:uppercase;letter-spacing:.5px;color:var(--dim);margin-left:.3rem;white-space:nowrap}
+.gap{font-family:ui-monospace,monospace;font-size:.62rem;color:var(--dim);margin:-.2rem 0 .5rem 54px}
+.rack.withdrawer{margin-right:580px}
+
+/* link chips: P0→A / P1→B / mgmt; ok = seen as expected, bad = not, dev = differs from BOM */
+.links{display:flex;gap:4px;margin-top:.45rem;flex-wrap:wrap}
+.lk{font-family:ui-monospace,monospace;font-size:.66rem;padding:.02rem .3rem;border-radius:3px;border:1px solid var(--border);color:var(--muted)}
+.lk.ok{color:var(--green);border-color:rgba(63,185,80,.35)} .lk.bad{color:var(--red);border-color:rgba(248,81,73,.45)}
+.lk.dev{color:var(--amber);border-color:rgba(210,153,34,.45)}
+
+/* per-tile population: amber when overridden from the BOM default */
+.popsel{background:var(--bg);border:1px solid var(--line);border-radius:5px;color:var(--text);font-family:ui-monospace,monospace;font-size:.72rem;padding:.05rem .25rem;max-width:150px}
+.popsel.ovr{border-color:var(--amber);color:var(--amber)}
+.popsel:disabled{opacity:.6}
+.popv{font-size:.72rem;color:var(--dim)}
+.t-row .popsel{min-width:0}
+.side{margin-left:auto;font-size:.72rem;color:var(--dim);white-space:nowrap} .side.bad{color:var(--red);font-weight:700}
+
+/* header: read-only order context + Close */
+.ctx .ro{font-family:ui-monospace,monospace;color:var(--text);font-size:.78rem;text-transform:none;letter-spacing:0;font-weight:400;
+  border:1px solid var(--line);border-radius:6px;padding:.3rem .45rem;background:var(--bg)}
+.closebtn{background:none;border:1px solid rgba(248,81,73,.5);color:var(--red);border-radius:6px;padding:.3rem .6rem;font-weight:600;cursor:pointer;font-size:.72rem}
+.discbtn{background:none;border:1px solid rgba(163,113,247,.55);color:var(--violet);border-radius:6px;padding:.3rem .6rem;font-weight:600;cursor:pointer;font-size:.72rem}
+.discbtn:disabled{opacity:.35;cursor:default}
+.hdr-msg{font-size:.68rem;color:var(--muted)}
+.freshbtn{color:var(--amber);border-color:rgba(210,153,34,.55)} .freshbtn:disabled{opacity:.35;cursor:default}
+.pass-chip{font-size:.68rem;color:var(--amber);border:1px solid rgba(210,153,34,.45);border-radius:999px;padding:.1rem .5rem;white-space:nowrap}
+.rep-link{font-size:.68rem;color:var(--accent);text-decoration:none;border-bottom:1px dotted rgba(88,166,255,.6);white-space:nowrap}
+.rep-link:hover{border-bottom-style:solid}
+textarea.confirm-in{font:inherit;font-size:.8rem;resize:vertical}
+.unexp{margin:0 0 .8rem 54px}
+.unexp .ab-b{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+.closed-chip{font-size:.68rem;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:.1rem .5rem}
+.ctx-at.run{color:var(--violet)}
+
+/* drawer */
+.drawer{top:var(--top-h,88px);height:calc(100% - var(--top-h,88px))}
+.actions button:disabled{opacity:.35;cursor:default}
+.actions button:disabled:hover{background:var(--panel2)}
+.facets .bad{color:var(--red)}
+.facets .note{color:var(--dim);font-size:.72rem}
+.ha{display:grid;grid-template-columns:auto 1fr 1fr;gap:.2rem .6rem;font-size:.76rem;font-family:ui-monospace,monospace}
+.ha .h{color:var(--dim);font-family:system-ui;font-size:.64rem;text-transform:uppercase;letter-spacing:.4px}
+.ha .ok{color:var(--green)} .ha .bad{color:var(--red)} .ha .dev{color:var(--amber)} .ha .dimv{color:var(--dim)}
+.phase.bad{border-color:rgba(248,81,73,.45)}
+.step{cursor:default}
+
+/* close modal */
+.confirm-in{width:100%;margin-bottom:.6rem;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--text);
+  padding:.4rem .55rem;font-family:ui-monospace,monospace;font-size:.85rem}
+.press.danger{color:var(--red);border-color:var(--red);background:rgba(248,81,73,.1)}
+
+/* /rackpost/ index */
+.rack.index .tile{min-height:auto}
+
+/* Qualify: header button, POP verdict, firmware groups (same palette as INV), artifacts */
+.qualbtn{border-color:rgba(210,153,34,.55);color:var(--amber)}
+.qualbtn.passed{border-color:rgba(63,185,80,.55);color:var(--green)}
+.popv{cursor:pointer;margin-left:.3rem}
+.popv.ok{color:var(--green)} .popv.bad{color:var(--red);font-weight:700}
+.watt.bad{color:var(--red);background:rgba(248,81,73,.13)}
+.step .art{margin-left:.35rem;font-family:ui-monospace,monospace;font-size:.66rem;color:var(--accent);text-decoration:none}
+.step .art:hover{text-decoration:underline}
+.pop-tbl td:nth-child(2),.pop-tbl td:nth-child(3){width:2.5rem;text-align:center}
+/* the evidence modal's table (fio per device x job); numbers right-aligned */
+.ev-tbl{display:block;overflow-x:auto}
+.ev-tbl th{text-transform:none}
+.ev-tbl td:nth-child(n+4),.ev-tbl th:nth-child(n+4){text-align:right;white-space:nowrap}
+
+/* header: Qualify lockstep phase strip (past / current) + devices done at the barrier */
+.qphase{display:inline-flex;gap:3px;align-items:center;font-size:.66rem;margin-left:.6rem;white-space:nowrap}
+.qphase i{font-style:normal;padding:.03rem .4rem;border-radius:999px;border:1px solid var(--line);color:var(--dim)}
+.qphase i.past{color:var(--muted);border-color:rgba(210,153,34,.35)}
+.qphase i.cur{color:var(--amber);border-color:var(--amber);font-weight:600}
+.qphase b{color:var(--text);margin-left:.35rem;font-weight:600}
+.qphase .qwait{color:var(--muted)}
+
+/* Firmware (detect only): header button, step evidence under a clicked step, IOM rows */
+.fwbtn{border-color:rgba(88,166,255,.55);color:var(--accent)}
+.step.evable{cursor:pointer}
+.ev{margin:.1rem 0 .35rem 1.2rem;padding:.3rem .5rem;border-left:2px solid var(--line);font-size:.68rem}
+.ev-row{display:grid;grid-template-columns:9rem 1fr;gap:.4rem}
+.ev-row .lbl{color:var(--dim)}
+.ev-row .mono{font-family:ui-monospace,monospace;word-break:break-all}
+.ev-note{color:var(--dim);margin-top:.15rem}
+.ep-fw{margin-top:.3rem}
+.ep-fw .ep-h{font-size:.66rem;color:var(--dim);letter-spacing:.04em;margin:.2rem 0 .1rem}
+.ev-h{font-weight:600;margin-bottom:.15rem}
+
+/* Task 6: clickable switches / BMC endpoints, per-port table, step evidence modal */
+.tile.sw{cursor:pointer}
+.tile.sw .sw-rows{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0 .8rem}
+.tile.sw .swbmc{cursor:pointer;color:var(--accent)}
+.tile.sw .swbmc:hover,.tile.sw .swbmc.on{text-decoration:underline}
+.clk{cursor:pointer} .lbl.clk,.ep-h.clk{color:var(--accent)}
+.lk.clk:hover{border-color:var(--accent);color:var(--text)}
+.d-sn.bad{color:var(--red)}
+.kv-grid .mono{font-family:ui-monospace,monospace;word-break:break-word}
+.kv-grid .dimv{color:var(--dim)}
+.arts-line{display:flex;flex-wrap:wrap;gap:.2rem .1rem;align-items:center;font-size:.7rem;margin:-.3rem 0 .6rem}
+.arts-line .lbl{color:var(--dim);margin-right:.2rem}
+.arts-line .art{margin-left:.35rem;font-family:ui-monospace,monospace;color:var(--accent);text-decoration:none}
+.arts-line .art:hover{text-decoration:underline}
+.port-tbl td{font-size:.72rem;vertical-align:top}
+.port-tbl td.ok{color:var(--green)} .port-tbl td.bad{color:var(--red)} .port-tbl td.dimv{color:var(--dim)}
+.port-tbl tr.unexp td{background:rgba(248,81,73,.07)}
+.port-tbl .lk{margin-right:3px;display:inline-block}
+.port-tbl .note{color:var(--amber);font-size:.66rem}
+.step-head{margin-left:.4rem;font-weight:600}
+/* a step row stays one line (Post's two columns): the full note is its tooltip + modal */
+.drawer .step{white-space:nowrap;min-width:0}
+.drawer .step .note{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--dim)}
+.drawer .step .art{flex-shrink:0}
+.drawer .step{overflow:hidden}
+.tile.sw .sw-rows{grid-template-columns:minmax(0,.8fr) minmax(0,1.2fr) minmax(0,1.2fr)}
+.tile.sw .t-row .k{width:auto;min-width:2.2rem;margin-right:.35rem}
+.kv-grid .amb{color:var(--amber)}
+
+/* artifacts open in-page: chips in step rows / raw lines / the evidence modal, and the viewer */
+.step .art,.arts-line .art{cursor:pointer}
+.alert-box.clk:hover{border-color:var(--accent)}
+.art-box{width:min(1100px,94vw);max-width:94vw;height:84vh;display:flex;flex-direction:column;overflow:hidden}
+.art-box .m-h{flex-shrink:0}
+.art-box .art-info{font-size:.7rem;color:var(--dim);font-weight:400;white-space:nowrap}
+.art-bar{display:flex;align-items:center;gap:.4rem;padding:.5rem .9rem;border-bottom:1px solid var(--border);flex-shrink:0;min-width:0}
+.art-bar .press{width:auto;padding:.25rem .7rem;font:600 .74rem system-ui,sans-serif;text-decoration:none;display:inline-block}
+.art-bar .art-copied{font-size:.7rem;color:var(--green)}
+.art-bar .art-path{margin-left:auto;font-size:.66rem;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.art-box > .m-sub,.art-box > .pending-note{margin:.5rem .9rem 0}
+.art-box .amb{color:var(--amber)} .art-box .bad{color:var(--red)}
+.art-pre{flex:1;min-height:0;margin:.6rem .9rem .9rem;white-space:pre;overflow:auto;tab-size:8}
+
+/* unmeasured: the target did not answer, nothing was judged -- grey "not measured",
+   never red/amber (a fault) and never green (done) */
+.seg.unmeasured{background:var(--grey);border-color:transparent}
+.dot.unmeasured{background:var(--grey)}
+.step.unmeasured{color:var(--muted)} .step.unmeasured .si{color:var(--grey)}
+.pop-badge.st-unmeasured{color:var(--muted);background:rgba(110,118,129,.22)}
+.popv.unm{color:var(--grey)}
+.phase.unm{border-color:rgba(110,118,129,.45)}
+.depbtn{border-color:rgba(57,197,207,.55);color:var(--cyan)}
+.depbtn.passed{border-color:rgba(63,185,80,.55);color:var(--green)}
+.dphase i.past{border-color:rgba(57,197,207,.35)} .dphase i.cur{color:var(--cyan);border-color:var(--cyan)}
+.lk.amb{color:var(--amber);border-color:rgba(210,153,34,.45)} .lk.dimv{color:var(--dim)}
+.lk.hamode{margin-left:.6rem;white-space:nowrap}
+.d-head .lk.waived{margin-left:.4rem}
+.m-sub.ok{color:var(--green)} .m-sub .dim,.m-sub.dim{color:var(--dim)}
+.m-box label.m-sub{display:block}
+.donebtn{border-color:rgba(63,185,80,.55);color:var(--green)}
+.donebtn.passed{border-color:rgba(63,185,80,.8)}
+.csv-links{font-size:.68rem;color:var(--muted);white-space:nowrap}
+.csv-links a{color:var(--green);margin-left:.35rem;text-decoration:none;border-bottom:1px dotted rgba(63,185,80,.6)}
+.csv-links a:hover{border-bottom-style:solid}
+
+/* live link pills (link monitor, ~30 s): ok = identity seen (filled), up = link up, no
+   identity (outline), bad = down / wrong, unk = switch not read (grey, never red) */
+.lk.live.ok{color:var(--green);background:rgba(63,185,80,.18);border-color:rgba(63,185,80,.55)}
+.lk.live.up{color:var(--green);background:none;border-color:rgba(63,185,80,.55)}
+.lk.live.unk{color:var(--dim);border-style:dashed}
+.pres{width:8px;height:8px;border-radius:50%;flex-shrink:0;margin-right:.35rem;box-sizing:border-box;
+  border:1.5px solid var(--grey);display:inline-block}
+.pres.present{background:var(--green);border-color:var(--green)}
+.pres.absent{background:var(--red);border-color:var(--red)}
+.step.held{color:var(--muted)} .step.held .si{color:var(--grey)}
+/* live console tail (the relay's capture while a console rung runs) */
+.con-live{max-height:22rem;overflow:auto;white-space:pre-wrap;margin:.3rem 0 .6rem;font-size:12px}
+/* Run strip: the current pass's latest Run (held = its blockers + Continue to Deploy) */
+.run-strip{display:flex;flex-wrap:wrap;gap:.35rem .7rem;align-items:center;margin:.4rem 1rem 0;padding:.35rem .6rem;border:1px solid var(--line);border-radius:6px;font-size:.72rem}
+.run-strip .rs-main{font-weight:600}
+.run-strip.rs-running{border-color:rgba(163,113,247,.55)} .run-strip.rs-running .rs-main{color:var(--violet)}
+.run-strip.rs-held,.run-strip.rs-interrupted{border-color:rgba(210,153,34,.55)} .run-strip.rs-held .rs-main,.run-strip.rs-interrupted .rs-main{color:var(--amber)}
+.run-strip.rs-done .rs-main{color:var(--green)}
+.run-strip .rs-held{color:var(--muted)} .run-strip .rs-held b{color:var(--text);font-family:ui-monospace,monospace}
+.run-strip .rs-held.ok{color:var(--green)}
+.runbtn{border-color:rgba(63,185,80,.6);color:var(--green)}
+/* Plan 6 Task 3: a running step (blue, "running…"; amber stays "needs attention"), the
+   lit phase chip of the stage running now, the console panel */
+.step.run{color:var(--accent)} .step.run .si{color:var(--accent);animation:rp-pulse 1.4s ease-in-out infinite}
+.seg.run{background:var(--accent);border-color:transparent;animation:rp-pulse 1.4s ease-in-out infinite}
+.pop-badge.st-run{color:var(--accent);background:rgba(88,166,255,.15)}
+@keyframes rp-pulse{50%{opacity:.45}}
+.metric.lit{border-color:var(--accent);box-shadow:inset 0 -2px 0 var(--accent)}
+.section-l.con-h{text-transform:none}
+.section-l.con-h.live{color:var(--accent)} .section-l.con-h.bad{color:var(--red)}
+.con-find{display:grid;grid-template-columns:5rem 1fr;gap:.5rem;font-size:.72rem;margin:.1rem 0;color:var(--red)}
+.con-find .mono{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.con-find .lbl{color:var(--dim)}
+.run-strip .rs-fw{color:var(--accent);cursor:help}
+
+/* Firmware is report only: a finding is an amber note (never a red fault, never an alert) */
+.seg.fwnote{background:var(--amber);border-color:transparent;opacity:.75}
+.dot.fwnote{background:var(--amber)}
+.step.fwnote .si{color:var(--amber)} .step.fwnote .note{color:var(--amber)}
+.pop-badge.st-fwnote{color:var(--amber);background:rgba(210,153,34,.15)}
+/* drawer: where the device is now, finished phases folded to their summary line */
+.now-line{display:flex;flex-wrap:wrap;gap:.2rem .6rem;align-items:baseline;margin:.1rem 0 .45rem;padding:.3rem .5rem;border:1px solid var(--border);border-radius:6px;font-size:.74rem;color:var(--dim)}
+.now-line.on{border-color:rgba(88,166,255,.55);color:var(--accent)}
+.now-line .now-next{color:var(--dim);font-size:.7rem}
+.phase-h.clk{cursor:pointer} .phase-h .caret{margin-left:.35rem;color:var(--dim);font-size:.7rem}
+.phase-h .ph-ok{margin-left:.35rem;color:var(--green)}
+.phase.folded .steps:empty{display:none}
+/* header: the stage launch buttons on the count-tile row, in the tiles' shape. One rule
+   for all: ok = passed this pass for every device it applies to (green ✓), lit = it runs
+   now (amber), neutral otherwise; the sub line is passed/of */
+.toprow .tl{flex-wrap:wrap;row-gap:6px}
+.stagebtns{padding-left:.6rem;border-left:1px solid var(--border)}
+.stagebtns{gap:.3rem}
+.stagebtn{font:inherit;color:var(--text);min-width:52px;padding:.2rem .45rem}
+.stagebtn b{font-size:.8rem;line-height:1.3;font-weight:700;white-space:nowrap}
+.stagebtn.run b,.stagebtn.done b{color:var(--green)} .stagebtn.discover b{color:var(--violet)}
+.stagebtn.firmware b{color:var(--accent)} .stagebtn.qualify b{color:var(--amber)} .stagebtn.deploy b{color:var(--cyan)}
+.stagebtn.ok{border-color:rgba(63,185,80,.65);background:rgba(63,185,80,.1)}
+.stagebtn.ok b,.stagebtn.ok span{color:var(--green)} .stagebtn.ok span{font-weight:700}
+.stagebtn.lit{border-color:var(--amber);box-shadow:inset 0 -2px 0 var(--amber)}
+.stagebtn.lit span{color:var(--amber);animation:rp-pulse 1.4s ease-in-out infinite}
+.stagebtn:disabled{cursor:default}
+.stagebtn:disabled:not(.lit):not(.ok){opacity:.45}
+.stagebtn:disabled.ok{opacity:.75}
+/* drawer PWR / IDNT; the tile's identify marker blinks while the LED is on */
+.actions button.lit{color:var(--amber);border-color:var(--amber);background:rgba(210,153,34,.12)}
+.idm{font-family:ui-monospace,monospace;font-size:.6rem;font-weight:700;color:#1b1300;background:var(--amber);
+  border-radius:3px;padding:0 .25rem;margin-left:.35rem;animation:rp-blink 1s steps(2,start) infinite}
+@keyframes rp-blink{to{visibility:hidden}}
+.m-sub b.on{color:var(--green)} .m-sub b.off{color:var(--accent)} .m-sub b.unk{color:var(--muted)}
+
+/* lab racks: absent BOM slots, the Unplaced box, the drawer's placement line */
+.tile.absent{opacity:.45;border-style:dashed}
+.alert-box.unplaced{border-color:var(--accent)}
+.up-row{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin:.2rem 0}
+.d-place{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin:.3rem 0 .5rem}
+.up-row .mono,.d-place .mono{font-family:ui-monospace,monospace;font-size:.72rem}
+.up-row .muted,.d-place .muted{color:var(--muted);font-size:.72rem}
+.up-row .press,.d-place .press{width:auto;padding:.15rem .6rem;font:600 .72rem system-ui,sans-serif}
+.d-place-in{display:inline-flex;flex-wrap:wrap;gap:.4rem;align-items:center}
+/* fio drive judge: a passed step with a drive outside its range (amber on the row, its
+   modal rows and a tile marker; never the phase bar, counters, ALERTS or Done summary) */
+.step.flag .si,.step.flag .note{color:var(--amber)}
+.pop-badge.st-flag{color:var(--amber);background:rgba(210,153,34,.15)}
+.ev-tbl tr.flag td{background:rgba(210,153,34,.13);color:var(--amber)}
+.ev-tbl tr.bad td{color:var(--red)}
+/* the Discover boot timeline (Post's ladder table): extra reads left, fault red, last row bold */
+.ev-tbl.timeline td:nth-child(n+4),.ev-tbl.timeline th:nth-child(n+4){text-align:left;white-space:normal}
+.ev-tbl tr.fault td{color:var(--red)} .ev-tbl tr.now td{font-weight:600}
+.flagm{font-size:.7rem;font-weight:700;color:var(--amber);margin-left:.2rem;cursor:default}

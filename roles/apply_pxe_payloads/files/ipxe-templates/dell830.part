@@ -1,0 +1,5 @@
+# apply the dell830 settings (defaults)
+set node-setting dell830
+set com-default com1f
+set com-setting ${ttys0f}
+

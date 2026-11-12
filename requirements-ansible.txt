@@ -1,0 +1,13 @@
+# The reaper toolchain (ansible controller): python 3.12.13 (scripts/toolchain-venv.sh PYVER,
+# the same interpreter as the flax service image) + these pins. Dev venv: ~/.venv-reaper-ansible;
+# bangs: /opt/flax/venv/reaper-ansible. Jinja2 matches requirements.txt so templates render
+# with one Jinja everywhere (deploy, services, tests). A fleet upgrade is a deliberate step
+# (spec 2026-11-07 reaper-cli §3.1).
+ansible-core==2.18.20
+PyYAML==6.0.2
+Jinja2==3.1.6
+# network_cli transports (arista uses libssh, cisco falls back to paramiko). paramiko stays
+# 3.x: 5.0 drops the SHA-1 kex/host-key the Cisco IOS 15 switches need ("no acceptable kex").
+ansible-pylibssh==1.4.0
+paramiko==3.4.0
+pytest==9.2.0

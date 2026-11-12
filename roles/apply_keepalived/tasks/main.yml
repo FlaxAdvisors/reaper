@@ -1,0 +1,81 @@
+---
+- name: Ensure keepalived package installed
+  become: true
+  community.general.zypper:
+    name: keepalived
+    state: present
+
+- name: Deploy keepalived.conf
+  become: true
+  ansible.builtin.template:
+    src: keepalived.conf.j2
+    dest: /etc/keepalived/keepalived.conf
+    owner: root
+    group: root
+    mode: "0600"
+  notify: restart keepalived
+
+- name: Deploy notify_master.sh
+  become: true
+  ansible.builtin.template:
+    src: notify_master.sh.j2
+    dest: /usr/local/sbin/notify_master.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy notify_backup.sh
+  become: true
+  ansible.builtin.template:
+    src: notify_backup.sh.j2
+    dest: /usr/local/sbin/notify_backup.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy notify_fault.sh
+  become: true
+  ansible.builtin.template:
+    src: notify_fault.sh.j2
+    dest: /usr/local/sbin/notify_fault.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy check_lab_services.sh
+  become: true
+  ansible.builtin.template:
+    src: check_lab_services.sh.j2
+    dest: /usr/local/bin/check_lab_services.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure keepalived systemd drop-in directory
+  become: true
+  ansible.builtin.file:
+    path: /etc/systemd/system/keepalived.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy keepalived systemd drop-in (retry past early-boot interface race)
+  become: true
+  ansible.builtin.template:
+    src: keepalived.service.d/override.conf.j2
+    dest: /etc/systemd/system/keepalived.service.d/override.conf
+    owner: root
+    group: root
+    mode: "0644"
+  # No restart notify: a Restart=on-failure change only matters on the next
+  # start/boot, and bouncing keepalived would needlessly move the VIP. The
+  # daemon_reload below makes systemd pick up the drop-in in place.
+
+- name: Enable + start keepalived
+  become: true
+  ansible.builtin.systemd:
+    name: keepalived
+    enabled: true
+    state: started
+    daemon_reload: true

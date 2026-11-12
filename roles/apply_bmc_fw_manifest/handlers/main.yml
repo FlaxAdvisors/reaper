@@ -1,0 +1,15 @@
+---
+# flax-post and flax-post-fwd load the manifest once at start (and bind-mount it as a
+# single file); try-restart touches only running units, so a VIP-gated standby is left
+# alone.
+- name: Restart BMC manifest readers
+  become: true
+  ansible.builtin.shell: |
+    systemctl try-restart flax-post.service flax-post-fwd.service
+    # the console bind-mounts the manifest as a single file: a rename (ansible
+    # template/copy) leaves it on the old inode until it restarts. Only if running.
+    if [ -n "$(docker ps -q -f name=^flax-stack-flax-control-1$)" ]; then
+      docker restart flax-stack-flax-control-1 >/dev/null && echo "restarted the console"
+    fi
+  register: apply_bmc_fw_manifest_restart
+  changed_when: true

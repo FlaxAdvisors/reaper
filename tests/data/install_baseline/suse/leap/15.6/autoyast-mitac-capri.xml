@@ -1,0 +1,767 @@
+<?xml version="1.0"?>
+<!DOCTYPE profile>
+<profile xmlns="http://www.suse.com/1.0/yast2ns"
+	 xmlns:config="http://www.suse.com/1.0/configns">
+  <add-on t="map">
+    <add_on_others t="list">
+      <listentry t="map">
+        <name>bang</name>
+        <alias>bang</alias>
+        <product>bang</product>
+        <media_url>http://bang/install/rpmbuild</media_url>
+        <product_dir>/</product_dir>
+      </listentry>
+
+      <!-- obs repos -->
+      <listentry t="map">
+        <name>Devel project for Vagrant (openSUSE_Leap_15.6)</name>
+        <alias>virt_vagrant</alias>
+        <media_url>https://download.opensuse.org/repositories/Virtualization:/vagrant/openSUSE_Leap_15.6/</media_url>
+        <product_dir>/</product_dir>
+      </listentry>
+      <listentry t="map">
+        <name>Appliance Builder (openSUSE_Leap_15.6)</name>
+        <alias>virt_app_builder</alias>
+        <media_url>https://download.opensuse.org/repositories/Virtualization:/Appliances:/Builder/openSUSE_Leap_15.6/</media_url>
+        <product_dir/>
+      </listentry>
+      <listentry t="map">
+        <name>Ruby base project (openSUSE_Leap_15.6)</name>
+        <alias>d_l_ruby</alias>
+        <media_url>https://download.opensuse.org/repositories/devel:/languages:/ruby/openSUSE_Leap_15.6/</media_url>
+        <product_dir/>
+      </listentry>
+      <listentry t="map">
+        <name>Ruby Extensions (openSUSE_Leap_15.6)</name>
+        <alias>d_l_ruby_ext</alias>
+        <media_url>https://download.opensuse.org/repositories/devel:/languages:/ruby:/extensions/openSUSE_Leap_15.6/</media_url>
+        <product_dir/>
+      </listentry>
+
+      <!-- packman
+      <listentry t="map">
+        <name>packman</name>
+        <alias>packman</alias>
+        <media_url>http://ftp.gwdg.de/pub/linux/misc/packman/suse/openSUSE_Leap_15.6/</media_url>
+        <product_dir/>
+      </listentry>
+      -->
+      
+      <!-- oss -->
+      <listentry t="map">
+        <name>Main Repository</name>
+        <alias>oss</alias>
+        <media_url>http://download.opensuse.org/distribution/leap/15.6/repo/oss/</media_url>
+        <product_dir>/</product_dir>
+      </listentry>
+      <listentry t="map">
+	<name>Main Update Repository</name>
+        <alias>update</alias>
+        <media_url>http://download.opensuse.org/update/leap/15.6/oss</media_url>
+        <product_dir>/</product_dir>
+      </listentry>
+      <listentry t="map">
+        <name>Debug Repository</name>
+        <alias>debug</alias>
+        <media_url>http://download.opensuse.org/debug/distribution/leap/15.6/repo/oss/</media_url>
+        <product_dir>/</product_dir>
+      </listentry>
+      <listentry t="map">
+	<name>Update Repository (Debug)</name>
+        <alias>debug-update</alias>
+        <media_url>http://download.opensuse.org/debug/update/leap/15.6/oss/</media_url>
+        <product_dir>/</product_dir>
+      </listentry>
+      <listentry t="map">
+        <name>Source Repository</name>
+        <alias>source</alias>
+        <media_url>http://download.opensuse.org/source/distribution/leap/15.6/repo/oss/</media_url>
+        <product_dir>/</product_dir>
+      </listentry>
+
+      <!-- non-oss -->
+      <listentry>
+        <name>Non-OSS Repository</name>
+        <alias>non-oss</alias>
+        <media_url>http://download.opensuse.org/distribution/leap/15.6/repo/non-oss/</media_url>
+        <product_dir>/</product_dir>
+      </listentry>
+      <listentry t="map">
+        <name>Update Repository (Non-Oss)</name>
+        <alias>update-non-oss</alias>
+        <media_url>http://download.opensuse.org/update/leap/15.6/non-oss/</media_url>
+        <product_dir>/</product_dir>
+      </listentry>
+      <listentry t="map">
+        <name>Debug Repository (Non-OSS)</name>
+        <alias>debug-non-oss</alias>
+        <media_url>http://download.opensuse.org/debug/distribution/leap/15.6/repo/non-oss/</media_url>
+        <product_dir>/</product_dir>
+      </listentry>
+      <listentry t="map">
+        <name>Update Repository (Debug, Non-OSS)</name>
+        <alias>debug-update-non-oss</alias>
+        <media_url>http://download.opensuse.org/debug/update/leap/15.6/non-oss/</media_url>
+        <product_dir>/</product_dir>
+      </listentry>
+
+
+      <!-- sle -->
+      <listentry t="map">
+        <name>Update repository with updates from SUSE Linux Enterprise 15</name>
+        <alias>sle-update</alias>
+        <media_url>http://download.opensuse.org/update/leap/15.6/sle/</media_url>
+        <product_dir>/</product_dir>
+      </listentry>
+      <listentry t="map">
+        <name>Update repository with debuginfo for updates from SUSE Linux Enterprise 15</name>
+        <alias>sle-debug-update</alias>
+        <media_url>http://download.opensuse.org/debug/update/leap/15.6/sle/</media_url>
+        <product_dir>/</product_dir>
+      </listentry>
+
+      <!-- backports -->      
+      <listentry t="map">
+	<name>Update repository of openSUSE Backports</name>
+        <alias>backports-update</alias>
+        <media_url>http://download.opensuse.org/update/leap/15.6/backports/</media_url>
+        <product_dir>/</product_dir>
+      </listentry>
+      <listentry t="map">
+        <name>Update repository with updates for openSUSE Leap debuginfo packages from openSUSE Backports</name>
+        <alias>backports-debug-update</alias>
+        <media_url>http://download.opensuse.org/update/leap/15.6/backports_debug/</media_url>
+        <product_dir>/</product_dir>
+      </listentry>
+
+    </add_on_others>
+  </add-on>
+  <bootloader t="map">
+    <global t="map">
+      <append>linux nomodeset noquiet splash=off console=tty0 console=ttyS1,57600n8 earlyprintk=serial,ttyS1,57600n8 mitigations=auto</append>
+      <cpu_mitigations>auto</cpu_mitigations>
+      <gfxmode>auto</gfxmode>
+      <hiddenmenu>false</hiddenmenu>
+      <os_prober>false</os_prober>
+      <secure_boot>true</secure_boot>
+      <serial>serial --unit=1 --speed=57600 --parity=no --word=8</serial>
+      <terminal>gfxterm serial</terminal>
+      <timeout t="integer">8</timeout>
+      <update_nvram>true</update_nvram>
+      <xen_append>console=hvc0</xen_append>
+      <xen_kernel_append>console=com1 com1=57600</xen_kernel_append>
+    </global>
+    <loader_type>grub2-efi</loader_type>
+  </bootloader>
+  <general t="map">
+    <mode t="map">
+      <confirm t="boolean">false</confirm>
+      <halt t="boolean">true</halt>
+      <second_stage t="boolean">true</second_stage>
+      <final_halt t="boolean">false</final_halt>
+      <final_reboot t="boolean">false</final_reboot>
+    </mode>
+    <signature-handling t="map">
+      <accept_file_without_checksum t="boolean">false</accept_file_without_checksum>
+      <accept_non_trusted_gpg_key t="boolean">true</accept_non_trusted_gpg_key>
+      <accept_unknown_gpg_key t="boolean">true</accept_unknown_gpg_key>
+      <accept_unsigned_file t="boolean">true</accept_unsigned_file>
+      <accept_verification_failed t="boolean">false</accept_verification_failed>
+      <import_gpg_key t="boolean">true</import_gpg_key>
+    </signature-handling>
+  </general>
+  <!--
+  <networking t="map">
+    <dns t="map">
+      <dhclient_hostname_option>AUTO</dhclient_hostname_option>
+      <dhcp_hostname t="boolean">true</dhcp_hostname>
+      <resolv_conf_policy>auto</resolv_conf_policy>
+      <write_hostname config:type="boolean">true</write_hostname>
+    </dns>
+    <interfaces t="list">
+      <interface t="map">
+        <bootproto>dhcp</bootproto>
+        <name>eth0</name>
+        <startmode>auto</startmode>
+      </interface>
+    </interfaces>
+    <ipv6 t="boolean">true</ipv6>
+    <keep_install_network t="boolean">true</keep_install_network>
+    <managed t="boolean">false</managed>
+    <routing t="map">
+      <ipv4_forward t="boolean">false</ipv4_forward>
+      <ipv6_forward t="boolean">false</ipv6_forward>
+    </routing>
+    </networking>
+    -->
+  <ntp-client t="map">
+    <ntp_policy>auto</ntp_policy>
+    <ntp_servers t="list">
+      <ntp_server t="map">
+        <address>0.pool.ntp.org</address>
+        <iburst t="boolean">true</iburst>
+        <offline t="boolean">false</offline>
+      </ntp_server>
+      <ntp_server t="map">
+        <address>1.pool.ntp.org</address>
+        <iburst t="boolean">true</iburst>
+        <offline t="boolean">false</offline>
+      </ntp_server>
+      <ntp_server t="map">
+        <address>2.pool.ntp.org</address>
+        <iburst t="boolean">true</iburst>
+        <offline t="boolean">false</offline>
+      </ntp_server>
+      <ntp_server t="map">
+        <address>3.pool.ntp.org</address>
+        <iburst t="boolean">true</iburst>
+        <offline t="boolean">false</offline>
+      </ntp_server>
+    </ntp_servers>
+    <ntp_sync>systemd</ntp_sync>
+  </ntp-client>
+  <partitioning config:type="list">
+    <drive>
+      <!--
+        #  pci-0000:00:1f.2-ata-1   monolake
+        #  pci-0000:00:1f.2-ata-5   leopard quanta
+        #  pci-0000:00:1f.2-ata-3   bigsur bottom slot
+        #  pci-0000:00:11.4-ata-1   bigsur top slot ???
+        #  pci-0000:01:00.0-nvme-1  tiogapass
+	#  pci-0000:05:00.0-nvme-1  mitac-tp
+	#  pci-0000:47:00.0-ata-1   mitac-capri
+        #  pci-0000:00:04.0         vmware vm
+      -->
+
+      <device>/dev/disk/by-path/pci-0000:47:00.0-ata-1</device>
+      <disklabel>gpt</disklabel>
+      <enable_snapshots config:type="boolean">true</enable_snapshots>
+      <initialize config:type="boolean">false</initialize>
+      <type config:type="symbol">CT_DISK</type>
+      <use>all</use>
+    </drive>
+  </partitioning>
+  <report t="map">
+    <errors t="map">
+      <log t="boolean">true</log>
+      <show t="boolean">false</show>
+      <timeout t="integer">10</timeout>
+    </errors>
+    <messages t="map">
+      <log t="boolean">false</log>
+      <show t="boolean">false</show>
+      <timeout t="integer">2</timeout>
+    </messages>
+    <warnings t="map">
+      <log t="boolean">false</log>
+      <show t="boolean">false</show>
+      <timeout t="integer">2</timeout>
+    </warnings>
+    <yesno_messages t="map">
+      <log t="boolean">false</log>
+      <show t="boolean">false</show>
+      <timeout t="integer">2</timeout>
+    </yesno_messages>
+  </report>
+  <scripts t="map">
+    <!--
+    <init-scripts t="list">
+      <script t="map">
+        <filename>zzz_halt</filename>
+        <source>shutdown -h now</source>
+      </script>
+    </init-scripts>
+    -->
+    <post-scripts config:type="list">
+      <script>
+        <filename>post.sh</filename>
+        <interpreter>shell</interpreter>
+        <source>
+	  <!--
+          <![CDATA[
+#!/bin/bash                
+
+cp /etc/sudoers /tmp/sudoers
+sed -i '$ a admin ALL=(ALL) NOPASSWD: ALL' /tmp/sudoers
+sed -i '$ a flax ALL=(ALL) NOPASSWD: ALL' /tmp/sudoers
+if visudo -c -f /tmp/sudoers ; then mv /tmp/sudoers /etc/sudoers ; fi
+
+          ]]>
+          -->
+          <![CDATA[
+#!/bin/bash                
+cat<<-'EOF'>/etc/sudoers.d/admin
+admin ALL=(ALL) NOPASSWD: ALL
+EOF
+cat<<-'EOF'>/etc/sudoers.d/flax
+flax ALL=(ALL) NOPASSWD: ALL
+EOF
+          ]]>
+          </source>
+      </script>
+    </post-scripts>
+  </scripts>
+  <software t="map">
+    <install_recommended t="boolean">true</install_recommended>
+    <instsource/>
+    <packages t="list">
+      <package>ansible</package>
+      <package>btrfsprogs</package>
+      <package>chrony</package>
+      <package>dosfstools</package>
+      <package>e2fsprogs</package>
+      <package>firewalld</package>
+      <package>glibc</package>
+      <package>grub2-x86_64-efi</package>
+      <package>irqbalance</package>
+      <package>kexec-tools</package>
+      <package>lsscsi</package>
+      <package>lldpd</package>
+      <package>mokutil</package>
+      <package>numactl</package>
+      <package>openSUSE-release</package>
+      <package>openssh</package>
+      <package>shim</package>
+      <package>snapper</package>
+      <package>wicked</package>
+    </packages>
+    <patterns t="list">
+      <pattern>apparmor</pattern>
+      <pattern>base</pattern>
+      <pattern>console</pattern>
+      <pattern>documentation</pattern>
+      <pattern>enhanced_base</pattern>
+      <pattern>minimal_base</pattern>
+      <pattern>sw_management</pattern>
+      <pattern>yast2_basis</pattern>
+    </patterns>
+    <products t="list">
+      <product>Leap</product>
+    </products>
+  </software>
+  <timezone t="map">
+    <timezone>Etc/UTC</timezone>
+  </timezone>
+  <user_defaults t="map">
+    <expire/>
+    <group>100</group>
+    <groups/>
+    <home>/home</home>
+    <inactive>-1</inactive>
+    <no_groups t="boolean">true</no_groups>
+    <shell>/bin/bash</shell>
+    <skel>/etc/skel</skel>
+    <umask>022</umask>
+  </user_defaults>
+  <users t="list">
+    <user>
+      <authorized_keys t="list">
+        <authorized_key><<KEY>></authorized_key>
+      </authorized_keys>
+      <encrypted config:type="boolean">true</encrypted>
+      <username>admin</username>
+      <fullname>admin</fullname>
+      <gid>100</gid>
+      <groups>wheel</groups>
+      <home>/home/admin</home>
+      <home_btrfs_subvolume config:type="boolean">false</home_btrfs_subvolume>
+      <password_settings>
+        <expire/>
+        <flag/>
+        <inact/>
+        <max>99999</max>
+        <min>0</min>
+        <warn>7</warn>
+      </password_settings>
+      <shell>/bin/bash</shell>
+      <uid>1000</uid>
+      <user_password><<leap_admin_hash>></user_password>
+    </user>
+    <user t="map">
+      <authorized_keys t="list">
+        <authorized_key><<KEY>></authorized_key>
+      </authorized_keys>
+      <encrypted t="boolean">true</encrypted>
+      <fullname>flax</fullname>
+      <gid>100</gid>
+      <home>/home/flax</home>
+      <home_btrfs_subvolume t="boolean">false</home_btrfs_subvolume>
+      <password_settings t="map">
+        <expire/>
+        <flag/>
+        <inact/>
+        <max>99999</max>
+        <min>0</min>
+        <warn>7</warn>
+      </password_settings>
+      <shell>/bin/bash</shell>
+      <uid>1001</uid>
+      <user_password><<flax_hash>></user_password>
+      <username>flax</username>
+    </user>
+    <user t="map">
+      <encrypted t="boolean">true</encrypted>
+      <fullname>systemd Resolver</fullname>
+      <gid>479</gid>
+      <home>/</home>
+      <home_btrfs_subvolume t="boolean">false</home_btrfs_subvolume>
+      <password_settings t="map">
+        <expire/>
+        <flag/>
+        <inact/>
+        <max/>
+        <min/>
+        <warn/>
+      </password_settings>
+      <shell>/usr/sbin/nologin</shell>
+      <uid>479</uid>
+      <user_password>!*</user_password>
+      <username>systemd-resolve</username>
+    </user>
+    <user t="map">
+      <encrypted t="boolean">true</encrypted>
+      <fullname>User for polkitd</fullname>
+      <gid>482</gid>
+      <home>/var/lib/polkit</home>
+      <home_btrfs_subvolume t="boolean">false</home_btrfs_subvolume>
+      <password_settings t="map">
+        <expire/>
+        <flag/>
+        <inact/>
+        <max/>
+        <min/>
+        <warn/>
+      </password_settings>
+      <shell>/sbin/nologin</shell>
+      <uid>495</uid>
+      <user_password>!</user_password>
+      <username>polkitd</username>
+    </user>
+    <user t="map">
+      <authorized_keys t="list">
+        <authorized_key><<KEY>></authorized_key>
+      </authorized_keys>
+      <encrypted t="boolean">true</encrypted>
+      <fullname>root</fullname>
+      <gid>0</gid>
+      <home>/root</home>
+      <home_btrfs_subvolume t="boolean">false</home_btrfs_subvolume>
+      <password_settings t="map">
+        <expire/>
+        <flag/>
+        <inact/>
+        <max/>
+        <min/>
+        <warn/>
+      </password_settings>
+      <shell>/bin/bash</shell>
+      <uid>0</uid>
+      <user_password><<flax_hash>></user_password>
+      <username>root</username>
+    </user>
+    <user t="map">
+      <encrypted t="boolean">true</encrypted>
+      <fullname>Daemon</fullname>
+      <gid>2</gid>
+      <home>/sbin</home>
+      <home_btrfs_subvolume t="boolean">false</home_btrfs_subvolume>
+      <password_settings t="map">
+        <expire/>
+        <flag/>
+        <inact/>
+        <max/>
+        <min/>
+        <warn/>
+      </password_settings>
+      <shell>/sbin/nologin</shell>
+      <uid>2</uid>
+      <user_password>!</user_password>
+      <username>daemon</username>
+    </user>
+    <user t="map">
+      <encrypted t="boolean">true</encrypted>
+      <fullname>systemd Core Dumper</fullname>
+      <gid>477</gid>
+      <home>/</home>
+      <home_btrfs_subvolume t="boolean">false</home_btrfs_subvolume>
+      <password_settings t="map">
+        <expire/>
+        <flag/>
+        <inact/>
+        <max/>
+        <min/>
+        <warn/>
+      </password_settings>
+      <shell>/usr/sbin/nologin</shell>
+      <uid>477</uid>
+      <user_password>!*</user_password>
+      <username>systemd-coredump</username>
+    </user>
+    <user t="map">
+      <encrypted t="boolean">true</encrypted>
+      <fullname>systemd Network Management</fullname>
+      <gid>480</gid>
+      <home>/</home>
+      <home_btrfs_subvolume t="boolean">false</home_btrfs_subvolume>
+      <password_settings t="map">
+        <expire/>
+        <flag/>
+        <inact/>
+        <max/>
+        <min/>
+        <warn/>
+      </password_settings>
+      <shell>/usr/sbin/nologin</shell>
+      <uid>480</uid>
+      <user_password>!*</user_password>
+      <username>systemd-network</username>
+    </user>
+    <user t="map">
+      <encrypted t="boolean">true</encrypted>
+      <fullname>Mailer daemon</fullname>
+      <gid>499</gid>
+      <home>/var/spool/clientmqueue</home>
+      <home_btrfs_subvolume t="boolean">false</home_btrfs_subvolume>
+      <password_settings t="map">
+        <expire/>
+        <flag/>
+        <inact/>
+        <max/>
+        <min/>
+        <warn/>
+      </password_settings>
+      <shell>/sbin/nologin</shell>
+      <uid>499</uid>
+      <user_password>!</user_password>
+      <username>mail</username>
+    </user>
+    <user t="map">
+      <encrypted t="boolean">true</encrypted>
+      <fullname>Postfix Daemon</fullname>
+      <gid>51</gid>
+      <home>/var/spool/postfix</home>
+      <home_btrfs_subvolume t="boolean">false</home_btrfs_subvolume>
+      <password_settings t="map">
+        <expire/>
+        <flag/>
+        <inact/>
+        <max/>
+        <min/>
+        <warn/>
+      </password_settings>
+      <shell>/sbin/nologin</shell>
+      <uid>51</uid>
+      <user_password>!</user_password>
+      <username>postfix</username>
+    </user>
+    <user t="map">
+      <encrypted t="boolean">true</encrypted>
+      <fullname>nobody</fullname>
+      <gid>65534</gid>
+      <home>/var/lib/nobody</home>
+      <home_btrfs_subvolume t="boolean">false</home_btrfs_subvolume>
+      <password_settings t="map">
+        <expire/>
+        <flag/>
+        <inact/>
+        <max/>
+        <min/>
+        <warn/>
+      </password_settings>
+      <shell>/bin/bash</shell>
+      <uid>65534</uid>
+      <user_password>!</user_password>
+      <username>nobody</username>
+    </user>
+    <user t="map">
+      <encrypted t="boolean">true</encrypted>
+      <fullname>systemd Time Synchronization</fullname>
+      <gid>478</gid>
+      <home>/</home>
+      <home_btrfs_subvolume t="boolean">false</home_btrfs_subvolume>
+      <password_settings t="map">
+        <expire/>
+        <flag/>
+        <inact/>
+        <max/>
+        <min/>
+        <warn/>
+      </password_settings>
+      <shell>/usr/sbin/nologin</shell>
+      <uid>478</uid>
+      <user_password>!*</user_password>
+      <username>systemd-timesync</username>
+    </user>
+    <user t="map">
+      <encrypted t="boolean">true</encrypted>
+      <fullname>User for nscd</fullname>
+      <gid>475</gid>
+      <home>/run/nscd</home>
+      <home_btrfs_subvolume t="boolean">false</home_btrfs_subvolume>
+      <password_settings t="map">
+        <expire/>
+        <flag/>
+        <inact/>
+        <max/>
+        <min/>
+        <warn/>
+      </password_settings>
+      <shell>/sbin/nologin</shell>
+      <uid>474</uid>
+      <user_password>!</user_password>
+      <username>nscd</username>
+    </user>
+    <user t="map">
+      <encrypted t="boolean">true</encrypted>
+      <fullname>user for rpcbind</fullname>
+      <gid>65534</gid>
+      <home>/var/lib/empty</home>
+      <home_btrfs_subvolume t="boolean">false</home_btrfs_subvolume>
+      <password_settings t="map">
+        <expire/>
+        <flag/>
+        <inact/>
+        <max/>
+        <min/>
+        <warn/>
+      </password_settings>
+      <shell>/sbin/nologin</shell>
+      <uid>475</uid>
+      <user_password>!</user_password>
+      <username>rpc</username>
+    </user>
+    <user t="map">
+      <encrypted t="boolean">true</encrypted>
+      <fullname>Manual pages viewer</fullname>
+      <gid>62</gid>
+      <home>/var/lib/empty</home>
+      <home_btrfs_subvolume t="boolean">false</home_btrfs_subvolume>
+      <password_settings t="map">
+        <expire/>
+        <flag/>
+        <inact/>
+        <max/>
+        <min/>
+        <warn/>
+      </password_settings>
+      <shell>/sbin/nologin</shell>
+      <uid>13</uid>
+      <user_password>!</user_password>
+      <username>man</username>
+    </user>
+    <user t="map">
+      <encrypted t="boolean">true</encrypted>
+      <fullname>Printing daemon</fullname>
+      <gid>489</gid>
+      <home>/var/spool/lpd</home>
+      <home_btrfs_subvolume t="boolean">false</home_btrfs_subvolume>
+      <password_settings t="map">
+        <expire/>
+        <flag/>
+        <inact/>
+        <max/>
+        <min/>
+        <warn/>
+      </password_settings>
+      <shell>/sbin/nologin</shell>
+      <uid>498</uid>
+      <user_password>!</user_password>
+      <username>lp</username>
+    </user>
+    <user t="map">
+      <encrypted t="boolean">true</encrypted>
+      <fullname>Chrony Daemon</fullname>
+      <gid>476</gid>
+      <home>/var/lib/chrony</home>
+      <home_btrfs_subvolume t="boolean">false</home_btrfs_subvolume>
+      <password_settings t="map">
+        <expire/>
+        <flag/>
+        <inact/>
+        <max/>
+        <min/>
+        <warn/>
+      </password_settings>
+      <shell>/bin/false</shell>
+      <uid>476</uid>
+      <user_password>!</user_password>
+      <username>chrony</username>
+    </user>
+    <user t="map">
+      <encrypted t="boolean">true</encrypted>
+      <fullname>NFS statd daemon</fullname>
+      <gid>65533</gid>
+      <home>/var/lib/nfs</home>
+      <home_btrfs_subvolume t="boolean">false</home_btrfs_subvolume>
+      <password_settings t="map">
+        <expire/>
+        <flag/>
+        <inact/>
+        <max/>
+        <min/>
+        <warn/>
+      </password_settings>
+      <shell>/sbin/nologin</shell>
+      <uid>473</uid>
+      <user_password>!</user_password>
+      <username>statd</username>
+    </user>
+    <user t="map">
+      <encrypted t="boolean">true</encrypted>
+      <fullname>User for D-Bus</fullname>
+      <gid>484</gid>
+      <home>/run/dbus</home>
+      <home_btrfs_subvolume t="boolean">false</home_btrfs_subvolume>
+      <password_settings t="map">
+        <expire/>
+        <flag/>
+        <inact/>
+        <max/>
+        <min/>
+        <warn/>
+      </password_settings>
+      <shell>/usr/bin/false</shell>
+      <uid>497</uid>
+      <user_password>!</user_password>
+      <username>messagebus</username>
+    </user>
+    <user t="map">
+      <encrypted t="boolean">true</encrypted>
+      <fullname>bin</fullname>
+      <gid>1</gid>
+      <home>/bin</home>
+      <home_btrfs_subvolume t="boolean">false</home_btrfs_subvolume>
+      <password_settings t="map">
+        <expire/>
+        <flag/>
+        <inact/>
+        <max/>
+        <min/>
+        <warn/>
+      </password_settings>
+      <shell>/sbin/nologin</shell>
+      <uid>1</uid>
+      <user_password>!</user_password>
+      <username>bin</username>
+    </user>
+    <user t="map">
+      <encrypted t="boolean">true</encrypted>
+      <fullname>SSH daemon</fullname>
+      <gid>483</gid>
+      <home>/var/lib/sshd</home>
+      <home_btrfs_subvolume t="boolean">false</home_btrfs_subvolume>
+      <password_settings t="map">
+        <expire/>
+        <flag/>
+        <inact/>
+        <max/>
+        <min/>
+        <warn/>
+      </password_settings>
+      <shell>/sbin/nologin</shell>
+      <uid>496</uid>
+      <user_password>!</user_password>
+      <username>sshd</username>
+    </user>
+  </users>
+</profile>

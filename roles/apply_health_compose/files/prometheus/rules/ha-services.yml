@@ -1,0 +1,34 @@
+groups:
+  - name: ha-services
+    rules:
+      - alert: VRRPUnexpectedTransition
+        expr: changes(vrrp_state[5m]) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "VRRP transition on {{ $labels.instance }} in last 5m"
+
+      - alert: EffectivePriorityInverted
+        expr: vrrp:would_failover > 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "Effective priority inverted at {{ $labels.site }} — failover imminent"
+
+      - alert: ServiceCoredumped
+        expr: increase(coredump_count[1h]) > 0
+        labels: { severity: critical }
+        annotations:
+          summary: "Coredump captured for {{ $labels.exe }} on {{ $labels.bang }}"
+
+      - alert: ServiceCoredumpedRapid
+        expr: increase(coredump_count[1h]) >= 2
+        labels: { severity: critical }
+        annotations:
+          summary: "Crash loop: {{ $labels.exe }} cored >=2x in 1h on {{ $labels.bang }}"
+
+      - alert: ChronyDrifted
+        expr: abs(node_timex_offset_seconds) > 1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Clock drifted >1s on {{ $labels.bang }}"

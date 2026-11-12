@@ -1,0 +1,12 @@
+# MAC-pinned + physical-only. SUBSYSTEMS=="pci" excludes vlan subifs
+# (they share the parent MAC and would otherwise collide on the name).
+# 2026-11-10: the Realtek mgmt/public pair (00:13:3b:5a:c6:08/09) is gone; mgmt
+# (192.168.88.22) now rides eth0 untagged (rabbit-lorax Et32/4 native vlan 2).
+# Mellanox ConnectX (07:00) -> lab data + mgmt (rabbit-lorax Et32/4 trunk)
+SUBSYSTEM=="net", ACTION=="add", SUBSYSTEMS=="pci", ATTR{address}=="0c:42:a1:19:ac:c2", KERNEL=="eth*", NAME="eth0"
+SUBSYSTEM=="net", ACTION=="add", SUBSYSTEMS=="pci", ATTR{address}=="0c:42:a1:19:ac:c3", KERNEL=="eth*", NAME="eth1"
+# Mellanox ConnectX-4 Lx (01:00): eth3 = 1GbE drop to turtle-lorax swp8 (native 2, tagged corp 4)
+SUBSYSTEM=="net", ACTION=="add", SUBSYSTEMS=="pci", ATTR{address}=="7c:fe:90:cb:74:3e", KERNEL=="eth*", NAME="eth2"
+SUBSYSTEM=="net", ACTION=="add", SUBSYSTEMS=="pci", ATTR{address}=="7c:fe:90:cb:74:3f", KERNEL=="eth*", NAME="eth3"
+# Wi-Fi (USB)
+SUBSYSTEM=="net", ACTION=="add", ATTR{address}=="00:0c:e7:01:4a:56", KERNEL=="wlan*", NAME="wlan0"

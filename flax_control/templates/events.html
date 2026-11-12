@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% import "_components.html" as c %}
+{% block title %}flax-control — events{% endblock %}
+{% block content %}
+{{ c.page_header('Events', 'Audit log across the flax pipeline — observe/classify/reconcile/materializer/post transitions.') }}
+
+<form method="get" action="/events" class="filter-bar">
+  <label>service
+    <select name="service">
+      <option value="">(any)</option>
+      {% for s in facets.services %}<option value="{{ s }}" {{ 'selected' if filters.service==s else '' }}>{{ s }}</option>{% endfor %}
+    </select></label>
+  <label>kind
+    <select name="kind"><option value="">(any)</option>
+      {% for k in facets.kinds %}<option value="{{ k }}" {{ 'selected' if filters.kind==k else '' }}>{{ k }}</option>{% endfor %}
+    </select></label>
+  <label>switch
+    <select name="switch"><option value="">(any)</option>
+      {% for sw in facets.switches %}<option value="{{ sw }}" {{ 'selected' if filters.switch==sw else '' }}>{{ sw }}</option>{% endfor %}
+    </select></label>
+  <label>port <input type="text" name="port" value="{{ filters.port or '' }}"></label>
+  <label>limit <input type="number" name="limit" value="{{ filters.limit }}" min="1" max="5000" style="width:90px"></label>
+  <button type="submit" class="ds-btn">Filter</button>
+  <span class="muted">{{ events | length }} shown</span>
+</form>
+
+{% if events %}
+<div class="table-scroll"><table class="data-table sortable" id="events-tbl"><thead><tr>
+  <th>ts</th><th>service</th><th>kind</th><th>switch</th><th>port</th><th>mac</th><th>payload</th>
+</tr></thead><tbody>
+  {% for e in events %}
+    <tr>
+      <td class="muted mono">{{ e.ts }}</td>
+      <td><span class="tag">{{ e.service }}</span></td>
+      <td>{{ c.badge(e.kind, 'a') }}</td>
+      <td>{% if e.switch %}<a href="/switches/{{ e.switch }}">{{ e.switch }}</a>{% else %}<span class="muted">—</span>{% endif %}</td>
+      <td>
+        {% if e.switch and e.port %}<a href="/switches/{{ e.switch }}/{{ e.port }}"><code>{{ e.port }}</code></a>
+        {% elif e.port %}<code>{{ e.port }}</code>
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
+      <td>{% if e.mac %}<a href="/devices/{{ e.mac }}"><code>{{ e.mac }}</code></a>{% else %}<span class="muted">—</span>{% endif %}</td>
+      <td class="mono">{{ e.payload | tojson }}</td>
+    </tr>
+  {% endfor %}
+</tbody></table></div>
+{% else %}
+<p class="empty">No events match the current filter.</p>
+{% endif %}
+{% endblock %}

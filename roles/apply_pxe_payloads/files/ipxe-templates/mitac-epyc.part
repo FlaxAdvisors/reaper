@@ -1,0 +1,4 @@
+# apply the wiwynn-tp settings
+set node-setting mitac-epyc
+set com-default com1f
+set com-setting ${ttys0f}

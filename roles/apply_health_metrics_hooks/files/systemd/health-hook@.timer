@@ -1,0 +1,10 @@
+[Unit]
+Description=Health-dashboard textfile-collector timer: %i
+
+[Timer]
+OnBootSec=30s
+# OnUnitActiveSec is set per-instance via a drop-in (see role tasks).
+Unit=health-hook@%i.service
+
+[Install]
+WantedBy=timers.target

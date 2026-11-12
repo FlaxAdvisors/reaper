@@ -1,0 +1,4 @@
+# apply the dell-fc settings
+set node-setting dell-fc
+set com-default com1f
+set com-setting ${ttys0f}

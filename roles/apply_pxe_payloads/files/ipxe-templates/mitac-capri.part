@@ -1,0 +1,4 @@
+# apply the tiogapass settings
+set node-setting mitac-capri
+set com-default com1f
+set com-setting ${ttys0f}

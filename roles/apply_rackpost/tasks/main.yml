@@ -1,0 +1,211 @@
+---
+# rackpost order server. Layout under {{ apply_rackpost_dest_dir }} mirrors the
+# repo so flax_rack/server.py finds flax_post/web/static relative to itself.
+# Plain copy, NOT template: the code carries literal braces.
+
+# Drain first: while /run/flax-rackpost.drain exists the daemon refuses to start a
+# stage or a Close, so nothing starts between the idle check below and the restart
+# at the end (a restart mid-stage killed two operator runs on 2026-10-30).
+- name: Drain flax-rackpost (no new stages until the restart)
+  become: true
+  ansible.builtin.file:
+    path: /run/flax-rackpost.drain
+    state: touch
+    mode: "0644"
+
+- name: Refuse to restart under a running stage
+  become: true
+  ansible.builtin.shell: |
+    python3 - <<'PY'
+    import json, sys, urllib.request
+    base = "http://127.0.0.1:{{ apply_rackpost_port }}"
+    try:
+        ix = json.load(urllib.request.urlopen(base + "/rackpost/api/racks", timeout=10))
+    except OSError:
+        sys.exit(0)                     # daemon not up: nothing to interrupt
+    busy = []
+    for o in ix["orders"]:
+        for r in o["racks"]:
+            s = json.load(urllib.request.urlopen(f"{base}/{r['prefix']}/api/state", timeout=10))
+            if s.get("stage_running"):
+                busy.append(f"{r['prefix']}: {s.get('stage') or 'cli'}")
+    print("; ".join(busy))
+    sys.exit(3 if busy else 0)
+    PY
+  register: apply_rackpost_busy
+  changed_when: false
+  failed_when: false
+  when: not (apply_rackpost_restart_busy | default(false) | bool)
+
+- name: Undrain and stop when a stage is running
+  when: apply_rackpost_busy.rc is defined and apply_rackpost_busy.rc == 3
+  block:
+    - name: Undrain flax-rackpost
+      become: true
+      ansible.builtin.file:
+        path: /run/flax-rackpost.drain
+        state: absent
+    - name: Stop
+      ansible.builtin.fail:
+        msg: "a stage is running ({{ apply_rackpost_busy.stdout }}); re-run when idle, or -e apply_rackpost_restart_busy=true"
+
+- name: Create rackpost directories
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:   # subdirs are created by the rsync tasks below
+    - /opt/flax/bin
+    - "{{ apply_rackpost_dest_dir }}"
+
+# rsync, not ansible.builtin.copy: copy costs ~3 round trips PER FILE (a profiled
+# post deploy spent 70% of its time copying trees); rsync is one call per tree and
+# compares by checksum, so an unchanged tree reports ok.
+- name: Deploy flax_rack and flax_rungs
+  become: true
+  ansible.posix.synchronize:
+    src: "{{ playbook_dir }}/../{{ item }}/"
+    dest: "{{ apply_rackpost_dest_dir }}/{{ item }}/"
+    archive: false
+    recursive: true
+    perms: true
+    checksum: true
+    # go-w: the mode must not follow the deploying clone's umask (bang clones 0002, orbit 0022)
+    rsync_opts: ['--chown=root:root', '--chmod=go-w', '--exclude=__pycache__', '--exclude=*.pyc']
+  loop:
+    - flax_rack
+    - flax_rungs
+  notify: Restart flax-rackpost
+
+# The build id the header shows and every open page reloads on (rackpost.js
+# checkBuild): computed here on the controller from the checkout being deployed,
+# `<flax_post version>·<short sha>[-dirty-<hash>]`: dirty = uncommitted or untracked
+# (not ignored) files under the deployed dirs; hash = 7 hex of `git diff HEAD` + the
+# untracked files' names and contents there, so two dirty deploys differ. The daemon
+# reads BUILD at start, so a new id restarts it.
+- name: Write the rackpost build id
+  become: true
+  vars:
+    _ver: >-
+      {{ lookup('file', apply_rackpost_repo ~ '/flax_post/version.py')
+         | regex_findall('__version__ = "([^"]+)"') | first }}
+    _sha: "{{ lookup('pipe', 'git -C ' ~ (apply_rackpost_repo | quote) ~ ' rev-parse --short HEAD') }}"
+    _dirs: "flax_rack flax_rungs flax_post flax_switch_sense roles/apply_rackpost"
+    _dirty: >-
+      {{ lookup('pipe', 'cd ' ~ (apply_rackpost_repo | quote) ~ ' && test -n "$(git status'
+         ~ ' --porcelain --untracked-files=all -- ' ~ _dirs ~ ')" && { git diff HEAD -- '
+         ~ _dirs ~ '; git ls-files -o --exclude-standard -z -- ' ~ _dirs
+         ~ ' | xargs -0r sha1sum; } | sha1sum | cut -c1-7 || true') }}
+  ansible.builtin.copy:
+    content: "{{ _ver }}·{{ _sha }}{{ ('-dirty-' ~ _dirty) if _dirty else '' }}\n"
+    dest: "{{ apply_rackpost_dest_dir }}/BUILD"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-rackpost
+
+# Only the listed files (anchored --include per file, every dir walked, empty dirs
+# pruned, everything else excluded): one rsync for modules + static together.
+- name: Deploy shared flax_post modules + static files
+  become: true
+  vars:
+    _files: "{{ apply_rackpost_post_modules + (apply_rackpost_post_static | map('regex_replace', '^', 'web/static/') | list) }}"
+  ansible.posix.synchronize:
+    src: "{{ playbook_dir }}/../flax_post/"
+    dest: "{{ apply_rackpost_dest_dir }}/flax_post/"
+    archive: false
+    recursive: true
+    checksum: true
+    rsync_opts: "{{ ['--chown=root:root', '--chmod=D755,F644', '--prune-empty-dirs', '--include=*/']
+                    + (_files | map('regex_replace', '^', '--include=/') | list) + ['--exclude=*'] }}"
+  notify: Restart flax-rackpost
+
+# rackpost reads every switch through flax-switch-sense's read drivers
+# (flax_rack/switches.py); only those modules, never the daemon's psycopg side.
+- name: Deploy shared flax_switch_sense driver modules
+  become: true
+  ansible.posix.synchronize:
+    src: "{{ playbook_dir }}/../flax_switch_sense/"
+    dest: "{{ apply_rackpost_dest_dir }}/flax_switch_sense/"
+    archive: false
+    recursive: true
+    checksum: true
+    rsync_opts: "{{ ['--chown=root:root', '--chmod=D755,F644', '--prune-empty-dirs', '--include=*/']
+                    + (apply_rackpost_switch_sense_modules | map('regex_replace', '^', '--include=/') | list) + ['--exclude=*'] }}"
+  notify: Restart flax-rackpost
+
+- name: Install rackpost wrapper
+  become: true
+  ansible.builtin.template:
+    src: rackpost.sh.j2
+    dest: "{{ apply_rackpost_wrapper }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+# Only the BOM importer needs it; the daemon is stdlib (+ requests, below).
+# Vendored under the deploy dir (not root's --user site) so `rackpost import-bom`
+# works for any operator, not only root; the wrapper puts the vendor dir on PYTHONPATH.
+- name: Install openpyxl for import-bom
+  become: true
+  ansible.builtin.pip:
+    name: openpyxl
+    executable: "{{ apply_rackpost_python | replace('python', 'pip') }}"
+    extra_args: "--target {{ apply_rackpost_vendor_dir }}"
+
+# The shared EOS driver (eAPI) imports requests + urllib3, which the bangs' host
+# python lacks (bang-rhythm): vendored the same way, PINNED. pip --target
+# always reports changed, so the pinned versions' dist-info dirs are the marker:
+# pip (and the restart) runs only when one is missing, i.e. first deploy or a pin bump.
+- name: Check the vendored requests + urllib3 pins
+  ansible.builtin.stat:
+    path: "{{ apply_rackpost_vendor_dir }}/{{ item }}.dist-info"
+  loop: "{{ apply_rackpost_switch_driver_pips | map('replace', '==', '-') | list }}"
+  register: apply_rackpost_pip_markers
+
+- name: Install requests + urllib3 for the switch drivers
+  become: true
+  ansible.builtin.pip:
+    name: "{{ apply_rackpost_switch_driver_pips }}"
+    executable: "{{ apply_rackpost_python | replace('python', 'pip') }}"
+    extra_args: "--upgrade --target {{ apply_rackpost_vendor_dir }}"
+  when: apply_rackpost_pip_markers.results | rejectattr('stat.exists') | list | length > 0
+  notify: Restart flax-rackpost
+
+# The pre-interpreter-keyed vendor dir (python3.11 builds) is dead once the wrapper
+# points at vendor-<python>.
+- name: Remove the old unkeyed vendor dir
+  become: true
+  ansible.builtin.file:
+    path: "{{ apply_rackpost_dest_dir }}/vendor"
+    state: absent
+
+- name: Deploy flax-rackpost systemd unit
+  become: true
+  ansible.builtin.template:
+    src: flax-rackpost.service.j2
+    dest: /etc/systemd/system/flax-rackpost.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart flax-rackpost
+
+- name: Enable + start flax-rackpost
+  become: true
+  ansible.builtin.systemd:
+    name: flax-rackpost
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Restart now (handlers) so the drain covers it
+  ansible.builtin.meta: flush_handlers
+
+- name: Undrain flax-rackpost
+  become: true
+  ansible.builtin.file:
+    path: /run/flax-rackpost.drain
+    state: absent

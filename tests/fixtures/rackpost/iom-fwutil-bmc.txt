@@ -1,0 +1,4 @@
+BMC Version: fbttn-v2019.52.0
+Fan Speed Controller Version: fbttn-type5-mp-v3
+ROM Version: fbttn-v2.0
+TPM Version: 133.33

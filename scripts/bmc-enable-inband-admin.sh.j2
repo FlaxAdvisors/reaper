@@ -1,0 +1,207 @@
+#!/bin/bash
+# bmc-enable-inband-admin.sh
+#
+# Configure a BMC so the in-band/KCS ipmitool channel grants admin
+# privilege to host-side callers. Without this, the host's
+# `ipmitool chassis power off` (and similar) returns
+# `Insufficient privilege level`, breaking bang-hook.sh's post-script
+# auto-power-off step.
+#
+# Idempotent — safe to re-run on every node-discovery pass.
+#
+# Branches by BMC kind:
+#
+#   Phosphor OpenBMC (Wedge OpenBMC, Tioga Pass openBMC, Yosemite, etc.):
+#     /usr/share/ipmi-providers/channel_access.json ships with channels
+#     1, 2, 3 only. Channel 15 (system interface / KCS) is defined in
+#     channel_config.json but absent from channel_access.json, so any
+#     KCS request gets denied at priv check — that's the "Insufficient
+#     privilege level" we see. Add a "15" entry with priv-admin and
+#     restart phosphor-ipmi-kcs@ipmi_kcs3.service.
+#
+#   AMI MegaRAC: empirically, `ipmitool channel setaccess 15` is
+#   rejected ("Invalid data field in request" / 0x82) — same as
+#   Phosphor. AMI BMCs in this fleet appear to default the system
+#   interface to admin priv (no fix needed); the AMI branch is a
+#   no-op + warning. If a booted host on an AMI-BMC'd port hits
+#   "Insufficient privilege level" via in-band ipmitool, vendor-
+#   specific setup will be required (web UI or Redfish — not yet
+#   reverse-engineered).
+#
+# Usage: bmc-enable-inband-admin.sh <bmc-host> [<user> <pass>]
+#   user defaults to root, pass defaults to the vaulted BMC root cred.
+#
+# Caveats:
+#   - Phosphor branch overwrites channel_access.json with a known-good
+#     full content (channels 1,2,3,15 all priv-admin, always_available).
+#     If a site has hand-tuned channels 1/2/3 to non-defaults, that
+#     customization is lost. Backup is written to
+#     channel_access.json.bak before overwrite.
+#   - Restarting phosphor-ipmi-kcs briefly drops in-band IPMI; LAN
+#     IPMI is unaffected. ~3s outage typical.
+
+set -euo pipefail
+
+bmc="${1:-}"
+user="${2:-root}"
+pass="${3:-{{ bmc_root_password }}}"
+
+if [[ -z "$bmc" ]]; then
+    echo "Usage: $0 <bmc-host> [<user> <pass>]" >&2
+    exit 1
+fi
+
+for cmd in sshpass ipmitool curl; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        echo "$cmd not found in PATH" >&2
+        exit 1
+    fi
+done
+
+# Detect BMC kind by probing SSH + os-release.
+#
+# Both Facebook OpenBMC and AMI Onetree are Phosphor-based and honour
+# `root/the vaulted BMC root cred` for SSH regardless of any in-band IPMI user config.
+# The only remaining non-openbmc shape is legacy AMI OEM firmware
+# (admin/admin), which is supposed to be decommissioned — if we hit one
+# we warn loudly and no-op.
+#
+# Classification strategy:
+#   1. Try caller-passed creds for SSH; check os-release for openbmc.
+#   2. If miss AND caller-passed wasn't already root/the vaulted BMC root cred, retry
+#      SSH with the hardcoded root/the vaulted BMC root cred combo. The legacy
+#      `traditional` BMC kind passes the IPMI cred (USERID/<IPMI cred>) which
+#      is wrong for the openbmc SSH endpoint — this fallback rescues
+#      that case.
+#   3. If both miss, ipmitool with admin/admin against the LAN port
+#      identifies the legacy AMI OEM remnant; warn + no-op.
+#
+# We deliberately do not query Redfish here — Redfish creds may differ
+# from IPMI/SSH creds and we want a small cred surface per call.
+kind=unknown
+ssh_user="$user"
+ssh_pass="$pass"
+
+probe_openbmc() {
+    local pu="$1" pp="$2"
+    local osrel
+    osrel=$(sshpass -p "$pp" ssh -o StrictHostKeyChecking=no \
+                  -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+                  -o ConnectTimeout=5 "$pu@$bmc" \
+                  'cat /etc/os-release 2>/dev/null' 2>/dev/null) || return 1
+    echo "$osrel" | grep -qi 'openbmc' || return 1
+    return 0
+}
+
+if probe_openbmc "$user" "$pass"; then
+    kind=phosphor
+elif [[ "$user" != "root" || "$pass" != "{{ bmc_root_password }}" ]] \
+        && probe_openbmc root "{{ bmc_root_password }}"; then
+    kind=phosphor
+    ssh_user=root
+    ssh_pass="{{ bmc_root_password }}"
+    echo "[$bmc] caller passed $user/<redacted>; falling back to root/the vaulted BMC root cred which works for SSH"
+fi
+if [[ "$kind" == unknown ]]; then
+    # No openbmc os-release reachable. The only remaining shape we've
+    # ever shipped is legacy AMI OEM firmware (admin/admin). Confirm
+    # before branching — otherwise this is just unreachable.
+    if ipmitool -C 17 -I lanplus -H "$bmc" -U admin -P admin \
+            chassis status >/dev/null 2>&1; then
+        kind=ami_legacy
+    fi
+fi
+
+case "$kind" in
+    phosphor)
+        echo "[$bmc] Phosphor OpenBMC (or AMI Onetree) — patching channel_access.json"
+        # NOTE on scope (reverted 2026-05-13 d02c74b experiment):
+        # We previously also restarted phosphor-ipmi-host (ipmid) here so
+        # the in-memory channel_access.json view would refresh. That made
+        # ipmid log "Failed to GetObject / GetAll" on every D-Bus call
+        # afterwards — the restarted instance ends up in a degraded state
+        # talking to phosphor-host's D-Bus tree. AND it didn't actually
+        # solve the host-side in-band priv problem: ipmid has a hard-coded
+        # allowlist in libusercmds.so that rejects `ipmitool user set
+        # name|priv|...` and `sol payload enable` from channel 15
+        # regardless of channel_access.json's priv_limit value.
+        #
+        # The durable fix for in-band user/SOL setup is to create the
+        # USERID user + SOL access over SSH/D-Bus directly on the BMC
+        # (xyz.openbmc_project.User.Manager.CreateUser etc.) — separate
+        # piece of work; that obsoletes setipmiuser.sh's in-band flow.
+        #
+        # In the meantime this recipe is still useful for:
+        #   - Documenting channel 15 priv-admin in channel_access.json
+        #     (cosmetic — does not unlock the allowlisted commands).
+        #   - Keeping kcsbridged in sync with the file (cheap, harmless).
+        sshpass -p "$ssh_pass" ssh -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+            -o ConnectTimeout=5 "$ssh_user@$bmc" '
+            set -e
+            f=/usr/share/ipmi-providers/channel_access.json
+            if grep -q "\"15\"" "$f" 2>/dev/null; then
+                echo "  channel 15 already present — no-op"
+                exit 0
+            fi
+            cp "$f" "${f}.bak"
+            cat > "$f" << "JSON"
+{
+  "1" : {
+    "access_mode" : "always_available",
+    "user_auth_disabled" : false,
+    "per_msg_auth_disabled" : false,
+    "alerting_disabled" : false,
+    "priv_limit" : "priv-admin"
+  },
+  "2" : {
+    "access_mode" : "always_available",
+    "user_auth_disabled" : false,
+    "per_msg_auth_disabled" : false,
+    "alerting_disabled" : false,
+    "priv_limit" : "priv-admin"
+  },
+  "3" : {
+    "access_mode" : "always_available",
+    "user_auth_disabled" : false,
+    "per_msg_auth_disabled" : false,
+    "alerting_disabled" : false,
+    "priv_limit" : "priv-admin"
+  },
+  "15" : {
+    "access_mode" : "always_available",
+    "user_auth_disabled" : false,
+    "per_msg_auth_disabled" : false,
+    "alerting_disabled" : false,
+    "priv_limit" : "priv-admin"
+  }
+}
+JSON
+            systemctl restart phosphor-ipmi-kcs@ipmi_kcs3.service
+            echo "  channel 15 priv-admin installed; KCS bridge restarted"
+        '
+        ;;
+    ami_legacy)
+        # Legacy AMI OEM firmware (admin/admin). This generation was
+        # supposed to be decommissioned; if it's still on the floor,
+        # channel-15 priv config requires vendor-specific tooling
+        # (Web UI or Redfish OEM endpoint) not handled here. Loud
+        # warning so operators notice and either swap firmware or
+        # configure it by hand.
+        echo "[$bmc] WARNING: legacy AMI OEM FW detected (admin/admin" \
+             "accepted IPMI; no openbmc os-release reachable). This" \
+             "generation should be decommissioned. Channel-15 config" \
+             "is vendor-specific (Web UI / Redfish) and not handled" \
+             "by this script — host-side ipmitool will continue to" \
+             "fail with 'Insufficient privilege level' until manually fixed." >&2
+        exit 0  # not an error per se — caller wanted classification + best-effort
+        ;;
+    *)
+        echo "[$bmc] could not detect BMC kind (no openbmc on SSH with" \
+             "given creds or root/the vaulted BMC root cred fallback; no admin/admin IPMI" \
+             "response either). Check connectivity / creds." >&2
+        exit 2
+        ;;
+esac
+
+echo "[$bmc] in-band admin enabled."

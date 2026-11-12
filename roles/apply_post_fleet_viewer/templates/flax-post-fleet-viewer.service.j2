@@ -1,0 +1,14 @@
+[Unit]
+Description=flax-post-fleet-viewer — read-only live viewer for post_state/post_node + firmware stores
+After=docker.service network-online.target flax-stack.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={{ apply_post_fleet_viewer_python }} {{ apply_post_fleet_viewer_dest_dir }}/{{ apply_post_fleet_viewer_script }} \
+    --local --bind {{ apply_post_fleet_viewer_bind }} --port {{ apply_post_fleet_viewer_port }}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,19 @@
+FRU Device Description : Builtin FRU Device (ID 0)
+ Chassis Type          : Rack Mount Chassis
+ Chassis Part Number   :             
+ Chassis Serial        :            
+ Chassis Area Checksum : OK
+ Board Mfg Date        : Tue 09 Jun 2020 02:44:00 AM UTC UTC
+ Board Mfg             : MCT   
+ Board Product         : E7278P          
+ Board Serial          : B32B-B000YF 
+ Board Part Number     : 411C43900104
+ Board Area Checksum   : OK
+ Product Manufacturer  : MCT        
+ Product Name          : TS2290-E7278P-6SSD
+ Product Part Number   : 5412C4390012
+ Product Version       :         
+ Product Serial        : 2031TPS6D0002
+ Product Asset Tag     :            
+ Product Area Checksum : OK
+

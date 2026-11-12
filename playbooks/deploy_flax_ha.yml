@@ -1,0 +1,90 @@
+---
+# HA-SAFE deploy wrapper. A deploy that recreates flax-control blips its
+# /api/v1/healthz for a few seconds; keepalived's chk_services (fall 5 @ 2s,
+# weight -30) then drops the MASTER below the BACKUP's priority, the BACKUP
+# preempts the VIP, and notify_master_postgres.sh runs pg_promote() — which
+# DETACHES the standby into a standalone primary. This wrapper stops the
+# standby's keepalived for the (short, attended) deploy window so that cannot
+# happen, then re-arms it and asserts the standby is still streaming.
+#
+# Run with the SAME --tags you would pass to apply_bang_services.yml, and
+# WITHOUT --limit (the guard plays target the standby by inventory and must not
+# be filtered out). Intended for tag-scoped, primary-affecting deploys, e.g.:
+#   ansible-playbook -i inventories/<site>/hosts.yml \
+#     --vault-password-file ~/.vault_pass_<site> \
+#     playbooks/deploy_flax_ha.yml --tags flax_stack
+#
+# A tagless FULL deploy is out of scope for the guarantee: apply_keepalived
+# (tag: keepalived) would re-arm the standby mid-run. Use --tags.
+#
+# FAILURE NOTE: apply_bang_services.yml runs serial:1 with no any_errors_fatal,
+# so a deploy that ERRORS aborts the run before the re-arm/verify plays — the
+# standby is then left with keepalived STOPPED. That is the safe direction (a
+# stopped standby cannot preempt/split-brain) and the window is attended, but
+# the operator MUST manually re-arm on a deploy error (runbook: "if the deploy
+# errors"). Ansible cannot wrap an import_playbook in an always:, so this is
+# accepted, not structurally guaranteed. The --limit guard below fails the run
+# BEFORE any keepalived is touched, so a mis-invocation can't leave a host down.
+
+- name: Quiesce the standby's keepalived (pre-deploy)
+  hosts: jumphosts
+  gather_facts: false
+  pre_tasks:
+    - name: Refuse --limit (guard plays must reach the standby)
+      ansible.builtin.assert:
+        that:
+          - ansible_limit is not defined
+        fail_msg: >-
+          Do NOT pass --limit to deploy_flax_ha.yml. The keepalived guard plays
+          target the standby by inventory; --limit would filter them out and
+          could leave the standby quiesced. Re-run without --limit (use --tags to
+          scope the deploy body).
+      run_once: true
+      tags: [always]
+
+    - name: Require explicit --tags (a tagless full deploy re-arms the standby mid-run)
+      ansible.builtin.assert:
+        that:
+          - "'all' not in ansible_run_tags"
+        fail_msg: >-
+          Run deploy_flax_ha.yml WITH --tags (e.g. --tags flax_stack). A tagless
+          full deploy runs apply_keepalived, which re-arms the standby's keepalived
+          mid-run (state: started) — on a standby-first inventory (braintree) that
+          re-arms the standby BEFORE the primary's flax-control blip, re-opening the
+          exact preempt+promote detach this wrapper prevents. For a full re-provision
+          use the manual quiesce path in the runbook instead.
+      run_once: true
+      tags: [always]
+  tasks:
+    - name: Stop keepalived on the standby only (HA sites)
+      become: true
+      ansible.builtin.systemd:
+        name: keepalived
+        state: stopped
+      when:
+        - (apply_flax_stack_peers | default([]) | length) >= 2
+        - not (apply_flax_stack_is_primary | default(true) | bool)
+      tags: [always]
+
+- name: Deploy bang services (honours --tags; serial:1 across the pair)
+  ansible.builtin.import_playbook: apply_bang_services.yml
+
+- name: Re-arm the standby's keepalived (post-deploy; skipped if the deploy aborted)
+  hosts: jumphosts
+  gather_facts: false
+  tasks:
+    - name: Start keepalived on the standby only (HA sites)
+      become: true
+      ansible.builtin.systemd:
+        name: keepalived
+        state: started
+      when:
+        - (apply_flax_stack_peers | default([]) | length) >= 2
+        - not (apply_flax_stack_is_primary | default(true) | bool)
+      tags: [always]
+
+- name: Assert replication is healthy after the deploy
+  ansible.builtin.import_playbook: pg_ha_check.yml
+  vars:
+    ha_check_mode: assert
+  tags: [always]
