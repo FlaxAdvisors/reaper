@@ -1,7 +1,8 @@
 """Post BIOS manifest from per-site inventory (reaper fw spec 2026-11-11 §6a).
 
 The rendered /etc/flax/bios-firmware-versions.json must stay byte-identical to the
-static file it replaces (af7f196), for every site, except for what `reaper fw <site>
+static file it replaces (kept as fixtures/post_bios_manifest/bios-firmware-versions.static.json),
+for every site, except for what `reaper fw <site>
 bios <family> <tar>` moves: the `target` and `bin_url` of each entry linked to that
 triage family, which then name the site's host_fw_platforms target and tar
 (eindhoven moved to TPO_P27F, 1181dd9)."""
@@ -32,9 +33,8 @@ def site_var(site):
 
 
 def todays_file() -> bytes:
-    return subprocess.run(["git", "-C", str(ROOT), "show",
-                           "af7f196:roles/apply_flax_post/files/bios-firmware-versions.json"],
-                          capture_output=True, check=True).stdout
+    """The static roles/apply_flax_post/files/bios-firmware-versions.json the template replaced."""
+    return (ROOT / "tests" / "fixtures" / "post_bios_manifest" / "bios-firmware-versions.static.json").read_bytes()
 
 
 def render(var, tmp_path) -> bytes:

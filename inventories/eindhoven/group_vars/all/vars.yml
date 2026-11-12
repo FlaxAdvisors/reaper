@@ -213,7 +213,7 @@ apply_flax_post_db_password: "{{ vault_flax_stack_db_passwords.flax_post }}"
 # image explicitly (was tracking the role default). 0.9.113 = main + the
 # post-UI-actions branch. Viewer unit gains creds-bmc/opt-flax-bin/export/
 # node_config mounts; image adds nmap/jq/curl for the ghost helpers.
-apply_flax_post_image_tag: "0.9.209"  # 0.9.209 = Deploy reads dimmerr labels with spaces ("DIMM A0")
+apply_flax_post_image_tag: "0.9.213"  # 0.9.213 = dependency bumps (OSV-clean image; SOL relay on node 24)
 apply_flax_post_deploy_enabled: true   # Loose Post Deploy ON (operator 2026-11-06): a Qualify pass -> Ubuntu 24.04 + flax_user + iperf + stress -> Done; wipes the system disk unless post installed it
 
 # Core flax services pinned to the SAME build as flax_post (2026-09-11). Until
@@ -221,14 +221,14 @@ apply_flax_post_deploy_enabled: true   # Loose Post Deploy ON (operator 2026-11-
 # 0.9.87, reconcile 0.9.83, switch-sense 0.9.41, discover 0.9.46, console
 # 0.9.123) and the role defaults lagged too, so a routine apply could move a
 # service by accident. One tag for the whole bundle; bump them together.
-apply_flax_classify_image_tag: "0.9.203"  # 0.9.203 = post per-node order assignment + Finish order (migrations 041/042), console closed_by guard
-apply_flax_observe_image_tag: "0.9.203"  # 0.9.203 = post per-node order assignment + Finish order (migrations 041/042), console closed_by guard
-apply_flax_reconcile_image_tag: "0.9.203"  # 0.9.203 = post per-node order assignment + Finish order (migrations 041/042), console closed_by guard
-apply_flax_switch_sense_image_tag: "0.9.203"  # 0.9.203 = post per-node order assignment + Finish order (migrations 041/042), console closed_by guard
-apply_flax_discover_image_tag: "0.9.203"  # 0.9.203 = post per-node order assignment + Finish order (migrations 041/042), console closed_by guard
-apply_flax_stack_flax_control_image_tag: "0.9.203"  # 0.9.203 = post per-node order assignment + Finish order (migrations 041/042), console closed_by guard
+apply_flax_classify_image_tag: "0.9.213"  # 0.9.213 = dependency bumps (OSV-clean image; SOL relay on node 24)
+apply_flax_observe_image_tag: "0.9.213"  # 0.9.213 = dependency bumps (OSV-clean image; SOL relay on node 24)
+apply_flax_reconcile_image_tag: "0.9.213"  # 0.9.213 = dependency bumps (OSV-clean image; SOL relay on node 24)
+apply_flax_switch_sense_image_tag: "0.9.213"  # 0.9.213 = dependency bumps (OSV-clean image; SOL relay on node 24)
+apply_flax_discover_image_tag: "0.9.213"  # 0.9.213 = dependency bumps (OSV-clean image; SOL relay on node 24)
+apply_flax_stack_flax_control_image_tag: "0.9.213"  # 0.9.213 = dependency bumps (OSV-clean image; SOL relay on node 24)
 # SOL console (flax-post-sol Node relay + flax_post/web SOL modal), 2026-07-10.
-apply_flax_post_sol_image_tag: "0.9.209"  # 0.9.209 = relay reads post's blades feed again (racks map); 0.9.195 skipped it
+apply_flax_post_sol_image_tag: "0.9.213"  # 0.9.213 = dependency bumps (OSV-clean image; SOL relay on node 24)
 apply_flax_post_ladder_ports: ""  # every slot: the engine power-on was proven on et8b4 2026-09-11 and every guard held on the other 46 for 3 h
 
 # NIC firmware: pinned to 'detect' 2026-09-06. The role default is 'enforce'
