@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from reapercli.lib.gather import gather
 from reapercli.lib.guards import Refused, clone_guard
-from reapercli.lib.images import (BUILD_CMD, REMOTE_CLONE, inspect_cmd, on_primary, run_at, ship_cmd,
+from reapercli.lib.images import (BUILD_CMD, REMOTE_CLONE, images, inspect_cmd, on_primary, run_at, ship_cmd,
                                   version_tag)
 from reapercli.lib.inventory import site_hosts, ssh_target
 from reapercli.lib.out import Row, exit_code, render
@@ -53,7 +53,7 @@ def _check_primary(site, sh, tag, head, ctx):
             raise Refused(f"{site.name}: {sh.primary} clone at {got}{' (dirty)' if len(lines) > 1 else ''}"
                           f" (want {head[:7]}): git pull there")
     if run_at(target, inspect_cmd(tag), 30, ctx.runner).rc == 0:
-        raise Refused(f"{site.name}: {sh.primary} already has flax-control:{tag}: ship it, or bump flax_post/version.py")
+        raise Refused(f"{site.name}: {sh.primary} already has {images(tag)}: ship it, or bump flax_post/version.py")
     return target
 
 
@@ -93,17 +93,17 @@ def ship(argv, ctx) -> int:
         sh = site_hosts(s, ctx.root, ctx.hostname)
         src = on_primary(sh, ctx.hostname, ctx.user)
         if run_at(src, inspect_cmd(a.tag), 30, ctx.runner).rc != 0:
-            raise Refused(f"{s.name}: {sh.primary} has no flax-control:{a.tag}: reaper image build {s.name} {a.tag}")
+            raise Refused(f"{s.name}: {sh.primary} lacks one of {images(a.tag)}: reaper image build {s.name} {a.tag}")
         for b in sh.bangs:
             if b.name == sh.primary:
                 continue
             if b.dormant:
-                rows.append(Row("image", f"flax-control:{a.tag}", "warn", "standby dormant, not shipped", b.name, s.name))
+                rows.append(Row("image", images(a.tag), "warn", "standby dormant, not shipped", b.name, s.name))
             elif run_at(ssh_target(b, sh.on_site), inspect_cmd(a.tag), 30, ctx.runner).rc == 0:
-                rows.append(Row("image", f"flax-control:{a.tag}", "ok", "already present", b.name, s.name))
+                rows.append(Row("image", images(a.tag), "ok", "already present", b.name, s.name))
             else:
                 jobs.append((s, sh, src, b))
-                print(f"ship {s.name}: {sh.primary} -> {b.name} ({b.mgmt_ip}) flax-control:{a.tag}")
+                print(f"ship {s.name}: {sh.primary} -> {b.name} ({b.mgmt_ip}) {images(a.tag)}")
     if rows:
         print(render(rows))
     if not a.yes:
@@ -112,7 +112,7 @@ def ship(argv, ctx) -> int:
     for s, sh, src, b in jobs:
         r = run_at(src, ship_cmd(a.tag, b.mgmt_ip), BUILD_TIMEOUT, ctx.runner)
         ok = r.rc == 0 and run_at(ssh_target(b, sh.on_site), inspect_cmd(a.tag), 30, ctx.runner).rc == 0
-        rows.append(Row("image", f"flax-control:{a.tag}", "ok" if ok else "FAIL",
+        rows.append(Row("image", images(a.tag), "ok" if ok else "FAIL",
                         "shipped" if ok else (r.err.strip().splitlines() or ["not present after load"])[-1],
                         b.name, s.name))
         print(render(rows[-1:]))

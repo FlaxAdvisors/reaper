@@ -1,8 +1,9 @@
 """Image build and ship (spec §6; operator decisions 2026-11-07).
 
-build: each site's PRIMARY builds flax-control:<tag> from its own clone, which must
-sit at the controller's HEAD (never moved for anyone: they `git pull` there).
-ship: primary -> its own standby over the mgmt LAN. Never cross-site."""
+build: each site's PRIMARY builds flax-control:<tag> and flax-post-sol:<tag> (the SOL relay;
+both carry flax_post/version.py's tag) from its own clone, which must sit at the controller's
+HEAD (never moved for anyone: they `git pull` there).
+ship: primary -> its own standby over the mgmt LAN, both images in one stream. Never cross-site."""
 import re
 import shlex
 from pathlib import Path
@@ -10,7 +11,9 @@ from typing import Optional
 
 from reapercli.lib.remote import Result, ssh_argv, subprocess_runner
 
-BUILD_CMD = "cd {root} && docker build -t flax-control:{tag} -f flax_control/Dockerfile ."
+REPOS = ("flax-control", "flax-post-sol")     # every image `reaper image build|ship` makes
+BUILD_CMD = ("cd {root} && docker build -t flax-control:{tag} -f flax_control/Dockerfile . "
+             "&& docker build -t flax-post-sol:{tag} flax_post_sol")
 REMOTE_CLONE = "~/git/reaper"
 
 
@@ -38,11 +41,16 @@ def run_at(target: Optional[str], cmd: str, timeout: float, runner=None) -> Resu
     return (runner or subprocess_runner)(argv, None, timeout)
 
 
+def images(tag: str) -> str:
+    return " ".join(f"{r}:{tag}" for r in REPOS)
+
+
 def ship_cmd(tag: str, standby_ip: str) -> str:
     load = shlex.quote("gunzip | docker load")
-    return (f"set -o pipefail; docker save flax-control:{tag} | gzip -1 | "
+    return (f"set -o pipefail; docker save {images(tag)} | gzip -1 | "
             f"ssh -o BatchMode=yes -o ConnectTimeout=6 flax@{standby_ip} {load}")
 
 
 def inspect_cmd(tag: str) -> str:
-    return f"docker image inspect flax-control:{tag} >/dev/null 2>&1"
+    """rc 0 only when every image of the tag is present (inspect fails on any missing one)."""
+    return f"docker image inspect {images(tag)} >/dev/null 2>&1"

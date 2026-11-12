@@ -8,7 +8,7 @@ import pytest
 
 pytest.importorskip("reapercli")
 from reapercli.__main__ import Context, main  # noqa: E402
-from reapercli.lib.images import version_tag  # noqa: E402
+from reapercli.lib.images import images, version_tag  # noqa: E402
 from reapercli.lib.remote import Result  # noqa: E402
 from test_reapercli_guards import make_clone  # noqa: E402
 
@@ -19,7 +19,9 @@ TAG = version_tag(ROOT)
 class Fake:
     def __init__(self, head, primary_head=None, have=None):
         self.head, self.primary_head = head, primary_head or head
-        self.have = {k: set(v) for k, v in (have or {}).items()}   # host -> tags present
+        # host -> images present ("repo:tag"); a bare tag means every image of that tag
+        self.have = {k: {i for t in v for i in ([t] if ":" in t else images(t).split())}
+                     for k, v in (have or {}).items()}
         self.log, self.targets = [], []
 
     def __call__(self, argv, stdin, timeout):
@@ -31,11 +33,11 @@ class Fake:
         if "rev-parse HEAD" in cmd:
             return Result(0, self.primary_head + "\n", "")
         if "docker image inspect" in cmd:
-            tag = re.search(r"flax-control:(\S+)", cmd).group(1)
-            return Result(0 if tag in self.have.get(host, ()) else 1, "", "")
+            want = set(re.findall(r"(flax-[a-z-]+:\S+)", cmd.split(">")[0]))
+            return Result(0 if want <= self.have.get(host, set()) else 1, "", "")
         if "docker save" in cmd:
             standby = "bang-edam" if "192.168.88.22" in cmd else "bang-blues"
-            self.have.setdefault(standby, set()).add(TAG)
+            self.have.setdefault(standby, set()).update(re.findall(r"(flax-[a-z-]+:\S+)", cmd.split("|")[0]))
         return Result(0, "built\n", "")
 
     def cmds(self, word):
@@ -141,3 +143,19 @@ def test_build_and_ship_run_as_the_operator(tmp_path):
     assert main(["image", "ship", "eindhoven", TAG, "--yes"], c) == 0
     save = [t for t, (_, cmd) in zip(f.targets, f.log) if "docker save" in cmd]
     assert save == ["tester@bang-gouda"]
+
+
+def test_build_makes_the_sol_relay_image_too(tmp_path):
+    c, f, _ = head_ctx(tmp_path)
+    assert main(["image", "build", "eindhoven", TAG, "--yes"], c) == 0
+    [(_, cmd)] = f.cmds("docker build -t flax-control:")
+    assert f"docker build -t flax-post-sol:{TAG} flax_post_sol" in cmd
+
+
+def test_ship_sends_both_images_when_the_standby_lacks_one(tmp_path):
+    """The SOL relay shares the tag: a standby holding only flax-control still gets the pair."""
+    c, f, _ = head_ctx(tmp_path, have={"bang-gouda": {TAG}, "bang-edam": {f"flax-control:{TAG}"}})
+    assert main(["image", "ship", "eindhoven", TAG, "--yes"], c) == 0
+    [(_, cmd)] = f.cmds("docker save")
+    assert f"docker save flax-control:{TAG} flax-post-sol:{TAG} |" in cmd
+    assert f.have["bang-edam"] >= {f"flax-control:{TAG}", f"flax-post-sol:{TAG}"}
