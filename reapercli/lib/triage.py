@@ -16,7 +16,6 @@ from reapercli.lib.images import on_primary, run_at
 from reapercli.lib.inventory import ssh_target
 
 CLONE = "~/git/triage"
-DIST = "monitor/web/dist"
 COMPOSE = "docker-compose-prod.yml"
 FILES = (COMPOSE, ".env", ".env_prod")
 PROJECT = "prod"
@@ -33,7 +32,7 @@ class Source:
     branch: str
     target: Optional[str]      # the operator's ssh target for the primary; None = here
     ref: bool = False          # an older commit (--triage-ref): never built from HEAD's tree
-    note: str = ""             # a warn line for the plan (UI dist older than the UI source)
+    note: str = ""             # warn lines for the plan (e.g. origin could not be fetched)
 
 
 def _state(sh, ctx, branch: str, ref: Optional[str]) -> tuple:
@@ -45,11 +44,9 @@ def _state(sh, ctx, branch: str, ref: Optional[str]) -> tuple:
            f"&& echo fetched=1 || echo fetched=0; echo branch=$(git branch --show-current); "
            f"echo dirty=$(git status --porcelain | wc -l); echo head=$(git rev-parse HEAD); "
            f"git merge-base --is-ancestor HEAD {b} && echo pushed=1 || echo pushed=0; "
-           f"echo behind=$(git rev-list --count HEAD..{b}); "
-           # the UI is gitignored (monitor/web/dist) but COPYed into the api image: it must
-           # exist, and the plan says when it predates the last UI commit
-           f"test -f {DIST}/index.html && echo dist=$(stat -c %Y {DIST}/index.html); "
-           f"echo uisrc=$(git log -1 --format=%ct -- monitor/web)")
+           # the UI (monitor/web) is built inside the api image (its Dockerfile's `ui`
+           # stage), so the clone needs no host-built dist
+           f"echo behind=$(git rev-list --count HEAD..{b})")
     if ref:
         r = shlex.quote(ref + "^{commit}")
         cmd += (f"; echo ref=$(git rev-parse --verify {r}); "
@@ -80,14 +77,9 @@ def guard(sh, ctx, branch: str = "main", ref: Optional[str] = None) -> Source:
         if st.get("refok") != "1":
             raise Refused(f"{where}: {ref} not on origin/{branch}")
         return Source(st["ref"], st["ref"][:12], branch, target, True)
-    if not st.get("dist", "").strip():
-        raise Refused(f"{where}: no {DIST}/index.html: build the UI first (the api image COPYs it)")
     notes = []
     if st.get("fetched") != "1":
         notes.append(f"  warn could not fetch origin/{branch}: compared with the clone's last fetch")
-    if int(st["dist"]) < int(st.get("uisrc") or 0):
-        notes.append(f"  warn {DIST} is older than the last monitor/web commit: "
-                     f"rebuild the UI if that commit changed it")
     return Source(head, head[:12], branch, target, False, "\n".join(notes))
 
 

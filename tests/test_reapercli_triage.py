@@ -31,7 +31,7 @@ class Fake:
     def __init__(self, branch="main", dirty=0, pushed=1, behind=0, ref=None, refok=1,
                  files=None, have=None, ps=None, fail=None):
         self.state = dict(branch=branch, dirty=dirty, head=SHA, pushed=pushed, behind=behind,
-                          dist=2000, uisrc=1000, fetched=1)
+                          fetched=1)
         if ref:
             self.state.update(ref=ref, refok=refok)
         self.files = files if files is not None else {"docker-compose-prod.yml": COMPOSE,
@@ -232,17 +232,13 @@ def test_site_env_refuses_a_non_string(monkeypatch):
         triage.site_env(SimpleNamespace(name="x"))
 
 
-def test_guard_refuses_without_ui_dist():
+def test_guard_needs_no_host_built_ui():
+    """The api image builds monitor/web itself: a clone without dist/ deploys (the guard
+    used to refuse it), and the probe no longer asks about one."""
     f = Fake()
-    f.state.pop("dist")
-    with pytest.raises(Refused, match="monitor/web/dist"):
-        triage.guard(SH, ctx(f))
-
-
-def test_guard_notes_a_ui_dist_older_than_the_ui_source():
-    f = Fake()
-    f.state.update(dist=1000, uisrc=2000)
-    assert "warn" in triage.guard(SH, ctx(f)).note and "older" in triage.guard(SH, ctx(f)).note
+    src = triage.guard(SH, ctx(f))
+    assert src.sha == SHA and src.note == ""
+    assert f.log and not any("monitor/web/dist" in cmd for _, cmd in f.log)
 
 
 def test_guard_ref_unresolvable_says_so():
