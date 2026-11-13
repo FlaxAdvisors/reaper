@@ -85,3 +85,16 @@ def test_nodeid_passes_through(tmp_path):
     r = tree(tmp_path, "tests/test_x.py")
     files, _ = tg.resolve(r, ["tests/test_x.py::test_one"])
     assert rel(r, files) == ["tests/test_x.py::test_one"]
+
+
+def test_path_with_no_tests_is_an_error(tmp_path):
+    r = tree(tmp_path, "tests/fixtures/x.json", "tests/test_a.py")
+    with pytest.raises(tg.GroupError) as e:
+        tg.resolve(r, ["tests/fixtures"])
+    assert "tests/fixtures" in str(e.value)
+
+
+def test_directory_expands_to_its_tests(tmp_path):
+    r = tree(tmp_path, "tests/test_a.py", "tests/helper.py")
+    files, _ = tg.resolve(r, ["tests"])
+    assert rel(r, files) == ["tests/test_a.py"]

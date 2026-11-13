@@ -12,7 +12,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from reapercli.lib import testgroups as tg
 
 NO_TESTS = 5                                   # pytest: nothing collected (an empty serial pass)
-OWN_MODE = ("-n", "--numprocesses", "--pdb", "-m")   # passthrough that takes the run's mode over
+# passthrough that takes the run's mode over: -n/-m in any form (-n 4, -n4, -mslow; no other
+# pytest option starts with -n or -m), --numprocesses, --pdb, and xdist switched off
+def _takes_over(passthrough) -> bool:
+    for i, x in enumerate(passthrough):
+        nxt = passthrough[i + 1] if i + 1 < len(passthrough) else ""
+        if x == "--pdb" or x.startswith(("-n", "-m", "--numprocesses")):
+            return True
+        if x.startswith("-p") and "no:xdist" in (x[2:] or nxt):
+            return True
+    return False
 
 
 def _default_runner(root):
@@ -49,12 +58,14 @@ def _list(root, groups) -> None:
 def _pytest(root, run, files, a, passthrough) -> int:
     script = str(root / "scripts" / "run-tests.sh")
     base = [script, *map(str, files)]
-    if a.serial or any(x == o or x.startswith(o + "=") for x in passthrough for o in OWN_MODE):
+    if a.serial or _takes_over(passthrough):
         return run([*base, *passthrough], False)[0]
     rc_a = run([*base, *passthrough, "-n", a.jobs or "auto", "-m", "not serial"], False)[0]
     rc_b = run([*base, *passthrough, "-m", "serial"], False)[0]
     print(f"pytest: parallel pass rc {rc_a}, serial pass rc {rc_b}")
-    return 0 if rc_a == 0 and rc_b in (0, NO_TESTS) else 1
+    # NO_TESTS from one pass is fine (nothing serial-marked, or only serial tests picked);
+    # from both, nothing ran at all
+    return 0 if {rc_a, rc_b} <= {0, NO_TESTS} and 0 in (rc_a, rc_b) else 1
 
 
 def _shell(root, run, suites, a) -> int:

@@ -55,7 +55,15 @@ def resolve(root: Path, words: list) -> tuple:
             if not hit:
                 raise GroupError(f"group {w!r} matches no files under {root} (stale pattern?)")
             out |= hit
+        elif (root / w.split("::")[0]).is_dir():
+            d = (root / w).relative_to(root).as_posix()
+            hit = _globs(root, (f"{d}/test_*.py", f"{d}/test-*.sh"))
+            if not hit:
+                raise GroupError(f"{w!r} holds no test_*.py or test-*.sh")
+            out |= hit
         elif (root / w.split("::")[0]).exists():
+            if Path(w.split("::")[0]).suffix not in (".py", ".sh"):
+                raise GroupError(f"{w!r} is not a test file (.py or .sh)")
             out.add(root / w)
         else:
             raise GroupError(f"unknown group {w!r}; groups: {' '.join(group_names())}")

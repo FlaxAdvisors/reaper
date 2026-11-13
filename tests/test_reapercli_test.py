@@ -108,3 +108,26 @@ def test_list_runs_nothing(tmp_path, capsys):
 def test_completion_offers_groups(tmp_path, capsys):
     main(["completion"], ctx(tmp_path, Run()))
     assert "post-lane" in capsys.readouterr().out
+
+
+def test_only_serial_tests_selected_is_ok(tmp_path):
+    assert main(["test", "cli", "--no-shell"], ctx(tmp_path, Run(rcs=[5, 0]))) == 0
+
+
+def test_nothing_ran_in_either_pass_fails(tmp_path):
+    assert main(["test", "cli", "--no-shell"], ctx(tmp_path, Run(rcs=[5, 5]))) == 1
+
+
+@pytest.mark.parametrize("opt", ["-n4", "-nauto", "-mslow", "--numprocesses=4", "-pno:xdist"])
+def test_attached_mode_options_take_over(tmp_path, opt):
+    r = Run()
+    main(["test", "cli", "--no-shell", "--", opt], ctx(tmp_path, r))
+    (only,) = r.pytest_calls()
+    assert only[-1] == opt and "auto" not in only[:-1] and "serial" not in " ".join(only)
+
+
+def test_p_no_xdist_separate_form_takes_over(tmp_path):
+    r = Run()
+    main(["test", "cli", "--no-shell", "--", "-p", "no:xdist"], ctx(tmp_path, r))
+    (only,) = r.pytest_calls()
+    assert only[-2:] == ["-p", "no:xdist"]
