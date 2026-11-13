@@ -10,11 +10,11 @@ import statistics
 from pathlib import Path
 
 SUITE = "v1"
-FLAG_SIGMA = 1.0
+FLAG_SIGMA = 2.0
 CLIP_SIGMA = 3.0
 CLIP_ROUNDS = 5
 MIN_SAMPLES = 5
-SIBLING_PCT = 10
+SIBLING_PCT = 20
 MIN_SIBLINGS = 3  # the device + at least two others
 SIGMA_FLOOR_FRAC = 0.01  # effective σ = max(std, this × |mean|): a std-0 group never flags on a hair
 SPREAD_CAP = 0.15  # a history group with std / |mean| above this is too wide to judge by (kept in the file)

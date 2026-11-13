@@ -856,7 +856,7 @@ def test_fio_detail_flags_outside_drive():
         assert cls == ("flag" if r[0] == "sdc" else "")
         assert r[-1] == ("outside" if r[0] == "sdc" and r[2].startswith("lat") else "ok")
     lat_sdc = next(r for r in t["rows"] if r[0] == "sdc" and r[2].startswith("lat"))
-    assert lat_sdc[-2] == "≤ 5100 µs"
+    assert lat_sdc[-2] == "≤ 5200 µs"
     assert det["judge"]["sdc"]["verdict"] == "outside"
     assert det["headline"].startswith("fio pass · 1 drive outside range")
     assert det["headline"] == "fio pass · 1 drive outside range: WX01DSV4 (Front_ArrayDevice04) lat"

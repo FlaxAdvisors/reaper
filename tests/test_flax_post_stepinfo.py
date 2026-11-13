@@ -338,9 +338,9 @@ def test_stepinfo_fio_table_and_flag_rows():
         (dv, jb) for jb in ("bw", "lat", "iops") for dv in ("sda", "sdb", "sdc")]
     assert t["row_cls"] == ["flag" if r[0] == "sdc" else "" for r in t["rows"]]
     lat_sdc = next(r for r in t["rows"] if r[0] == "sdc" and r[2].startswith("lat"))
-    assert lat_sdc[-2:] == ["≤ 5100 µs", "outside"]
+    assert lat_sdc[-2:] == ["≤ 5200 µs", "outside"]
     r = _rows(d)
-    assert r["outside range"].startswith("WX01DSV4 (sdc): lat lat_us 9000 vs expected ≤ 5100 µs")
+    assert r["outside range"].startswith("WX01DSV4 (sdc): lat lat_us 9000 vs expected ≤ 5200 µs")
     assert "judge" not in r and "flagged" not in r
     assert any("never a failure" in n for n in d["notes"])
 

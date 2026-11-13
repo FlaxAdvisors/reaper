@@ -894,7 +894,7 @@ def test_poll_target_judges_fio_once():
     agent._run_id = "r2"
     host_qual.poll_target(TARGET, make_client=lambda ip: agent, store=store, fio_baseline={})
     fresh = store.state["et6b1"]["qual"]["steps"]["fio"]["summary"]
-    assert summ["judge"]["sdc"]["expected"] == {"lat": "≤ 5100 µs"}
+    assert summ["judge"]["sdc"]["expected"] == {"lat": "≤ 5200 µs"}
     assert fresh["judge"]["sdc"]["expected"] == {}       # no history group this time
 
 

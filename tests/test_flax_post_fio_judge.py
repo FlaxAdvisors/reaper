@@ -27,7 +27,7 @@ def test_judge_flags_slow_drive_against_history():
     r = fj.judge({"a": {"bw": _pj(mbps=220)}, "b": {"bw": _pj(mbps=250)}}, disks, base)
     assert r["a"]["verdict"] == "outside"
     assert "bw" in r["a"]["reasons"][0] and "220" in r["a"]["reasons"][0]
-    assert r["a"]["expected"]["bw"].startswith("≥ 235")  # mean - 1σ
+    assert r["a"]["expected"]["bw"].startswith("≥ 230")  # mean - 2σ
     assert r["b"]["verdict"] == "ok"
     assert fj.flagged(r) == ["a"]
 
@@ -83,8 +83,8 @@ def test_judge_std_zero_group_does_not_flag_a_hair_thin_miss():
     base = _base([_g("bw", "mbps", 500, 0)])
     d = {"a": {"model": "MODELX"}}
     assert fj.judge({"a": {"bw": _pj(mbps=499.9)}}, d, base)["a"]["verdict"] == "ok"
-    r = fj.judge({"a": {"bw": _pj(mbps=480)}}, d, base)["a"]       # 1σ floor = 1% of 500
-    assert r["verdict"] == "outside" and r["expected"]["bw"] == "≥ 495 MB/s"
+    r = fj.judge({"a": {"bw": _pj(mbps=480)}}, d, base)["a"]       # 2σ floor = 2% of 500
+    assert r["verdict"] == "outside" and r["expected"]["bw"] == "≥ 490 MB/s"
     assert "1%" in fj.note()
 
 
@@ -128,8 +128,9 @@ def test_note_names_the_spread_cap():
     assert f"{fj.SPREAD_CAP * 100:g}%" in fj.note() and "spread too wide" in fj.note()
 
 
-def test_constants_are_one_sigma_and_ten_percent():
-    assert (fj.FLAG_SIGMA, fj.SIBLING_PCT, fj.MIN_SIBLINGS) == (1.0, 10, 3)
+def test_constants_are_two_sigma_and_twenty_percent():
+    # operator 2026-11-13: 1σ flagged ~12% of the history; back to 2σ and 20% siblings
+    assert (fj.FLAG_SIGMA, fj.SIBLING_PCT, fj.MIN_SIBLINGS) == (2.0, 20, 3)
 
 
 def test_size_key_rounds_to_three_significant_figures():

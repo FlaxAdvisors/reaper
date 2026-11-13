@@ -27,7 +27,7 @@ def _r(serial, value, at, run="r1", mac="m1", key=SMALL, job="bw", metric="mbps"
 ROWS = [_r("A", 400.0, "2026-11-10T01:00:00+00:00", run="r1", mac="m1"),
         _r("A", 2450.0, "2026-11-11T01:00:00+00:00", run="r2", mac="m1"),   # A's latest: fast
         _r("B", 2600.0, "2026-11-10T02:00:00+00:00", run="r3", mac="m2"),
-        _r("C", 350.0, "2026-11-12T02:00:00+00:00", run="r4", mac="m3"),     # outside 1σ
+        _r("C", 350.0, "2026-11-12T02:00:00+00:00", run="r4", mac="m3"),     # outside 2σ
         _r(None, 999.0, "2026-11-12T03:00:00+00:00", run="r5", mac="m4"),    # no serial: a run, not a drive
         _r("N1", 3100.0, "2026-11-12T04:00:00+00:00", run="r6", mac="m5", key=("NEW NVME 512", 512.0))]
 
@@ -61,7 +61,7 @@ def test_render_escapes_and_names_the_site_and_rules():
     h = fio_guide.render(BASE, rows, site="lavergne", generated="2026-11-13 12:00 UTC")
     assert "<SCRIPT>" not in h and "&lt;SCRIPT&gt;" in h
     assert "lavergne" in h and "2026-11-13 12:00 UTC" in h and "bang-fiesta:/export/bangs" in h
-    assert "1σ" in h and "10%" in h and "collected only" in h and "2,500 ± 100" in h
+    assert "2σ" in h and "20%" in h and "collected only" in h and "2,500 ± 100" in h
     assert h.index("NEW NVME 512") < h.index("HGST HUS726060AL")  # collected keys first
 
 
