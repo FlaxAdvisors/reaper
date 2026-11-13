@@ -325,10 +325,10 @@ host_fw_platforms:
   tiogapass-bios:
     match:
       product_name: ["(?i)tioga", "(?i)sv7220g3"]
-    target_version: "TPO_P26F"
+    target_version: "TPO_P27F"
     flash:
       method: redfish-update-multipart
-      artifact: "SXC-Lab_OCP-Updates/OEM-TP-wiwynn-FW-2021-02-23/tiogapass-bios-TPO_P26F.tar"
+      artifact: "SXC-Lab_OCP-Updates/OEM-TP-wiwynn-FW-2021-02-23/tiogapass-bios-update-TPO_P27F.tar"
     auto: true
   # Quanta Leopards (operator 2026-10-27): report-only. post flashes F06_3B22
   # (update_quanta_leopard.sh); triage bios_fw only reads the version the BIOS
@@ -348,9 +348,9 @@ post_bios_fw_platforms:
   - platform: "Wiwynn Tioga Pass"
     family: tiogapass
     host_fw_family: tiogapass-bios
-    target: "TPO_P26F"
+    target: "TPO_P27F"
     afulnx_url: "http://bang/export/share/SXC-Lab_OCP-Updates/Linux_Flash_Utilities/afulnx_64_Wiwynn_Tioga_Pass"
-    bin_url: "http://bang/export/share/SXC-Lab_OCP-Updates/OEM-TP-wiwynn-FW-2021-02-23/tiogapass-bios-TPO_P26F.tar"
+    bin_url: "http://bang/export/share/SXC-Lab_OCP-Updates/OEM-TP-wiwynn-FW-2021-02-23/tiogapass-bios-update-TPO_P27F.tar"
     bin_path: image-bios
     flags: ["/X", "/B", "/P", "/K", "/N", "/ME", "/REBOOT"]
   - platform: "Quanta Leopard"
