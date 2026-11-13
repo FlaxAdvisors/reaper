@@ -112,8 +112,7 @@ def test_credentials_are_vaulted():
 
 
 def test_copied_maps_match_eindhoven():
-    # node_config is per site (each synced from its own live /opt/flax/node_config,
-    # reaper b4c6958 / aa61117), so it is not compared here.
+    # node_config is one shared set (files/services/_common/node_config), not compared here.
     for d in ("family-map", "macmath"):
         assert sorted(os.listdir(os.path.join(SVC, d))) == sorted(os.listdir(os.path.join(EHV, d))), d
     assert load("bmc-only-families.json") == load("bmc-only-families.json", EHV)

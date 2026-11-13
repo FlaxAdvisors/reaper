@@ -244,7 +244,8 @@
   when: (flax_role_integra_ports | default({})) | length > 0
 
 # Population profiles (one regex-per-line file per customer build) plus
-# blocklist-parts.json. Mounted read-only into the triage api and flax-post;
+# blocklist-parts.json. ONE set for every site (files/services/_common/node_config,
+# operator 2026-11-13): profiles describe customer builds, not sites. Mounted read-only into the triage api and flax-post;
 # the triage UI's selected profile names one of these files. Operators have
 # edited them in place on the bang -- the repo copy is now the source, so an
 # in-place edit must be carried back here or the next run reverts it. Files
@@ -266,7 +267,7 @@
 - name: Deploy node_config profiles
   become: true
   ansible.posix.synchronize:
-    src: "{{ config_output_dir }}/{{ site_name }}/services/node_config/"
+    src: "{{ playbook_dir }}/../files/services/_common/node_config/"
     dest: /opt/flax/node_config/
     archive: false
     recursive: true

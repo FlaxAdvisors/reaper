@@ -1,4 +1,5 @@
 ---
 # No role defaults. All destination paths are fixed under /etc/flax and are
 # written literally in tasks/main.yml; the source files come from the
-# per-site config tree via config_output_dir / site_name (set globally).
+# per-site config tree via config_output_dir / site_name (set globally), except
+# the population profiles: one shared set in files/services/_common/node_config.
