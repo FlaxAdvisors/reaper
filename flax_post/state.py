@@ -452,3 +452,55 @@ def record_result(bmc_mac, result: dict, *, serial=None, order_no=None, last_por
     upsert_node(bmc_mac, serial=serial, order_no=order_no, last_port=last_port,
                 result=result, runs=runs)
     write_run(bmc_mac, result, serial=serial, order_no=order_no)
+
+
+def write_fio_drives(bmc_mac, run_id, rows) -> int:
+    """Upsert one run's per-drive fio numbers (flax_post.fio_drives.rows) into
+    post_fio_drive, keyed by (bmc_mac, run_id, dev, job, metric). Returns rows written."""
+    if not rows:
+        return 0
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO post_fio_drive (bmc_mac, run_id, serial, model, size_gb, controller, "
+                "dev, job, metric, value) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (bmc_mac, run_id, dev, job, metric) DO UPDATE SET "
+                "  serial = EXCLUDED.serial, model = EXCLUDED.model, size_gb = EXCLUDED.size_gb, "
+                "  controller = EXCLUDED.controller, value = EXCLUDED.value",
+                [(bmc_mac, run_id, r.get("serial"), r.get("model"), r.get("size_gb"),
+                  r.get("controller"), r["dev"], r["job"], r["metric"], r["value"]) for r in rows])
+    return len(rows)
+
+
+def fio_peers(keys, exclude_serials) -> dict:
+    """Site-wide sibling values for the judge: {(model, size_gb): {(job, metric): [value]}}
+    from the latest run of every serial with that key, the given serials excluded (the
+    node's own drives, wherever they ran before). Rows without a serial never count."""
+    keys = [(m, s) for m, s in dict.fromkeys(keys or []) if m]
+    if not keys:
+        return {}
+    models = [m for m, _ in keys]
+    with get_pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT model, size_gb, job, metric, value FROM ("
+            "  SELECT model, size_gb, job, metric, value, serial, captured_at,"
+            "         rank() OVER (PARTITION BY serial ORDER BY captured_at DESC, run_id DESC) AS rk"
+            "  FROM post_fio_drive"
+            "  WHERE serial IS NOT NULL AND model = ANY(%s) AND NOT (serial = ANY(%s))"
+            ") x WHERE rk = 1",
+            (models, list(exclude_serials or [])),
+        ).fetchall()
+    want = set(keys)
+    out: dict = {}
+    for model, size, job, metric, value in rows:
+        if (model, size) in want:
+            out.setdefault((model, size), {}).setdefault((job, metric), []).append(value)
+    return out
+
+
+def fio_runs() -> list:
+    """(bmc_mac, run_id) of every stored run with a fio artifact (the backfill's input)."""
+    with get_pool().connection() as conn:
+        return [tuple(r) for r in conn.execute(
+            "SELECT bmc_mac, run_id FROM post_artifact WHERE stage = 'fio' AND name = 'fio' "
+            "ORDER BY captured_at").fetchall()]

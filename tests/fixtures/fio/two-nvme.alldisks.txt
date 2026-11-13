@@ -1,0 +1,2 @@
+/dev/nvme0n1      [nvme0] 7          nvme         non-rotational   256.0    none HPS3NHAV SAMSUNG_MZVL4256HBJD-00BH1 TESTSN-FIO-0      
+/dev/nvme1n1      [nvme1] 4          nvme         non-rotational  3840.7    none EDB78M5Q SAMSUNG_MZ1LB3T8HMLA-000MV TESTSN-FIO-1      
