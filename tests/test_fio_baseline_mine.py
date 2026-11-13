@@ -430,3 +430,16 @@ def test_main_mines_the_archive_and_the_drives_csv(tmp_path):
     b = json.loads(out.read_text())
     assert any(g["model"] == "NEWDRIVE" and g["size_gb"] == 512.0 and g["n"] == 5 for g in b["groups"])
     assert b["drive_rows"] == 5 and "slow runs dropped" in wi.read_text()
+
+
+def test_a_slow_majority_is_the_body_not_an_outlier():
+    # 90 runs near 1000 and 10 near 2000: the 10 fast runs are the odd ones, nothing is dropped
+    g = mine.build(_bw([1000.0, 1010.0, 990.0] * 30 + [2000.0, 2010.0] * 5))["groups"][0]
+    assert g["slow_dropped"] == 0
+
+
+def test_zeros_never_crash_the_mining():
+    lat = [{"model": "M", "size": 256.0, "controller": None, "job": "lat", "date": "2026-11-01",
+            "read": {"lat_us": v, "p99_us": v}} for v in [0.0] * 6 + [100.0] * 20]
+    mine.build(lat)
+    mine.build(_bw([0.0] * 8))

@@ -63,7 +63,8 @@ def sigma_clip(values):
 def drop_slow(pairs, good):
     """pairs [(value, date)] -> (kept pairs, dropped count). Split the values in two at the cut
     minimising the within-cluster variance of their logs (the fast side = the good side); drop the
-    slow cluster when it is a separate mode (SLOW_* above), else keep everything."""
+    slow cluster when it is a separate mode (SLOW_* above) and at most half the group, else keep
+    everything."""
     n = len(pairs)
     srt = sorted(pairs, key=lambda p: p[0], reverse=(good == "higher"))
     lv = [math.log(max(float(v), 1e-9)) for v, _ in srt]
@@ -84,9 +85,11 @@ def drop_slow(pairs, good):
     fast, slow = [float(v) for v, _ in srt[:i]], [float(v) for v, _ in srt[i:]]
     mf, ms = statistics.fmean(fast), statistics.fmean(slow)
     sd = math.sqrt(statistics.pvariance(fast) + (statistics.pvariance(slow) if len(slow) > 1 else 0.0))
+    if not mf or len(slow) > len(fast):  # an outlier is a minority: a slow majority is the body
+        return pairs, 0
     d = math.sqrt(2) * abs(mf - ms) / sd if sd else math.inf
     worse = (mf - ms) / mf if good == "higher" else (ms - mf) / mf
-    if mf and d >= SLOW_MIN_D and worse * 100 >= SLOW_MIN_PCT:
+    if d >= SLOW_MIN_D and worse * 100 >= SLOW_MIN_PCT:
         return srt[:i], len(slow)
     return pairs, 0
 
