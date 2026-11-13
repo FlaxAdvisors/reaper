@@ -854,7 +854,7 @@ _HDD_ALLDISKS = "".join(
     f"/dev/{d} [0:0:{i}:0] Front_ArrayDevice0{i} mpt3sas rotational 6001.2 "
     f"SEAGATE SN04 {_HDD} WX01DSV{i}\n" for i, d in enumerate(("sda", "sdb", "sdc"), 2))
 _HDD_BASE = {"suite": "v1", "groups": [
-    {"model": _HDD[:16], "controller": "mpt3sas", "job": "lat", "metric": "lat_us",
+    {"model": _HDD[:16], "size_gb": 6001.2, "controller": "mpt3sas", "job": "lat", "metric": "lat_us",
      "n": 40, "mean": 5000.0, "std": 100.0}]}
 
 
@@ -894,7 +894,7 @@ def test_poll_target_judges_fio_once():
     agent._run_id = "r2"
     host_qual.poll_target(TARGET, make_client=lambda ip: agent, store=store, fio_baseline={})
     fresh = store.state["et6b1"]["qual"]["steps"]["fio"]["summary"]
-    assert summ["judge"]["sdc"]["expected"] == {"lat": "≤ 5200 µs"}
+    assert summ["judge"]["sdc"]["expected"] == {"lat": "≤ 5100 µs"}
     assert fresh["judge"]["sdc"]["expected"] == {}       # no history group this time
 
 
@@ -933,3 +933,54 @@ def test_profile_prefers_override_then_target_population():
     assert host_qual._read_profile_for(t, _S("a")) == "a"
     assert host_qual._read_profile_for(t, _S(None)) == "acme-leo"
     assert host_qual._read_profile_for({"port": "et7b1"}, _S(None)) == "ovh-bare-tp"
+
+
+# ---- site-wide siblings (addendum 2026-11-13): post_fio_drive rows + peers ----
+import pathlib as _pl
+_FIX = _pl.Path(__file__).resolve().parent / "fixtures" / "fio"
+_SMALL = ("SAMSUNG MZVL4256HBJD-00BH1", 256.0)
+
+
+def _nvme_agent():
+    return FakeAgent(status_body={"status": "running", "current": "iperf", "done_n": 6,
+                                  "total_n": 12, "verdict": None, "pct": 50},
+                     stages=[{"name": "inventory", "status": "pass"}, {"name": "fio", "status": "pass"}],
+                     arts={("inventory", "alldisks"): (_FIX / "two-nvme.alldisks.txt").read_text(),
+                           ("fio", "fio"): (_FIX / "two-nvme.fio.txt").read_text()},
+                     summaries={"fio": {"devices": ["nvme0n1", "nvme1n1"], "smart_excluded": {}}})
+
+
+def _peer_store(peers=None, boom=False):
+    s = _store()
+    s.written, s.asked = [], []
+    def write_fio_drives(bmc_mac, run_id, rows):
+        s.written.append((bmc_mac, run_id, rows)); return len(rows)
+    def fio_peers(keys, exclude):
+        s.asked.append((sorted(keys, key=str), sorted(exclude)))
+        if boom:
+            raise RuntimeError("relation post_fio_drive does not exist")
+        return peers or {}
+    s.write_fio_drives, s.fio_peers = write_fio_drives, fio_peers
+    return s
+
+
+def test_fio_judge_uses_site_peers():
+    store = _peer_store({_SMALL: {("bw", "mbps"): [2450.0, 2640.0, 2770.0]}})
+    host_qual.poll_target(TARGET, make_client=lambda ip: _nvme_agent(), store=store, fio_baseline={})
+    summ = store.state["et6b1"]["qual"]["steps"]["fio"]["summary"]
+    assert summ["flagged"] == ["nvme0n1"] and summ["judge"]["nvme0n1"]["verdict"] == "outside"
+    assert summ["judge"]["nvme1n1"]["verdict"] == "no baseline"
+    (mac, run, rows), = store.written
+    assert mac == TARGET["bmc_mac"] and len(rows) == 8
+    keys, excl = store.asked[0]
+    assert _SMALL in keys and excl == ["TESTSN-FIO-0", "TESTSN-FIO-1"]
+    # the same run polled again: no second write, no second query
+    host_qual.poll_target(TARGET, make_client=lambda ip: _nvme_agent(), store=store, fio_baseline={})
+    assert len(store.written) == 1 and len(store.asked) == 1
+
+
+def test_fio_judge_without_the_table_still_judges():  # RF4
+    store = _peer_store(boom=True)
+    host_qual.poll_target(TARGET, make_client=lambda ip: _nvme_agent(), store=store, fio_baseline={})
+    summ = store.state["et6b1"]["qual"]["steps"]["fio"]["summary"]
+    assert {j["verdict"] for j in summ["judge"].values()} == {"no baseline"}

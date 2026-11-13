@@ -17,7 +17,7 @@ from .. import actions
 from .. import blades
 from .. import blocklist  # noqa: F401 -- qualify_rules' judges, kept reachable here
 from .. import deploy as _deploy
-from .. import fio_judge
+from .. import fio_drives, fio_judge
 from .. import population  # noqa: F401
 from .. import shipchecks
 from .. import state as _state
@@ -261,6 +261,24 @@ def _fio_baseline() -> dict:
     return _FIO_BASELINE
 
 
+def _site_peers(store, target, run_id, text, alldisks, info, parsed) -> "dict | None":
+    """Record this run's per-drive fio numbers (post_fio_drive) and read the site's
+    same-key drives in other nodes for the sibling check. Any failure (no table yet, DB
+    down) leaves the judge with in-node siblings only."""
+    write = getattr(store, "write_fio_drives", None)
+    peers = getattr(store, "fio_peers", None)
+    if not (write and peers):
+        return None
+    try:
+        write(target["bmc_mac"], run_id, fio_drives.rows(text, alldisks))
+        keys = sorted({fio_judge.drive_key(info.get(d), d) for d in parsed}, key=str)
+        serials = sorted({(info.get(d) or {}).get("serial") for d in info} - {None})
+        return peers(keys, serials)
+    except Exception:
+        log.warning("fio site peers unavailable for %s", target.get("port"), exc_info=True)
+        return None
+
+
 def _judge_fio(store, target, run_id, steps, live_q, baseline) -> None:
     """Label each drive of a terminal fio stage against its model's history and its
     siblings (flax_post.fio_judge): summary.judge {dev: {verdict, reasons, expected,
@@ -281,8 +299,11 @@ def _judge_fio(store, target, run_id, steps, live_q, baseline) -> None:
     parsed: dict = {}
     for dev, job, out in fio_rung.sections(text):
         parsed.setdefault(dev, {})[job] = fio_rung.parse_job(out)
-    info = fio_rung.disk_info(store.get_artifact(target["bmc_mac"], run_id, "inventory", "alldisks"))
-    judged = fio_judge.judge(parsed, info, _fio_baseline() if baseline is None else baseline)
+    alldisks = store.get_artifact(target["bmc_mac"], run_id, "inventory", "alldisks")
+    info = fio_rung.disk_info(alldisks)
+    peers = _site_peers(store, target, run_id, text, alldisks, info, parsed)
+    judged = fio_judge.judge(parsed, info, _fio_baseline() if baseline is None else baseline,
+                             peers=peers)
     for dev, j in judged.items():
         j["serial"] = (info.get(dev) or {}).get("serial")
     summ.update(judge=judged,
