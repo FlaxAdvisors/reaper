@@ -30,7 +30,10 @@ import secrets
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
@@ -154,6 +157,16 @@ def _build_locked(psycopg, name):
         _build(psycopg, name)
     finally:
         lock.close()                      # ends the session, which releases the lock
+
+
+@pytest.fixture(autouse=True)
+def _tz_resync():
+    """Tests that monkeypatch TZ and call time.tzset() leave the C timezone state behind
+    when monkeypatch restores the env var: localtime() keeps the patched zone while glibc
+    mktime() re-reads TZ, a skew of the local UTC offset in whatever runs next in that
+    process. Set up first, torn down last (after monkeypatch's restore), so re-sync here."""
+    yield
+    time.tzset()
 
 
 def _drop(psycopg, name):
