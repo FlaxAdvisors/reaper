@@ -34,11 +34,11 @@ def backfill(store=None) -> tuple[int, int]:
     if store is None:
         from . import state as store
     runs = n = 0
-    for bmc_mac, run_id in store.fio_runs():
+    for bmc_mac, run_id, at in store.fio_runs():
         r = rows(store.get_artifact(bmc_mac, run_id, "fio", "fio"),
                  store.get_artifact(bmc_mac, run_id, "inventory", "alldisks"))
         if r:
-            n += store.write_fio_drives(bmc_mac, run_id, r)
+            n += store.write_fio_drives(bmc_mac, run_id, r, captured_at=at)
             runs += 1
     return runs, n
 

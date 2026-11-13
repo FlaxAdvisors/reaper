@@ -454,21 +454,27 @@ def record_result(bmc_mac, result: dict, *, serial=None, order_no=None, last_por
     write_run(bmc_mac, result, serial=serial, order_no=order_no)
 
 
-def write_fio_drives(bmc_mac, run_id, rows) -> int:
+def write_fio_drives(bmc_mac, run_id, rows, captured_at=None) -> int:
     """Upsert one run's per-drive fio numbers (flax_post.fio_drives.rows) into
-    post_fio_drive, keyed by (bmc_mac, run_id, dev, job, metric). Returns rows written."""
+    post_fio_drive, keyed by (bmc_mac, run_id, dev, job, metric). captured_at is the
+    run's own time (the backfill passes its fio artifact's); None = now. A re-write never
+    moves a row's time forward, so a later backfill of an old run cannot outrank a newer
+    run in fio_peers' latest-per-serial pick. Returns rows written."""
     if not rows:
         return 0
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
             cur.executemany(
                 "INSERT INTO post_fio_drive (bmc_mac, run_id, serial, model, size_gb, controller, "
-                "dev, job, metric, value) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "dev, job, metric, value, captured_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, COALESCE(%s, NOW())) "
                 "ON CONFLICT (bmc_mac, run_id, dev, job, metric) DO UPDATE SET "
                 "  serial = EXCLUDED.serial, model = EXCLUDED.model, size_gb = EXCLUDED.size_gb, "
-                "  controller = EXCLUDED.controller, value = EXCLUDED.value",
+                "  controller = EXCLUDED.controller, value = EXCLUDED.value, "
+                "  captured_at = LEAST(post_fio_drive.captured_at, EXCLUDED.captured_at)",
                 [(bmc_mac, run_id, r.get("serial"), r.get("model"), r.get("size_gb"),
-                  r.get("controller"), r["dev"], r["job"], r["metric"], r["value"]) for r in rows])
+                  r.get("controller"), r["dev"], r["job"], r["metric"], r["value"], captured_at)
+                 for r in rows])
     return len(rows)
 
 
@@ -499,8 +505,9 @@ def fio_peers(keys, exclude_serials) -> dict:
 
 
 def fio_runs() -> list:
-    """(bmc_mac, run_id) of every stored run with a fio artifact (the backfill's input)."""
+    """(bmc_mac, run_id, captured_at) of every stored run with a fio artifact (the
+    backfill's input; captured_at = when the run's fio artifact was stored)."""
     with get_pool().connection() as conn:
         return [tuple(r) for r in conn.execute(
-            "SELECT bmc_mac, run_id FROM post_artifact WHERE stage = 'fio' AND name = 'fio' "
+            "SELECT bmc_mac, run_id, captured_at FROM post_artifact WHERE stage = 'fio' AND name = 'fio' "
             "ORDER BY captured_at").fetchall()]

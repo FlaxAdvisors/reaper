@@ -82,12 +82,21 @@ def test_peers_latest_run_per_serial_and_exclusions(db):  # RF1, RF3
 def test_backfill_writes_every_stored_run_with_fio():
     class Store:
         written = []
-        def fio_runs(self): return [("m1", "r1"), ("m2", "r2")]
+        def fio_runs(self): return [("m1", "r1", "T1"), ("m2", "r2", "T2")]
         def get_artifact(self, mac, run, stage, name):
             if mac == "m2":
                 return None  # a run whose fio artifact is gone: skipped
             return FIO if (stage, name) == ("fio", "fio") else ALLDISKS
-        def write_fio_drives(self, mac, run, rows):
-            self.written.append((mac, run, len(rows))); return len(rows)
+        def write_fio_drives(self, mac, run, rows, captured_at=None):
+            self.written.append((mac, run, len(rows), captured_at)); return len(rows)
     s = Store()
-    assert fio_drives.backfill(s) == (1, 8) and s.written == [("m1", "r1", 8)]
+    assert fio_drives.backfill(s) == (1, 8) and s.written == [("m1", "r1", 8, "T1")]
+
+
+def test_a_backfilled_older_run_never_beats_a_newer_one(db):
+    import datetime
+    db.write_fio_drives(MAC + "01", "rB", [_row("S1", 200.0)])  # observe: judged now
+    old = datetime.datetime(2026, 11, 10, tzinfo=datetime.timezone.utc)
+    db.write_fio_drives(MAC + "01", "rA", [_row("S1", 100.0)], captured_at=old)  # backfill, later
+    db.write_fio_drives(MAC + "01", "rB", [_row("S1", 200.0)], captured_at=None)  # re-written
+    assert db.fio_peers([SMALL], [])[SMALL][("bw", "mbps")] == [200.0]
