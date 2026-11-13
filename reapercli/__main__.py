@@ -23,6 +23,8 @@ COMMANDS = {
     "diag": "reapercli.commands.diag",
     "net": "reapercli.commands.net",
     "fw": "reapercli.commands.fw",
+    "test": "reapercli.commands.test",
+    "tests": "reapercli.commands.test",
 }
 # the switch / jump-host subcommands are also accepted bare: `reaper push …` == `reaper net push …`
 NET_ALIASES = ("fetch", "drift", "plan", "push", "setup")
@@ -43,6 +45,7 @@ USAGE = """usage: reaper <command> [site|all] [args...]
   net         fetch | drift | plan | push | setup   (also accepted bare; setup = git hooks + ssh jump hosts + shell env)
   fw          bmc|bios <family> <tar> [--yes]: move a family's firmware target (triage + post)
               status [bmc|bios] [<family>]: reaper's targets vs each bang's manifests + reader starts
+  test        [group...] [--list] [--shell|--no-shell] [-j N|--serial] [-- pytest args] (alias: tests)
   shell       enter the pinned toolchain env (reaper shell [cmd...]); leave with exit
 """
 
@@ -58,6 +61,7 @@ class Context:
     configs: Optional[Path] = None           # files/configs (device config, net state); tests inject a tmp dir
     clone: Optional[Path] = None             # the clone guarded/recorded; default root (tests inject)
     sleep: Callable = time.sleep             # waits (ha keepalived-roll); tests inject a no-op
+    test_runner: Optional[Callable] = None   # reaper test: (argv, capture) -> (rc, output); tests inject
 
 
 def default_context() -> Context:
