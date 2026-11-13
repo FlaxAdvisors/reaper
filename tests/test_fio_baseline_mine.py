@@ -135,7 +135,7 @@ def test_whatif_reports_flag_counts():
     b = mine.build(samples)
     t = mine.whatif(samples, b)
     row = [ln for ln in t.splitlines() if ln.startswith("M | any | bw")][0]
-    assert row.split(" | ")[-1] == "1"  # only the 90 is below mean - 2σ
+    assert row.split(" | ")[-1] == "1"  # only the 90 is below mean - 1σ
 
 
 SMART = ("smartctl 7.4\n=== START OF INFORMATION SECTION ===\nDevice Model:     HGST HUS726060ALE611\n"

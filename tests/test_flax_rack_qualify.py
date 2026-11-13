@@ -838,9 +838,9 @@ def _hdd_fio(lat_by_dev):
 
 
 _HDD_BASE = {"suite": "v1", "groups": [
-    {"model": _HDD[:16], "controller": "mpt3sas", "job": "lat", "metric": "lat_us",
+    {"model": _HDD[:16], "size_gb": 6001.2, "controller": "mpt3sas", "job": "lat", "metric": "lat_us",
      "n": 40, "mean": 5000.0, "std": 100.0},
-    {"model": _HDD[:16], "controller": "mpt3sas", "job": "bw", "metric": "mbps",
+    {"model": _HDD[:16], "size_gb": 6001.2, "controller": "mpt3sas", "job": "bw", "metric": "mbps",
      "n": 40, "mean": 240.0, "std": 5.0}]}
 
 
@@ -856,7 +856,7 @@ def test_fio_detail_flags_outside_drive():
         assert cls == ("flag" if r[0] == "sdc" else "")
         assert r[-1] == ("outside" if r[0] == "sdc" and r[2].startswith("lat") else "ok")
     lat_sdc = next(r for r in t["rows"] if r[0] == "sdc" and r[2].startswith("lat"))
-    assert lat_sdc[-2] == "≤ 5200 µs"
+    assert lat_sdc[-2] == "≤ 5100 µs"
     assert det["judge"]["sdc"]["verdict"] == "outside"
     assert det["headline"].startswith("fio pass · 1 drive outside range")
     assert det["headline"] == "fio pass · 1 drive outside range: WX01DSV4 (Front_ArrayDevice04) lat"

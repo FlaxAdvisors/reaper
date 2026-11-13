@@ -294,7 +294,7 @@ _HDD_ALLDISKS = "".join(
     f"/dev/{d} [0:0:{i}:0] Front_ArrayDevice0{i} mpt3sas rotational 6001.2 "
     f"SEAGATE SN04 {_HDD} WX01DSV{i}\n" for i, d in enumerate(("sda", "sdb", "sdc"), 2))
 _HDD_BASE = {"suite": "v1", "groups": [
-    {"model": _HDD[:16], "controller": "mpt3sas", "job": "lat", "metric": "lat_us",
+    {"model": _HDD[:16], "size_gb": 6001.2, "controller": "mpt3sas", "job": "lat", "metric": "lat_us",
      "n": 40, "mean": 5000.0, "std": 100.0}]}
 
 
@@ -338,9 +338,9 @@ def test_stepinfo_fio_table_and_flag_rows():
         (dv, jb) for jb in ("bw", "lat", "iops") for dv in ("sda", "sdb", "sdc")]
     assert t["row_cls"] == ["flag" if r[0] == "sdc" else "" for r in t["rows"]]
     lat_sdc = next(r for r in t["rows"] if r[0] == "sdc" and r[2].startswith("lat"))
-    assert lat_sdc[-2:] == ["≤ 5200 µs", "outside"]
+    assert lat_sdc[-2:] == ["≤ 5100 µs", "outside"]
     r = _rows(d)
-    assert r["outside range"].startswith("WX01DSV4 (sdc): lat lat_us 9000 vs expected ≤ 5200 µs")
+    assert r["outside range"].startswith("WX01DSV4 (sdc): lat lat_us 9000 vs expected ≤ 5100 µs")
     assert "judge" not in r and "flagged" not in r
     assert any("never a failure" in n for n in d["notes"])
 

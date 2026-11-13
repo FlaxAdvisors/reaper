@@ -10,11 +10,11 @@ import statistics
 from pathlib import Path
 
 SUITE = "v1"
-FLAG_SIGMA = 2.0
+FLAG_SIGMA = 1.0
 CLIP_SIGMA = 3.0
 CLIP_ROUNDS = 5
 MIN_SAMPLES = 5
-SIBLING_PCT = 20
+SIBLING_PCT = 10
 MIN_SIBLINGS = 3  # the device + at least two others
 SIGMA_FLOOR_FRAC = 0.01  # effective σ = max(std, this × |mean|): a std-0 group never flags on a hair
 SPREAD_CAP = 0.15  # a history group with std / |mean| above this is too wide to judge by (kept in the file)
@@ -45,6 +45,28 @@ def normalise_model(s, dev=None):
     return s
 
 
+def size_key(size_gb):
+    """A drive's size as a grouping key: 3 significant figures (3840.7 and 3840.8 GB are one
+    size); None when unknown (None matches only None)."""
+    if size_gb is None:
+        return None
+    try:
+        return float(f"{float(size_gb):.3g}")
+    except (TypeError, ValueError):
+        return None
+
+
+def drive_key(info, dev):
+    """(model, size): what makes two drives siblings, in a node or across the site."""
+    info = info or {}
+    return normalise_model(info.get("model"), dev), size_key(info.get("size_gb"))
+
+
+def _cut(model, dev):
+    """A non-NVMe model key cut to the 16-char sysfs form (the cut may drop the size)."""
+    return bool(model) and not str(dev or "").lower().startswith("nvme") and len(model) == 16
+
+
 def load_baseline(path=BASELINE_PATH):
     try:
         with open(path) as f:
@@ -58,11 +80,18 @@ def _fmt(v):
     return f"{v:.0f}" if abs(v) >= 100 else f"{v:.3g}"
 
 
-def _group(baseline, model, controller, job, metric):
+def _group(baseline, model, controller, job, metric, size=None, cut=False):
+    """The history group for a drive: a group carrying size_gb matches only that size; a
+    group without it (the v1 file) is used only when the model key was not cut."""
     exact = anyc = None
     for g in baseline.get("groups") or []:
         if (g.get("model") != model or g.get("job") != job
                 or g.get("metric") != metric):
+            continue
+        if "size_gb" in g:
+            if size_key(g.get("size_gb")) != size:
+                continue
+        elif cut:
             continue
         if g.get("controller") == controller and controller is not None:
             exact = g
@@ -88,7 +117,7 @@ def too_wide(g):
 
 
 def sigma_eff(mean, std):
-    """The σ the 2σ history check uses: the group's std, floored at SIGMA_FLOOR_FRAC of
+    """The σ the history check uses: the group's std, floored at SIGMA_FLOOR_FRAC of
     |mean| (quantised fio output can clip a uniform group down to std 0)."""
     return max(std or 0.0, SIGMA_FLOOR_FRAC * abs(mean))
 
@@ -101,14 +130,18 @@ def _get(parsed_job, metric):
     return v if isinstance(v, (int, float)) else None
 
 
-def judge(parsed, disks, baseline):
+def judge(parsed, disks, baseline, peers=None):
+    """peers: {(model, size): {(job, metric): [value, ...]}} from same-key drives in other
+    nodes at the site; pooled with this node's same-key drives for the sibling check."""
+    peers = peers or {}
     baseline = baseline or {}
     if baseline.get("suite") not in (None, SUITE):
         baseline = {}  # another fio job definition's numbers never judge this suite
     out = {}
     for dev, jobs in parsed.items():
         info = disks.get(dev) or {}
-        model = normalise_model(info.get("model"), dev)
+        model, size = drive_key(info, dev)
+        cut = _cut(model, dev)
         ctrl = info.get("controller")
         reasons, expected, judged, wide = [], {}, False, {}
         for job, mlist in METRICS.items():
@@ -119,7 +152,7 @@ def judge(parsed, disks, baseline):
                 val = _get(pj, metric)
                 if val is None:
                     continue
-                g = _group(baseline, model, ctrl, job, metric) if model else None
+                g = _group(baseline, model, ctrl, job, metric, size, cut) if model else None
                 if g and too_wide(g):
                     # history too spread to judge by: a label, the sibling check still runs
                     wide.setdefault(job, []).append(metric)
@@ -147,11 +180,13 @@ def judge(parsed, disks, baseline):
                     continue
                 sib = []
                 for d2, j2 in parsed.items():
-                    if d2 == dev or normalise_model((disks.get(d2) or {}).get("model"), d2) != model:
+                    if d2 == dev or drive_key(disks.get(d2), d2) != (model, size):
                         continue
                     v2 = _get((j2 or {}).get(job), metric)
                     if v2 is not None:
                         sib.append(v2)
+                sib.extend(v for v in (peers.get((model, size)) or {}).get((job, metric)) or []
+                           if isinstance(v, (int, float)))
                 if len(sib) + 1 >= MIN_SIBLINGS:
                     judged = True
                     med = statistics.median(sib)
@@ -192,7 +227,7 @@ def note() -> str:
             f"{FLAG_SIGMA:g}σ on the bad side, σ ≥ {SIGMA_FLOOR_FRAC * 100:g}% of the mean, "
             f"n ≥ {MIN_SAMPLES}, history "
             f"{CLIP_SIGMA:g}σ-clipped; a history spread σ/mean > {SPREAD_CAP * 100:g}% is "
-            f"not used: no baseline (spread too wide)) and against same-model siblings in the node "
+            f"not used: no baseline (spread too wide)) and against same-model, same-size siblings in the node and across the site "
             f"(> {SIBLING_PCT}% worse than their median, ≥ {MIN_SIBLINGS} "
             f"drives); outside = flagged (a label), never a failure; no baseline = neither check "
             f"applied")

@@ -27,7 +27,7 @@ def test_judge_flags_slow_drive_against_history():
     r = fj.judge({"a": {"bw": _pj(mbps=220)}, "b": {"bw": _pj(mbps=250)}}, disks, base)
     assert r["a"]["verdict"] == "outside"
     assert "bw" in r["a"]["reasons"][0] and "220" in r["a"]["reasons"][0]
-    assert r["a"]["expected"]["bw"].startswith("≥ 230")
+    assert r["a"]["expected"]["bw"].startswith("≥ 235")  # mean - 1σ
     assert r["b"]["verdict"] == "ok"
     assert fj.flagged(r) == ["a"]
 
@@ -71,8 +71,10 @@ def test_sata_model_key_equals_between_sysfs_and_smartctl_forms():
 
 
 def test_judge_uses_the_dev_aware_key_for_history_and_siblings():
-    base = _base([_g("bw", "mbps", 240, 5, model="HGST HUS726060AL")])
-    disks = {"sda": {"model": "HGST HUS726060ALE611"}, "sdb": {"model": "HGST HUS726060AL"}}
+    # a cut 16-char key is judged by history only from a group that carries the size
+    base = _base([dict(_g("bw", "mbps", 240, 5, model="HGST HUS726060AL"), size_gb=6001.2)])
+    disks = {"sda": {"model": "HGST HUS726060ALE611", "size_gb": 6001.2},
+             "sdb": {"model": "HGST HUS726060AL", "size_gb": 6001.2}}
     r = fj.judge({"sda": {"bw": _pj(mbps=100)}, "sdb": {"bw": _pj(mbps=240)}}, disks, base)
     assert r["sda"]["verdict"] == "outside" and r["sdb"]["verdict"] == "ok"
 
@@ -81,8 +83,8 @@ def test_judge_std_zero_group_does_not_flag_a_hair_thin_miss():
     base = _base([_g("bw", "mbps", 500, 0)])
     d = {"a": {"model": "MODELX"}}
     assert fj.judge({"a": {"bw": _pj(mbps=499.9)}}, d, base)["a"]["verdict"] == "ok"
-    r = fj.judge({"a": {"bw": _pj(mbps=480)}}, d, base)["a"]       # 2σ floor = 2% of 500
-    assert r["verdict"] == "outside" and r["expected"]["bw"] == "≥ 490 MB/s"
+    r = fj.judge({"a": {"bw": _pj(mbps=480)}}, d, base)["a"]       # 1σ floor = 1% of 500
+    assert r["verdict"] == "outside" and r["expected"]["bw"] == "≥ 495 MB/s"
     assert "1%" in fj.note()
 
 
@@ -124,3 +126,50 @@ def test_judge_spread_at_the_cap_is_still_used():
 
 def test_note_names_the_spread_cap():
     assert f"{fj.SPREAD_CAP * 100:g}%" in fj.note() and "spread too wide" in fj.note()
+
+
+def test_constants_are_one_sigma_and_ten_percent():
+    assert (fj.FLAG_SIGMA, fj.SIBLING_PCT, fj.MIN_SIBLINGS) == (1.0, 10, 3)
+
+
+def test_size_key_rounds_to_three_significant_figures():
+    assert fj.size_key(3840.7) == fj.size_key(3840.8) == 3840.0
+    assert fj.size_key(256.0) == 256.0 and fj.size_key(None) is None
+
+
+def test_siblings_need_the_same_size():
+    disks = {"a": {"model": "M", "size_gb": 480}, "b": {"model": "M", "size_gb": 960},
+             "c": {"model": "M", "size_gb": 960}}
+    r = fj.judge({d: {"bw": _pj(mbps=v)} for d, v in zip("abc", (100, 200, 200))}, disks, {})
+    assert {x["verdict"] for x in r.values()} == {"no baseline"}
+
+
+def test_site_peers_judge_a_lone_drive():
+    disks = {"nvme0n1": {"model": "SAMSUNG MZVL4256HBJD-00BH1", "size_gb": 256.0}}
+    key = ("SAMSUNG MZVL4256HBJD-00BH1", 256.0)
+    peers = {key: {("bw", "mbps"): [2450, 2640, 2770]}}
+    r = fj.judge({"nvme0n1": {"bw": _pj(mbps=569)}}, disks, {}, peers=peers)
+    assert r["nvme0n1"]["verdict"] == "outside" and "3 sibling median" in r["nvme0n1"]["reasons"][0]
+    ok = fj.judge({"nvme0n1": {"bw": _pj(mbps=2500)}}, disks, {}, peers=peers)
+    assert ok["nvme0n1"]["verdict"] == "ok"
+
+
+def test_one_peer_is_not_enough():
+    disks = {"a": {"model": "M", "size_gb": 1.0}}
+    r = fj.judge({"a": {"bw": _pj(mbps=1)}}, disks, {}, peers={("M", 1.0): {("bw", "mbps"): [100]}})
+    assert r["a"]["verdict"] == "no baseline"
+
+
+def test_history_group_with_size_matches_only_that_size():
+    g = dict(_g("bw", "mbps", 240, 5), size_gb=960.0)
+    r = fj.judge({"a": {"bw": _pj(mbps=100)}}, {"a": {"model": "MODELX", "size_gb": 480}}, _base([g]))
+    assert r["a"]["verdict"] == "no baseline"
+    r2 = fj.judge({"a": {"bw": _pj(mbps=100)}}, {"a": {"model": "MODELX", "size_gb": 960}}, _base([g]))
+    assert r2["a"]["verdict"] == "outside"
+
+
+def test_v1_group_with_a_cut_sata_model_is_not_used():  # RF5
+    g = _g("bw", "mbps", 240, 5, model="SANDISK SD9SN8W-")
+    r = fj.judge({"sda": {"bw": _pj(mbps=100)}},
+                 {"sda": {"model": "SanDisk SD9SN8W-512G", "size_gb": 512}}, _base([g]))
+    assert r["sda"]["verdict"] == "no baseline"
