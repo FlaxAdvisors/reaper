@@ -134,7 +134,7 @@ def test_whatif_reports_flag_counts():
                 "read": {"mbps": v}} for v in [100.0] * 8 + [90.0, 110.0]]
     b = mine.build(samples)
     t = mine.whatif(samples, b)
-    row = [ln for ln in t.splitlines() if ln.startswith("M | any | bw")][0]
+    row = [ln for ln in t.splitlines() if ln.startswith("M | ? | any | bw")][0]
     assert row.split(" | ")[-1] == "1"  # only the 90 is below mean - 1σ
 
 
@@ -223,7 +223,7 @@ def test_whatif_uses_the_judges_sigma_floor():
     samples = [{"model": "M", "controller": None, "job": "bw", "date": "2026-01-01",
                 "read": {"mbps": v}} for v in [500.0] * 9 + [499.0]]
     t = mine.whatif(samples, mine.build(samples))
-    row = [ln for ln in t.splitlines() if ln.startswith("M | any | bw")][0]
+    row = [ln for ln in t.splitlines() if ln.startswith("M | ? | any | bw")][0]
     assert row.split(" | ")[-1] == "0"  # 499 is a hair under, inside 2 x 1% of the mean
 
 
@@ -344,3 +344,18 @@ def test_whatif_lists_groups_set_aside_by_the_spread_cap():
     # the group stays in the baseline untouched
     g = [x for x in b["groups"] if x["metric"] == "p99_us"][0]
     assert (g["n"], g["mean"], g["std"]) == (10, 150.0, 50.0) and fj.too_wide(g)
+
+
+def test_groups_split_by_size(tmp_path):
+    n = tmp_path / "bang-x" / "nodes"
+    for i, size in enumerate(("480.1", "480.1", "960.2")):
+        o = n / f"SESORD-{i}"
+        _node(o, "m", f"h{i}", alldisks=ALLDISKS.replace("6001.1", size))
+        _fio(o, f"h{i}", "sdb", "bw", 200 + i)
+    samples, c = mine.scan(tmp_path)
+    b = mine.build(samples, c)
+    g = [x for x in b["groups"] if x["model"] == "ST6000NM019B-2TG" and x["metric"] == "mbps"
+         and x["controller"] is None]
+    assert sorted((x["size_gb"], x["n"]) for x in g) == [(480.0, 2), (960.0, 1)]
+    t = mine.whatif(samples, b)
+    assert "ST6000NM019B-2TG | 480 | any | bw | mbps | 2 |" in t

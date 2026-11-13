@@ -21,7 +21,7 @@ for _p in (_HERE.parent, _HERE):
 from flax_rungs.fio import parse_job  # noqa: E402
 from flax_post.fio_judge import (  # noqa: E402
     CLIP_ROUNDS, CLIP_SIGMA, FLAG_SIGMA, METRICS, MIN_SIBLINGS, SIBLING_PCT, SPREAD_CAP, SUITE,
-    normalise_model, sigma_eff, spread, too_wide)
+    normalise_model, sigma_eff, size_key, spread, too_wide)
 
 JOBS = {"bw": "--bs=64k --iodepth=64 --rw=read --name=raw-read",
         "lat": "--bs=4k --iodepth=1 --rw=randread --name=readlatency",
@@ -278,7 +278,8 @@ def scan(root):
                     if not rd:
                         c["unjoined"] += 1
                         continue
-                    s = {"model": normalise_model(info["model"], dev), "controller": info.get("controller"),
+                    s = {"model": normalise_model(info["model"], dev), "size": size_key(info.get("size_gb")),
+                         "controller": info.get("controller"),
                          "job": job, "dev": dev, "host": hostdir.name, "order": base,
                          "date": datetime.date.fromtimestamp(mt).isoformat(), "read": rd}
                     k = (base, hostdir.name, dev, job)
@@ -300,28 +301,35 @@ def _groups(samples):
             if v is None:
                 continue
             for ctrl in {s["controller"], None}:
-                g.setdefault((s["model"], ctrl, s["job"], metric), []).append((v, s["date"]))
+                g.setdefault((s["model"], s.get("size"), ctrl, s["job"], metric),
+                             []).append((v, s["date"]))
     return g
 
 
 def build(samples, counters=None, source=""):
     groups = []
-    for (model, ctrl, job, metric), vd in sorted(
+    for (model, size, ctrl, job, metric), vd in sorted(
             _groups(samples).items(), key=lambda kv: tuple(str(x) for x in kv[0])):
         st = sigma_clip([v for v, _ in vd])
         dates = sorted(d for _, d in vd)
-        groups.append({"model": model, "controller": ctrl, "job": job, "metric": metric,
+        groups.append({"model": model, "size_gb": size, "controller": ctrl, "job": job,
+                       "metric": metric,
                        **st, "from": dates[0], "to": dates[-1]})
     return {"suite": SUITE, "generated": datetime.date.today().isoformat(), "source": source,
             "jobs": {j: f"{COMMON} {a}" for j, a in JOBS.items()},
             "groups": groups, **{k: v for k, v in (counters or {}).items()}}
 
 
+def _size(v):
+    return "?" if v is None else f"{v:g}"
+
+
 def whatif(samples, baseline):
     gs = _groups(samples)
-    lines = ["model | controller | job | metric | n | clipped | flagged at %gσ" % FLAG_SIGMA]
+    lines = ["model | size GB | controller | job | metric | n | clipped | flagged at %gσ" % FLAG_SIGMA]
     for g in baseline["groups"]:
-        vals = [v for v, _ in gs.get((g["model"], g["controller"], g["job"], g["metric"]), [])]
+        vals = [v for v, _ in gs.get((g["model"], g.get("size_gb"), g["controller"], g["job"],
+                                      g["metric"]), [])]
         good = dict(METRICS[g["job"]])[g["metric"]]
         mean, std = g["mean"], g["std"]
         lo, hi = mean - CLIP_SIGMA * std, mean + CLIP_SIGMA * std
@@ -331,8 +339,8 @@ def whatif(samples, baseline):
             n = sum(v < mean - FLAG_SIGMA * se for v in kept)
         else:
             n = sum(v > mean + FLAG_SIGMA * se for v in kept)
-        lines.append(f"{g['model']} | {g['controller'] or 'any'} | {g['job']} | {g['metric']} | "
-                     f"{g['n']} | {g['clipped']} | {n}")
+        lines.append(f"{g['model']} | {_size(g.get('size_gb'))} | {g['controller'] or 'any'} | "
+                     f"{g['job']} | {g['metric']} | {g['n']} | {g['clipped']} | {n}")
     lines += _spread_section(baseline)
     lines += _sibling_section(samples)
     return "\n".join(lines) + "\n"
@@ -360,7 +368,8 @@ def _sibling_section(samples):
         for metric, good in METRICS[s["job"]]:
             v = s["read"].get(metric)
             if v is not None:
-                nodes.setdefault((s.get("order"), s.get("host"), s["model"], s["job"], metric, good),
+                nodes.setdefault((s.get("order"), s.get("host"), (s["model"], s.get("size")),
+                                  s["job"], metric, good),
                                  []).append(v)
     per = {}  # model -> [comparisons, flags]
     for (_o, _h, model, _job, _metric, good), vals in nodes.items():
@@ -374,10 +383,11 @@ def _sibling_section(samples):
             worse = (med - v) / med if good == "higher" else (v - med) / med
             row[0] += 1
             row[1] += worse * 100 > SIBLING_PCT
-    out = ["", "sibling check at > %g%% worse than the median of >= %d same-model drives in a node"
+    out = ["", "sibling check at > %g%% worse than the median of >= %d same-model, same-size drives in a node"
            % (SIBLING_PCT, MIN_SIBLINGS), "model | comparisons | flagged"]
     for m in sorted(per, key=str):
-        out.append(f"{m} | {per[m][0]} | {per[m][1]}")
+        name = m[0] if m[1] is None else f"{m[0]} {_size(m[1])} GB"
+        out.append(f"{name} | {per[m][0]} | {per[m][1]}")
     out.append(f"TOTAL | {sum(r[0] for r in per.values())} | {sum(r[1] for r in per.values())}")
     return out
 
