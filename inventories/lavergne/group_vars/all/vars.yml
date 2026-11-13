@@ -192,7 +192,7 @@ apply_flax_post_db_password: "{{ vault_flax_stack_db_passwords.flax_post }}"
 # image explicitly (was tracking the role default). 0.9.113 = main + the
 # post-UI-actions branch. Viewer unit gains creds-bmc/opt-flax-bin/export/
 # node_config mounts; image adds nmap/jq/curl for the ghost helpers.
-apply_flax_post_image_tag: "0.9.213"  # 0.9.213 = dependency bumps (OSV-clean image; SOL relay on node 24)
+apply_flax_post_image_tag: "0.9.214"  # 0.9.214 = fio site siblings, post_fio_drive (043), slow-run history, /guides/fio-drives.html
 apply_flax_post_deploy_enabled: true   # Loose Post Deploy ON (operator 2026-11-06): a Qualify pass -> Ubuntu 24.04 + flax_user + iperf + stress -> Done; wipes the system disk unless post installed it
 
 # Core flax services pinned to the SAME build as flax_post (2026-09-11). Until
@@ -205,7 +205,7 @@ apply_flax_observe_image_tag: "0.9.213"  # 0.9.213 = dependency bumps (OSV-clean
 apply_flax_reconcile_image_tag: "0.9.213"  # 0.9.213 = dependency bumps (OSV-clean image; SOL relay on node 24)
 apply_flax_switch_sense_image_tag: "0.9.213"  # 0.9.213 = dependency bumps (OSV-clean image; SOL relay on node 24)
 apply_flax_discover_image_tag: "0.9.213"  # 0.9.213 = dependency bumps (OSV-clean image; SOL relay on node 24)
-apply_flax_stack_flax_control_image_tag: "0.9.213"  # 0.9.213 = dependency bumps (OSV-clean image; SOL relay on node 24)
+apply_flax_stack_flax_control_image_tag: "0.9.214"  # 0.9.214 = migration 043 (post_fio_drive); console unchanged otherwise
 # SOL console (flax-post-sol Node relay + flax_post/web SOL modal), 2026-07-10.
 apply_flax_post_sol_image_tag: "0.9.213"  # 0.9.213 = dependency bumps (OSV-clean image; SOL relay on node 24)
 apply_flax_post_ladder_ports: ""  # every slot: the engine power-on was proven on et8b4 2026-09-11 and every guard held on the other 46 for 3 h
