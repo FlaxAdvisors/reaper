@@ -30,8 +30,10 @@ def run(argv: list, ctx) -> int:
     comps = load_components(ctx.root, site_map)
     deployable = sorted(({c.name for c in comps.values()} | {c.group for c in comps.values() if c.group}) - {"keepalived"})
     from reapercli.lib.diagscope import _words
+    from reapercli.lib.testgroups import group_names
     sub = {**SUB, "fw": " ".join(["status", "bmc", "bios", "--yes", *_fw_families(site_map)]),
-           "deploy": " ".join(deployable), "diag": " ".join([*sorted(_words(comps)), "--since", "--window"])}
+           "deploy": " ".join(deployable),
+           **dict.fromkeys(("test", "tests"), " ".join([*group_names(), "--list", "--shell", "--no-shell", "--serial", "-j"])), "diag": " ".join([*sorted(_words(comps)), "--since", "--window"])}
     cases = "\n".join(f'    {k}) COMPREPLY=( $(compgen -W "{v} {sites}" -- "$cur") ); return;;' for k, v in sub.items())
     print(f"""_reaper_complete() {{
   local cur="${{COMP_WORDS[COMP_CWORD]}}"

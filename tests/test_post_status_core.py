@@ -276,6 +276,7 @@ def test_flush_returns_at_once_without_serial_info(tmp_path):
     assert r.returncode == 0 and took < 1.0, (r.stderr, took)
 
 
+@pytest.mark.serial   # wall-clock window: a busy box starts the flush late (seen at -n auto)
 def test_flush_waits_for_tx_to_move_then_settle(tmp_path):
     # A writer bumps tx for ~0.8s (the repaint going out), then stops; flush
     # must return after it settles, well before the cap.

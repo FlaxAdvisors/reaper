@@ -30,7 +30,10 @@ import secrets
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
@@ -106,6 +109,10 @@ def pytest_configure(config):
     except ImportError:
         _disable(config, "psycopg not installed")
         return
+    if getattr(config.option, "numprocesses", None) and not hasattr(config, "workerinput"):
+        # xdist controller: runs no tests, so no DB; each worker builds its own below
+        _run["note"] = "xdist controller: each worker builds its own per-run test DB"
+        return
     try:
         admin = psycopg.connect(**_admin_kw("postgres"))
     except Exception as exc:                  # no cluster reachable: DB tests skip
@@ -124,7 +131,7 @@ def pytest_configure(config):
         name = "%s%s_%d_%s" % (RUN_PREFIX, _host_tag(), os.getpid(), secrets.token_hex(3))
         cur.execute('CREATE DATABASE "%s"' % name)
     try:
-        _build(psycopg, name)
+        _build_locked(psycopg, name)
     except Exception:
         _drop(psycopg, name)
         raise
@@ -138,6 +145,28 @@ def pytest_configure(config):
         dsn = os.environ.get(v) or "%s user=%s" % (base, defaults[v])
         os.environ[v] = (re.sub(r"\bdbname=\S+", "dbname=" + name, dsn) if "dbname=" in dsn
                          else dsn + " dbname=" + name)
+
+
+def _build_locked(psycopg, name):
+    """Builds take turns (xdist workers, or runs from several worktrees starting together):
+    migration 001 creates cluster-global roles with check-then-create, which races on a
+    fresh cluster. Only the build is serialised; the tests still run in parallel."""
+    lock = psycopg.connect(**_admin_kw("postgres"))
+    try:
+        lock.execute("SELECT pg_advisory_lock(hashtext('flax_test_build'))")
+        _build(psycopg, name)
+    finally:
+        lock.close()                      # ends the session, which releases the lock
+
+
+@pytest.fixture(autouse=True)
+def _tz_resync():
+    """Tests that monkeypatch TZ and call time.tzset() leave the C timezone state behind
+    when monkeypatch restores the env var: localtime() keeps the patched zone while glibc
+    mktime() re-reads TZ, a skew of the local UTC offset in whatever runs next in that
+    process. Set up first, torn down last (after monkeypatch's restore), so re-sync here."""
+    yield
+    time.tzset()
 
 
 def _drop(psycopg, name):
