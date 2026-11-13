@@ -267,36 +267,19 @@ flax_role_post_vid_by_family:
   grandcanyon: 31
   capri: 24
 
-# ---- flax image tags — braintree pinned uniformly to latest ----
-# Shared role defaults lag per-service (eindhoven runs a mix). Braintree is a
-# fresh spine cutover, so pin ALL flax services to one image for a coherent
-# deploy. Bump this block (and re-load the image, Task 4) to roll braintree
-# forward in future.
-#
-# 2026-08-12: all seven flax-control-image services moved to 0.9.121. NO BUILD
-# was required — 0.9.121 already existed on bang-gouda and was stream-loaded to
-# both braintree bangs. This puts braintree AHEAD of eindhoven on most services
-# (eindhoven runs a mix: 0.9.121, 0.9.116, 0.9.104, and some as old as 0.9.41).
-#
-# Not in this image: the 6-line flax_control Config-UI registration of
-# platform-pairs.json on this branch. That is display-only and will ride the
-# next real build; the Ansible task that actually deploys the file is not part
-# of the image at all.
-#
-# KNOWN HAZARD in 0.9.121: run_done masks identify/power-off failures, so a node
-# can read Done/powered-off while still powered (see TODO.md, Post). Accepted
-# for the dev site — confirm power state before unracking until it is fixed.
-apply_flax_stack_flax_control_image_tag: "0.9.121"
-apply_flax_switch_sense_image_tag: "0.9.121"
-apply_flax_observe_image_tag: "0.9.121"
-apply_flax_discover_image_tag: "0.9.121"
-apply_flax_classify_image_tag: "0.9.121"
-apply_flax_reconcile_image_tag: "0.9.121"
-# Post UI Wave 3 (PWR/IDNT/INV/POP buttons) + SOL console, caught up to main 2026-07-10.
-apply_flax_post_image_tag: "0.9.121"
-# flax-post-sol is a separate image; 0.9.117 is the newest that exists on
-# bang-gouda (only 0.9.116 and 0.9.117 are built), so this pin is already current.
-apply_flax_post_sol_image_tag: "0.9.117"
+# ---- flax image tags: braintree tracks latest ----
+# The dev site runs the newest build on every flax service (no held-back pins).
+# 2026-11-13: 0.9.121/0.9.117 -> 0.9.214 (migrations 033-043; fio site siblings,
+# post_fio_drive, rackpost orders). Roll forward: bump this block, `reaper image
+# build braintree <tag>`, `reaper migrate braintree --tag <tag>`, then deploy.
+apply_flax_stack_flax_control_image_tag: "0.9.214"
+apply_flax_switch_sense_image_tag: "0.9.214"
+apply_flax_observe_image_tag: "0.9.214"
+apply_flax_discover_image_tag: "0.9.214"
+apply_flax_classify_image_tag: "0.9.214"
+apply_flax_reconcile_image_tag: "0.9.214"
+apply_flax_post_image_tag: "0.9.214"
+apply_flax_post_sol_image_tag: "0.9.214"
 
 # BMC firmware manifest. 2026-11-09 operator: braintree carries the same BIOS +
 # BMC manifests as eindhoven and lavergne (was flax-onetree-1.0.9 here); the
