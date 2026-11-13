@@ -335,15 +335,15 @@ def test_smartctl_model_beats_byid_model_for_the_same_serial(tmp_path):
 def test_whatif_lists_groups_set_aside_by_the_spread_cap():
     from flax_post import fio_judge as fj
     samples = [{"model": "WIDE", "controller": None, "job": "lat", "date": "2026-01-01",
-                "read": {"lat_us": 100.0, "p99_us": v}} for v in [100.0, 200.0] * 5]
-    b = mine.build(samples)
+                "read": {"lat_us": 100.0, "p99_us": v}} for v in [60.0 + 20 * i for i in range(10)]]
+    b = mine.build(samples)  # one wide cluster: nothing for drop_slow, set aside by the cap
     t = mine.whatif(samples, b).split("set aside by the spread cap")[1].split("sibling check")[0]
     rows = [ln for ln in t.splitlines() if ln.startswith("WIDE")]
     assert t.splitlines()[0].rstrip().endswith(": 1") and rows == [
-        "WIDE | any | lat | p99_us | 10 | 150 | 50 | 33.3"]
+        "WIDE | any | lat | p99_us | 10 | 150 | 57.45 | 38.3"]
     # the group stays in the baseline untouched
     g = [x for x in b["groups"] if x["metric"] == "p99_us"][0]
-    assert (g["n"], g["mean"], g["std"]) == (10, 150.0, 50.0) and fj.too_wide(g)
+    assert (g["n"], g["mean"], round(g["std"], 2), g["slow_dropped"]) == (10, 150.0, 57.45, 0) and fj.too_wide(g)
 
 
 def test_groups_split_by_size(tmp_path):
@@ -359,3 +359,74 @@ def test_groups_split_by_size(tmp_path):
     assert sorted((x["size_gb"], x["n"]) for x in g) == [(480.0, 2), (960.0, 1)]
     t = mine.whatif(samples, b)
     assert "ST6000NM019B-2TG | 480 | any | bw | mbps | 2 |" in t
+
+
+def _bw(vals, model="M", size=256.0):
+    return [{"model": model, "size": size, "controller": None, "job": "bw", "date": "2026-11-01",
+             "read": {"mbps": v}} for v in vals]
+
+
+def test_a_slow_cluster_inside_one_size_is_dropped_before_the_clip():
+    # the rhythm MZVL4256 shape: one size, a fast and a slow cluster
+    vals = [2367, 2362, 2466, 2454, 2455, 2448, 2643, 2626] + [410, 322, 481, 357, 353, 568]
+    b = mine.build(_bw(vals))
+    g = [x for x in b["groups"] if x["metric"] == "mbps"][0]
+    assert g["slow_dropped"] == 6 and g["n"] == 8 and g["min"] == 2362
+
+
+def test_slow_means_bad_side_for_latency():
+    lat = [{"model": "M", "size": 256.0, "controller": None, "job": "lat", "date": "2026-11-01",
+            "read": {"lat_us": v, "p99_us": 20.0}} for v in [40.0] * 6 + [52.0, 53.0, 54.0, 55.0]]
+    g = [x for x in mine.build(lat)["groups"] if x["metric"] == "lat_us"][0]
+    assert g["slow_dropped"] == 4 and g["max"] == 40.0
+
+
+def test_one_normal_cluster_drops_nothing():
+    import random
+    rnd = random.Random(7)
+    g = [x for x in mine.build(_bw([rnd.gauss(2800, 60) for _ in range(400)]))["groups"]][0]
+    assert g["slow_dropped"] == 0 and g["n"] + g["clipped"] == 400
+
+
+def test_a_few_fast_freaks_never_drop_the_body():
+    # 3 runs at 2x are below the 5-sample / 10% floor for a fast cluster
+    g = mine.build(_bw([1000.0, 1010.0, 990.0, 1005.0] * 10 + [2000.0] * 3))["groups"][0]
+    assert g["slow_dropped"] == 0
+
+
+def test_a_mild_shift_under_15_percent_is_kept():
+    g = mine.build(_bw([1000.0, 1001.0, 999.0] * 5 + [900.0, 901.0, 899.0] * 5))["groups"][0]
+    assert g["slow_dropped"] == 0 and g["n"] == 30
+
+
+def test_drives_csv_is_a_second_source(tmp_path):
+    p = tmp_path / "d.csv"
+    p.write_text(
+        "bmc_mac,run_id,serial,model,size_gb,controller,dev,job,metric,value,captured_at\n"
+        "aa,r1,S1,SAMSUNG MZVL4256HBJD-00BH1,256,nvme,nvme0n1,bw,mbps,2400.5,2026-11-11 14:19:11+00\n"
+        "aa,r1,S1,SAMSUNG MZVL4256HBJD-00BH1,256,nvme,nvme0n1,lat,lat_us,40,2026-11-11 14:19:11+00\n"
+        "aa,r1,S1,SAMSUNG MZVL4256HBJD-00BH1,256,nvme,nvme0n1,lat,p99_us,50,2026-11-11 14:19:11+00\n"
+        "aa,r1,S1,SAMSUNG MZVL4256HBJD-00BH1,256,nvme,nvme0n1,bw,mbps,2400.5,2026-11-11 14:19:11+00\n"
+        "bb,r2,,,,,sda,bw,mbps,500,2026-11-12 01:00:00+00\n")
+    s, c = mine.drive_samples(p)
+    assert c == {"drive_rows": 4, "drive_dup": 1, "drive_unkeyed": 1}
+    assert len(s) == 2
+    bw = [x for x in s if x["job"] == "bw"][0]
+    assert (bw["model"], bw["size"], bw["controller"], bw["date"], bw["read"]) == (
+        "SAMSUNG MZVL4256HBJD-00BH1", 256.0, "nvme", "2026-11-11", {"mbps": 2400.5})
+    lat = [x for x in s if x["job"] == "lat"][0]
+    assert lat["read"] == {"lat_us": 40.0, "p99_us": 50.0}
+
+
+def test_main_mines_the_archive_and_the_drives_csv(tmp_path):
+    root, _ = _tree(tmp_path / "a")
+    p = tmp_path / "d.csv"
+    p.write_text("bmc_mac,run_id,serial,model,size_gb,controller,dev,job,metric,value,captured_at\n"
+                 + "".join(f"m{i},r{i},S{i},NEWDRIVE,512,nvme,nvme0n1,bw,mbps,{3000 + i},2026-11-11 00:00:00+00\n"
+                           for i in range(5)))
+    out, wi = tmp_path / "b.json", tmp_path / "w.txt"
+    assert mine.main(["--root", str(root), "--drives", str(p), "--out", str(out), "--whatif", str(wi)]) == 0
+    import json
+    b = json.loads(out.read_text())
+    assert any(g["model"] == "NEWDRIVE" and g["size_gb"] == 512.0 and g["n"] == 5 for g in b["groups"])
+    assert b["drive_rows"] == 5 and "slow runs dropped" in wi.read_text()

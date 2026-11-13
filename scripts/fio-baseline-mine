@@ -6,7 +6,9 @@ Archive: <root>/bang-*/nodes/SESORD-<n>[r2|p2|...]/fio-results/<host>/<job>-test
 joined to  .../SESORD-<n>*/post-*/latest/{hostname.txt, alldisks-v*.txt|hwinfo.txt|smartctl--all.txt}.
 Runs on a bang with flax_rungs/ and flax_post/ copied beside it."""
 import argparse
+import csv
 import datetime
+import math
 import json
 import re
 import statistics
@@ -31,6 +33,11 @@ COMMON = ("--numjobs=4 --runtime=30 --time_based --direct=1 --ioengine=libaio "
 _OUT = re.compile(r"^(bw|iops|lat)-test-job-(.+)\.out$")
 _ORDER = re.compile(r"^(.*?)(?:r\d+|p\d+)$")
 _SKIP = (".old", ".pre-renetwork")
+# Slow runs (addendum 2, 2026-11-13): a group's slow cluster is an outlier human review missed.
+SLOW_MIN_D = 4.0         # Ashman's D between the fast and the slow cluster
+SLOW_MIN_PCT = 15        # slow mean at least this % worse than the fast mean
+SLOW_MIN_FAST = 5        # the fast cluster holds at least this many samples ...
+SLOW_MIN_FAST_FRAC = 0.10  # ... and this share of the group
 
 
 def sigma_clip(values):
@@ -51,6 +58,37 @@ def sigma_clip(values):
             "clipped": clipped,
             "min": min(vals) if vals else 0.0,
             "max": max(vals) if vals else 0.0}
+
+
+def drop_slow(pairs, good):
+    """pairs [(value, date)] -> (kept pairs, dropped count). Split the values in two at the cut
+    minimising the within-cluster variance of their logs (the fast side = the good side); drop the
+    slow cluster when it is a separate mode (SLOW_* above), else keep everything."""
+    n = len(pairs)
+    srt = sorted(pairs, key=lambda p: p[0], reverse=(good == "higher"))
+    lv = [math.log(max(float(v), 1e-9)) for v, _ in srt]
+    s1, s2 = [0.0], [0.0]
+    for x in lv:
+        s1.append(s1[-1] + x)
+        s2.append(s2[-1] + x * x)
+
+    def sse(a, b):
+        k = b - a
+        return 0.0 if k == 0 else (s2[b] - s2[a]) - (s1[b] - s1[a]) ** 2 / k
+
+    lo = max(SLOW_MIN_FAST, math.ceil(SLOW_MIN_FAST_FRAC * n))
+    cuts = [(sse(0, i) + sse(i, n), i) for i in range(lo, n)]
+    if not cuts:
+        return pairs, 0
+    i = min(cuts)[1]
+    fast, slow = [float(v) for v, _ in srt[:i]], [float(v) for v, _ in srt[i:]]
+    mf, ms = statistics.fmean(fast), statistics.fmean(slow)
+    sd = math.sqrt(statistics.pvariance(fast) + (statistics.pvariance(slow) if len(slow) > 1 else 0.0))
+    d = math.sqrt(2) * abs(mf - ms) / sd if sd else math.inf
+    worse = (mf - ms) / mf if good == "higher" else (ms - mf) / mf
+    if mf and d >= SLOW_MIN_D and worse * 100 >= SLOW_MIN_PCT:
+        return srt[:i], len(slow)
+    return pairs, 0
 
 
 def _read(p):
@@ -306,14 +344,41 @@ def _groups(samples):
     return g
 
 
+def drive_samples(path):
+    """A post_fio_drive export (psql \\copy ... csv header) -> (samples, counters): one sample per
+    (bmc_mac, run_id, dev, job), every run kept; a row without a model counts as unkeyed."""
+    c = {"drive_rows": 0, "drive_dup": 0, "drive_unkeyed": 0}
+    seen, by = set(), {}
+    with open(path, newline="") as f:
+        for r in csv.DictReader(f):
+            if not (r.get("model") or "").strip():
+                c["drive_unkeyed"] += 1
+                continue
+            c["drive_rows"] += 1
+            k = (r["bmc_mac"], r["run_id"], r["dev"], r["job"], r["metric"])
+            if k in seen:
+                c["drive_dup"] += 1
+                continue
+            seen.add(k)
+            s = by.setdefault(k[:4], {
+                "model": r["model"].strip(),
+                "size": size_key(r["size_gb"]) if (r.get("size_gb") or "").strip() else None,
+                "controller": (r.get("controller") or "").strip() or None,
+                "job": r["job"], "dev": r["dev"], "host": r["bmc_mac"], "order": r["run_id"],
+                "date": (r.get("captured_at") or "")[:10], "read": {}})
+            s["read"][r["metric"]] = float(r["value"])
+    return list(by.values()), c
+
+
 def build(samples, counters=None, source=""):
     groups = []
     for (model, size, ctrl, job, metric), vd in sorted(
             _groups(samples).items(), key=lambda kv: tuple(str(x) for x in kv[0])):
+        vd, slow = drop_slow(vd, dict(METRICS[job])[metric])
         st = sigma_clip([v for v, _ in vd])
         dates = sorted(d for _, d in vd)
         groups.append({"model": model, "size_gb": size, "controller": ctrl, "job": job,
-                       "metric": metric,
+                       "metric": metric, "slow_dropped": slow,
                        **st, "from": dates[0], "to": dates[-1]})
     return {"suite": SUITE, "generated": datetime.date.today().isoformat(), "source": source,
             "jobs": {j: f"{COMMON} {a}" for j, a in JOBS.items()},
@@ -341,9 +406,22 @@ def whatif(samples, baseline):
             n = sum(v > mean + FLAG_SIGMA * se for v in kept)
         lines.append(f"{g['model']} | {_size(g.get('size_gb'))} | {g['controller'] or 'any'} | "
                      f"{g['job']} | {g['metric']} | {g['n']} | {g['clipped']} | {n}")
+    lines += _slow_section(baseline)
     lines += _spread_section(baseline)
     lines += _sibling_section(samples)
     return "\n".join(lines) + "\n"
+
+
+def _slow_section(baseline):
+    """The groups whose slow cluster was dropped before the clip (drop_slow)."""
+    slow = [g for g in baseline["groups"] if g.get("slow_dropped")]
+    out = ["", "slow runs dropped (a separate slow cluster; D >= %g, >= %g%% worse): %d groups, %d samples"
+           % (SLOW_MIN_D, SLOW_MIN_PCT, len(slow), sum(g["slow_dropped"] for g in slow)),
+           "model | size GB | controller | job | metric | kept | slow dropped"]
+    for g in slow:
+        out.append(f"{g['model']} | {_size(g.get('size_gb'))} | {g['controller'] or 'any'} | {g['job']} | "
+                   f"{g['metric']} | {g['n'] + g['clipped']} | {g['slow_dropped']}")
+    return out
 
 
 def _spread_section(baseline):
@@ -395,11 +473,18 @@ def _sibling_section(samples):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--root", required=True)
+    ap.add_argument("--drives", help="a post_fio_drive csv export (header row), mined beside --root")
     ap.add_argument("--out", required=True)
     ap.add_argument("--whatif", required=True)
     a = ap.parse_args(argv)
     samples, counters = scan(a.root)
-    base = build(samples, counters, source=a.root)
+    source = a.root
+    if a.drives:
+        more, dc = drive_samples(a.drives)
+        samples += more
+        counters.update(dc)
+        source += f" + {a.drives}"
+    base = build(samples, counters, source=source)
     Path(a.out).write_text(json.dumps(base, indent=1) + "\n")
     Path(a.whatif).write_text(whatif(samples, base))
     print(f"{len(samples)} samples, {len(base['groups'])} groups, counters {counters}")
