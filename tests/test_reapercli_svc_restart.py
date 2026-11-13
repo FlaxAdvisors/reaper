@@ -25,7 +25,7 @@ def plan(name, holder="bang-gouda", host=None):
 
 def test_flax_post_restarts_units_on_holder_only():
     cmds = plan("flax_post")
-    assert len(cmds) == 7
+    assert len(cmds) == 8  # + flax-post-fio-guide: a restart re-renders the guide now
     assert {b for b, _ in cmds} == {"bang-gouda"}
     assert all("sudo -n systemctl restart" in c for _, c in cmds)
 

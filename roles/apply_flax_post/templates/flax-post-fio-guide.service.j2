@@ -1,0 +1,18 @@
+{# roles/apply_flax_post/templates/flax-post-fio-guide.service.j2 #}
+[Unit]
+Description=flax-post-fio-guide — render /guides/fio-drives.html (fio drive reference) from post_fio_drive
+After=docker.service network-online.target flax-stack.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/flax/flax-post/flax-post.env
+# VIP-gate as a condition: the standby skips (no failed unit); the VIP holder renders.
+ExecCondition=/bin/bash -c '. /etc/flax/site.env && ip -o -4 addr | grep -qE " $${MGMT_VIP}/"'
+ExecStart=/usr/bin/docker run --rm \
+    --network host \
+    --env-file /etc/flax/flax-post/flax-post.env \
+    --env-file /etc/flax/site.env \
+    -v /srv/pxe/guides:/guides \
+    flax-control:${FLAX_POST_IMAGE_TAG} \
+    python -m flax_post.fio_guide --out /guides/fio-drives.html

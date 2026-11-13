@@ -511,3 +511,20 @@ def fio_runs() -> list:
         return [tuple(r) for r in conn.execute(
             "SELECT bmc_mac, run_id, captured_at FROM post_artifact WHERE stage = 'fio' AND name = 'fio' "
             "ORDER BY captured_at").fetchall()]
+
+
+def fio_drive_rows() -> list:
+    """Every post_fio_drive row as a dict (the /guides/ fio drive reference's input);
+    captured_at as UTC ISO text."""
+    import datetime as _dt
+    cols = ("bmc_mac", "run_id", "serial", "model", "size_gb", "controller", "dev", "job",
+            "metric", "value", "captured_at")
+    with get_pool().connection() as conn:
+        rows = conn.execute(f"SELECT {', '.join(cols)} FROM post_fio_drive ORDER BY captured_at").fetchall()
+    out = []
+    for r in rows:
+        d = dict(zip(cols, r))
+        at = d["captured_at"]
+        d["captured_at"] = at.astimezone(_dt.timezone.utc).isoformat() if hasattr(at, "astimezone") else at
+        out.append(d)
+    return out

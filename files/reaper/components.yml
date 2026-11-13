@@ -318,7 +318,8 @@ flax_post:
   kind: unit
   vip_gated: true
   units: [flax-post, flax-post-observe, flax-post-fwd, flax-post-biosd, flax-post-nicd,
-          flax-post-nginx, flax-post-deployd]
+          flax-post-nginx, flax-post-deployd, flax-post-fio-guide]
+  timers: [flax-post-fio-guide]   # oneshot: /guides/fio-drives.html hourly (its run is unnamed, --rm)
   containers: [flax-post, flax-post-observe, flax-post-fwd, flax-post-biosd, flax-post-nicd,
                flax-post-nginx]
   ports: [8446, 8444]          # 8444 = flax-post-nginx TLS vhost

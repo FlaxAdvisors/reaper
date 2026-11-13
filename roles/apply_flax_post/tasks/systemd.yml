@@ -226,6 +226,43 @@
     enabled: false
     daemon_reload: true
 
+# /guides/fio-drives.html: the fio drive reference (history + this site's post_fio_drive),
+# rendered hourly on the VIP holder into the host nginx's /srv/pxe/guides (served as /guides/).
+- name: Ensure the operator guides dir exists (/guides/ on the host nginx)
+  become: true
+  ansible.builtin.file:
+    path: /srv/pxe/guides
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy flax-post-fio-guide.service unit
+  become: true
+  ansible.builtin.template:
+    src: flax-post-fio-guide.service.j2
+    dest: /etc/systemd/system/flax-post-fio-guide.service
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Deploy flax-post-fio-guide.timer unit
+  become: true
+  ansible.builtin.template:
+    src: flax-post-fio-guide.timer.j2
+    dest: /etc/systemd/system/flax-post-fio-guide.timer
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Enable the hourly fio drive guide (both bangs; the service skips on the standby)
+  become: true
+  ansible.builtin.systemd:
+    name: flax-post-fio-guide.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+
 - name: Deploy flax-post-nginx.conf (TLS vhost -> viewer)
   become: true
   ansible.builtin.template:

@@ -1,0 +1,11 @@
+{# roles/apply_flax_post/templates/flax-post-fio-guide.timer.j2 #}
+[Unit]
+Description=Render /guides/fio-drives.html hourly (flax-post-fio-guide)
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target
