@@ -329,6 +329,7 @@ def _run_once_kwargs(recorded, devs):
         ipmi_runner=runner, ping=lambda ip: False,
         set_state=lambda *a, **k: None, upsert_node=lambda *a, **k: None,
         settings={"order_no": "RRORD-T1", "population": None, "customer": "acme"},
+        orders={"RRORD-T1": {"customer": "acme"}},
         workers=1,
         record_observation=lambda **kw: recorded.append(kw),
         observed=_vouch(devs),
@@ -1120,6 +1121,7 @@ def _gate_kwargs(devs, recorded, states, nodes, observed):
         set_state=lambda port, **f: states.setdefault(port, {}).update(f),
         upsert_node=lambda mac, **f: nodes.setdefault(mac, {}).update(f),
         settings={"order_no": "RRORD-T1", "population": None, "customer": "acme"},
+        orders={"RRORD-T1": {"customer": "acme"}},
         workers=1,
         record_observation=lambda **kw: recorded.append(kw),
         observed=observed,
@@ -1406,12 +1408,40 @@ def test_assigned_node_stamped_with_its_order_not_header():
         record_observation=lambda **kw: recorded.append(kw),
         settings={"order_no": "RRORD-100", "population": None, "customer": "X"},
         observed=_vouch(devs),
-        nodes={"aa:71": {"assigned_order_no": "RRORD-1033", "assigned_customer": "Acme",
-                         "assigned_serial": "TPN12345678"}})
+        nodes={"aa:71": {"assigned_order_no": "RRORD-1033", "assigned_customer": "stale",
+                         "assigned_serial": "TPN12345678"}},
+        orders={"RRORD-1033": {"customer": "Acme"}, "RRORD-100": {"customer": "X"}})
     assert states["et7b1"]["order_no"] == "RRORD-1033" and states["et8b1"]["order_no"] == "RRORD-100"
     assert nodes["aa:71"]["order_no"] == "RRORD-1033" and nodes["aa:81"]["order_no"] == "RRORD-100"
     keys = {r["p0_mac"]: r["keys"] for r in recorded}
     assert keys["aa:70"] == {"order": "RRORD-1033", "customer": "Acme"}
+
+
+def _stamp(orders, settings_customer="X"):
+    recorded = []
+    devs = _two_blades()
+    ipmi.run_once(
+        devices=devs, creds=[{"bmcuser": "u", "bmcpass": "p"}], ipmi_runner=_runner,
+        ping=lambda ip: True, workers=1,
+        set_state=lambda port, **f: None, upsert_node=lambda mac, **f: None,
+        record_observation=lambda **kw: recorded.append(kw),
+        settings={"order_no": "RRORD-100", "population": None, "customer": settings_customer},
+        observed=_vouch(devs),
+        nodes={"aa:71": {"assigned_order_no": "RRORD-1033", "assigned_serial": "TPN12345678"}},
+        orders=orders)
+    return {r["p0_mac"]: r["keys"] for r in recorded}
+
+
+def test_header_node_stamped_with_header_orders_customer():
+    keys = _stamp({"RRORD-100": {"customer": "OVH"}, "RRORD-1033": {"customer": "Barivia"}},
+                  settings_customer="hdr-stale")
+    assert keys["aa:80"] == {"order": "RRORD-100", "customer": "OVH"}
+
+
+def test_orders_unreadable_stamps_no_customer():
+    keys = _stamp({})
+    assert keys["aa:70"] == {"order": "RRORD-1033"}
+    assert keys["aa:80"] == {"order": "RRORD-100"}
 
 
 def test_unvouched_pass_does_not_stamp_order():

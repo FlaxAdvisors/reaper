@@ -764,7 +764,7 @@ def _process_blade_power(d, creds, ipmi_runner, ping, set_state, switch=SWITCH, 
 def run_once(devices=None, creds=None, ipmi_runner=None, ping=None,
              set_state=None, upsert_node=None, settings=None, workers=None,
              record_observation=None, switch=None, make_redfish=None,
-             prior=None, run_owner=None, observed=None, nodes=None) -> None:
+             prior=None, run_owner=None, observed=None, nodes=None, orders=None) -> None:
     """One pass over the post BMCs, FANNED OUT across a worker pool.
 
     Each BMC is an independent IPMI session, so probing 48 blades sequentially
@@ -822,10 +822,19 @@ def run_once(devices=None, creds=None, ipmi_runner=None, ping=None,
             nodes = state.read_nodes()
         except Exception:
             log.exception("ipmi: could not read post_node assignments; header order this pass")
+    # Order labels (customer) come from the effective order's own record
+    # (spec 2026-11-09). Unreadable -> {}: records carry the order only, never
+    # the header's customer on a node overridden to another order.
+    if orders is None and _production:
+        try:
+            orders = state.order_labels()
+        except Exception:
+            log.exception("ipmi: could not read post_order labels; records stamp no customer")
+            orders = {}
     keys = records.role_keys(settings)      # {"order":…, "customer":…}, nulls omitted
 
     def effective_for(mac, serial):
-        return assign.effective((nodes or {}).get(mac), settings, serial)
+        return assign.effective((nodes or {}).get(mac), settings, serial, orders)
     hosts = {d["port"]: d for d in devices
              if d.get("kind") == "host" and d.get("switch") == switch}
     bmcs = [d for d in devices
