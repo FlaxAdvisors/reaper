@@ -1,7 +1,8 @@
 """The one effective-order rule for a post node (spec 2026-11-06 per-node order).
 
-A tile may carry its own assignment (order, sales, customer, population) on
-post_node.assigned_*; the header (post_settings) is the default. The assignment
+A tile may carry its own assignment (order + population) on post_node.assigned_*;
+the header (post_settings) is the default. Sales/customer are the order's own
+(post_order), never the node's. The assignment
 applies only while its assigned_serial equals the node's (vouched) serial: a moved
 mezz card carries the BMC MAC to another blade, which must follow the header and
 show the assignment as stale. Pure: no DB, no imports of other lanes.
@@ -10,23 +11,26 @@ show the assignment as stale. Pure: no DB, no imports of other lanes.
 _FIELDS = ("order_no", "sales", "customer", "population")
 
 
-def effective(node, settings, serial=None) -> dict:
-    """{order_no, sales, customer, population, source, stale, assigned_at}."""
+def effective(node, settings, serial=None, orders=None) -> dict:
+    """{order_no, sales, customer, population, source, stale, assigned_at}.
+
+    order_no: the node's own assignment while it applies, else the header's.
+    sales/customer: that ORDER's record (`orders`, state.order_labels()) only;
+    None when it has no record or `orders` is None. population: the node's own
+    override -> the order's record -> the header's (spec 2026-11-09)."""
     node = node or {}
     settings = settings or {}
     sn = serial if serial is not None else node.get("serial")
     applies = bool(node.get("assigned_order_no")) and node.get("assigned_serial") is not None \
         and node.get("assigned_serial") == sn
-    if applies:
-        out = {"order_no": node["assigned_order_no"]}
-        for f in ("sales", "customer", "population"):
-            out[f] = node.get("assigned_" + f) or settings.get(f)
-        out.update(source="node", stale=False, assigned_at=node.get("assigned_at"))
-        return out
-    out = {f: settings.get(f) for f in _FIELDS}
-    out.update(source="header", stale=bool(node.get("assigned_order_no")),
-               assigned_at=node.get("assigned_at"))
-    return out
+    order_no = node["assigned_order_no"] if applies else settings.get("order_no")
+    rec = (orders or {}).get(order_no) or {}
+    population = (node.get("assigned_population") if applies else None) \
+        or rec.get("population") or settings.get("population")
+    return {"order_no": order_no, "sales": rec.get("sales"), "customer": rec.get("customer"),
+            "population": population, "source": "node" if applies else "header",
+            "stale": bool(node.get("assigned_order_no")) and not applies,
+            "assigned_at": node.get("assigned_at")}
 
 
 def order_prefix(order_no) -> str:

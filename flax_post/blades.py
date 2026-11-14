@@ -601,16 +601,16 @@ def _done_steps(st, holes=None):
     return {"identify": idf, "power-off": pwr, "done": fin}
 
 
-def _effective_fields(node, settings, serial) -> dict:
+def _effective_fields(node, settings, serial, orders=None) -> dict:
     from . import assign
-    e = assign.effective(node, settings, serial)
+    e = assign.effective(node, settings, serial, orders)
     return {"order_no": e["order_no"], "sales": e["sales"], "customer": e["customer"],
             "population": e["population"], "order_source": e["source"],
             "order_stale": e["stale"], "assigned_at": e["assigned_at"],
             "header_order_no": (settings or {}).get("order_no")}
 
 
-def _record(slot, c, st, settings, live_link, macs, node=None):
+def _record(slot, c, st, settings, live_link, macs, node=None, orders=None):
     discover_steps = _discover_steps(c, st, live_link)
     discover_done = phase_advances(discover_steps)
     steps = {"Discover": discover_steps, "Firmware": _firmware_steps(st),
@@ -692,7 +692,7 @@ def _record(slot, c, st, settings, live_link, macs, node=None):
         "battery_done": (((st.get("qual") or {}).get("overall") or {}).get("status") == "done"),
         # The node's EFFECTIVE order (its own assignment while the serial
         # matches, else the header): spec 2026-11-06 per-node order.
-        **_effective_fields(node, settings, st.get("serial")),
+        **_effective_fields(node, settings, st.get("serial"), orders),
         "pop_override": st.get("pop_override"),
         "sdr": st.get("sdr") or {}, "sel": st.get("sel") or [],
         "alerts": st.get("alerts") or [],
@@ -731,7 +731,8 @@ def _fill_placeholders(out: list) -> list:
     return out + ghosts
 
 
-def build_slots(slots, consumed, state, settings, switch_facts=None, nodes=None) -> list:
+def build_slots(slots, consumed, state, settings, switch_facts=None, nodes=None,
+                orders=None) -> list:
     """Full grid in rack order; populated slots are complete blade records.
 
     The live switch overlay (link, macs_seen) is applied to EVERY slot from
@@ -753,7 +754,8 @@ def build_slots(slots, consumed, state, settings, switch_facts=None, nodes=None)
                         "col": slot["col"], "group": slot["group"], "empty": True})
         else:
             node = (nodes or {}).get((c or {}).get("bmc_mac") or st.get("bmc_mac"))
-            out.append(_record(slot, c or {}, st, settings, live_link, macs, node=node))
+            out.append(_record(slot, c or {}, st, settings, live_link, macs, node=node,
+                               orders=orders))
     out = _fill_placeholders(out)
     out.sort(key=lambda s: (-(s["group"] or 0), -s["ou"], _COL_ORDER.get(s["col"], 0)))
     return out

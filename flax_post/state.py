@@ -256,7 +256,7 @@ def assign_node(bmc_mac, serial, assignment, settings, orders=None) -> dict:
                 (bmc_mac, serial) + vals)
         node = {"serial": serial, "assigned_order_no": vals[0], "assigned_population": vals[1],
                 "assigned_serial": vals[2]}
-        eff = assign.effective(node, settings, serial)
+        eff = assign.effective(node, settings, serial, orders)
         touch_order(conn, eff["order_no"])
         moved = reassign_entries(conn, bmc_mac, serial, eff["order_no"])
     return {"order_no": eff["order_no"], "effective": eff, "moved": moved}

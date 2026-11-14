@@ -3,16 +3,49 @@ from starlette.testclient import TestClient
 from flax_post import app as app_mod
 
 
-def test_settings_endpoint_forwards_customer(monkeypatch):
-    seen = {}
-    monkeypatch.setattr(app_mod.state, "write_settings", lambda **kw: seen.update(kw))
-    monkeypatch.setattr(app_mod.state, "read_settings",
-                        lambda: {"order_no": "RRORD-003", "population": None, "customer": "acme", "updated_at": None})
-    monkeypatch.setattr(app_mod.state, "touch_header_labels", lambda *a, **k: None)
-    c = TestClient(app_mod.app)
-    r = c.post("/api/v1/settings", json={"customer": "acme", "order_no": "RRORD-003"})
+def _set_header_spy(monkeypatch, calls):
+    monkeypatch.setattr(app_mod.state, "set_header",
+                        lambda o, f, **kw: calls.append((o, f, kw)) or [])
+
+
+def test_settings_set_sends_all_four_in_one_call(monkeypatch):
+    calls = []
+    _set_header_spy(monkeypatch, calls)
+    monkeypatch.setattr(app_mod.state, "read_settings", lambda: _hdr("RRORD-003"))
+    r = TestClient(app_mod.app).post("/api/v1/settings", json={
+        "order_no": "RRORD-003", "sales": "S-3", "customer": "acme", "population": "p3"})
     assert r.status_code == 200
-    assert seen == {"customer": "acme", "order_no": "RRORD-003"}
+    assert calls == [("RRORD-003", [], {"sales": "S-3", "customer": "acme", "population": "p3"})]
+
+
+def test_settings_sales_alone_targets_header_order(monkeypatch):
+    calls = []
+    _set_header_spy(monkeypatch, calls)
+    monkeypatch.setattr(app_mod.state, "read_settings", lambda: _hdr("RRORD-100"))
+    r = TestClient(app_mod.app).post("/api/v1/settings", json={"sales": "S-100"})
+    assert r.status_code == 200
+    assert calls == [("RRORD-100", [], {"sales": "S-100"})]
+
+
+def test_settings_rejects_bad_sales(monkeypatch):
+    calls = []
+    _set_header_spy(monkeypatch, calls)
+    monkeypatch.setattr(app_mod.state, "read_settings", lambda: _hdr("RRORD-100"))
+    r = TestClient(app_mod.app).post("/api/v1/settings", json={"sales": "S 100/x"})
+    assert r.status_code == 400 and calls == []
+
+
+def test_settings_409_lists_values_to_set(monkeypatch):
+    monkeypatch.setattr(app_mod.state, "read_settings", lambda: _hdr())
+    monkeypatch.setattr(app_mod.state, "read_state", lambda: {"et8b1": {"bmc_mac": "aa:bb:cc:00:00:01",
+                                                                        "serial": "SN1", "order_no": "RRORD-1033"}})
+    monkeypatch.setattr(app_mod.state, "read_nodes", lambda *a: {})
+    monkeypatch.setattr(app_mod.state, "order_row", lambda o: {"sales": "S-100", "customer": "OVH",
+                                                               "population": "ovh-bare-tp"})
+    r = TestClient(app_mod.app).post("/api/v1/settings", json={"order_no": "RRORD-100", "customer": "ovh"})
+    assert r.status_code == 409
+    assert r.json()["set"] == {"order_no": "RRORD-100", "sales": "S-100", "customer": "ovh",
+                               "population": "ovh-bare-tp"}
 
 
 def _slots(serial="SN1"):
@@ -39,7 +72,7 @@ def test_settings_order_change_confirmed_applies(monkeypatch):
     monkeypatch.setattr(app_mod.state, "read_state", lambda: {"et8b1": {"bmc_mac": "aa:bb:cc:00:00:01",
                                                                         "serial": "SN1", "order_no": "RRORD-1033"}})
     monkeypatch.setattr(app_mod.state, "read_nodes", lambda *a: {})
-    monkeypatch.setattr(app_mod.state, "apply_header_order", lambda o, f, **k: calls.append((o, f)) or [])
+    monkeypatch.setattr(app_mod.state, "set_header", lambda o, f, **k: calls.append((o, f)) or [])
     r = TestClient(app_mod.app).post("/api/v1/settings", json={"order_no": "RRORD-100", "confirm": True})
     assert r.status_code == 200 and len(calls) == 1 and calls[0][0] == "RRORD-100"
 
@@ -53,8 +86,55 @@ def test_assign_refuses_tile_without_serial(monkeypatch):
 def test_assign_ok_returns_effective(monkeypatch):
     monkeypatch.setattr(app_mod, "_blade_slots", lambda: _slots())
     monkeypatch.setattr(app_mod.state, "read_settings", lambda: _hdr("RRORD-100"))
-    monkeypatch.setattr(app_mod.state, "assign_node", lambda b, s, a, st: {
+    monkeypatch.setattr(app_mod.state, "order_labels", lambda: {})
+    monkeypatch.setattr(app_mod.state, "assign_node", lambda b, s, a, st, orders=None: {
         "effective": {"order_no": a["order_no"]}, "moved": {}})
     r = TestClient(app_mod.app).post("/api/v1/assign", json={"port": "et8b1", "order_no": "RRORD-1033",
                                                              "customer": "Acme"})
     assert r.status_code == 200 and r.json()["effective"]["order_no"] == "RRORD-1033"
+
+
+def test_assign_ignores_sales_and_customer(monkeypatch):
+    seen = []
+    monkeypatch.setattr(app_mod, "_blade_slots", lambda: _slots())
+    monkeypatch.setattr(app_mod.state, "read_settings", lambda: _hdr("RRORD-100"))
+    monkeypatch.setattr(app_mod.state, "order_labels", lambda: {})
+    monkeypatch.setattr(app_mod.state, "assign_node", lambda b, s, a, st, orders=None: seen.append(a) or {
+        "effective": {"order_no": a["order_no"]}, "moved": {}})
+    r = TestClient(app_mod.app).post("/api/v1/assign", json={
+        "port": "et8b1", "order_no": "RRORD-1033", "sales": "S-ORD101033", "customer": "Acme",
+        "population": "barivia-leo"})
+    assert r.status_code == 200
+    assert seen == [{"order_no": "RRORD-1033", "population": "barivia-leo"}]
+
+
+def _labels_spy(monkeypatch, finished=None):
+    calls = []
+    monkeypatch.setattr(app_mod.state, "set_order_labels",
+                        lambda o, **kw: calls.append((o, kw)))
+    monkeypatch.setattr(app_mod.state, "order_row",
+                        lambda o: {"sales": None, "customer": None, "population": None,
+                                   "finished_at": finished})
+    return calls
+
+
+def test_order_labels_endpoint_validates_sales(monkeypatch):
+    calls = _labels_spy(monkeypatch)
+    c = TestClient(app_mod.app)
+    assert c.post("/api/v1/orders/labels", json={"order_no": "RRORD-100", "sales": "bad sales!"}
+                  ).status_code == 400
+    assert c.post("/api/v1/orders/labels", json={"sales": "S-1"}).status_code == 400
+    assert c.post("/api/v1/orders/labels", json={"order_no": "RRORD-100", "customer": "x" * 65}
+                  ).status_code == 400
+    assert calls == []
+    r = c.post("/api/v1/orders/labels", json={"order_no": "RRORD-100", "sales": "S-1",
+                                              "customer": "", "population": "ovh-bare-tp"})
+    assert r.status_code == 200 and r.json() == {"ok": True, "finished": False}
+    assert calls == [("RRORD-100", {"sales": "S-1", "customer": None, "population": "ovh-bare-tp"})]
+
+
+def test_order_labels_on_finished_order_says_so(monkeypatch):
+    _labels_spy(monkeypatch, finished="2026-11-12T00:00:00+00:00")
+    r = TestClient(app_mod.app).post("/api/v1/orders/labels", json={"order_no": "RRORD-100",
+                                                                     "customer": "OVH"})
+    assert r.status_code == 200 and r.json()["finished"] is True

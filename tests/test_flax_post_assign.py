@@ -11,15 +11,49 @@ def _pick(d):
     return {k: d[k] for k in ("order_no", "customer", "population", "sales", "source", "stale")}
 
 
+ORDERS = {"RRORD-100": {"sales": "S-1", "customer": "X", "population": "ovh-bare-tp",
+                        "finished_at": None},
+          "RRORD-1033": {"sales": "S-1033", "customer": "Barivia", "population": "barivia-leo",
+                         "finished_at": None}}
+
+
 def test_effective_header_when_no_assignment():
-    e = assign.effective(None, HDR, "SN1")
+    e = assign.effective(None, HDR, "SN1", ORDERS)
     assert _pick(e) == dict(HDR, source="header", stale=False)
 
 
 def test_effective_uses_assignment_when_serial_matches():
-    assert _pick(assign.effective(NODE, HDR, "SN1")) == {
-        "order_no": "RRORD-1033", "customer": "Acme", "population": "acme-leo",
-        "sales": "S-1", "source": "node", "stale": False}
+    assert _pick(assign.effective(NODE, HDR, "SN1", ORDERS)) == {
+        "order_no": "RRORD-1033", "customer": "Barivia", "population": "acme-leo",
+        "sales": "S-1033", "source": "node", "stale": False}
+
+
+def test_effective_node_labels_come_from_its_order_record():
+    node = dict(NODE, assigned_customer="stale", assigned_sales="S-ORD101033")
+    e = assign.effective(node, HDR, "SN1", ORDERS)
+    assert (e["sales"], e["customer"]) == ("S-1033", "Barivia")
+
+
+def test_effective_header_labels_from_record():
+    hdr = dict(HDR, sales="S-HDR-STALE", customer="hdr-stale")
+    e = assign.effective(None, hdr, "SN1", ORDERS)
+    assert (e["sales"], e["customer"]) == ("S-1", "X")
+
+
+def test_effective_population_chain():
+    assert assign.effective(NODE, HDR, "SN1", ORDERS)["population"] == "acme-leo"
+    node = dict(NODE, assigned_population=None)
+    assert assign.effective(node, HDR, "SN1", ORDERS)["population"] == "barivia-leo"
+    orders = dict(ORDERS, **{"RRORD-1033": dict(ORDERS["RRORD-1033"], population=None)})
+    assert assign.effective(node, HDR, "SN1", orders)["population"] == "ovh-bare-tp"  # settings
+
+
+def test_effective_no_record_gives_blank_labels():
+    node = dict(NODE, assigned_order_no="RRORD-NEW")
+    e = assign.effective(node, HDR, "SN1", ORDERS)
+    assert (e["order_no"], e["sales"], e["customer"]) == ("RRORD-NEW", None, None)
+    e = assign.effective(node, HDR, "SN1", None)
+    assert (e["sales"], e["customer"]) == (None, None)
 
 
 def test_effective_ignores_assignment_after_serial_change():

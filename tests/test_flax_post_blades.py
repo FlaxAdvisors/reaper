@@ -1020,16 +1020,18 @@ _ST = {"et6b1": {"serial": "SN9"}}
 _HDR = {"order_no": "RRORD-100", "population": "ovh-bare-tp", "customer": "X", "sales": None}
 
 
-def _blade(nodes=None):
-    return next(s for s in blades.build_slots(_GEO["slots"], _C, _ST, _HDR, nodes=nodes)
+def _blade(nodes=None, orders=None):
+    return next(s for s in blades.build_slots(_GEO["slots"], _C, _ST, _HDR, nodes=nodes,
+                                              orders=orders)
                 if s["port"] == "et6b1")
 
 
 def test_record_uses_node_assignment():
-    b = _blade({"aa:bb": {"assigned_order_no": "RRORD-1033", "assigned_customer": "Acme",
-                          "assigned_population": "acme-leo", "assigned_serial": "SN9"}})
+    b = _blade({"aa:bb": {"assigned_order_no": "RRORD-1033", "assigned_customer": "stale",
+                          "assigned_population": "acme-leo", "assigned_serial": "SN9"}},
+               orders={"RRORD-1033": {"sales": "S-1033", "customer": "Acme", "population": None}})
     assert (b["order_no"], b["order_source"], b["header_order_no"]) == ("RRORD-1033", "node", "RRORD-100")
-    assert b["customer"] == "Acme" and b["population"] == "acme-leo"
+    assert b["customer"] == "Acme" and b["sales"] == "S-1033" and b["population"] == "acme-leo"
 
 
 def test_record_follows_header_without_node():

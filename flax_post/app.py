@@ -1,6 +1,7 @@
 """flax-post — Eindhoven Post Servers viewer (read-only, source='post' devices)."""
 import time
 import logging
+import re
 import os
 from datetime import timezone
 from pathlib import Path
@@ -76,7 +77,8 @@ def _blade_slots() -> list[dict]:
     facts = consume.switch_ports(switch)
     consumed = consume.consumed_by_port(devices, facts, switch)
     return blades.build_slots(geo["slots"], consumed, state.read_state(),
-                              state.read_settings(), facts, nodes=state.read_nodes())
+                              state.read_settings(), facts, nodes=state.read_nodes(),
+                              orders=state.order_labels())
 
 
 @app.get("/")
@@ -89,11 +91,47 @@ def index(request: Request):
 
 
 @app.get("/api/v1/orders")
-def api_orders() -> JSONResponse:
+def api_orders(include_finished: int = 0) -> JSONResponse:
     """Open post orders (post_order registry, newest first) + the header order:
-    the Order field's datalist and the Finish dialog's choices."""
-    return JSONResponse({"orders": state.list_orders(),
+    the Order field's datalist and the Finish dialog's choices. With
+    include_finished=1, finished orders too (the UI's label refill index)."""
+    return JSONResponse({"orders": state.list_orders(include_finished=bool(include_finished)),
                          "header": state.read_settings().get("order_no")})
+
+
+_SALES_RE = re.compile(r"^[A-Za-z0-9._-]{0,64}$")
+_LABEL_KEYS = ("sales", "customer", "population")
+
+
+def _labels_in(body) -> "tuple[dict, str | None]":
+    """The label fields present in `body`, stripped ('' -> None), and an error
+    string when one is invalid (sales: the archive's rule; any field <= 64)."""
+    out = {}
+    for k in _LABEL_KEYS:
+        if k in body:
+            v = (str(body[k]) if body[k] is not None else "").strip()
+            if len(v) > 64:
+                return {}, f"{k} longer than 64"
+            if k == "sales" and not _SALES_RE.match(v):
+                return {}, "sales: letters, digits, . _ - only"
+            out[k] = v or None
+    return out, None
+
+
+@app.post("/api/v1/orders/labels")
+async def api_order_labels(request: Request) -> JSONResponse:
+    """Edit one ORDER's labels (every node on it): overwrite, blank clears.
+    A finished order is allowed; the reply says so (re-Finish to re-archive)."""
+    body = await request.json()
+    order_no = (body.get("order_no") or "").strip()
+    if not order_no:
+        return JSONResponse({"ok": False, "reason": "no order"}, status_code=400)
+    labels, err = _labels_in(body)
+    if err:
+        return JSONResponse({"ok": False, "reason": err}, status_code=400)
+    await run_in_threadpool(lambda: state.set_order_labels(order_no, **labels))
+    row = await run_in_threadpool(state.order_row, order_no)
+    return JSONResponse({"ok": True, "finished": bool(row.get("finished_at"))})
 
 
 def _finish_context(order_no):
@@ -103,14 +141,10 @@ def _finish_context(order_no):
     mems, left, no_serial = finish.members(runs)
     slots = [s for s in _blade_slots() if not s.get("empty")]
     left = left + finish.running(order_no, slots, {m["serial"] for m in mems} | {l["serial"] for l in left})
+    # The order's own record only: run snapshots and the header are history,
+    # not labels (11-06..09 runs carry a wrong sales on RRORD-100).
     row = state.order_row(order_no)
-    hdr = state.read_settings()
-    res = [m.get("result") or {} for m in mems]
-    customer = row.get("customer") or next((r.get("customer") for r in res if r.get("customer")), None) \
-        or (hdr.get("customer") if hdr.get("order_no") == order_no else None)
-    sales = row.get("sales") or next((r.get("sales") for r in res if r.get("sales")), None) \
-        or (hdr.get("sales") if hdr.get("order_no") == order_no else None)
-    return mems, left, no_serial, customer, sales
+    return mems, left, no_serial, row.get("customer"), row.get("sales")
 
 
 def _brief(m):
@@ -248,39 +282,41 @@ def api_step(port: str, phase: str, step: str) -> JSONResponse:
 
 @app.post("/api/v1/settings")
 async def api_settings(request: Request) -> JSONResponse:
-    """Header context. An ORDER change moves every present, unassigned node's
-    open-order entries with it (one open order per node), so it is confirmed
-    first: 409 lists the movers until the body carries confirm: true."""
+    """The header's one Set: {order_no?, sales?, customer?, population?}. The
+    labels present are written onto the TARGET order's record (the body's
+    order, else the current header order) in the same transaction as the
+    header change (state.set_header). An ORDER change moves every present,
+    unassigned node's open-order entries with it, so it is confirmed first:
+    409 lists the movers and the four values to set until confirm: true."""
     body = await request.json()
-    kw = {k: body[k] for k in ("order_no", "population", "customer", "sales") if k in body}
+    labels, err = _labels_in(body)
+    if err:
+        return JSONResponse({"ok": False, "reason": err}, status_code=400)
     current = state.read_settings()
-    new_order = kw.get("order_no", current.get("order_no"))
-    if "order_no" in kw and (kw["order_no"] or None) != (current.get("order_no") or None):
+    target = ((body.get("order_no") or "").strip() or None) if "order_no" in body \
+        else (current.get("order_no") or None)
+    followers = []
+    if target != (current.get("order_no") or None):
         followers = assign.header_followers(state.read_state(), state.read_nodes(), current)
         if followers and body.get("confirm") is not True:
+            rec = (state.order_row(target) if target else {}) or {}
             return JSONResponse({"ok": False, "confirm": [
                 {"port": f["port"], "serial": f["serial"],
-                 "from": f.get("order_no") or current.get("order_no"), "to": kw["order_no"]}
-                for f in followers]}, status_code=409)
-        moved = state.apply_header_order(kw.pop("order_no") or None, followers,
-                                         **{k: kw.pop(k) for k in ("sales", "customer") if k in kw})
-        if kw:
-            state.write_settings(**kw)
-        return JSONResponse({"ok": True, "moved": moved, "settings": state.read_settings()})
-    state.write_settings(**kw)
-    if "sales" in kw or "customer" in kw:
-        try:
-            state.touch_header_labels(new_order, sales=kw.get("sales"), customer=kw.get("customer"))
-        except Exception:
-            logging.getLogger("flax-post").exception("post_order label update failed")
-    return JSONResponse({"ok": True, "settings": state.read_settings()})
+                 "from": f.get("order_no") or current.get("order_no"), "to": target}
+                for f in followers],
+                "set": dict({k: rec.get(k) for k in _LABEL_KEYS}, order_no=target, **labels)},
+                status_code=409)
+    moved = await run_in_threadpool(lambda: state.set_header(target, followers, **labels))
+    return JSONResponse({"ok": True, "moved": moved, "settings": state.read_settings()})
 
 
 @app.post("/api/v1/assign")
 async def api_assign(request: Request) -> JSONResponse:
-    """A tile's own order/sales/customer/population ({port, order_no, ...}) or
-    {port, clear: true} to follow the header again. Moves the node's open-order
-    entries to its new effective order in the same transaction."""
+    """A tile's own order + population ({port, order_no, population?}) or
+    {port, clear: true} to follow the header again. Sales/customer in the body
+    (an older open tab) are ignored: they belong to the order (/orders/labels).
+    Moves the node's open-order entries to its new effective order in the same
+    transaction."""
     body = await request.json()
     port = body.get("port")
     record = next((s for s in _blade_slots() if s.get("port") == port), None)
@@ -295,11 +331,10 @@ async def api_assign(request: Request) -> JSONResponse:
         order_no = (body.get("order_no") or "").strip()
         if not order_no:
             return JSONResponse({"ok": False, "reason": "no order"}, status_code=400)
-        assignment = {"order_no": order_no}
-        for k in ("sales", "customer", "population"):
-            v = (body.get(k) or "").strip()
-            assignment[k] = v or None
-    out = state.assign_node(bmc, serial, assignment, state.read_settings())
+        assignment = {"order_no": order_no,
+                      "population": (body.get("population") or "").strip() or None}
+    out = state.assign_node(bmc, serial, assignment, state.read_settings(),
+                            orders=state.order_labels())
     return JSONResponse({"ok": True, "effective": out["effective"], "moved": out["moved"]})
 
 

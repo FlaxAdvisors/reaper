@@ -76,8 +76,8 @@ def test_post_settings_writes(monkeypatch):
     from fastapi.testclient import TestClient
     from flax_post import app as app_module
     captured = {}
-    monkeypatch.setattr(app_module.state, "write_settings",
-                        lambda **kw: captured.update(kw))
+    monkeypatch.setattr(app_module.state, "set_header",
+                        lambda o, f, **kw: captured.update(kw, order_no=o) or [])
     monkeypatch.setattr(app_module.state, "read_settings",
                         lambda: {"order_no": "RRORD-004", "population": None, "customer": "OVH",
                                  "updated_at": "2026-09-12T03:47:40+00:00"})
@@ -441,6 +441,42 @@ def test_orders_endpoint_lists_open_orders(client, monkeypatch):
     assert r.status_code == 200
     assert r.json() == {"orders": [{"order_no": "RRORD-1033", "sales": None, "customer": "Acme",
                                     "opened_at": None, "finished_at": None}], "header": "RRORD-100"}
+
+
+def test_orders_include_finished(client, monkeypatch):
+    from flax_post import app as app_module
+    seen = []
+    monkeypatch.setattr(app_module.state, "list_orders",
+                        lambda **k: seen.append(k) or [])
+    monkeypatch.setattr(app_module.state, "read_settings", lambda: {"order_no": None})
+    client.get("/api/v1/orders")
+    client.get("/api/v1/orders?include_finished=1")
+    assert seen == [{"include_finished": False}, {"include_finished": True}]
+
+
+def _finish_ctx_world(monkeypatch, row):
+    from flax_post import app as app_module
+    run = {"bmc_mac": "aa:01", "serial": "SN1", "run_id": "r1", "verdict": "pass",
+           "finished_at": 1, "port": "et7b1", "compact": False,
+           "result": {"verdict": "pass", "sales": "S-ORD101033", "customer": "Barivia"}}
+    monkeypatch.setattr(app_module.state, "runs_under", lambda o: [run])
+    monkeypatch.setattr(app_module, "_blade_slots", lambda: [])
+    monkeypatch.setattr(app_module.state, "order_row", lambda o: row)
+    monkeypatch.setattr(app_module.state, "read_settings",
+                        lambda: {"order_no": "RRORD-100", "sales": "S-HDR", "customer": "hdr"})
+
+
+def test_finish_preview_reads_record_only(client, monkeypatch):
+    _finish_ctx_world(monkeypatch, {})
+    j = client.get("/api/v1/orders/finish-preview?order=RRORD-100").json()
+    assert (j["sales"], j["customer"]) == (None, None)
+
+
+def test_finish_csv_names_follow_record_after_label_edit(client, monkeypatch):
+    _finish_ctx_world(monkeypatch, {"sales": "S-100", "customer": "OVH", "population": None,
+                                    "finished_at": None})
+    j = client.get("/api/v1/orders/finish-preview?order=RRORD-100").json()
+    assert (j["sales"], j["customer"]) == ("S-100", "OVH")
 
 
 def test_index_boot_has_sales(client, monkeypatch):
