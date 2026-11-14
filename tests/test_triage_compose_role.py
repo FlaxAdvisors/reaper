@@ -44,3 +44,34 @@ def test_untagged_bang_services_run_skips_triage_instead_of_failing():
              if isinstance(t, dict) and (t.get("ansible.builtin.import_role") or {}).get("name") == "apply_triage_compose"]
     when = imp["when"]
     assert "apply_triage_compose_src" in when and "'triage_compose' in ansible_run_tags" in when
+
+
+def test_role_creates_every_narrowed_mount_source():
+    """The triage compose (TODO-NET-EXPOSURE 9.4) mounts single /etc/flax paths into the
+    SOL server and the api. A missing bind source is created by docker as a root-owned
+    DIRECTORY, which breaks a file mount, so the role makes each one first."""
+    tasks = _tasks()
+    dirs = set()
+    for t in tasks:
+        f = t.get("ansible.builtin.file") or {}
+        if f.get("state") == "directory":
+            dirs.update(t.get("loop") or [f.get("path")])
+    assert {"/etc/flax/soltriage", "/etc/flax/bmcfw-state", "/etc/flax/triage-ui",
+            "/etc/flax/mezzflash"} <= dirs
+    seeded = {t["ansible.builtin.copy"]["dest"]: t["ansible.builtin.copy"] for t in tasks
+              if "ansible.builtin.copy" in t and "content" in t["ansible.builtin.copy"]}
+    for f in ("/etc/flax/flash.json", "/etc/flax/bmcfw.json"):
+        assert seeded[f]["force"] is False, f
+
+
+def test_bmc_credentials_change_restarts_the_sol_server():
+    """The SOL server mounts credentials-bmc.json as a single file, which pins the inode:
+    a rewritten file must restart it (not the whole stack), and only when it changed."""
+    tasks = yaml.safe_load((ROOT / "roles" / "apply_lease_agent" / "tasks" / "main.yml").read_text())
+    i = next(n for n, t in enumerate(tasks)
+             if (t.get("ansible.builtin.copy") or {}).get("dest") == "/etc/flax/credentials-bmc.json")
+    reg = tasks[i].get("register")
+    assert reg
+    restart = [t for t in tasks[i + 1:] if "prod-server-1" in str(t)]
+    assert restart and reg + " is changed" in str(restart[0].get("when"))
+    assert "restart" in str(restart[0])

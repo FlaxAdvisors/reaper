@@ -53,6 +53,21 @@
     owner: root
     group: root
     mode: "0644"
+  register: apply_lease_agent_bmc_creds
+  no_log: true
+
+# The triage SOL server mounts this ONE file (TODO-NET-EXPOSURE 9.4), and a
+# single-file bind mount keeps the inode it started with: a rewrite is only
+# seen after a restart. Only the SOL server, only on a change, only where it runs.
+- name: Restart the triage SOL server after a BMC credentials change
+  become: true
+  ansible.builtin.shell: |
+    if docker ps --format '{{ "{{" }}.Names{{ "}}" }}' | grep -qx prod-server-1; then
+      docker restart prod-server-1 && echo restarted
+    fi
+  register: apply_lease_agent_sol_restart
+  changed_when: "'restarted' in apply_lease_agent_sol_restart.stdout"
+  when: apply_lease_agent_bmc_creds is changed
 
 - name: Deploy credentials-host.json (vault-encrypted)
   become: true

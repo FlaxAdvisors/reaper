@@ -72,6 +72,10 @@
     - /etc/flax/mezzflash
     - /etc/flax/frufw-backup
     - /etc/flax/triage-ui
+    # the narrowed mounts (TODO-NET-EXPOSURE 9.4): the SOL server's history and
+    # power clicks, and bmcfw.json's lock + backup (the api sees /etc/flax ro)
+    - /etc/flax/soltriage
+    - /etc/flax/bmcfw-state
 
 - name: Seed an empty flash.json (the api's $DB_FILE)
   become: true
@@ -82,6 +86,18 @@
     owner: root
     group: root
     mode: "0644"
+
+# The api mounts bmcfw.json as a FILE (Clear writes it in place); a missing
+# source would become a directory. bmc_fw owns its content after first start.
+- name: Seed an empty bmcfw.json state store
+  become: true
+  ansible.builtin.copy:
+    content: "{}\n"
+    dest: /etc/flax/bmcfw.json
+    force: false
+    owner: root
+    group: root
+    mode: "0600"
 
 - name: Seed an empty frufw.json state store
   become: true
