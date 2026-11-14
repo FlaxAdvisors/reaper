@@ -275,13 +275,25 @@ def set_header(order_no, followers, *, sales=..., customer=..., population=...) 
     post_settings' order + labels in step with that record, and move every
     follower's open-order entries (followers = assign.header_followers)."""
     out = []
+    if not order_no:
+        # No header order (lavergne runs this way): there is no record, so the
+        # given labels are the header's own; the others stay as they are.
+        given = {k: (v or None) for k, v in zip(_LABELS, (sales, customer, population))
+                 if v is not ...}
+        with get_pool().connection() as conn, conn.transaction():
+            conn.execute("UPDATE post_settings SET order_no = NULL"
+                         + "".join(", " + k + " = %s" for k in given)
+                         + ", updated_at = NOW() WHERE id = 1", tuple(given.values()))
+            for f in followers:
+                c = reassign_entries(conn, f["bmc_mac"], f["serial"], None)
+                out.append(dict(port=f["port"], serial=f["serial"], **c))
+        return out
     with get_pool().connection() as conn, conn.transaction():
         touch_order(conn, order_no)
         set_order_labels(order_no, sales=sales, customer=customer, population=population,
                          conn=conn)
         rec = conn.execute("SELECT sales, customer, population FROM post_order "
-                           "WHERE order_no = %s", (order_no,)).fetchone() if order_no else None
-        rec = rec or (None, None, None)
+                           "WHERE order_no = %s", (order_no,)).fetchone() or (None, None, None)
         conn.execute("UPDATE post_settings SET order_no = %s, sales = %s, customer = %s, "
                      "population = %s, updated_at = NOW() WHERE id = 1", (order_no,) + tuple(rec))
         for f in followers:

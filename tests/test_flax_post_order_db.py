@@ -380,3 +380,17 @@ def test_mark_finished_keeps_header_settings_in_step(db):
         state.mark_finished("ZZTEST-FH", sales="S2", customer="C2", counts={})
         assert admin.execute("SELECT sales, customer FROM post_settings WHERE id=1"
                              ).fetchone() == ("S2", "C2")
+
+
+def test_header_without_order_keeps_its_own_labels(db):
+    admin, _ = db
+    from flax_post import state
+    with _keep_settings(admin):
+        admin.execute("UPDATE post_settings SET order_no=NULL, sales=NULL, customer='C', "
+                      "population='tec6-spare-tp' WHERE id=1")
+        state.set_header(None, [])
+        assert admin.execute("SELECT order_no, customer, population FROM post_settings WHERE id=1"
+                             ).fetchone() == (None, "C", "tec6-spare-tp")
+        state.set_header(None, [], population="other")
+        assert admin.execute("SELECT customer, population FROM post_settings WHERE id=1"
+                             ).fetchone() == ("C", "other")
