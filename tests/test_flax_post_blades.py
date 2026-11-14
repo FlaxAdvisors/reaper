@@ -1032,6 +1032,8 @@ def test_record_uses_node_assignment():
                orders={"RRORD-1033": {"sales": "S-1033", "customer": "Acme", "population": None}})
     assert (b["order_no"], b["order_source"], b["header_order_no"]) == ("RRORD-1033", "node", "RRORD-100")
     assert b["customer"] == "Acme" and b["sales"] == "S-1033" and b["population"] == "acme-leo"
+    assert b["own_population"] == "acme-leo"
+    assert _blade()["own_population"] is None
 
 
 def test_record_follows_header_without_node():

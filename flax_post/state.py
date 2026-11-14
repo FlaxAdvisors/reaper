@@ -157,11 +157,18 @@ def set_order_labels(order_no, *, sales=..., customer=..., population=..., conn=
            + ", %s" * len(cols) + ") ON CONFLICT (order_no) DO UPDATE SET "
            + ", ".join(c + " = EXCLUDED." + c for c in cols))
     params = (order_no,) + tuple(given[c] for c in cols)
+    # post_settings mirrors the HEADER order's record (records.role_keys and
+    # older readers still read it): keep it in step when this is that order.
+    hdr_sql = ("UPDATE post_settings SET " + ", ".join(c + " = %s" for c in cols)
+               + " WHERE id = 1 AND order_no = %s")
+    hdr_params = tuple(given[c] for c in cols) + (order_no,)
     if conn is not None:
         conn.execute(sql, params)
+        conn.execute(hdr_sql, hdr_params)
         return
-    with get_pool().connection() as c:
+    with get_pool().connection() as c, c.transaction():
         c.execute(sql, params)
+        c.execute(hdr_sql, hdr_params)
 
 
 def order_labels() -> dict:

@@ -66,7 +66,10 @@ function App() {
     // every order's record (finished included): {order_no: {sales, customer, population, finished_at}}
     orderIndex: {},
     // the drawer's per-node order assignment form (prefilled on open)
-    asg: { order: '', sales: '', customer: '', population: '' }, asgMsg: null,
+    // the drawer's per-node override: order + population only. Sales/customer
+    // belong to the ORDER: shown read-only, edited for the whole order.
+    asg: { order: '', population: '' }, asgMsg: null,
+    asgLabels: { edit: false, sales: '', customer: '' },
     fin: { order: '', customer: '', sales: '', preview: null, msg: null, busy: false }, finishedOrder: null,
     settingsAt: boot.settings_at || null,
     // header connection dot: did the LAST poll of the server answer (null =
@@ -574,9 +577,30 @@ function App() {
     // ---- per-node order assignment (drawer) ----
     prefillAsg(b) {
       const own = b && b.order_source === 'node';
-      this.asg = { order: own ? (b.order_no || '') : '', sales: own ? (b.sales || '') : '',
-                   customer: own ? (b.customer || '') : '', population: own ? (b.population || '') : '' };
+      this.asg = { order: own ? (b.order_no || '') : '', population: own ? (b.own_population || '') : '' };
+      this.asgLabels = { edit: false, sales: '', customer: '' };
       this.asgMsg = null;
+    },
+    // what the drawer shows for the order in its Order field (the node's own
+    // assignment, else the header's): that order's record
+    asgOrder() { return (this.asg.order || '').trim() || (this.sel ? (this.sel.order_no || '') : ''); },
+    asgRec() { return this.orderRec(this.asgOrder()) || {}; },
+    asgPopDefault() {
+      const p = this.asgRec().population;
+      return p ? `order: ${p}` : `header: ${this.hdrSaved.population || '—'}`;
+    },
+    editOrderLabels() {
+      const r = this.asgRec();
+      this.asgLabels = { edit: true, sales: r.sales || '', customer: r.customer || '' };
+    },
+    async saveOrderLabels() {
+      const order_no = this.asgOrder();
+      if (!order_no) return;
+      const r = await postOrderLabels({ order_no, sales: this.asgLabels.sales, customer: this.asgLabels.customer });
+      if (!r.ok) { this.asgMsg = r.reason || ('error ' + r.status); return; }
+      this.asgLabels.edit = false;
+      this.asgMsg = r.finished ? 'labels saved — re-Finish to update the archive' : 'labels saved';
+      this.refresh();
     },
     asgStatus(b) {
       if (!b) return '';
@@ -589,8 +613,7 @@ function App() {
     },
     async assignOrder() {
       if (!this.sel) return;
-      const r = await postAssign({ port: this.sel.port, order_no: this.asg.order, sales: this.asg.sales,
-                                   customer: this.asg.customer, population: this.asg.population });
+      const r = await postAssign({ port: this.sel.port, order_no: this.asg.order, population: this.asg.population });
       this.asgMsg = r.ok ? 'assigned' : (r.reason || ('error ' + r.status));
       this.refresh();
     },

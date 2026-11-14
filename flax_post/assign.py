@@ -12,7 +12,7 @@ _FIELDS = ("order_no", "sales", "customer", "population")
 
 
 def effective(node, settings, serial=None, orders=None) -> dict:
-    """{order_no, sales, customer, population, source, stale, assigned_at}.
+    """{order_no, sales, customer, population, own_population, source, stale, assigned_at}.
 
     order_no: the node's own assignment while it applies, else the header's.
     sales/customer: that ORDER's record (`orders`, state.order_labels()) only;
@@ -28,7 +28,8 @@ def effective(node, settings, serial=None, orders=None) -> dict:
     population = (node.get("assigned_population") if applies else None) \
         or rec.get("population") or settings.get("population")
     return {"order_no": order_no, "sales": rec.get("sales"), "customer": rec.get("customer"),
-            "population": population, "source": "node" if applies else "header",
+            "population": population,
+            "own_population": (node.get("assigned_population") or None) if applies else None, "source": "node" if applies else "header",
             "stale": bool(node.get("assigned_order_no")) and not applies,
             "assigned_at": node.get("assigned_at")}
 

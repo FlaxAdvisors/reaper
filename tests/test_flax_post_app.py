@@ -497,9 +497,11 @@ def _ui(client, monkeypatch):
 
 def test_header_has_no_per_field_save(client, monkeypatch):
     js, html = _ui(client, monkeypatch)
+    import re
     for name in ("saveSales", "saveCustomer", "savePopulation", "saveOrder", "clearCustomer",
                  "clearOrder"):
-        assert name not in js and name not in html, name
+        pat = re.compile(r"\b" + name + r"\b")
+        assert not pat.search(js) and not pat.search(html), name
 
 
 def test_header_set_posts_settings_once(client, monkeypatch):
@@ -520,6 +522,21 @@ def test_dirty_form_survives_poll(client, monkeypatch):
 def test_static_app_js_wires_assign(client):
     js = client.get("/web-static/app.js").text
     assert "postAssign(" in js and "'move'" in js
+
+
+def test_assign_posts_order_and_population_only(client):
+    js = client.get("/web-static/app.js").text
+    call = js[js.index("postAssign({ port: this.sel.port, order_no"):]
+    call = call[:call.index("})")]
+    assert "population" in call and "sales" not in call and "customer" not in call
+
+
+def test_drawer_labels_read_only_with_edit(client, monkeypatch):
+    js, html = _ui(client, monkeypatch)
+    assert "postOrderLabels(" in js and "saveOrderLabels(" in js
+    assert 'name="assign-sales"' not in html and 'name="assign-customer"' not in html
+    assert '@click="saveOrderLabels()"' in html and "all nodes on this order" in html
+    assert "re-Finish to update the archive" in js
 
 
 def _fin(monkeypatch, left, send=None, mems=None):

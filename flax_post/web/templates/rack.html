@@ -134,16 +134,28 @@
       <button @click="openModal('idnt')">IDNT</button>
     </div>
 
-    <div class="section-l">order · {{asgStatus(sel)}}</div>
-    <div class="asg">
-      <input name="assign-order" autocomplete="off" list="post-open-orders" v-model="asg.order" placeholder="order">
-      <input name="assign-sales" autocomplete="off" v-model="asg.sales" placeholder="sales">
-      <input name="assign-customer" autocomplete="off" v-model="asg.customer" placeholder="customer">
-      <select name="assign-population" v-model="asg.population">
-        <option value="">(header: {{population||'—'}})</option>
+    <div class="section-l">{{sel.order_source==='node' ? 'order override · node' : 'order · ' + asgStatus(sel)}}</div>
+    <div class="asg ovr-zone" :class="{follow: sel.order_source!=='node'}">
+      <input class="fld" name="assign-order" autocomplete="off" list="post-open-orders" v-model="asg.order"
+             @change="asgLabels.edit=false" :placeholder="sel.order_no || 'order'">
+      <select class="fld" name="assign-population" v-model="asg.population">
+        <option value="">({{asgPopDefault()}})</option>
         <option v-for="p in profiles" :value="p">{{p}}</option></select>
-      <button @click="assignOrder()" :disabled="!asg.order">Assign</button>
+      <button class="primary" @click="assignOrder()" :disabled="!asg.order">Assign</button>
       <button @click="useHeader()" :disabled="sel.order_source==='header'">Use header</button>
+      <div class="asg-labels" v-if="!asgLabels.edit">
+        <span class="k">sales</span><span class="v">{{asgRec().sales || '—'}}</span>
+        <span class="k">customer</span><span class="v">{{asgRec().customer || '—'}}</span>
+        <a class="lnk" v-if="asgOrder()" @click="editOrderLabels()" title="change the labels of this ORDER (every node on it)">edit</a>
+      </div>
+      <div class="asg-labels edit" v-else>
+        <span class="asg-for">labels for <b>{{asgOrder()}}</b> — all nodes on this order</span>
+        <input class="fld" name="order-label-sales" autocomplete="off" v-model="asgLabels.sales" placeholder="sales">
+        <input class="fld" name="order-label-customer" autocomplete="off" v-model="asgLabels.customer" placeholder="customer">
+        <button class="primary" @click="saveOrderLabels()">Save labels</button>
+        <button @click="asgLabels.edit=false">Cancel</button>
+      </div>
+      <span class="ctx-note" v-if="reopenNote(asg.order)">{{reopenNote(asg.order).replace('Set', 'Assign')}}</span>
       <span class="asg-msg" v-if="asgMsg">{{asgMsg}}</span>
     </div>
 
@@ -190,11 +202,11 @@
         <span class="x" @click="closeModal()">✕</span></div>
       <div class="m-b">
         <div v-if="modal?.kind==='finish'">
-          <div class="asg">
-            <select name="finish-order" v-model="fin.order" @change="loadFinish()">
+          <div class="asg fin-form">
+            <select class="fld" name="finish-order" v-model="fin.order" @change="loadFinish()">
               <option v-for="o in openOrders" :value="o.order_no">{{o.order_no}}</option></select>
-            <input name="finish-customer" v-model="fin.customer" placeholder="customer (required)">
-            <input name="finish-sales" v-model="fin.sales" placeholder="sales">
+            <input class="fld" name="finish-customer" v-model="fin.customer" placeholder="customer (required)">
+            <input class="fld" name="finish-sales" v-model="fin.sales" placeholder="sales">
           </div>
           <p class="m-sub">archived: every node Done under <b>{{fin.order || '—'}}</b> ({{(fin.preview?.members || []).length}})</p>
           <div class="mv-row" v-for="m in (fin.preview?.members || [])">{{m.serial}} · {{m.port || '—'}} · Done {{finWhen(m.finished_at)}}</div>

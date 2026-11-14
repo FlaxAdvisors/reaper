@@ -605,7 +605,8 @@ def _effective_fields(node, settings, serial, orders=None) -> dict:
     from . import assign
     e = assign.effective(node, settings, serial, orders)
     return {"order_no": e["order_no"], "sales": e["sales"], "customer": e["customer"],
-            "population": e["population"], "order_source": e["source"],
+            "population": e["population"], "own_population": e["own_population"],
+            "order_source": e["source"],
             "order_stale": e["stale"], "assigned_at": e["assigned_at"],
             "header_order_no": (settings or {}).get("order_no")}
 

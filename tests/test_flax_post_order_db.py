@@ -356,3 +356,16 @@ def test_order_labels_includes_finished(db):
     assert state.order_row("ZZTEST-O")["population"] == "PO"
     rows = {o["order_no"]: o for o in state.list_orders(include_finished=True)}
     assert rows["ZZTEST-O"]["population"] == "PO" and "ZZTEST-D" in rows
+
+
+def test_set_order_labels_keeps_header_settings_in_step(db):
+    admin, _ = db
+    from flax_post import state
+    admin.execute("INSERT INTO post_order (order_no) VALUES ('ZZTEST-H'), ('ZZTEST-X')")
+    with _keep_settings(admin):
+        admin.execute("UPDATE post_settings SET order_no='ZZTEST-H', sales='old', customer='C' WHERE id=1")
+        state.set_order_labels("ZZTEST-X", sales="SX")
+        assert admin.execute("SELECT sales FROM post_settings WHERE id=1").fetchone() == ("old",)
+        state.set_order_labels("ZZTEST-H", sales="SH", customer="")
+        assert admin.execute("SELECT sales, customer FROM post_settings WHERE id=1"
+                             ).fetchone() == ("SH", None)
