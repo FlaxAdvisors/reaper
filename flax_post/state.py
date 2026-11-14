@@ -130,16 +130,49 @@ def read_nodes(bmc_macs=None) -> dict:
     return out
 
 
-def touch_order(conn, order_no, *, sales=None, customer=None) -> None:
-    """Open (or reopen) an order in post_order; non-null sales/customer win."""
+def touch_order(conn, order_no) -> None:
+    """Open (or reopen) an order in post_order. Never writes labels: those
+    change only through set_order_labels (and Finish's mark_finished)."""
     if not order_no:
         return
     conn.execute(
-        "INSERT INTO post_order (order_no, sales, customer) VALUES (%s, %s, %s) "
-        "ON CONFLICT (order_no) DO UPDATE SET finished_at = NULL, "
-        "sales = COALESCE(EXCLUDED.sales, post_order.sales), "
-        "customer = COALESCE(EXCLUDED.customer, post_order.customer)",
-        (order_no, sales, customer))
+        "INSERT INTO post_order (order_no) VALUES (%s) "
+        "ON CONFLICT (order_no) DO UPDATE SET finished_at = NULL", (order_no,))
+
+
+_LABELS = ("sales", "customer", "population")
+
+
+def set_order_labels(order_no, *, sales=..., customer=..., population=..., conn=None) -> None:
+    """THE writer of an order's labels: each given field overwrites ('' / None
+    clear it), Ellipsis leaves it. Upserts the row; never touches finished_at.
+    With `conn`, runs inside the caller's transaction."""
+    if not order_no:
+        return
+    given = {k: (v or None) for k, v in zip(_LABELS, (sales, customer, population)) if v is not ...}
+    if not given:
+        return
+    cols = list(given)
+    sql = ("INSERT INTO post_order (order_no, " + ", ".join(cols) + ") VALUES (%s"
+           + ", %s" * len(cols) + ") ON CONFLICT (order_no) DO UPDATE SET "
+           + ", ".join(c + " = EXCLUDED." + c for c in cols))
+    params = (order_no,) + tuple(given[c] for c in cols)
+    if conn is not None:
+        conn.execute(sql, params)
+        return
+    with get_pool().connection() as c:
+        c.execute(sql, params)
+
+
+def order_labels() -> dict:
+    """{order_no: {sales, customer, population, finished_at (iso|None)}} for every
+    post_order row, finished included: the one source of order labels."""
+    with get_pool().connection() as conn:
+        rows = conn.execute("SELECT order_no, sales, customer, population, finished_at "
+                            "FROM post_order").fetchall()
+    iso = lambda v: v.isoformat() if v is not None and not isinstance(v, str) else v
+    return {o: {"sales": s, "customer": c, "population": p, "finished_at": iso(f)}
+            for o, s, c, p, f in rows}
 
 
 def open_orders(conn) -> set:
@@ -150,9 +183,9 @@ def open_orders(conn) -> set:
 def list_orders(*, include_finished: bool = False) -> list:
     """Registered orders (post_order) plus any order that has finished runs but no
     registry row (e.g. RRORD-100's runs from before migration 042), newest first."""
-    sql = ("SELECT order_no, sales, customer, opened_at, finished_at FROM post_order"
+    sql = ("SELECT order_no, sales, customer, population, opened_at, finished_at FROM post_order"
            + ("" if include_finished else " WHERE finished_at IS NULL")
-           + " UNION ALL SELECT r.order_no, NULL, NULL, min(r.finished_at), NULL FROM post_run r "
+           + " UNION ALL SELECT r.order_no, NULL, NULL, NULL, min(r.finished_at), NULL FROM post_run r "
            "WHERE r.order_no IS NOT NULL AND r.order_no <> '' "
            "AND NOT EXISTS (SELECT 1 FROM post_order o WHERE o.order_no = r.order_no) "
            "GROUP BY r.order_no")
@@ -160,8 +193,8 @@ def list_orders(*, include_finished: bool = False) -> list:
     with get_pool().connection() as conn:
         rows = conn.execute(sql).fetchall()
     iso = lambda v: v.isoformat() if v is not None and not isinstance(v, str) else v
-    return [{"order_no": o, "sales": s, "customer": c, "opened_at": iso(a), "finished_at": iso(f)}
-            for o, s, c, a, f in rows]
+    return [{"order_no": o, "sales": s, "customer": c, "population": p, "opened_at": iso(a),
+             "finished_at": iso(f)} for o, s, c, p, a, f in rows]
 
 
 def reassign_entries(conn, bmc_mac, serial, new_order) -> dict:
@@ -201,60 +234,53 @@ def reassign_entries(conn, bmc_mac, serial, new_order) -> dict:
     return counts
 
 
-def assign_node(bmc_mac, serial, assignment, settings) -> dict:
-    """Write (or clear, assignment=None) a tile's own order and move its
-    open-order entries to the resulting effective order, in ONE transaction."""
+def assign_node(bmc_mac, serial, assignment, settings, orders=None) -> dict:
+    """Write (or clear, assignment=None) a tile's own order + population and
+    move its open-order entries to the resulting effective order, in ONE
+    transaction. Sales/customer are the ORDER's (post_order), never the node's:
+    any in `assignment` are ignored and assigned_sales/customer are written NULL."""
     from . import assign
     a = assignment or {}
-    vals = (a.get("order_no"), a.get("sales"), a.get("customer"), a.get("population"),
-            serial if assignment else None)
+    vals = (a.get("order_no"), a.get("population") or None, serial if assignment else None)
     with get_pool().connection() as conn, conn.transaction():
         n = conn.execute(
-            "UPDATE post_node SET assigned_order_no = %s, assigned_sales = %s, "
-            "assigned_customer = %s, assigned_population = %s, assigned_serial = %s, "
+            "UPDATE post_node SET assigned_order_no = %s, assigned_sales = NULL, "
+            "assigned_customer = NULL, assigned_population = %s, assigned_serial = %s, "
             "assigned_at = " + ("NOW()" if assignment else "NULL") + " WHERE bmc_mac = %s",
             vals + (bmc_mac,)).rowcount
         if not n:
             conn.execute(
-                "INSERT INTO post_node (bmc_mac, serial, assigned_order_no, assigned_sales, "
-                "assigned_customer, assigned_population, assigned_serial, assigned_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, " + ("NOW()" if assignment else "NULL") + ")",
+                "INSERT INTO post_node (bmc_mac, serial, assigned_order_no, "
+                "assigned_population, assigned_serial, assigned_at) "
+                "VALUES (%s, %s, %s, %s, %s, " + ("NOW()" if assignment else "NULL") + ")",
                 (bmc_mac, serial) + vals)
-        node = {"serial": serial, "assigned_order_no": vals[0], "assigned_sales": vals[1],
-                "assigned_customer": vals[2], "assigned_population": vals[3],
-                "assigned_serial": vals[4]}
+        node = {"serial": serial, "assigned_order_no": vals[0], "assigned_population": vals[1],
+                "assigned_serial": vals[2]}
         eff = assign.effective(node, settings, serial)
-        touch_order(conn, eff["order_no"], sales=a.get("sales"), customer=a.get("customer"))
+        touch_order(conn, eff["order_no"])
         moved = reassign_entries(conn, bmc_mac, serial, eff["order_no"])
     return {"order_no": eff["order_no"], "effective": eff, "moved": moved}
 
 
-def apply_header_order(order_no, followers, *, sales=..., customer=...) -> list:
-    """New header order + move every follower's open-order entries, in ONE
-    transaction. Followers = assign.header_followers (present, unassigned)."""
-    sets, params = ["order_no = %s"], [order_no]
-    if sales is not ...:
-        sets.append("sales = %s"); params.append(sales)
-    if customer is not ...:
-        sets.append("customer = %s"); params.append(customer)
+def set_header(order_no, followers, *, sales=..., customer=..., population=...) -> list:
+    """The header's one Set, in ONE transaction: open/reopen `order_no`, write
+    the given labels onto ITS record (set_order_labels; Ellipsis = leave), keep
+    post_settings' order + labels in step with that record, and move every
+    follower's open-order entries (followers = assign.header_followers)."""
     out = []
     with get_pool().connection() as conn, conn.transaction():
-        conn.execute("UPDATE post_settings SET " + ", ".join(sets) +
-                     ", updated_at = NOW() WHERE id = 1", tuple(params))
-        touch_order(conn, order_no, sales=None if sales is ... else sales,
-                    customer=None if customer is ... else customer)
+        touch_order(conn, order_no)
+        set_order_labels(order_no, sales=sales, customer=customer, population=population,
+                         conn=conn)
+        rec = conn.execute("SELECT sales, customer, population FROM post_order "
+                           "WHERE order_no = %s", (order_no,)).fetchone() if order_no else None
+        rec = rec or (None, None, None)
+        conn.execute("UPDATE post_settings SET order_no = %s, sales = %s, customer = %s, "
+                     "population = %s, updated_at = NOW() WHERE id = 1", (order_no,) + tuple(rec))
         for f in followers:
             c = reassign_entries(conn, f["bmc_mac"], f["serial"], order_no)
             out.append(dict(port=f["port"], serial=f["serial"], **c))
     return out
-
-
-def touch_header_labels(order_no, *, sales=None, customer=None) -> None:
-    """Carry a header sales/customer edit onto the open order's registry row."""
-    if not order_no:
-        return
-    with get_pool().connection() as conn:
-        touch_order(conn, order_no, sales=sales, customer=customer)
 
 
 def runs_under(order_no) -> list:
@@ -305,16 +331,15 @@ def mark_finished(order_no, *, sales, customer, counts) -> None:
             "INSERT INTO post_order (order_no, sales, customer, finished_at, finished_counts) "
             "VALUES (%s, %s, %s, NOW(), %s) ON CONFLICT (order_no) DO UPDATE SET "
             "finished_at = NOW(), finished_counts = EXCLUDED.finished_counts, "
-            "sales = COALESCE(EXCLUDED.sales, post_order.sales), "
-            "customer = COALESCE(EXCLUDED.customer, post_order.customer)",
-            (order_no, sales, customer, json.dumps(counts)))
+            "sales = EXCLUDED.sales, customer = EXCLUDED.customer",
+            (order_no, sales or None, customer or None, json.dumps(counts)))
 
 
 def order_row(order_no) -> dict:
     with get_pool().connection() as conn:
-        r = conn.execute("SELECT sales, customer, finished_at FROM post_order WHERE order_no = %s",
-                         (order_no,)).fetchone()
-    return {"sales": r[0], "customer": r[1], "finished_at": r[2]} if r else {}
+        r = conn.execute("SELECT sales, customer, population, finished_at FROM post_order "
+                         "WHERE order_no = %s", (order_no,)).fetchone()
+    return {"sales": r[0], "customer": r[1], "population": r[2], "finished_at": r[3]} if r else {}
 
 
 def write_run(bmc_mac, result: dict, *, serial=None, order_no=None) -> None:

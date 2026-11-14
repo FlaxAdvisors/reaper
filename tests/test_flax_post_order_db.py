@@ -82,9 +82,9 @@ def test_touch_order_reopens_finished(db):
     admin, c = db
     from flax_post import state
     admin.execute("INSERT INTO post_order (order_no, finished_at) VALUES ('ZZTEST-7', now())")
-    state.touch_order(c, "ZZTEST-7", sales="S-7")
-    assert admin.execute("SELECT finished_at, sales FROM post_order WHERE order_no='ZZTEST-7'"
-                         ).fetchone() == (None, "S-7")
+    state.touch_order(c, "ZZTEST-7")
+    assert admin.execute("SELECT finished_at FROM post_order WHERE order_no='ZZTEST-7'"
+                         ).fetchone() == (None,)
     assert "ZZTEST-7" in state.open_orders(c)
     assert any(o["order_no"] == "ZZTEST-7" for o in state.list_orders())
 
@@ -192,7 +192,7 @@ def test_header_change_moves_only_present_unassigned_nodes(db):
     try:
         f = assign.header_followers(rows, state.read_nodes([P, D, O]), dict(HDR))
         assert [x["bmc_mac"] for x in f] == [P]
-        state.apply_header_order("ZZTEST-B", f)
+        state.set_header("ZZTEST-B", f)
         got = dict(admin.execute("SELECT bmc_mac, order_no FROM post_run WHERE bmc_mac = ANY(%s)", ([P, D, O],)).fetchall())
         assert got == {P: "ZZTEST-B", D: "ZZTEST-A", O: "ZZTEST-A"}
     finally:
@@ -226,3 +226,133 @@ def test_list_orders_includes_orders_with_runs_but_no_registry_row(db):
     assert "ZZTEST-OLD" in names and "ZZTEST-REG" in names
     admin.execute("INSERT INTO post_order (order_no, finished_at) VALUES ('ZZTEST-OLD', now())")
     assert "ZZTEST-OLD" not in [o["order_no"] for o in state.list_orders()]
+
+
+# --- order labels: one record, one writer (spec 2026-11-09 post order labels) ---
+import contextlib as _ctx
+import inspect as _inspect
+
+
+def _labels(admin, o):
+    return admin.execute("SELECT sales, customer, population, finished_at IS NOT NULL "
+                         "FROM post_order WHERE order_no=%s", (o,)).fetchone()
+
+
+@_ctx.contextmanager
+def _keep_settings(admin):
+    cols = "order_no, sales, customer, population"
+    before = admin.execute(f"SELECT {cols} FROM post_settings WHERE id=1").fetchone()
+    try:
+        yield
+    finally:
+        admin.execute("UPDATE post_settings SET order_no=%s, sales=%s, customer=%s, population=%s "
+                      "WHERE id=1", before)
+
+
+def test_set_order_labels_overwrites_and_blank_clears(db):
+    admin, _ = db
+    from flax_post import state
+    state.set_order_labels("ZZTEST-L", sales="S1", customer="C1", population="P1")
+    state.set_order_labels("ZZTEST-L", sales="S2", customer="")
+    assert _labels(admin, "ZZTEST-L") == ("S2", None, "P1", False)
+    state.set_order_labels("ZZTEST-L", population=None)
+    assert _labels(admin, "ZZTEST-L") == ("S2", None, None, False)
+
+
+def test_set_order_labels_creates_missing_row(db):
+    admin, _ = db
+    from flax_post import state
+    state.set_order_labels("ZZTEST-N", sales="SN", customer="CN", population="PN")
+    assert _labels(admin, "ZZTEST-N") == ("SN", "CN", "PN", False)
+
+
+def test_set_order_labels_never_reopens_or_finishes(db):
+    admin, _ = db
+    from flax_post import state
+    admin.execute("INSERT INTO post_order (order_no, finished_at) VALUES ('ZZTEST-F', now())")
+    state.set_order_labels("ZZTEST-F", sales="SF")
+    assert _labels(admin, "ZZTEST-F") == ("SF", None, None, True)
+
+
+def test_touch_order_no_longer_copies_labels(db):
+    admin, c = db
+    from flax_post import state
+    admin.execute("INSERT INTO post_order (order_no, sales, customer, population, finished_at) "
+                  "VALUES ('ZZTEST-T', 'ST', 'CT', 'PT', now())")
+    state.touch_order(c, "ZZTEST-T")
+    assert _labels(admin, "ZZTEST-T") == ("ST", "CT", "PT", False)
+    params = _inspect.signature(state.touch_order).parameters
+    assert "sales" not in params and "customer" not in params
+
+
+def test_header_set_writes_new_order_only(db):
+    admin, _ = db
+    from flax_post import state
+    admin.execute("INSERT INTO post_order (order_no, sales) VALUES ('ZZTEST-A', 'SA')")
+    with _keep_settings(admin):
+        admin.execute("UPDATE post_settings SET order_no='ZZTEST-A', sales='SA' WHERE id=1")
+        state.set_header("ZZTEST-B", [], sales="SB")
+        assert _labels(admin, "ZZTEST-B")[0] == "SB"
+        assert _labels(admin, "ZZTEST-A")[0] == "SA"
+        assert admin.execute("SELECT order_no, sales FROM post_settings WHERE id=1"
+                             ).fetchone() == ("ZZTEST-B", "SB")
+
+
+def test_header_order_change_does_not_carry_labels(db):
+    admin, _ = db
+    from flax_post import state
+    admin.execute("INSERT INTO post_order (order_no, sales, customer, population) "
+                  "VALUES ('ZZTEST-A', 'SA', 'CA', 'PA')")
+    with _keep_settings(admin):
+        admin.execute("UPDATE post_settings SET order_no='ZZTEST-A', sales='SA', customer='CA', "
+                      "population='PA' WHERE id=1")
+        state.set_header("ZZTEST-B", [])
+        assert _labels(admin, "ZZTEST-B") == (None, None, None, False)
+        assert admin.execute("SELECT sales, customer, population FROM post_settings WHERE id=1"
+                             ).fetchone() == (None, None, None)
+
+
+def test_header_set_on_finished_order_keeps_labels(db):
+    admin, _ = db
+    from flax_post import state
+    admin.execute("INSERT INTO post_order (order_no, sales, customer, population, finished_at) "
+                  "VALUES ('ZZTEST-B', 'SB', 'CB', 'PB', now())")
+    with _keep_settings(admin):
+        state.set_header("ZZTEST-B", [])
+        assert _labels(admin, "ZZTEST-B") == ("SB", "CB", "PB", False)
+        assert admin.execute("SELECT sales, customer, population FROM post_settings WHERE id=1"
+                             ).fetchone() == ("SB", "CB", "PB")
+
+
+def test_assign_writes_no_labels(db):
+    admin, _ = db
+    from flax_post import state
+    admin.execute("INSERT INTO post_order (order_no, sales, customer) VALUES ('ZZTEST-B', 'SB', 'CB')")
+    admin.execute("INSERT INTO post_node (bmc_mac, serial) VALUES (%s, %s)", (M1, SN1))
+    state.assign_node(M1, SN1, {"order_no": "ZZTEST-B", "sales": "X", "customer": "Y",
+                                "population": "P"}, HDR)
+    assert admin.execute("SELECT assigned_sales, assigned_customer, assigned_population "
+                         "FROM post_node WHERE bmc_mac=%s", (M1,)).fetchone() == (None, None, "P")
+    assert _labels(admin, "ZZTEST-B") == ("SB", "CB", None, False)
+
+
+def test_mark_finished_overwrites(db):
+    admin, _ = db
+    from flax_post import state
+    admin.execute("INSERT INTO post_order (order_no, sales, customer) VALUES ('ZZTEST-M', 'S1', 'C1')")
+    state.mark_finished("ZZTEST-M", sales=None, customer="C2", counts={"n": 1})
+    assert _labels(admin, "ZZTEST-M") == (None, "C2", None, True)
+
+
+def test_order_labels_includes_finished(db):
+    admin, _ = db
+    from flax_post import state
+    admin.execute("INSERT INTO post_order (order_no, sales, population) VALUES ('ZZTEST-O', 'SO', 'PO')")
+    admin.execute("INSERT INTO post_order (order_no, customer, finished_at) "
+                  "VALUES ('ZZTEST-D', 'CD', now())")
+    got = state.order_labels()
+    assert got["ZZTEST-O"] == {"sales": "SO", "customer": None, "population": "PO", "finished_at": None}
+    assert got["ZZTEST-D"]["customer"] == "CD" and got["ZZTEST-D"]["finished_at"]
+    assert state.order_row("ZZTEST-O")["population"] == "PO"
+    rows = {o["order_no"]: o for o in state.list_orders(include_finished=True)}
+    assert rows["ZZTEST-O"]["population"] == "PO" and "ZZTEST-D" in rows
