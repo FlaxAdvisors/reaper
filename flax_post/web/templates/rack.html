@@ -197,7 +197,7 @@
     <div class="m-box" :class="{'m-sol':modal?.kind==='sol', 'm-wide':modal?.kind==='step' && !!stepInfo?.table}" @click.stop>
       <div class="m-h"><span class="m-title">{{modalTitle()}}</span>
         <select name="post-pop-profile" v-if="modal?.kind==='pop'" v-model="popProfile" @change="loadInv()">
-          <option value="">(order: {{hdrSaved.population||'—'}})</option>
+          <option value="">(this node: {{sel?.population||'—'}})</option>
           <option v-for="p in profiles" :value="p">{{p}}</option></select>
         <span class="x" @click="closeModal()">✕</span></div>
       <div class="m-b">

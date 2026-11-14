@@ -248,6 +248,7 @@ def _run_blade(monkeypatch, arts, record=None, population="prof"):
     rec = dict(record or _RUN_REC)
     monkeypatch.setattr(app_module, "_blade_slots", lambda: [rec])
     monkeypatch.setattr(app_module.state, "read_settings", lambda: {"population": population})
+    monkeypatch.setattr(app_module.state, "read_state", lambda: {})
     monkeypatch.setattr(app_module.inventory._fm_live, "current", lambda path=None: {})
     calls = []
 
@@ -283,6 +284,20 @@ def test_api_inventory_sections_parse_the_runs_macinv_v(monkeypatch):
     assert seen == [("COUNT", "prof")]                           # POP judges the count form, as before
     assert "pop_export" not in j and "dir" not in j
 
+
+
+def test_api_inventory_judges_the_nodes_own_population(monkeypatch):
+    """POP/INV judge the node against the population the RUN judged it with
+    (pop_override -> its effective population -> header), not the header's."""
+    rec = dict(_RUN_REC, population="barivia-leo")
+    app_module, _ = _run_blade(monkeypatch, _arts(macinv="COUNT"), record=rec, population="ovh-bare-tp")
+    seen = []
+    monkeypatch.setattr(app_module.inventory, "verdict", _green(seen))
+    TestClient(app_module.app).get("/api/v1/inventory/et6b1")
+    monkeypatch.setattr(app_module.state, "read_state", lambda: {"et6b1": {"pop_override": "spare"}})
+    TestClient(app_module.app).get("/api/v1/inventory/et6b1")
+    TestClient(app_module.app).get("/api/v1/inventory/et6b1?profile=whatif")
+    assert [p for _, p in seen] == ["barivia-leo", "spare", "whatif"]
 
 
 def _clone_blocklist(monkeypatch, tmp_path):
@@ -594,3 +609,10 @@ def test_css_override_zone_and_shared_fields(client):
     zone = css[css.index(".ovr-zone{"):]
     assert "var(--violet)" in zone[:zone.index("}")]
     assert "var(--amber)" in css[css.index(".ctx.dirty{"):].split("}")[0]
+
+
+def test_pop_modal_default_names_the_nodes_population(client, monkeypatch):
+    _, html = _ui(client, monkeypatch)
+    i = html.index('name="post-pop-profile"')
+    opt = html[i:html.index("</option>", i)]
+    assert "sel?.population" in opt and "hdrSaved.population" not in opt

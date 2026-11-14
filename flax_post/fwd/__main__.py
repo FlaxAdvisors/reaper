@@ -57,7 +57,8 @@ class _Deps:
     def record_flash(self, port, bmc_mac, terminal, timeline):
         """Best-effort phase-4 fw-flash work record at a gauntlet's terminal
         transition. Identity comes from the durable post_node row (observe
-        writes host_mac + serial there); no resolvable identity -> skip."""
+        writes host_mac + serial there); no resolvable identity -> skip. Keys
+        are the node's effective order + that order's customer."""
         try:
             p0, serial = records.node_identity(bmc_mac)
             if p0 is None:
@@ -65,7 +66,7 @@ class _Deps:
             records.record_flash(
                 p0_mac=p0, serial=serial, port=port, terminal=terminal,
                 row=store.read().get(port) or {}, timeline=timeline,
-                keys=records.role_keys(state.read_settings()))
+                keys=state.effective_keys(bmc_mac, serial))
         except Exception:
             log.exception("work-record fw-flash write failed for %s", port)
 
@@ -76,7 +77,7 @@ class _Deps:
                 return
             records.record_action(
                 p0_mac=p0, serial=serial, port=port, action=action, ok=ok,
-                detail=detail, keys=records.role_keys(state.read_settings()))
+                detail=detail, keys=state.effective_keys(bmc_mac, serial))
         except Exception:
             log.exception("work-record fw-action write failed for %s", port)
 

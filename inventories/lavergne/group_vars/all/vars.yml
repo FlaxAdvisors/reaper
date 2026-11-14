@@ -192,7 +192,7 @@ apply_flax_post_db_password: "{{ vault_flax_stack_db_passwords.flax_post }}"
 # image explicitly (was tracking the role default). 0.9.113 = main + the
 # post-UI-actions branch. Viewer unit gains creds-bmc/opt-flax-bin/export/
 # node_config mounts; image adds nmap/jq/curl for the ghost helpers.
-apply_flax_post_image_tag: "0.9.216"  # 0.9.216 = order labels on the order record (044), header one-form Set
+apply_flax_post_image_tag: "0.9.217"  # 0.9.217 = fw records + POP/INV follow the node's effective order/population
 apply_flax_post_deploy_enabled: true   # Loose Post Deploy ON (operator 2026-11-06): a Qualify pass -> Ubuntu 24.04 + flax_user + iperf + stress -> Done; wipes the system disk unless post installed it
 
 # Core flax services pinned to the SAME build as flax_post (2026-09-11). Until

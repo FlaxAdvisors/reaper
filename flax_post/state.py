@@ -10,6 +10,7 @@ post_settings. vars_fields are merged into the row's JSONB `vars` so producers
 contribute slices without clobbering each other. Generation is bumped on write.
 """
 import json
+import logging
 
 from .db import get_pool
 
@@ -267,6 +268,21 @@ def assign_node(bmc_mac, serial, assignment, settings, orders=None) -> dict:
         touch_order(conn, eff["order_no"])
         moved = reassign_entries(conn, bmc_mac, serial, eff["order_no"])
     return {"order_no": eff["order_no"], "effective": eff, "moved": moved}
+
+
+def effective_keys(bmc_mac, serial) -> dict:
+    """The post role's record keys ({order, customer}) for ONE node: its
+    effective order (own assignment while the serial matches, else the header)
+    and THAT order's record customer. post_order unreadable -> the order only,
+    never the header's customer (same rule as the IPMI pass)."""
+    from . import assign, records
+    node = read_nodes([bmc_mac]).get(bmc_mac) if bmc_mac else None
+    try:
+        orders = order_labels()
+    except Exception:
+        logging.getLogger("flax-post").exception("post_order labels unreadable; keys carry no customer")
+        orders = {}
+    return records.role_keys(assign.effective(node, read_settings(), serial, orders))
 
 
 def set_header(order_no, followers, *, sales=..., customer=..., population=...) -> list:

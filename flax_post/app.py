@@ -248,7 +248,10 @@ def api_inventory(port: str, profile: "str | None" = None) -> JSONResponse:
     # tables paint the matching rows red and the INV button goes red.
     dimms = text("dimmsum")
     out["blocked"] = blocklist.check_dimmsum(dimms) if dimms else blocklist.check(sections.get("memory") or [])
-    prof = profile or state.read_settings().get("population")
+    # The profile the RUN judged this node with (pop_override -> the node's
+    # effective population -> header); ?profile= is the operator's what-if.
+    from .observe.host_qual import _read_profile_for
+    prof = profile or _read_profile_for(record, state)
     count = text("macinv")
     if count:
         out["pop"] = dict(inventory.verdict(count, prof), source="run", run_id=run_id)
