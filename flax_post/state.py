@@ -333,13 +333,16 @@ def artifacts_for(bmc_mac, run_id) -> list:
 
 
 def mark_finished(order_no, *, sales, customer, counts) -> None:
-    with get_pool().connection() as conn:
+    """Finish = an edit of the order's record (overwrite, blank clears) plus
+    the finished stamp, in one transaction; post_settings follows when this is
+    the header order (set_order_labels)."""
+    with get_pool().connection() as conn, conn.transaction():
         conn.execute(
-            "INSERT INTO post_order (order_no, sales, customer, finished_at, finished_counts) "
-            "VALUES (%s, %s, %s, NOW(), %s) ON CONFLICT (order_no) DO UPDATE SET "
-            "finished_at = NOW(), finished_counts = EXCLUDED.finished_counts, "
-            "sales = EXCLUDED.sales, customer = EXCLUDED.customer",
-            (order_no, sales or None, customer or None, json.dumps(counts)))
+            "INSERT INTO post_order (order_no, finished_at, finished_counts) "
+            "VALUES (%s, NOW(), %s) ON CONFLICT (order_no) DO UPDATE SET "
+            "finished_at = NOW(), finished_counts = EXCLUDED.finished_counts",
+            (order_no, json.dumps(counts)))
+        set_order_labels(order_no, sales=sales, customer=customer, conn=conn)
 
 
 def order_row(order_no) -> dict:

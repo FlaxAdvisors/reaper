@@ -129,7 +129,16 @@ function App() {
     applySettings(s) {
       const srv = hdrOf(s);
       if (this.hdrDirty()) {
-        if (!hdrSame(srv, this.hdrSaved)) this.hdrElsewhere = true;
+        const old = this.hdrSaved;
+        if (!hdrSame(srv, old)) {
+          // Same order on both sides: fields this operator has not touched
+          // follow the server, so a later Set cannot revert another browser's
+          // edit. If either side moved the order, keep the form and only warn.
+          if (srv.order_no === old.order_no && this.hdr.order_no === old.order_no) {
+            for (const k of HDR_KEYS) if ((this.hdr[k] || '') === (old[k] || '')) this.hdr[k] = srv[k];
+          }
+          this.hdrElsewhere = true;
+        }
         this.hdrSaved = srv;
       } else {
         this.hdrSaved = srv; this.hdr = { ...srv }; this.hdrElsewhere = false;

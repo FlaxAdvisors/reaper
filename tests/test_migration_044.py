@@ -31,8 +31,7 @@ def test_044_static(monkeypatch):
     assert m.__doc__.startswith("post:")
     up = _sql(m, monkeypatch)
     assert "alter table post_order add column if not exists population text" in up
-    assert "'barivia-leo'" in up and "'rrord-1033'" in up
-    assert "'ovh-bare-tp'" in up and "'rrord-100'" in up
+    assert "rrord" not in up              # derived from the data, not per-site literals
     assert up.count("population is null") == 2
     assert " to flax_" not in up  # no grant change
     assert "drop column if exists population" in _sql(m, monkeypatch, "downgrade")
@@ -53,8 +52,7 @@ def admin():
         pytest.skip(f"no DB: {exc}")
     if c.execute("SELECT to_regclass('public._retention_scratch_marker')").fetchone()[0] is None:
         c.close(); pytest.skip("not the local scratch cluster")
-    orders = ("RRORD-1033", "RRORD-100", "ZZTEST-044")
-    clean = lambda: c.execute("DELETE FROM post_order WHERE order_no = ANY(%s)", (list(orders),))
+    clean = lambda: c.execute("DELETE FROM post_order WHERE order_no LIKE 'ZZTEST-044%'")
     clean()
     yield c
     clean(); c.close()
@@ -64,17 +62,37 @@ def test_044_applied_on_the_scratch_db(admin):
     cols = {r[0] for r in admin.execute(
         "SELECT column_name FROM information_schema.columns WHERE table_name = 'post_order'")}
     assert "population" in cols
-    admin.execute("INSERT INTO post_order (order_no) VALUES ('RRORD-1033'), ('RRORD-100')")
-    admin.execute("INSERT INTO post_order (order_no, population) VALUES ('ZZTEST-044', 'x')")
     m = _load()
-    for sql in m.BACKFILL:
-        admin.execute(sql)
-    got = dict(admin.execute(
-        "SELECT order_no, population FROM post_order "
-        "WHERE order_no IN ('RRORD-1033', 'RRORD-100', 'ZZTEST-044')").fetchall())
-    assert got == {"RRORD-1033": "barivia-leo", "RRORD-100": "ovh-bare-tp", "ZZTEST-044": "x"}
-    admin.execute("UPDATE post_order SET population = 'kept' WHERE order_no = 'RRORD-100'")
-    for sql in m.BACKFILL:
-        admin.execute(sql)
-    assert admin.execute("SELECT population FROM post_order WHERE order_no = 'RRORD-100'"
-                         ).fetchone()[0] == "kept"
+    before = admin.execute("SELECT order_no, sales, customer, population FROM post_settings "
+                           "WHERE id=1").fetchone()
+    try:
+        admin.execute("INSERT INTO post_order (order_no, sales, customer) VALUES "
+                      "('ZZTEST-044A', 'SA', 'CA'), ('ZZTEST-044B', NULL, NULL), "
+                      "('ZZTEST-044C', NULL, NULL)")
+        admin.execute("INSERT INTO post_order (order_no, population) VALUES ('ZZTEST-044K', 'x')")
+        nodes = [("aa:de:ad:44:00:01", "ZZTEST-044B", "leo"), ("aa:de:ad:44:00:02", "ZZTEST-044B", "leo"),
+                 ("aa:de:ad:44:00:03", "ZZTEST-044C", "leo"), ("aa:de:ad:44:00:04", "ZZTEST-044C", "tp"),
+                 ("aa:de:ad:44:00:05", "ZZTEST-044K", "y")]
+        for mac, o, p in nodes:
+            admin.execute("INSERT INTO post_node (bmc_mac, assigned_order_no, assigned_population) "
+                          "VALUES (%s, %s, %s)", (mac, o, p))
+        admin.execute("UPDATE post_settings SET order_no='ZZTEST-044A', sales='stale', customer=NULL, "
+                      "population='hdr-pop' WHERE id=1")
+        for sql in m.BACKFILL:
+            admin.execute(sql)
+        got = dict(admin.execute("SELECT order_no, population FROM post_order "
+                                 "WHERE order_no LIKE 'ZZTEST-044%'").fetchall())
+        # header order <- header population; unanimous node override; mixed -> none; kept
+        assert got == {"ZZTEST-044A": "hdr-pop", "ZZTEST-044B": "leo", "ZZTEST-044C": None,
+                       "ZZTEST-044K": "x"}
+        # post_settings now mirrors the header order's record
+        assert admin.execute("SELECT sales, customer, population FROM post_settings WHERE id=1"
+                             ).fetchone() == ("SA", "CA", "hdr-pop")
+        for sql in m.BACKFILL:                 # re-runnable
+            admin.execute(sql)
+        assert admin.execute("SELECT population FROM post_order WHERE order_no='ZZTEST-044K'"
+                             ).fetchone()[0] == "x"
+    finally:
+        admin.execute("DELETE FROM post_node WHERE bmc_mac LIKE 'aa:de:ad:44:%'")
+        admin.execute("UPDATE post_settings SET order_no=%s, sales=%s, customer=%s, population=%s "
+                      "WHERE id=1", before)

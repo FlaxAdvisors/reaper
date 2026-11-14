@@ -369,3 +369,14 @@ def test_set_order_labels_keeps_header_settings_in_step(db):
         state.set_order_labels("ZZTEST-H", sales="SH", customer="")
         assert admin.execute("SELECT sales, customer FROM post_settings WHERE id=1"
                              ).fetchone() == ("SH", None)
+
+
+def test_mark_finished_keeps_header_settings_in_step(db):
+    admin, _ = db
+    from flax_post import state
+    admin.execute("INSERT INTO post_order (order_no, sales, customer) VALUES ('ZZTEST-FH', 'S1', 'C1')")
+    with _keep_settings(admin):
+        admin.execute("UPDATE post_settings SET order_no='ZZTEST-FH', sales='S1', customer='C1' WHERE id=1")
+        state.mark_finished("ZZTEST-FH", sales="S2", customer="C2", counts={})
+        assert admin.execute("SELECT sales, customer FROM post_settings WHERE id=1"
+                             ).fetchone() == ("S2", "C2")
