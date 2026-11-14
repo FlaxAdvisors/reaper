@@ -51,9 +51,25 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .ctx{display:flex;align-items:center;gap:.5rem}
 .ctx label{display:flex;align-items:center;gap:.3rem;font-size:.66rem;text-transform:uppercase;
   letter-spacing:.4px;color:var(--muted);font-weight:600}
-.ctx input,.ctx select{background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--text);
+/* one field style for every operator input: header, drawer override, Finish */
+.fld,.ctx input,.ctx select{background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--text);
   padding:.3rem .45rem;font-family:ui-monospace,monospace;font-size:.78rem}
+.fld:focus,.ctx input:focus,.ctx select:focus{outline:none;border-color:var(--accent);
+  box-shadow:0 0 0 1px var(--accent)}
 .ctx input{width:96px;text-transform:none}
+/* header form with unsaved edits: amber outline + marker; Set is the primary */
+.ctx{border-radius:var(--radius);padding:.15rem .3rem;outline:1px solid transparent}
+.ctx.dirty{outline:1px solid var(--amber);background:rgba(210,153,34,.06)}
+.ctx-set{display:inline-flex;align-items:center;gap:.3rem}
+.ctx-unsaved{font-size:.62rem;text-transform:uppercase;letter-spacing:.4px;color:var(--amber);font-weight:700}
+.ctx-note{font-size:.7rem;color:var(--amber);white-space:nowrap}
+.ctx-note.err{color:var(--red)}
+/* buttons in the header, the drawer override and the modals: the .actions look */
+.ctx button,.asg button,.m-actions button,.fin-btn{background:var(--panel2);border:1px solid var(--line);
+  color:var(--accent);border-radius:6px;padding:.3rem .65rem;font-weight:600;cursor:pointer;font-size:.78rem}
+.ctx button:hover,.asg button:hover,.m-actions button:hover,.fin-btn:hover{background:#222b3a}
+.ctx button:disabled,.asg button:disabled,.m-actions button:disabled{color:var(--dim);cursor:default;background:var(--panel2)}
+button.primary{background:rgba(88,166,255,.15);border-color:var(--accent);color:var(--accent)}
 .ctx select{max-width:170px}
 .ctx .clr{cursor:pointer;color:var(--dim);font-size:.95rem;padding:0 .15rem}
 .ctx .clr:hover{color:var(--text)}
@@ -268,7 +284,22 @@ button.mini{font-size:.66rem;padding:.05rem .4rem;margin-left:.5rem;vertical-ali
 /* per-node order (2026-11-06): tile ORD row + drawer assignment */
 .t-row.ovr .v{color:var(--violet)}
 .t-row.stale .v{text-decoration:line-through;opacity:.6}
-.asg{display:flex;flex-wrap:wrap;gap:.3rem;margin:.2rem 0 .5rem}
+.asg{display:flex;flex-wrap:wrap;gap:.3rem;margin:.2rem 0 .5rem;align-items:center}
 .asg input,.asg select{width:7.5rem}
+/* the drawer's per-node override: violet = "this node differs from the header"
+   (the tile ORD row's colour); .follow = node follows the header (dashed, no tint) */
+.ovr-zone{border:1px solid rgba(163,113,247,.35);box-shadow:inset 3px 0 0 var(--violet);
+  background:rgba(163,113,247,.06);border-radius:var(--radius);padding:.5rem .6rem}
+.ovr-zone .fld{border-color:rgba(163,113,247,.45)}
+.ovr-zone .fld:focus{border-color:var(--violet);box-shadow:0 0 0 1px var(--violet)}
+.ovr-zone.follow{border:1px dashed var(--line);box-shadow:none;background:transparent}
+.ovr-zone.follow .fld{border-color:var(--line)}
+.asg-labels{flex-basis:100%;display:flex;flex-wrap:wrap;align-items:center;gap:.3rem .6rem;font-size:.78rem}
+.asg-labels .k{color:var(--dim);font-weight:600}
+.asg-labels .v{font-family:ui-monospace,monospace}
+.asg-labels .lnk{color:var(--accent);cursor:pointer;font-size:.74rem}
+.asg-labels .lnk:hover{text-decoration:underline}
+.asg-for{flex-basis:100%;color:var(--muted);font-size:.74rem}
+.fin-form .fld{width:auto;min-width:7.5rem}
 .asg-msg{font-size:.79rem;color:var(--muted);align-self:center}
 .mv-row{font-family:ui-monospace,monospace;font-size:.85rem;margin:.15rem 0}

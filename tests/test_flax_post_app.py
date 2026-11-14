@@ -580,3 +580,17 @@ def test_finish_requires_customer(client, monkeypatch):
     _fin(monkeypatch, [])
     r = client.post("/api/v1/orders/finish", json={"order_no": "RRORD-1033", "customer": " "})
     assert r.status_code == 400
+
+
+def test_css_override_zone_and_shared_fields(client):
+    import re
+    css = client.get("/web-static/rack.css").text
+    for sel in (".fld{", ".ovr-zone{", ".ovr-zone.follow{", ".ctx.dirty{", "button.primary{"):
+        assert sel in css.replace(" {", "{"), sel
+    # the new rules use the existing tokens only (no new colour literal)
+    for sel, body in re.findall(r"([^{}]+)\{([^}]*)\}", css):
+        if re.search(r"\.fld|\.ovr-zone|\.ctx\.dirty|\.ctx-|button\.primary|\.asg-", sel):
+            assert "#" not in body, sel
+    zone = css[css.index(".ovr-zone{"):]
+    assert "var(--violet)" in zone[:zone.index("}")]
+    assert "var(--amber)" in css[css.index(".ctx.dirty{"):].split("}")[0]

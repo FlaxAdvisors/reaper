@@ -219,7 +219,7 @@
         <div v-else-if="modal?.kind==='move'">
           <p class="m-sub">these nodes follow the header; their open-order runs move to <b>{{modal?.to || '—'}}</b></p>
           <div class="mv-row" v-for="m in (modal?.movers || [])">{{m.port}} · {{m.serial}} · {{m.from || '—'}} → {{m.to || '—'}}</div>
-          <p class="m-sub" v-if="modal?.set">Set: order <b>{{modal.set.order_no || '—'}}</b> · sales <b>{{modal.set.sales || '—'}}</b> · customer <b>{{modal.set.customer || '—'}}</b> · population <b>{{modal.set.population || '—'}}</b></p>
+          <p class="m-sub" v-if="modal?.set">Set: order <b>{{modal?.set?.order_no || '—'}}</b> · sales <b>{{modal?.set?.sales || '—'}}</b> · customer <b>{{modal?.set?.customer || '—'}}</b> · population <b>{{modal?.set?.population || '—'}}</b></p>
           <div class="m-actions"><button @click="confirmMove()">Confirm</button> <button @click="cancelMove()">Cancel</button></div>
         </div>
         <div v-else-if="modal?.kind==='pwr'">
