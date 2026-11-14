@@ -16,7 +16,7 @@ export async function saveSettings(patch) {
   let j = {}; try { j = await r.json(); } catch (e) { /* empty body */ }
   return { status: r.status, ...j };
 }
-// A tile's own order ({port, order_no, sales, customer, population}) or
+// A tile's own order ({port, order_no, population}) or
 // {port, clear: true} to follow the header again.
 export async function postAssign(body) {
   const r = await fetch('/api/v1/assign', {
@@ -36,9 +36,20 @@ export async function postFinish(body) {
   });
   return { status: r.status, ...(await r.json()) };
 }
-export async function fetchOrders() {
-  const r = await fetch('/api/v1/orders', { cache: 'no-store' });
+// includeFinished: finished orders too (the header/drawer label refill index).
+export async function fetchOrders(includeFinished) {
+  const r = await fetch('/api/v1/orders' + (includeFinished ? '?include_finished=1' : ''), { cache: 'no-store' });
   return r.ok ? r.json() : { orders: [], header: null };
+}
+// One ORDER's labels {order_no, sales, customer, population} (every node on
+// it): overwrite, blank clears. -> {ok, finished}
+export async function postOrderLabels(body) {
+  const r = await fetch('/api/v1/orders/labels', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  let j = {}; try { j = await r.json(); } catch (e) { /* empty body */ }
+  return { status: r.status, ...j };
 }
 export async function postPower(port, action) {
   const r = await fetch('/api/v1/power', {

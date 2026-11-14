@@ -112,7 +112,7 @@ def test_rack_shell_vendored_and_controls(client):
     from flax_post.version import __version__
     assert ('version: "%s"' % __version__).encode() in body
     assert b'class="ctx"' in body                  # order + population cluster
-    assert b'v-model="order_no"' in body and b'v-model="population"' in body
+    assert b'v-model="hdr.order_no"' in body and b'v-model="hdr.population"' in body
     assert b'class="metrics"' in body              # dashboard chips
     assert b'class="title"' in body                # <site> Post Servers (right)
 
@@ -486,6 +486,35 @@ def test_index_boot_has_sales(client, monkeypatch):
     html = client.get("/").text
     for s in ("sales:", 'name="post-sales"', 'name="assign-order"', 'id="post-open-orders"'):
         assert s in html, s
+
+
+def _ui(client, monkeypatch):
+    from flax_post import app as app_module
+    monkeypatch.setattr(app_module.state, "read_settings",
+                        lambda: {"order_no": "RRORD-100", "population": None, "sales": "S-1"})
+    return client.get("/web-static/app.js").text, client.get("/").text
+
+
+def test_header_has_no_per_field_save(client, monkeypatch):
+    js, html = _ui(client, monkeypatch)
+    for name in ("saveSales", "saveCustomer", "savePopulation", "saveOrder", "clearCustomer",
+                 "clearOrder"):
+        assert name not in js and name not in html, name
+
+
+def test_header_set_posts_settings_once(client, monkeypatch):
+    js, html = _ui(client, monkeypatch)
+    assert "setHeader(" in js and "cancelHeader(" in js and "onHdrOrder(" in js
+    assert '@click="setHeader()"' in html and '@click="cancelHeader()"' in html
+    assert 'v-model="hdr.order_no"' in html and '@change="onHdrOrder()"' in html
+
+
+def test_dirty_form_survives_poll(client, monkeypatch):
+    js, _ = _ui(client, monkeypatch)
+    body = js[js.index("applySettings(s) {"):]
+    body = body[:body.index("\n    },")]
+    assert "hdrDirty()" in body and "hdrElsewhere" in body
+    assert "include_finished=1" in client.get("/web-static/api.js").text
 
 
 def test_static_app_js_wires_assign(client):

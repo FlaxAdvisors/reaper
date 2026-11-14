@@ -54,23 +54,29 @@
           <option v-for="r in rackList" :value="r.switch">{{r.label}}</option>
         </select>
       </div>
-      <div class="tr"><div class="ctx">
+      <div class="tr"><div class="ctx" :class="{dirty: hdrDirty()}">
         <label>Customer
-          <input name="post-customer" autocomplete="off" v-model="customer" @change="saveCustomer"
-                 placeholder="customer">
-          <span class="clr" title="clear" @click="clearCustomer">✕</span></label>
-        <label>Order <input name="post-order" autocomplete="off" list="post-open-orders" v-model="order_no" @change="saveOrder" placeholder="RRORD-003">
-          <span class="clr" title="clear" @click="clearOrder">✕</span></label>
+          <input class="fld" name="post-customer" autocomplete="off" v-model="hdr.customer" placeholder="customer">
+          <span class="clr" title="clear (Set saves)" @click="hdr.customer=''">✕</span></label>
+        <label>Order <input class="fld" name="post-order" autocomplete="off" list="post-open-orders" v-model="hdr.order_no" @change="onHdrOrder()" placeholder="RRORD-003">
+          <span class="clr" title="clear (Set saves)" @click="hdr.order_no=''">✕</span></label>
         <datalist id="post-open-orders"><option v-for="o in openOrders" :value="o.order_no"></option></datalist>
-        <button class="fin-btn" @click="openFinish()" :title="finishedOrder && finishedOrder===order_no ? 'finished; finish again to re-archive' : 'archive one whole order'">Finish…</button>
-        <span class="chip" v-if="finishedOrder && finishedOrder===order_no" title="finish again to re-archive">finished</span>
-        <label>Sales <input name="post-sales" autocomplete="off" v-model="sales" @change="saveSales" placeholder="S-ORD…"></label>
+        <button class="fin-btn" @click="openFinish()" :title="finishedOrder && finishedOrder===hdrSaved.order_no ? 'finished; finish again to re-archive' : 'archive one whole order'">Finish…</button>
+        <span class="chip" v-if="finishedOrder && finishedOrder===hdrSaved.order_no" title="finish again to re-archive">finished</span>
+        <label>Sales <input class="fld" name="post-sales" autocomplete="off" v-model="hdr.sales" placeholder="S-ORD…"></label>
         <label>Population
-          <select name="post-population" v-model="population" @change="savePopulation">
+          <select class="fld" name="post-population" v-model="hdr.population">
             <option value="">—</option>
             <option v-for="p in profiles" :value="p">{{p}}</option>
           </select></label>
-        <span class="ctx-at" :title="'order / population / customer are shared: set in any browser, every open post UI shows them within 15 s'">{{settingsAtText()}}</span>
+        <span class="ctx-set" v-if="hdrDirty()">
+          <span class="ctx-unsaved" title="the header form has edits not saved yet">unsaved</span>
+          <button class="primary" @click="setHeader()">Set</button>
+          <button @click="cancelHeader()">Cancel</button></span>
+        <span class="ctx-note" v-if="hdrDirty() && reopenNote(hdr.order_no)">{{reopenNote(hdr.order_no)}}</span>
+        <span class="ctx-note" v-if="hdrElsewhere" title="another browser Set the header while you were editing; Cancel shows it">changed elsewhere</span>
+        <span class="ctx-note err" v-if="hdrMsg">{{hdrMsg}}</span>
+        <span class="ctx-at" v-if="!hdrDirty()" :title="'order / sales / customer / population are shared: Set in any browser, every open post UI shows them within 15 s'">{{settingsAtText()}}</span>
       </div></div>
     </div>
   </div>
@@ -179,7 +185,7 @@
     <div class="m-box" :class="{'m-sol':modal?.kind==='sol', 'm-wide':modal?.kind==='step' && !!stepInfo?.table}" @click.stop>
       <div class="m-h"><span class="m-title">{{modalTitle()}}</span>
         <select name="post-pop-profile" v-if="modal?.kind==='pop'" v-model="popProfile" @change="loadInv()">
-          <option value="">(order: {{population||'—'}})</option>
+          <option value="">(order: {{hdrSaved.population||'—'}})</option>
           <option v-for="p in profiles" :value="p">{{p}}</option></select>
         <span class="x" @click="closeModal()">✕</span></div>
       <div class="m-b">
@@ -201,6 +207,7 @@
         <div v-else-if="modal?.kind==='move'">
           <p class="m-sub">these nodes follow the header; their open-order runs move to <b>{{modal?.to || '—'}}</b></p>
           <div class="mv-row" v-for="m in (modal?.movers || [])">{{m.port}} · {{m.serial}} · {{m.from || '—'}} → {{m.to || '—'}}</div>
+          <p class="m-sub" v-if="modal?.set">Set: order <b>{{modal.set.order_no || '—'}}</b> · sales <b>{{modal.set.sales || '—'}}</b> · customer <b>{{modal.set.customer || '—'}}</b> · population <b>{{modal.set.population || '—'}}</b></p>
           <div class="m-actions"><button @click="confirmMove()">Confirm</button> <button @click="cancelMove()">Cancel</button></div>
         </div>
         <div v-else-if="modal?.kind==='pwr'">

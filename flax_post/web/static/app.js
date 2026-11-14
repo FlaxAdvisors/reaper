@@ -2,7 +2,7 @@
 // Renders the prototype layout (docs/post-ui-prototype.html) from the real
 // /api/v1/blades feed. Discover = violet; grey = empty/unknown.
 import { fetchBlades, fetchProfiles, saveSettings, postPower, postIdentify, fetchInventory,
-         fetchArtifacts, fetchArtifact, fetchStep, postAssign, fetchOrders,
+         fetchArtifacts, fetchArtifact, fetchStep, postAssign, fetchOrders, postOrderLabels,
          fetchFinishPreview, postFinish, postDeployRetry } from '/web-static/api.js';
 
 // firmware phases (post_state fw_bmc/fw_bios/fw_nic 'phase') during which a
@@ -15,6 +15,11 @@ const RGB = { discover: '163,113,247', firmware: '88,166,255', qualify: '210,153
 const REFRESH_MS = 15000;
 
 const real = (slots) => slots.filter((s) => !s.empty);
+
+// The header context as a form: {order_no, sales, customer, population}, '' for none.
+const HDR_KEYS = ['order_no', 'sales', 'customer', 'population'];
+const hdrOf = (s) => Object.fromEntries(HDR_KEYS.map((k) => [k, (s && s[k]) || '']));
+const hdrSame = (a, b) => HDR_KEYS.every((k) => (a[k] || '') === (b[k] || ''));
 
 // groupColor() memo: distinct-value -> color-index map, computed once per
 // (section-array, keyField). Keyed by the section array's identity (each
@@ -54,11 +59,12 @@ function App() {
     site: boot.site || 'Post',
     phases: boot.phases || ['Discover', 'Firmware', 'Qualify', 'Done'],
     slots: [], racks: {}, profiles: [],
-    order_no: boot.order_no || '',
-    population: boot.population || '',
-    customer: boot.customer || '',
-    sales: boot.sales || '',
+    // header context: `hdr` is the form, `hdrSaved` the server's last context.
+    // Nothing saves until Set; a poll never overwrites a dirty form.
+    hdr: hdrOf(boot), hdrSaved: hdrOf(boot), hdrElsewhere: false, hdrMsg: null,
     openOrders: [],
+    // every order's record (finished included): {order_no: {sales, customer, population, finished_at}}
+    orderIndex: {},
     // the drawer's per-node order assignment form (prefilled on open)
     asg: { order: '', sales: '', customer: '', population: '' }, asgMsg: null,
     fin: { order: '', customer: '', sales: '', preview: null, msg: null, busy: false }, finishedOrder: null,
@@ -93,7 +99,7 @@ function App() {
         this.slots = d.slots || []; this.racks = d.racks || {};
         if (this.sel) this.sel = this.slots.find((s) => s.port === this.sel.port) || null;
         if (d.settings) this.applySettings(d.settings);
-        try { this.openOrders = (await fetchOrders()).orders || []; } catch (e) { /* keep last */ }
+        try { this.applyOrders((await fetchOrders(true)).orders || []); } catch (e) { /* keep last */ }
         this.live = true;
         this.checkVersion(d.version);
       } catch (e) { this.live = false; console.error(e); }
@@ -106,24 +112,45 @@ function App() {
     checkVersion(v) {
       if (!v || !this.boot.version || v === this.boot.version) return;
       const a = document.activeElement;
-      if (this.modal || (a && ['INPUT', 'TEXTAREA', 'SELECT'].includes(a.tagName))) return;
+      if (this.modal || this.hdrDirty() || (a && ['INPUT', 'TEXTAREA', 'SELECT'].includes(a.tagName))) return;
       try {
         if (sessionStorage.getItem('post-reloaded-for') === v) return;
         sessionStorage.setItem('post-reloaded-for', v);
       } catch (e) { /* no storage: reload anyway */ }
       location.reload();
     },
-    // The server's operator context wins over this browser's copy, except for
-    // the one field the operator is typing in right now (a poll must not eat
-    // a half-typed order number). Set in browser A, visible in browser B
-    // within one poll.
+    // The server's operator context fills the header form unless the form
+    // is dirty (an unsaved edit): then only hdrSaved moves, and a context that
+    // changed underneath (Set in another browser) shows "changed elsewhere".
+    // Set in browser A, visible in browser B within one poll.
     applySettings(s) {
-      const active = (document.activeElement && document.activeElement.name) || '';
-      if (active !== 'post-order') this.order_no = s.order_no || '';
-      if (active !== 'post-population') this.population = s.population || '';
-      if (active !== 'post-customer') this.customer = s.customer || '';
-      if (active !== 'post-sales') this.sales = s.sales || '';
+      const srv = hdrOf(s);
+      if (this.hdrDirty()) {
+        if (!hdrSame(srv, this.hdrSaved)) this.hdrElsewhere = true;
+        this.hdrSaved = srv;
+      } else {
+        this.hdrSaved = srv; this.hdr = { ...srv }; this.hdrElsewhere = false;
+      }
       this.settingsAt = s.updated_at || null;
+    },
+    applyOrders(rows) {
+      const idx = {};
+      for (const o of rows) idx[o.order_no] = o;
+      this.orderIndex = idx;
+      this.openOrders = rows.filter((o) => !o.finished_at);
+    },
+    orderRec(o) { return this.orderIndex[(o || '').trim()] || null; },
+    hdrDirty() { return !hdrSame(this.hdr, this.hdrSaved); },
+    // Order picked/typed: the other three come from THAT order's record (blank
+    // for an order with none) -- never carried over from the previous order.
+    onHdrOrder() {
+      const r = this.orderRec(this.hdr.order_no) || {};
+      this.hdr.sales = r.sales || ''; this.hdr.customer = r.customer || '';
+      this.hdr.population = r.population || '';
+    },
+    reopenNote(o) {
+      const r = this.orderRec(o);
+      return r && r.finished_at ? `${o.trim()} is finished — Set reopens it` : '';
     },
     settingsAtText() {
       if (!this.settingsAt) return '';
@@ -493,26 +520,38 @@ function App() {
       return `${names[m.kind] || m.kind} — ${id}`;
     },
 
-    // ---- settings (order + population + customer) ----
-    // A header ORDER change moves every present, unassigned node's open-order
-    // entries with it; the server answers 409 with the movers until confirmed.
-    async saveOrder() { await this.postOrder(this.order_no || null); },
-    async clearOrder() { this.order_no = ''; await this.postOrder(null); },
-    async postOrder(order_no, confirm) {
-      const r = await saveSettings(confirm ? { order_no, confirm: true } : { order_no });
+    // ---- header Set (order + sales + customer + population, one POST) ----
+    // Only the labels that differ from the chosen order's record are sent, so
+    // Set onto a finished order (reopen) never clears its labels. An ORDER
+    // change moves every present, unassigned node's open-order entries; the
+    // server answers 409 with the movers + the values to set until confirmed.
+    async setHeader(confirm) {
+      const o = (this.hdr.order_no || '').trim();
+      const rec = this.orderRec(o) || {};
+      const body = { order_no: o || null };
+      for (const k of ['sales', 'customer', 'population']) {
+        const v = (this.hdr[k] || '').trim();
+        if (v !== (rec[k] || '')) body[k] = v || null;
+      }
+      if (confirm) body.confirm = true;
+      const r = await saveSettings(body);
       if (r.status === 409 && r.confirm) {
         if (window.SolConsole) window.SolConsole.close();
-        this.modal = { kind: 'move', movers: r.confirm, to: order_no };
+        this.modal = { kind: 'move', movers: r.confirm, to: o, set: r.set || null };
         return;
       }
+      if (!r.ok) { this.hdrMsg = r.reason || ('error ' + r.status); return; }
+      this.hdrMsg = null; this.hdrElsewhere = false;
+      if (r.settings) { this.hdrSaved = hdrOf(r.settings); this.hdr = hdrOf(r.settings); }
       this.refresh();
     },
-    async confirmMove() { const to = this.modal?.to; this.modal = null; await this.postOrder(to, true); },
-    cancelMove() { this.modal = null; this.refresh(); },
+    cancelHeader() { this.hdr = { ...this.hdrSaved }; this.hdrElsewhere = false; this.hdrMsg = null; },
+    async confirmMove() { this.modal = null; await this.setHeader(true); },
+    cancelMove() { this.modal = null; },
     // ---- Finish order (archive one whole post order) ----
     async openFinish() {
       if (window.SolConsole) window.SolConsole.close();
-      this.fin = { order: this.order_no || ((this.openOrders[0] || {}).order_no || ''), customer: '', sales: '',
+      this.fin = { order: this.hdrSaved.order_no || ((this.openOrders[0] || {}).order_no || ''), customer: '', sales: '',
                    preview: null, msg: null, busy: false };
       this.modal = { kind: 'finish' };
       await this.loadFinish();
@@ -528,11 +567,10 @@ function App() {
                                    sales: this.fin.sales });
       this.fin.busy = false;
       this.fin.msg = r.ok ? `archived ${(r.archived || {}).devices || 0} node(s)` : (r.reason || ('error ' + r.status));
-      if (r.ok) this.openOrders = (await fetchOrders()).orders || [];
+      if (r.ok) this.applyOrders((await fetchOrders(true)).orders || []);
       if (r.ok) { this.finishedOrder = this.fin.order; this.refresh(); }
     },
     finWhen(t) { if (!t) return ''; const d = new Date(t * 1000); return isNaN(d) ? '' : d.toISOString().slice(0, 16).replace('T', ' '); },
-    async saveSales() { await saveSettings({ sales: this.sales || null }); this.refresh(); },
     // ---- per-node order assignment (drawer) ----
     prefillAsg(b) {
       const own = b && b.order_source === 'node';
@@ -562,9 +600,6 @@ function App() {
       this.asgMsg = r.ok ? 'header' : (r.reason || ('error ' + r.status));
       this.refresh();
     },
-    async savePopulation() { await saveSettings({ population: this.population || null }); this.refresh(); },
-    async saveCustomer() { await saveSettings({ customer: this.customer || null }); this.refresh(); },
-    async clearCustomer() { this.customer = ''; await saveSettings({ customer: null }); this.refresh(); },
   };
 }
 
