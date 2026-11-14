@@ -285,35 +285,51 @@ def effective_keys(bmc_mac, serial) -> dict:
     return records.role_keys(assign.effective(node, read_settings(), serial, orders))
 
 
-def set_header(order_no, followers, *, sales=..., customer=..., population=...) -> list:
-    """The header's one Set, in ONE transaction: open/reopen `order_no`, write
-    the given labels onto ITS record (set_order_labels; Ellipsis = leave), keep
-    post_settings' order + labels in step with that record, and move every
-    follower's open-order entries (followers = assign.header_followers)."""
-    out = []
+class HeaderMoved(Exception):
+    """The header order changed between the caller's read and its Set."""
+
+
+def order_exists(order_no) -> bool:
+    """An order is known when it has a post_order row or finished runs under it."""
     if not order_no:
-        # No header order (lavergne runs this way): there is no record, so the
-        # given labels are the header's own; the others stay as they are.
-        given = {k: (v or None) for k, v in zip(_LABELS, (sales, customer, population))
-                 if v is not ...}
-        with get_pool().connection() as conn, conn.transaction():
+        return False
+    with get_pool().connection() as conn:
+        return conn.execute(
+            "SELECT EXISTS (SELECT 1 FROM post_order WHERE order_no = %s) "
+            "OR EXISTS (SELECT 1 FROM post_run WHERE order_no = %s)",
+            (order_no, order_no)).fetchone()[0]
+
+
+def set_header(order_no, followers, *, sales=..., customer=..., population=...,
+               expect_order=...) -> list:
+    """The header's one Set, in ONE transaction holding the post_settings row
+    lock: refuse (HeaderMoved) if the header order is no longer `expect_order`
+    (the followers were computed against it); open/reopen `order_no`, write the
+    given labels onto ITS record (set_order_labels; Ellipsis = leave), keep
+    post_settings in step with that record, and move every follower's
+    open-order entries (followers = assign.header_followers). Readers are never
+    blocked (MVCC); a concurrent Set waits for the row lock, then re-checks.
+    With no order there is no record: the given labels are the header's own."""
+    out = []
+    given = {k: (v or None) for k, v in zip(_LABELS, (sales, customer, population))
+             if v is not ...}
+    with get_pool().connection() as conn, conn.transaction():
+        cur = conn.execute("SELECT order_no FROM post_settings WHERE id = 1 FOR UPDATE").fetchone()
+        if expect_order is not ... and ((cur[0] if cur else None) or None) != (expect_order or None):
+            raise HeaderMoved()
+        if not order_no:
             conn.execute("UPDATE post_settings SET order_no = NULL"
                          + "".join(", " + k + " = %s" for k in given)
                          + ", updated_at = NOW() WHERE id = 1", tuple(given.values()))
-            for f in followers:
-                c = reassign_entries(conn, f["bmc_mac"], f["serial"], None)
-                out.append(dict(port=f["port"], serial=f["serial"], **c))
-        return out
-    with get_pool().connection() as conn, conn.transaction():
-        touch_order(conn, order_no)
-        set_order_labels(order_no, sales=sales, customer=customer, population=population,
-                         conn=conn)
-        rec = conn.execute("SELECT sales, customer, population FROM post_order "
-                           "WHERE order_no = %s", (order_no,)).fetchone() or (None, None, None)
-        conn.execute("UPDATE post_settings SET order_no = %s, sales = %s, customer = %s, "
-                     "population = %s, updated_at = NOW() WHERE id = 1", (order_no,) + tuple(rec))
+        else:
+            touch_order(conn, order_no)
+            set_order_labels(order_no, conn=conn, **given)
+            rec = conn.execute("SELECT sales, customer, population FROM post_order "
+                               "WHERE order_no = %s", (order_no,)).fetchone() or (None, None, None)
+            conn.execute("UPDATE post_settings SET order_no = %s, sales = %s, customer = %s, "
+                         "population = %s, updated_at = NOW() WHERE id = 1", (order_no,) + tuple(rec))
         for f in followers:
-            c = reassign_entries(conn, f["bmc_mac"], f["serial"], order_no)
+            c = reassign_entries(conn, f["bmc_mac"], f["serial"], order_no or None)
             out.append(dict(port=f["port"], serial=f["serial"], **c))
     return out
 

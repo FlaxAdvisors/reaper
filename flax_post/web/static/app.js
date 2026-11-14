@@ -609,6 +609,16 @@ function App() {
       if (!r.ok) { this.asgMsg = r.reason || ('error ' + r.status); return; }
       this.asgLabels.edit = false;
       this.asgMsg = r.finished ? 'labels saved — re-Finish to update the archive' : 'labels saved';
+      // This browser's own save on the header's order: fold it into the header
+      // (saved + any field the operator has not edited), so it is not
+      // reported as "changed elsewhere" and a dirty form stays dirty only by
+      // the operator's own edits.
+      if (order_no === this.hdrSaved.order_no) {
+        const old = this.hdrSaved;
+        const now = { ...old, sales: (this.asgLabels.sales || '').trim(), customer: (this.asgLabels.customer || '').trim() };
+        for (const k of ['sales', 'customer']) if ((this.hdr[k] || '') === (old[k] || '')) this.hdr[k] = now[k];
+        this.hdrSaved = now;
+      }
       this.refresh();
     },
     asgStatus(b) {

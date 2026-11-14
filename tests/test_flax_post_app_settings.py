@@ -15,7 +15,8 @@ def test_settings_set_sends_all_four_in_one_call(monkeypatch):
     r = TestClient(app_mod.app).post("/api/v1/settings", json={
         "order_no": "RRORD-003", "sales": "S-3", "customer": "acme", "population": "p3"})
     assert r.status_code == 200
-    assert calls == [("RRORD-003", [], {"sales": "S-3", "customer": "acme", "population": "p3"})]
+    assert calls == [("RRORD-003", [], {"sales": "S-3", "customer": "acme", "population": "p3",
+                                        "expect_order": "RRORD-003"})]
 
 
 def test_settings_sales_alone_targets_header_order(monkeypatch):
@@ -24,7 +25,7 @@ def test_settings_sales_alone_targets_header_order(monkeypatch):
     monkeypatch.setattr(app_mod.state, "read_settings", lambda: _hdr("RRORD-100"))
     r = TestClient(app_mod.app).post("/api/v1/settings", json={"sales": "S-100"})
     assert r.status_code == 200
-    assert calls == [("RRORD-100", [], {"sales": "S-100"})]
+    assert calls == [("RRORD-100", [], {"sales": "S-100", "expect_order": "RRORD-100"})]
 
 
 def test_settings_rejects_bad_sales(monkeypatch):
@@ -115,6 +116,7 @@ def _labels_spy(monkeypatch, finished=None):
     monkeypatch.setattr(app_mod.state, "order_row",
                         lambda o: {"sales": None, "customer": None, "population": None,
                                    "finished_at": finished})
+    monkeypatch.setattr(app_mod.state, "order_exists", lambda o: True)
     return calls
 
 
@@ -138,3 +140,28 @@ def test_order_labels_on_finished_order_says_so(monkeypatch):
     r = TestClient(app_mod.app).post("/api/v1/orders/labels", json={"order_no": "RRORD-100",
                                                                      "customer": "OVH"})
     assert r.status_code == 200 and r.json()["finished"] is True
+
+
+def test_order_labels_refuses_an_order_that_does_not_exist(monkeypatch):
+    calls = _labels_spy(monkeypatch)
+    monkeypatch.setattr(app_mod.state, "order_exists", lambda o: o == "RRORD-100")
+    c = TestClient(app_mod.app)
+    r = c.post("/api/v1/orders/labels", json={"order_no": "RRORD-1O0", "sales": "S-1"})
+    assert r.status_code == 404 and "Assign or Set" in r.json()["reason"] and calls == []
+    assert c.post("/api/v1/orders/labels", json={"order_no": "RRORD-100", "sales": "S-1"}
+                  ).status_code == 200
+
+
+def test_settings_header_moved_is_a_409(monkeypatch):
+    def moved(o, f, **kw):
+        assert kw.get("expect_order") == "RRORD-100"
+        raise app_mod.state.HeaderMoved()
+    monkeypatch.setattr(app_mod.state, "set_header", moved)
+    monkeypatch.setattr(app_mod.state, "read_settings", lambda: _hdr("RRORD-100"))
+    r = TestClient(app_mod.app).post("/api/v1/settings", json={"sales": "S-100"})
+    assert r.status_code == 409 and r.json()["reason"] == "header changed elsewhere; reload"
+
+
+def test_settings_runs_off_the_event_loop():
+    import inspect
+    assert not inspect.iscoroutinefunction(app_mod._apply_settings)

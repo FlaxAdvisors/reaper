@@ -146,7 +146,7 @@
       <div class="asg-labels" v-if="!asgLabels.edit">
         <span class="k">sales</span><span class="v">{{asgRec().sales || '—'}}</span>
         <span class="k">customer</span><span class="v">{{asgRec().customer || '—'}}</span>
-        <a class="lnk" v-if="asgOrder()" @click="editOrderLabels()" title="change the labels of this ORDER (every node on it)">edit</a>
+        <a class="lnk" v-if="orderRec(asgOrder())" @click="editOrderLabels()" title="change the labels of this ORDER (every node on it)">edit</a>
       </div>
       <div class="asg-labels edit" v-else>
         <span class="asg-for">labels for <b>{{asgOrder()}}</b> — all nodes on this order</span>

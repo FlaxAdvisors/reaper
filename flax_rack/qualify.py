@@ -925,7 +925,7 @@ def fio_detail(detail: dict, verdict, fio_text, alldisks, lsblk, baseline=None) 
 
 
 def fio_judge_note() -> str:
-    return fio_judge.note()
+    return fio_judge.note(site=False)         # rackpost judges no site peers
 
 
 def smart_rung(res: RungResult, alldisks) -> RungResult:

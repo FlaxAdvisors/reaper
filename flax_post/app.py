@@ -76,9 +76,14 @@ def _blade_slots() -> list[dict]:
     devices = queries.post_devices()
     facts = consume.switch_ports(switch)
     consumed = consume.consumed_by_port(devices, facts, switch)
+    try:
+        orders = state.order_labels()
+    except Exception:          # e.g. before migration 044: blank labels, never a dead view
+        log.exception("post_order labels unreadable; labels blank this pass")
+        orders = {}
     return blades.build_slots(geo["slots"], consumed, state.read_state(),
                               state.read_settings(), facts, nodes=state.read_nodes(),
-                              orders=state.order_labels())
+                              orders=orders)
 
 
 @app.get("/")
@@ -129,6 +134,10 @@ async def api_order_labels(request: Request) -> JSONResponse:
     labels, err = _labels_in(body)
     if err:
         return JSONResponse({"ok": False, "reason": err}, status_code=400)
+    # Labels never create an order: only Assign or Set opens one.
+    if not await run_in_threadpool(state.order_exists, order_no):
+        return JSONResponse({"ok": False, "reason": f"no order {order_no}: Assign or Set first"},
+                            status_code=404)
     await run_in_threadpool(lambda: state.set_order_labels(order_no, **labels))
     row = await run_in_threadpool(state.order_row, order_no)
     return JSONResponse({"ok": True, "finished": bool(row.get("finished_at"))})
@@ -292,25 +301,35 @@ async def api_settings(request: Request) -> JSONResponse:
     unassigned node's open-order entries with it, so it is confirmed first:
     409 lists the movers and the four values to set until confirm: true."""
     body = await request.json()
+    status, payload = await run_in_threadpool(_apply_settings, body)
+    return JSONResponse(payload, status_code=status)
+
+
+def _apply_settings(body) -> "tuple[int, dict]":
+    """api_settings' work, off the event loop (polls keep answering). The write
+    is one transaction in state.set_header, which refuses if the header order
+    moved since `current` was read (the followers were computed against it)."""
     labels, err = _labels_in(body)
     if err:
-        return JSONResponse({"ok": False, "reason": err}, status_code=400)
+        return 400, {"ok": False, "reason": err}
     current = state.read_settings()
-    target = ((body.get("order_no") or "").strip() or None) if "order_no" in body \
-        else (current.get("order_no") or None)
+    cur_order = current.get("order_no") or None
+    target = ((body.get("order_no") or "").strip() or None) if "order_no" in body else cur_order
     followers = []
-    if target != (current.get("order_no") or None):
+    if target != cur_order:
         followers = assign.header_followers(state.read_state(), state.read_nodes(), current)
         if followers and body.get("confirm") is not True:
             rec = (state.order_row(target) if target else {}) or {}
-            return JSONResponse({"ok": False, "confirm": [
+            return 409, {"ok": False, "confirm": [
                 {"port": f["port"], "serial": f["serial"],
-                 "from": f.get("order_no") or current.get("order_no"), "to": target}
+                 "from": f.get("order_no") or cur_order, "to": target}
                 for f in followers],
-                "set": dict({k: rec.get(k) for k in _LABEL_KEYS}, order_no=target, **labels)},
-                status_code=409)
-    moved = await run_in_threadpool(lambda: state.set_header(target, followers, **labels))
-    return JSONResponse({"ok": True, "moved": moved, "settings": state.read_settings()})
+                "set": dict({k: rec.get(k) for k in _LABEL_KEYS}, order_no=target, **labels)}
+    try:
+        moved = state.set_header(target, followers, expect_order=cur_order, **labels)
+    except state.HeaderMoved:
+        return 409, {"ok": False, "reason": "header changed elsewhere; reload"}
+    return 200, {"ok": True, "moved": moved, "settings": state.read_settings()}
 
 
 @app.post("/api/v1/assign")

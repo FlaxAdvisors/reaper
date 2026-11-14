@@ -221,13 +221,14 @@ def no_baseline_fragment(results):
     return f" · {n} drive{'s' if n != 1 else ''} no baseline"
 
 
-def note() -> str:
-    """The judge's constants as one sentence for a fio step's notes (both UIs)."""
+def note(site: bool = True) -> str:
+    """The judge's constants as one sentence for a fio step's notes (both UIs).
+    site=False: siblings were only the node's own drives (rackpost judges no site peers)."""
     return (f"expected / check: each drive against its model's fleet history (mean "
             f"{FLAG_SIGMA:g}σ on the bad side, σ ≥ {SIGMA_FLOOR_FRAC * 100:g}% of the mean, "
             f"n ≥ {MIN_SAMPLES}, history "
             f"{CLIP_SIGMA:g}σ-clipped; a history spread σ/mean > {SPREAD_CAP * 100:g}% is "
-            f"not used: no baseline (spread too wide)) and against same-model, same-size siblings in the node and across the site "
+            f"not used: no baseline (spread too wide)) and against same-model, same-size siblings in the node" + (" and across the site" if site else "") + " "
             f"(> {SIBLING_PCT}% worse than their median, ≥ {MIN_SIBLINGS} "
             f"drives); outside = flagged (a label), never a failure; no baseline = neither check "
             f"applied")

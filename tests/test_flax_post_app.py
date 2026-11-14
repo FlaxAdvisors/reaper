@@ -77,7 +77,7 @@ def test_post_settings_writes(monkeypatch):
     from flax_post import app as app_module
     captured = {}
     monkeypatch.setattr(app_module.state, "set_header",
-                        lambda o, f, **kw: captured.update(kw, order_no=o) or [])
+                        lambda o, f, expect_order=None, **kw: captured.update(kw, order_no=o) or [])
     monkeypatch.setattr(app_module.state, "read_settings",
                         lambda: {"order_no": "RRORD-004", "population": None, "customer": "OVH",
                                  "updated_at": "2026-09-12T03:47:40+00:00"})
@@ -616,3 +616,41 @@ def test_pop_modal_default_names_the_nodes_population(client, monkeypatch):
     i = html.index('name="post-pop-profile"')
     opt = html[i:html.index("</option>", i)]
     assert "sel?.population" in opt and "hdrSaved.population" not in opt
+
+
+def test_blade_slots_show_blank_labels_when_orders_unreadable(monkeypatch):
+    from flax_post import app as app_module
+    seen = {}
+    monkeypatch.setattr(app_module.geometry, "load_geometry", lambda: {"slots": [], "racks": {}})
+    monkeypatch.setattr(app_module.blades, "post_switch", lambda g: "sw")
+    monkeypatch.setattr(app_module.queries, "post_devices", lambda: [])
+    monkeypatch.setattr(app_module.consume, "switch_ports", lambda s: {})
+    monkeypatch.setattr(app_module.consume, "consumed_by_port", lambda d, f, s: {})
+    monkeypatch.setattr(app_module.state, "read_state", lambda: {})
+    monkeypatch.setattr(app_module.state, "read_settings", lambda: {})
+    monkeypatch.setattr(app_module.state, "read_nodes", lambda *a: {})
+    def boom():
+        raise RuntimeError("column population does not exist")
+    monkeypatch.setattr(app_module.state, "order_labels", boom)
+    monkeypatch.setattr(app_module.blades, "build_slots",
+                        lambda *a, **k: seen.update(orders=k.get("orders")) or [])
+    assert app_module._blade_slots() == [] and seen["orders"] == {}
+
+
+def test_drawer_edit_link_only_for_an_existing_order(client, monkeypatch):
+    _, html = _ui(client, monkeypatch)
+    i = html.index('@click="editOrderLabels()"')
+    tag = html[html.rindex("<a", 0, i):i]
+    assert "orderRec(asgOrder())" in tag
+
+
+def test_own_drawer_save_folds_into_the_header(client):
+    js = client.get("/web-static/app.js").text
+    body = js[js.index("async saveOrderLabels() {"):]
+    body = body[:body.index("\n    },")]
+    assert "hdrSaved" in body
+
+
+def test_header_order_field_is_wider(client):
+    css = client.get("/web-static/rack.css").text
+    assert 'input[name="post-order"]' in css

@@ -56,7 +56,8 @@ code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
   padding:.3rem .45rem;font-family:ui-monospace,monospace;font-size:.78rem}
 .fld:focus,.ctx input:focus,.ctx select:focus{outline:none;border-color:var(--accent);
   box-shadow:0 0 0 1px var(--accent)}
-.ctx input{width:96px;text-transform:none}
+.ctx input{width:104px;text-transform:none}
+.ctx input[name="post-order"]{width:124px}
 /* header form with unsaved edits: amber outline + marker; Set is the primary */
 .ctx{border-radius:var(--radius);padding:.15rem .3rem;outline:1px solid transparent}
 .ctx.dirty{outline:1px solid var(--amber);background:rgba(210,153,34,.06)}
@@ -285,7 +286,8 @@ button.mini{font-size:.66rem;padding:.05rem .4rem;margin-left:.5rem;vertical-ali
 .t-row.ovr .v{color:var(--violet)}
 .t-row.stale .v{text-decoration:line-through;opacity:.6}
 .asg{display:flex;flex-wrap:wrap;gap:.3rem;margin:.2rem 0 .5rem;align-items:center}
-.asg input,.asg select{width:7.5rem}
+.asg input{width:7.5rem}
+.asg select{width:auto;min-width:7.5rem;max-width:13rem}
 /* the drawer's per-node override: violet = "this node differs from the header"
    (the tile ORD row's colour); .follow = node follows the header (dashed, no tint) */
 .ovr-zone{border:1px solid rgba(163,113,247,.35);box-shadow:inset 3px 0 0 var(--violet);

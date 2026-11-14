@@ -394,3 +394,28 @@ def test_header_without_order_keeps_its_own_labels(db):
         state.set_header(None, [], population="other")
         assert admin.execute("SELECT customer, population FROM post_settings WHERE id=1"
                              ).fetchone() == ("C", "other")
+
+
+def test_order_exists_row_or_runs(db):
+    admin, _ = db
+    from flax_post import state
+    admin.execute("INSERT INTO post_order (order_no) VALUES ('ZZTEST-E1')")
+    admin.execute("INSERT INTO post_run (bmc_mac, run_id, serial, order_no, result) "
+                  "VALUES (%s, 'e2', %s, 'ZZTEST-E2', '{}')", (M1, SN1))
+    assert state.order_exists("ZZTEST-E1") and state.order_exists("ZZTEST-E2")
+    assert not state.order_exists("ZZTEST-TYPO")
+
+
+def test_set_header_refuses_when_header_moved(db):
+    admin, _ = db
+    from flax_post import state
+    with _keep_settings(admin):
+        admin.execute("UPDATE post_settings SET order_no='ZZTEST-X', sales='SX' WHERE id=1")
+        with pytest.raises(state.HeaderMoved):
+            state.set_header("ZZTEST-B", [], sales="SB", expect_order="ZZTEST-A")
+        assert admin.execute("SELECT order_no, sales FROM post_settings WHERE id=1"
+                             ).fetchone() == ("ZZTEST-X", "SX")
+        assert admin.execute("SELECT count(*) FROM post_order WHERE order_no='ZZTEST-B'"
+                             ).fetchone()[0] == 0
+        state.set_header("ZZTEST-B", [], sales="SB", expect_order="ZZTEST-X")
+        assert admin.execute("SELECT order_no FROM post_settings WHERE id=1").fetchone() == ("ZZTEST-B",)

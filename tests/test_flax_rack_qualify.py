@@ -926,3 +926,12 @@ def test_fio_view_rejudges_a_row_summarized_before_the_judge(tmp_path, monkeypat
     assert det["flagged"] == ["sdc"] and det["headline"].startswith("fio pass · 1 drive")
     assert [r[0] for r in det["rows"]].count("devices") == 1
     assert det["rows"][-1] == ["stage", "fio"] and det["notes"].count("agent note") == 1
+
+
+def test_fio_detail_note_says_siblings_are_in_the_node_only():
+    """rackpost judges without site peers: its note must not claim 'across the site'."""
+    text = _hdd_fio({"sda": "5010", "sdb": "4990", "sdc": "9000"})
+    det = qualify.fio_detail({"summary": {"devices": ["sda", "sdb", "sdc"]}}, "pass", text,
+                             _HDD_ALLDISKS, None, baseline=_HDD_BASE)
+    note = det["notes"][-1]
+    assert "siblings in the node" in note and "across the site" not in note

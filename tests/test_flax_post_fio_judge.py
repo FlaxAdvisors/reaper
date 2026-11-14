@@ -174,3 +174,9 @@ def test_v1_group_with_a_cut_sata_model_is_not_used():  # RF5
     r = fj.judge({"sda": {"bw": _pj(mbps=100)}},
                  {"sda": {"model": "SanDisk SD9SN8W-512G", "size_gb": 512}}, _base([g]))
     assert r["sda"]["verdict"] == "no baseline"
+
+
+def test_note_scope():
+    from flax_post import fio_judge as fj
+    assert "in the node and across the site" in fj.note()
+    assert "across the site" not in fj.note(site=False) and "in the node" in fj.note(site=False)
