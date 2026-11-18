@@ -153,5 +153,10 @@
     "switch": "turtle-lorax",
     "port": "swp52",
     "reason": "uplink to rabbit-lorax Ethernet32/1 (trunk) - not a blade slot, exclude from steering"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp3",
+    "reason": "vlan 2 rabbit-fiesta OOB mgmt (SONiC eth0 + BMC) - not a blade slot, exclude from steering"
   }
 ]

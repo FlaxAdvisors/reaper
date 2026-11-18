@@ -30,6 +30,7 @@ iface swp2
 
 auto swp3
 iface swp3
+    alias "rabbit-fiesta OOB mgmt (SONiC eth0 + BMC)"
     bridge-access 2
 
 auto swp4

@@ -13,6 +13,11 @@
 # it is served by Kea (legacy-import reservation, kea.hosts subnet 4 -> .13),
 # NOT dnsmasq DHCP. Its DNS name resolves via the Kea-side hostname / this A:
 192.168.88.13 rabbit-lorax-bmc
+# rabbit-fiesta (Wedge100S, SONiC) and its BMC share one OOB cable on
+# turtle-lorax swp3 (access 2) since 2026-11-18 (was swp23, a vid 26 DUT
+# slot). Both are Kea legacy-import reservations in subnet 4, as above:
+192.168.88.14 rabbit-fiesta-bmc
+192.168.88.32 rabbit-fiesta
 # (hare-lorax-bmc / hare-lorax removed — rabbit-hare is a DUT now, served via
 #  the DUT pool, not mgmt.)
 #
@@ -24,3 +29,5 @@
 #   ip -6 neigh show dev eth0  |  grep <oui>
 #
 # rabbit-lorax-bmc  fe80::aa2b:b5ff:feb8:01d4%mgmt  (a8:2b:b5:b8:01:d4)
+# rabbit-fiesta-bmc fe80::3e2c:99ff:fe58:9d02%mgmt  (3c:2c:99:58:9d:02, Edge-Core OUI)
+# rabbit-fiesta     fe80::290:fbff:fe61:daa0%mgmt   (00:90:fb:61:da:a0, SONiC eth0)
