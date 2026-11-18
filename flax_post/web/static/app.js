@@ -45,10 +45,20 @@ function buildGroups(slots) {
   for (const s of slots) { (byG[s.group] ??= {}); ((byG[s.group])[s.ou] ??= []).push(s); }
   return Object.keys(byG).map(Number).sort((a, b) => b - a).map((g) => {
     const ous = Object.keys(byG[g]).map(Number).sort((a, b) => b - a);
-    const rows = ous.map((ou) => ({ ou, cells: byG[g][ou].slice().sort((a, b) => COL[a.col] - COL[b.col]) }));
+    // a row is as wide as its geometry width (a 4U BC is two half-width IOM slots)
+    // and as tall as its height (2U = one tile height)
+    const rows = ous.map((ou) => {
+      const cells = byG[g][ou].slice().sort((a, b) => COL[a.col] - COL[b.col]);
+      const width = Math.max(...cells.map((c) => c.width || 3));
+      const height = Math.max(...cells.map((c) => c.height || 2));
+      return { ou, cells, width, height, label: height > 2 ? `${ou}–${ou + height - 1}` : `${ou}`,
+               style: `grid-template-columns:46px repeat(${width},1fr)` };
+    });
     const cols = byG[g][ous[0]].map((c) => COLNAME[c.col] || c.col);
     const lo = ous[ous.length - 1];
-    return { gid: g, range: `${lo}–${ous[0] + 1}`, colHeads: cols, rows };
+    const top = Math.max(...rows.map((r) => r.ou + r.height - 1));
+    return { gid: g, range: `${lo}–${top}`, colHeads: cols, rows,
+             headStyle: `grid-template-columns:46px repeat(${rows[0].width},1fr)` };
   });
 }
 
@@ -284,7 +294,10 @@ function App() {
       }
       return cl.join(' ');
     },
-    tileStyle(b) { return (!b.empty && this.sel && this.sel.port === b.port) ? `background:rgba(${RGB[this.phaseKey(b)] || RGB.discover},.16)` : ''; },
+    tileStyle(b) {
+      const tall = (b.height || 2) > 2 ? `min-height:${54 * b.height}px;` : '';
+      return tall + ((!b.empty && this.sel && this.sel.port === b.port) ? `background:rgba(${RGB[this.phaseKey(b)] || RGB.discover},.16)` : '');
+    },
 
     // ---- filter + search ----
     toggle(f) { this.filter = this.filter === f ? null : f; },
