@@ -7,8 +7,8 @@ devices:
   - {name: bang-fiesta, kind: bang, mgmt_ip: 192.168.88.21, bmc_ip: 192.168.88.11}
   - {name: bang-siesta, kind: bang, mgmt_ip: 192.168.88.22, bmc_ip: 192.168.88.12, note: "VRRP backup · PG streaming standby (vid 8)"}
   - {name: turtle-lorax, kind: switch, vendor: cumulus, mgmt_ip: 192.168.88.33, note: "Cumulus · mgmt/OOB"}
-  - {name: rabbit-lorax, kind: switch, vendor: arista, mgmt_ip: 192.168.88.31, note: "Wedge100S · triage + post DUT switch"}
-  - {name: rabbit-fiesta, kind: switch, vendor: sonic, mgmt_ip: 192.168.88.32, bmc_ip: 192.168.88.14, note: "Wedge100S · SONiC · post rack switch"}
+  - {name: rabbit-lorax, kind: switch, vendor: arista, mgmt_ip: 192.168.88.31, note: "Wedge100S · EOS · triage DUT switch (Et6-8) · core for vids 2/4/8/16-31"}
+  - {name: rabbit-fiesta, kind: switch, vendor: sonic, mgmt_ip: 192.168.88.32, bmc_ip: 192.168.88.14, note: "Wedge100S · SONiC · post rack switch (27 slots, untagged 24/25)"}
   - {name: rs-bridge, kind: uplink, note: "ReadySpaces wifi, MAC-NAT client bridge · both bangs' only WAN"}
 links:
   - {a: "turtle-lorax:swp48", b: "rs-bridge:LAN", speed: 1G, note: "access 4 (corp)"}
@@ -19,4 +19,5 @@ links:
   - {a: "bang-fiesta:eth0", b: "rabbit-lorax:Et32/2", speed: 10G, note: "native 2 (bang BMC NC-SI), tagged 4, 8, 16-31"}
   - {a: "bang-siesta:eth0", b: "rabbit-lorax:Et32/4", speed: 10G, note: "native 2 (bang BMC NC-SI), tagged 4, 8, 16-31"}
   - {a: "rabbit-fiesta:eth0", b: "turtle-lorax:swp3", speed: 1G, note: "access 2 · SONiC eth0 + BMC on one OOB cable"}
-  - {a: "turtle-lorax:swp52", b: "rabbit-lorax:Et32/1", speed: 10G, note: "tagged 2,4,6,8,10,12,16-31"}
+  - {a: "turtle-lorax:swp52", b: "rabbit-lorax:Et32/1", speed: 10G, note: "tagged 2,4,8,16-31"}
+  - {a: "rabbit-lorax:Et1/1", b: "rabbit-fiesta:Ethernet124", speed: 100G, note: "trunk tagged 24-32 · post rack uplink"}
