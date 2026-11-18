@@ -52,3 +52,20 @@ def test_load_geometry_reads_file(tmp_path, monkeypatch):
     geo = geometry.load_geometry()
     assert len(geo["slots"]) == 1
     assert geometry.load_geometry("/nonexistent/x.json") == {"racks": {}, "slots": []}
+
+
+def test_rack_fixtures_are_parsed_for_the_elevation():
+    """Non-slot rack items (the switch, power shelves) drawn in the elevation."""
+    geo = geometry.parse_geometry({"racks": [{"switch": "rabbit-fiesta", "label": "Braintree Post",
+                                              "fixtures": [{"ou": 39, "label": "rabbit-fiesta"},
+                                                           {"ou": 9, "height": 3, "label": "power shelf",
+                                                            "kind": "power"}]}],
+                                   "slots": [_SLOT]})
+    fx = geo["racks"]["rabbit-fiesta"]["fixtures"]
+    assert fx == [{"ou": 39, "height": 1, "label": "rabbit-fiesta", "kind": "switch"},
+                  {"ou": 9, "height": 3, "label": "power shelf", "kind": "power"}]
+
+
+def test_rack_without_fixtures_has_none():
+    geo = geometry.parse_geometry({"racks": [{"switch": "rabbit-edam"}], "slots": [_SLOT]})
+    assert geo["racks"]["rabbit-edam"]["fixtures"] == []

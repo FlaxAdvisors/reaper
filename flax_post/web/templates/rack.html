@@ -83,7 +83,14 @@
 
   <!-- ================= rack ================= -->
   <div class="rack">
-    <div class="group" v-for="g in groups">
+    <template v-for="g in groups" :key="g.key">
+    <div class="elev-gap" v-if="g.kind === 'gap'" :style="'min-height:' + Math.min(14 * (g.top - g.lo + 1), 120) + 'px'">
+      <span class="g-range">{{g.range}}</span><span class="elev-note">empty</span>
+    </div>
+    <div class="elev-fixture" v-else-if="g.kind === 'fixture'" :class="'fx-' + g.fkind">
+      <span class="g-range">{{g.lo === g.top ? g.lo : g.lo + '–' + g.top}}</span><span class="elev-label">{{g.label}}</span>
+    </div>
+    <div class="group" v-else>
       <div class="group-h" :style="g.headStyle">
         <span class="g-range">{{g.range}}</span>
         <span class="col-h" v-for="h in g.colHeads">{{h}}</span>
@@ -115,6 +122,7 @@
         </div>
       </div>
     </div>
+    </template>
   </div>
 
   <!-- ================= detail drawer (docked, non-modal) ================= -->

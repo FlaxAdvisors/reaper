@@ -40,10 +40,10 @@ function groupIndex(section, keyField, value) {
   return idx == null ? 0 : idx % 9;
 }
 
-function buildGroups(slots) {
+function buildGroups(slots, fixtures) {
   const byG = {};
   for (const s of slots) { (byG[s.group] ??= {}); ((byG[s.group])[s.ou] ??= []).push(s); }
-  return Object.keys(byG).map(Number).sort((a, b) => b - a).map((g) => {
+  const groups = Object.keys(byG).map(Number).map((g) => {
     const ous = Object.keys(byG[g]).map(Number).sort((a, b) => b - a);
     // a row is as wide as its geometry width (a 4U BC is two half-width IOM slots)
     // and as tall as its height (2U = one tile height)
@@ -57,9 +57,26 @@ function buildGroups(slots) {
     const cols = byG[g][ous[0]].map((c) => COLNAME[c.col] || c.col);
     const lo = ous[ous.length - 1];
     const top = Math.max(...rows.map((r) => r.ou + r.height - 1));
-    return { gid: g, range: `${lo}–${top}`, colHeads: cols, rows,
+    return { kind: 'group', key: `g${g}`, gid: g, lo, top, range: `${lo}–${top}`, colHeads: cols, rows,
              headStyle: `grid-template-columns:46px repeat(${rows[0].width},1fr)` };
   });
+  // the physical elevation, top OU first: slot groups, rack fixtures (switch, power
+  // shelves) and the empty spans between them, so the view reads like the rack
+  const blocks = groups.concat((fixtures || []).map((f, i) => ({
+    kind: 'fixture', key: `f${i}`, lo: f.ou, top: f.ou + (f.height || 1) - 1, label: f.label,
+    fkind: f.kind || 'switch' })));
+  if (!blocks.length) return blocks;
+  blocks.sort((a, b) => b.top - a.top);
+  const out = [];
+  let next = blocks[0].top;            // the highest OU not yet accounted for
+  for (const b of blocks) {
+    if (b.top < next) out.push({ kind: 'gap', key: `gap${b.top + 1}`, lo: b.top + 1, top: next,
+                                 range: b.top + 1 === next ? `${next}` : `${b.top + 1}–${next}` });
+    out.push(b);
+    next = Math.min(next, b.lo - 1);
+  }
+  if (next >= 1) out.push({ kind: 'gap', key: 'gap1', lo: 1, top: next, range: next === 1 ? '1' : `1–${next}` });
+  return out;
 }
 
 function App() {
@@ -181,7 +198,10 @@ function App() {
 
     get rackList() { return Object.entries(this.racks).map(([sw, r]) => ({ switch: sw, label: r.label })); },
     get visible() { return this.activeSwitch ? this.slots.filter((s) => s.switch === this.activeSwitch) : this.slots; },
-    get groups() { return buildGroups(this.visible); },
+    get groups() {
+      const sw = this.activeSwitch || Object.keys(this.racks)[0];
+      return buildGroups(this.visible, ((this.racks || {})[sw] || {}).fixtures || []);
+    },
     get counts() {
       const b = real(this.visible), n = (f) => b.filter((x) => this.inFilter(x, f)).length;
       return { discover: n('discover'), firmware: n('firmware'), qualify: n('qualify'), done: n('done'),

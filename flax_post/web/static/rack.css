@@ -79,6 +79,15 @@ button.primary{background:rgba(88,166,255,.15);border-color:var(--accent);color:
 /* ---- rack ---- */
 .rack{max-width:1000px;margin:1rem 0 1rem 1.25rem;padding:0 1rem 3rem}
 .group{margin-bottom:1.1rem}
+/* elevation: the empty OU spans and the rack's non-slot fixtures (switch, power shelves) */
+.elev-gap{display:flex;align-items:center;gap:.6rem;border:1px dashed var(--border);border-radius:var(--radius);
+  margin:.25rem 0 .8rem 54px;padding:.2rem .6rem;color:var(--dim)}
+.elev-gap .elev-note{font-size:.66rem;text-transform:uppercase;letter-spacing:.7px}
+.elev-fixture{display:flex;align-items:center;gap:.6rem;border:1px solid var(--line);border-radius:var(--radius);
+  margin:.25rem 0 .8rem 54px;padding:.35rem .6rem;background:#121822;color:var(--muted)}
+.elev-fixture .elev-label{font-size:.78rem;font-weight:600}
+.elev-fixture.fx-power{background:#17140d;border-color:#3a3120}
+
 .group-h{display:grid;grid-template-columns:46px 1fr 1fr 1fr;gap:.5rem;align-items:end;
   border-top:1px solid var(--line);padding-top:.5rem;margin:.25rem 0 .4rem}
 .g-range{font-family:ui-monospace,monospace;font-size:.66rem;color:var(--dim)}

@@ -57,11 +57,19 @@ def _normalize_slot(s: dict) -> dict:
     }
 
 
+def _normalize_fixture(f: dict) -> dict:
+    """A non-slot rack item drawn in the elevation (the rack switch, a power shelf):
+    {ou (bottom), height (1), label, kind (switch | power | other)}."""
+    return {"ou": int(f["ou"]), "height": int(f.get("height", 1)),
+            "label": str(f.get("label", "")), "kind": str(f.get("kind", "switch"))}
+
+
 def parse_geometry(data) -> dict:
     """Normalize a {racks, slots} object (or bare slot list) into {racks: {switch: {...}}, slots: [...]}."""
     if isinstance(data, list):
         data = {"racks": [], "slots": data}
-    racks = {r["switch"]: {"tag": r.get("tag", ""), "label": r.get("label", r["switch"])}
+    racks = {r["switch"]: {"tag": r.get("tag", ""), "label": r.get("label", r["switch"]),
+                           "fixtures": [_normalize_fixture(f) for f in (r.get("fixtures") or [])]}
              for r in (data.get("racks") or [])}
     slots = [_normalize_slot(s) for s in (data.get("slots") or [])]
     return {"racks": racks, "slots": slots}

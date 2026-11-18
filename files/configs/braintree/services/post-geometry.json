@@ -3,7 +3,27 @@
     {
       "switch": "rabbit-fiesta",
       "tag": "",
-      "label": "Braintree Post"
+      "label": "Braintree Post",
+      "fixtures": [
+        {
+          "ou": 39,
+          "height": 1,
+          "label": "rabbit-fiesta \u00b7 Wedge100S SONiC",
+          "kind": "switch"
+        },
+        {
+          "ou": 28,
+          "height": 3,
+          "label": "power shelf",
+          "kind": "power"
+        },
+        {
+          "ou": 9,
+          "height": 3,
+          "label": "power shelf",
+          "kind": "power"
+        }
+      ]
     }
   ],
   "slots": [
