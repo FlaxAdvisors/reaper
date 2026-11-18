@@ -91,10 +91,6 @@ vlan 50
 management api http-commands
    no shutdown
 !
-interface Port-Channel1
-   shutdown
-   switchport access vlan 999
-!
 interface Ethernet1/1
    speed forced 100gfull
    switchport trunk allowed vlan 24-32
@@ -127,9 +123,6 @@ interface Ethernet4/1
 interface Ethernet5/1
    speed forced 25gfull
    switchport access vlan 24
-   switchport trunk native vlan 24
-   switchport trunk allowed vlan 24,777
-   switchport mode trunk
 !
 interface Ethernet5/2
    speed forced 25gfull
@@ -224,117 +217,67 @@ interface Ethernet10/4
    switchport access vlan 24
 !
 interface Ethernet11/1
-   speed forced 25gfull
-   switchport access vlan 24
-!
-interface Ethernet11/2
-   speed forced 25gfull
-   switchport access vlan 24
-!
-interface Ethernet11/3
-   speed forced 25gfull
-   switchport access vlan 24
-!
-interface Ethernet11/4
-   speed forced 25gfull
+   speed forced 100gfull
    switchport access vlan 24
 !
 interface Ethernet12/1
+   speed forced 100gfull
    switchport access vlan 24
 !
 interface Ethernet13/1
-   shutdown
-   no switchport
-   channel-group 1 mode active
+   speed forced 100gfull
+   switchport access vlan 24
 !
 interface Ethernet14/1
-   shutdown
-   no switchport
-   channel-group 1 mode active
+   speed forced 100gfull
+   switchport access vlan 24
 !
 interface Ethernet15/1
+   speed forced 100gfull
    switchport access vlan 24
 !
 interface Ethernet16/1
+   speed forced 100gfull
    switchport access vlan 24
 !
 interface Ethernet17/1
-   speed forced 25gfull
-   switchport access vlan 24
-!
-interface Ethernet17/2
-   speed forced 25gfull
-   switchport access vlan 24
-!
-interface Ethernet17/3
-   speed forced 25gfull
-   switchport access vlan 24
-!
-interface Ethernet17/4
-   speed forced 25gfull
+   speed forced 100gfull
    switchport access vlan 24
 !
 interface Ethernet18/1
+   speed forced 100gfull
    switchport access vlan 24
 !
 interface Ethernet19/1
-   speed forced 25gfull
-   switchport trunk allowed vlan 2,30,40,50
-   switchport mode trunk
-!
-interface Ethernet19/2
-   speed forced 25gfull
-   switchport trunk allowed vlan 2,30,40,50
-   switchport mode trunk
-!
-interface Ethernet19/3
-   speed forced 25gfull
-   switchport trunk allowed vlan 2,30,40,50
-   switchport mode trunk
-!
-interface Ethernet19/4
-   speed forced 25gfull
-   switchport trunk allowed vlan 2,30,40,50
-   switchport mode trunk
+   speed forced 100gfull
+   switchport access vlan 24
 !
 interface Ethernet20/1
+   speed forced 100gfull
    switchport access vlan 888
 !
-interface Ethernet20/2
-   speed forced 25gfull
-!
-interface Ethernet20/3
-   speed forced 25gfull
-!
-interface Ethernet20/4
-   speed forced 25gfull
-!
 interface Ethernet21/1
+   speed forced 100gfull
    switchport access vlan 888
 !
 interface Ethernet22/1
+   speed forced 100gfull
    switchport access vlan 888
-!
-interface Ethernet22/2
-   speed forced 25gfull
-!
-interface Ethernet22/3
-   speed forced 25gfull
-!
-interface Ethernet22/4
-   speed forced 25gfull
 !
 interface Ethernet23/1
    speed forced 25gfull
    switchport access vlan 888
 !
 interface Ethernet23/2
+   speed forced 25gfull
    switchport access vlan 888
 !
 interface Ethernet23/3
+   speed forced 25gfull
    switchport access vlan 888
 !
 interface Ethernet23/4
+   speed forced 25gfull
    switchport access vlan 888
 !
 interface Ethernet24/1
@@ -370,6 +313,7 @@ interface Ethernet25/4
    switchport access vlan 25
 !
 interface Ethernet26/1
+   speed forced 25gfull
    switchport access vlan 888
 !
 interface Ethernet26/2
@@ -382,9 +326,35 @@ interface Ethernet26/4
    speed forced 25gfull
 !
 interface Ethernet27/1
+   speed forced 25gfull
+   switchport access vlan 888
+!
+interface Ethernet27/2
+   speed forced 25gfull
+   switchport access vlan 888
+!
+interface Ethernet27/3
+   speed forced 25gfull
+   switchport access vlan 888
+!
+interface Ethernet27/4
+   speed forced 25gfull
    switchport access vlan 888
 !
 interface Ethernet28/1
+   speed forced 25gfull
+   switchport access vlan 24
+!
+interface Ethernet28/2
+   speed forced 25gfull
+   switchport access vlan 24
+!
+interface Ethernet28/3
+   speed forced 25gfull
+   switchport access vlan 24
+!
+interface Ethernet28/4
+   speed forced 25gfull
    switchport access vlan 24
 !
 interface Ethernet29/1
