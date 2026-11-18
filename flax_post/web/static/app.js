@@ -73,18 +73,30 @@ function buildGroups(slots, fixtures) {
     detail: f.detail || '', fkind: f.kind || 'switch' })));
   if (!blocks.length) return blocks;
   blocks.sort((a, b) => b.top - a.top);
+  // an empty span is drawn to scale as rows of empty 2U slots (a 1U remainder last),
+  // three across, so the elevation keeps the rack's real proportions
+  const gap = (lo, top) => {
+    const rows = [];
+    for (let t = top; t >= lo;) {
+      const h = t - lo + 1 >= 2 ? 2 : 1;
+      rows.push({ ou: t - h + 1, h, cells: [1, 2, 3] });
+      t -= h;
+    }
+    return { kind: 'gap', key: `gap${lo}`, lo, top, range: lo === top ? `${top}` : `${top}–${lo}`, rows };
+  };
   const out = [];
   let next = blocks[0].top;            // the highest OU not yet accounted for
   for (const b of blocks) {
-    // rackpost's marker for an empty span: ┄ 27–20 ┄
-    if (b.top < next) out.push({ kind: 'gap', key: `gap${b.top + 1}`, lo: b.top + 1, top: next,
-                                 range: b.top + 1 === next ? `${next}` : `${next}–${b.top + 1}` });
+    if (b.top < next) out.push(gap(b.top + 1, next));
     out.push(b);
     next = Math.min(next, b.lo - 1);
   }
-  if (next >= 1) out.push({ kind: 'gap', key: 'gap1', lo: 1, top: next, range: next === 1 ? '1' : `${next}–1` });
+  if (next >= 1) out.push(gap(1, next));
   return out;
 }
+
+// one OU of elevation (a 2U row is 2 OU tall, gap included; see --ou in rack.css)
+const ouHeight = (h) => `min-height:calc(var(--ou) * ${h || 2} - .5rem)`;
 
 function App() {
   const boot = window.BOOT || {};
@@ -321,7 +333,12 @@ function App() {
       }
       return cl.join(' ');
     },
-    tileStyle(b) { return (!b.empty && this.sel && this.sel.port === b.port) ? `background:rgba(${RGB[this.phaseKey(b)] || RGB.discover},.16)` : ''; },
+    // every tile is as tall as its slot (2U node, 4U BC IOM) at the rack's OU scale
+    tileStyle(b) {
+      const sel = (!b.empty && this.sel && this.sel.port === b.port) ? `;background:rgba(${RGB[this.phaseKey(b)] || RGB.discover},.16)` : '';
+      return ouHeight(b.height) + sel;
+    },
+    ouHeight,
     // a half-width slot is one IOM of a BC JBOD (rackpost's JBOD01 IOM1 · side A)
     tileName(b) {
       if (b.label) return b.port ? `${b.label} · ${b.port}` : b.label;

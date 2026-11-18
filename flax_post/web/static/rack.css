@@ -79,10 +79,12 @@ button.primary{background:rgba(88,166,255,.15);border-color:var(--accent);color:
 /* ---- rack ---- */
 .rack{max-width:1000px;margin:1rem 0 1rem 1.25rem;padding:0 1rem 3rem}
 .group{margin-bottom:1.1rem}
-/* elevation (rackpost rack-v3): an empty span is a thin ┄ marker; the rack switch and
-   power shelves are full-width rows; a BC JBOD's IOM tile carries its side */
-.gap{font-family:ui-monospace,monospace;font-size:.62rem;color:var(--dim);margin:-.2rem 0 .5rem 54px}
-.row.fixture .tile.fx{min-height:auto;cursor:default}
+/* elevation, to scale: --ou is one rack unit (a 2U node row = 2 OU incl. its .5rem gap;
+   a 4U BC IOM tile is twice that); empty spans are rows of empty slots; the rack switch
+   and power shelves are full-width rows; a BC JBOD's IOM tile carries its side */
+.rack{--ou:76px}
+.group.gap .col-h{text-transform:none}
+.row.fixture .tile.fx{cursor:default}
 .row.fixture .fx-detail{font-size:.72rem;color:var(--muted);margin-left:.6rem;font-weight:400}
 .row.fixture.fx-power .tile.fx{background:#121418;border-style:dashed}
 .row.fixture.fx-power .t-port{color:var(--dim)}

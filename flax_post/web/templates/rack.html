@@ -84,10 +84,16 @@
   <!-- ================= rack ================= -->
   <div class="rack">
     <div v-for="g in groups" :key="g.key">
-    <div class="gap" v-if="g.kind === 'gap'">┄ {{g.range}} ┄</div>
+    <div class="group gap" v-if="g.kind === 'gap'">
+      <div class="group-h"><span class="g-range">{{g.range}}</span><span class="col-h">empty</span></div>
+      <div class="row" v-for="r in g.rows">
+        <span class="ou-label">{{r.ou}}</span>
+        <div class="tile empty" v-for="c in r.cells" :style="ouHeight(r.h)"><span class="t-port">—</span></div>
+      </div>
+    </div>
     <div class="row fixture" v-else-if="g.kind === 'fixture'" :class="'fx-' + g.fkind" style="grid-template-columns:46px 1fr">
       <span class="ou-label">{{g.lo === g.top ? g.lo : g.top + '–' + g.lo}}</span>
-      <div class="tile fx"><div class="t-head"><span class="t-port">{{g.label}}</span>
+      <div class="tile fx" :style="ouHeight(g.top - g.lo + 1)"><div class="t-head"><span class="t-port">{{g.label}}</span>
         <span class="fx-detail" v-if="g.detail">{{g.detail}}</span></div></div>
     </div>
     <div class="group" v-else>
