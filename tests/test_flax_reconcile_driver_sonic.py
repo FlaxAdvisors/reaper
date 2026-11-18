@@ -190,3 +190,64 @@ def test_load_switches_skips_read_only_sonic_entry(tmp_path, extra):
     must not make reconcile a writer for it."""
     entry = dict({"name": "fake-sw", "driver": "sonic", "host": "fake-sw"}, **extra)
     assert _load(tmp_path, entry) == {}
+
+
+# ---- port_names="alias" (a managed lab SONiC switch; rabbit-fiesta 2026-11-18) ----
+# reconcile is handed Arista-canonical ports (Ethernet6/1, from desired_port) or the
+# internal et6b1; the switch's own name comes from the Alias column of
+# `show interfaces status` (Ethernet20 here, the golden wedge100s-l2 layout).
+import pathlib  # noqa: E402
+
+W_IFSTATUS = (pathlib.Path(__file__).parent / "fixtures/rackpost/wedge-show-interfaces-status.txt").read_text()
+W_BRIEF = """\
++-----------+--------------+------------+----------------+
+|   VLAN ID | IP Address   | Ports      | Port Tagging   |
++===========+==============+============+================+
+|      1000 |              | Ethernet20 | untagged       |
++-----------+--------------+------------+----------------+
+"""
+
+
+class FakeWedge(FakeSwitch):
+    def __call__(self, cmd):
+        self.cmds.append(cmd)
+        if "show interfaces status" in cmd:
+            return W_IFSTATUS
+        return W_BRIEF if cmd.startswith("show vlan brief") else ""
+
+
+@pytest.mark.parametrize("port", ["Ethernet6/1", "et6b1"])
+def test_alias_mode_set_access_vlan_acts_on_the_native_port(port):
+    sw = FakeWedge()
+    Sonic("fake-wedge", runner=sw, port_names="alias").set_access_vlan(port, 24)
+    assert sw.cmds[-1] == (
+        "sudo -n config vlan member del 1000 Ethernet20 </dev/null && "
+        "{ sudo -n config vlan member add -u 24 Ethernet20 </dev/null || "
+        "{ sudo -n config vlan member add -u 1000 Ethernet20 </dev/null; false; }; } && "
+        "sudo -n config save -y </dev/null")
+
+
+def test_alias_mode_flap_and_admin_up_use_the_native_port():
+    sw = FakeWedge()
+    s = Sonic("fake-wedge", runner=sw, port_names="alias")
+    s.flap("Ethernet32/1")
+    s.set_admin_up("et8b4")
+    writes = [c for c in sw.cmds if "show interfaces status" not in c]
+    assert "config interface shutdown Ethernet124 " in writes[0]
+    assert writes[1] == "sudo -n config interface startup Ethernet31 </dev/null"
+
+
+def test_alias_mode_unknown_alias_faults_loudly():
+    with pytest.raises(ValueError):
+        Sonic("fake-wedge", runner=FakeWedge(), port_names="alias").set_admin_up("Ethernet40/9")
+
+
+def test_native_mode_still_refuses_an_alias():
+    with pytest.raises(ValueError):
+        Sonic("fake-sw", runner=FakeSwitch()).set_admin_up("Ethernet6/1")
+
+
+def test_load_switches_passes_port_names(tmp_path):
+    switches = _load(tmp_path, {"name": "fake-wedge", "driver": "sonic", "host": "fake-wedge",
+                                "reconcile": True, "port_names": "alias"})
+    assert switches["fake-wedge"].port_names == "alias"

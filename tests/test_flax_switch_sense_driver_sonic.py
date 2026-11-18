@@ -157,3 +157,89 @@ def test_refresh_with_no_interface_rows_is_an_error_not_zero_ports():
         assert e.rc is None and "no ports" in str(e)
     else:
         raise AssertionError("expected SonicError")
+
+
+# ---- port_names="alias": a managed lab SONiC switch reports Arista-style names ----
+# (rabbit-fiesta, 2026-11-18). classify/observe/reconcile key ports as EthernetP/L
+# (et6b1); SONiC's own name is EthernetN, its CONFIG_DB alias is EthernetP/L, and
+# `show interfaces status` prints both. Golden wedge100s-l2 layout, live output.
+from flax_switch_sense.driver_sonic import parse_interface_aliases  # noqa: E402
+from flax_switch_sense.drivers import ConfigError, make_driver  # noqa: E402
+
+W_IFSTATUS = (F / "wedge-show-interfaces-status.txt").read_text()
+W_VLAN = (F / "wedge-show-vlan-brief.txt").read_text()
+W_MAC = (F / "wedge-show-mac.txt").read_text()
+W_LLDP = (F / "wedge-lldpctl.json").read_text()
+W_ALL = {"show interfaces status": W_IFSTATUS, "show vlan brief": W_VLAN,
+         "show mac": W_MAC, "lldpctl": W_LLDP}
+
+
+def wdrv(port_names="alias"):
+    return SonicDriver("192.0.2.32", "admin", "pw", runner=make_runner(W_ALL),
+                       port_names=port_names)
+
+
+def test_parse_interface_aliases_from_the_status_table():
+    a = parse_interface_aliases(W_IFSTATUS)
+    assert a["Ethernet0"] == "Ethernet1/1"
+    assert a["Ethernet20"] == "Ethernet6/1" and a["Ethernet23"] == "Ethernet6/4"
+    assert a["Ethernet124"] == "Ethernet32/1"
+    assert len(a) == 68
+
+
+def test_alias_mode_renames_every_read():
+    d = wdrv()
+    st = d.interfaces_status()
+    assert "Ethernet6/1" in st and "Ethernet20" not in st and len(st) == 68
+    assert d.interfaces_detail()["Ethernet32/1"]["speed"] == "100G"
+    v = d.vlans()
+    assert v["Ethernet6/1"] == {"access_vid": 1000, "trunk": False}
+    assert not any(p.startswith("Ethernet") and "/" not in p for p in v)
+    macs = d.mac_address_table()
+    assert macs and all("/" in port for _vlan, _mac, port in macs)
+    assert (1000, "88:e9:a4:03:0c:81", "Ethernet28/2") in macs      # Ethernet109
+    lldp = d.lldp_neighbors_detail()
+    assert "Ethernet8/4" in lldp and "Ethernet31" not in lldp        # Ethernet31
+
+
+def test_native_mode_is_unchanged():
+    d = wdrv("native")
+    assert "Ethernet20" in d.interfaces_status()
+    assert "Ethernet31" in d.lldp_neighbors_detail()
+    assert any(port == "Ethernet109" for _v, _m, port in d.mac_address_table())
+
+
+def test_alias_mode_keeps_a_port_without_an_alias_native():
+    """eth0 (lldp's mgmt neighbour) has no row in the status table: unchanged."""
+    lldp = json.dumps({"lldp": {"interface": [{"eth0": {"via": "LLDP",
+        "chassis": {"turtle": {"id": {"type": "mac", "value": "02:00:00:00:00:01"}}},
+        "port": {"id": {"type": "ifname", "value": "swp3"}, "descr": "swp3"}}}]}})
+    d = SonicDriver("192.0.2.32", "admin", "pw", port_names="alias",
+                    runner=make_runner(dict(W_ALL, lldpctl=lldp)))
+    assert list(d.lldp_neighbors_detail()) == ["eth0"]
+
+
+def test_alias_mode_after_refresh_one_ssh():
+    calls = []
+
+    def runner(cmd):
+        calls.append(cmd)
+        return "\n".join(f"@@FLAX-SENSE@@{k}\n{W_ALL[n]}" for k, n in (
+            ("ifstatus", "show interfaces status"), ("vlan", "show vlan brief"),
+            ("mac", "show mac"), ("lldp", "lldpctl"))) + "\n@@FLAX-SENSE@@end\n"
+    d = SonicDriver("192.0.2.32", "admin", "pw", runner=runner, port_names="alias")
+    d.refresh()
+    assert "Ethernet6/1" in d.interfaces_status() and "Ethernet6/1" in d.vlans()
+    assert len(calls) == 1
+
+
+def test_make_driver_passes_port_names():
+    d = make_driver({"name": "sw", "driver": "sonic", "host": "sw", "port_names": "alias"}, {})
+    assert d.port_names == "alias"
+    assert make_driver({"name": "sw", "driver": "sonic", "host": "sw"}, {}).port_names == "native"
+
+
+def test_make_driver_rejects_unknown_port_names():
+    import pytest
+    with pytest.raises(ConfigError):
+        make_driver({"name": "sw", "driver": "sonic", "host": "sw", "port_names": "aliases"}, {})

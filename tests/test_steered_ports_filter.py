@@ -153,9 +153,14 @@ def test_apply_config_wires_the_filters():
     text = open(os.path.join(_ROOT, "playbooks", "apply_config.yml")).read()
     assert "eos_without_steered_vlans" in text
     assert "cumulus_keep_steered_vlans" in text
-    for name in ("Apply Cisco IOS config", "Apply SONiC config"):
-        first = _play(name)["tasks"][0]
-        assert "ansible.builtin.assert" in first, name
+    first = _play("Apply Cisco IOS config")["tasks"][0]
+    assert "ansible.builtin.assert" in first
+    # SONiC: a steered port's VLAN membership is left to reconcile, the rest pushes
+    # (operator 2026-11-18: refuse only the managed ports' VLAN assignment)
+    sonic = _play("Apply SONiC config")
+    assert not any("ansible.builtin.assert" in t and "steered" in str(t) for t in sonic["tasks"])
+    render = next(t for t in sonic["tasks"] if t.get("name") == "Render config_db.json")
+    assert "sonic_without_steered_vlans(steered)" in render["ansible.builtin.set_fact"]["sonic_rendered"]
 
 
 def test_crlf_to_lf():
@@ -172,3 +177,36 @@ def test_cumulus_compares_crlf_normalised_live_content():
     assert fact["ansible.builtin.set_fact"]["cumulus_live"] == "{{ live_interfaces.stdout | crlf_to_lf }}"
     text = open(os.path.join(_ROOT, "playbooks", "apply_config.yml")).read()
     assert "replace('\\r'" not in text
+
+
+# ---- SONiC: config_db VLAN membership of steered ports stays reconcile's ----
+SONIC_DB = {
+    "PORT": {"Ethernet20": {"alias": "Ethernet6/1", "speed": "25000"},
+             "Ethernet21": {"alias": "Ethernet6/2", "speed": "25000"},
+             "Ethernet124": {"alias": "Ethernet32/1", "speed": "100000"}},
+    "VLAN": {"Vlan24": {"vlanid": "24"}, "Vlan1000": {"vlanid": "1000"}},
+    "VLAN_MEMBER": {"Vlan1000|Ethernet20": {"tagging_mode": "untagged"},
+                    "Vlan24|Ethernet21": {"tagging_mode": "untagged"},
+                    "Vlan24|Ethernet124": {"tagging_mode": "tagged"}},
+}
+
+
+def test_sonic_drops_vlan_members_of_steered_ports_by_alias():
+    m = _mod()
+    out = json.loads(m.sonic_without_steered_vlans(json.dumps(SONIC_DB), ["Ethernet6/2"]))
+    assert "Vlan24|Ethernet21" not in out["VLAN_MEMBER"]
+    assert set(out["VLAN_MEMBER"]) == {"Vlan1000|Ethernet20", "Vlan24|Ethernet124"}
+    assert out["PORT"] == SONIC_DB["PORT"] and out["VLAN"] == SONIC_DB["VLAN"]
+
+
+def test_sonic_matches_a_native_port_name_too():
+    m = _mod()
+    out = json.loads(m.sonic_without_steered_vlans(json.dumps(SONIC_DB), ["Ethernet20"]))
+    assert "Vlan1000|Ethernet20" not in out["VLAN_MEMBER"]
+    assert "Vlan24|Ethernet21" in out["VLAN_MEMBER"]
+
+
+def test_sonic_no_steered_ports_keeps_every_member():
+    m = _mod()
+    out = json.loads(m.sonic_without_steered_vlans(json.dumps(SONIC_DB), []))
+    assert out == SONIC_DB

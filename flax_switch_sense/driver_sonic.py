@@ -87,6 +87,24 @@ def parse_interfaces_status(text: str) -> dict[str, dict]:
     return out
 
 
+def parse_interface_aliases(text: str) -> dict[str, str]:
+    """`show interfaces status` -> {EthernetN: alias} (the Alias column, CONFIG_DB
+    PORT alias; Ethernet20 -> Ethernet6/1 on a Wedge100S). Ports without an alias
+    cell are left out."""
+    cols = None
+    out = {}
+    for line in (text or "").splitlines():
+        t = line.split()
+        if not t or set(line.strip()) <= {"-", " "}:
+            continue
+        if t[0] == "Interface":
+            cols = {n: i for i, n in enumerate(t)}
+            continue
+        if cols and "Alias" in cols and t[0].startswith("Ethernet") and len(t) > cols["Alias"]:
+            out[t[0]] = t[cols["Alias"]]
+    return out
+
+
 def parse_vlan_brief(text: str) -> dict[str, list[tuple[int, bool]]]:
     """`show vlan brief` grid -> {port: [(vid, tagged), ...]}. The VLAN ID cell
     is blank on a VLAN's continuation rows, so it carries down."""
@@ -166,10 +184,22 @@ class SonicDriver:
 
     Constructor takes host + user + password + an injectable runner (defaults to
     an `sshpass -e` + ssh subprocess) so tests run fully local.
+
+    port_names: "native" (default) reports SONiC's own EthernetN names -- what
+    rackpost reads. "alias" reports each port by its CONFIG_DB alias (the Alias
+    column of `show interfaces status`, e.g. Ethernet20 -> Ethernet6/1), for a
+    managed lab switch whose ports the pipeline keys Arista-style (et6b1); set
+    per switch with `"port_names": "alias"` in switches.json. A port without an
+    alias (eth0) keeps its own name.
     """
 
+    PORT_NAMES = ("native", "alias")
+
     def __init__(self, host: str, user: str, password: str, *,
-                 runner=None, timeout: float = 30.0):
+                 runner=None, timeout: float = 30.0, port_names: str = "native"):
+        if port_names not in self.PORT_NAMES:
+            raise ValueError(f"port_names must be one of {self.PORT_NAMES}: {port_names!r}")
+        self.port_names = port_names
         self.host = host
         self.user = user or "admin"
         self.password = password
@@ -234,11 +264,21 @@ class SonicDriver:
             return self._sections[key]
         return self.runner(cmd)
 
+    def _name(self):
+        """port -> the name this driver reports it under (identity in native mode)."""
+        if self.port_names != "alias":
+            return lambda port: port
+        aliases = parse_interface_aliases(self._section("ifstatus", _CMD_IFSTATUS))
+        return lambda port: aliases.get(port, port)
+
     # -- public read methods (EosDriver contract) --
 
     def interfaces_detail(self) -> dict[str, dict]:
-        """{EthernetN: {oper, admin, speed}} as `show interfaces status` prints them."""
-        return parse_interfaces_status(self._section("ifstatus", _CMD_IFSTATUS))
+        """{EthernetN: {oper, admin, speed}} as `show interfaces status` prints them
+        (keyed by alias in alias mode)."""
+        name = self._name()
+        return {name(port): st for port, st in
+                parse_interfaces_status(self._section("ifstatus", _CMD_IFSTATUS)).items()}
 
     def platform_info(self) -> dict:
         """The switch's TlvInfo EEPROM: {fields: {TLV Name: Value}, checksum_valid,
@@ -262,8 +302,10 @@ class SonicDriver:
         (The Vlan column of `show interfaces status` says `trunk` even for an
         untagged-only member, so `show vlan brief` is the source.)"""
         out = {}
-        for port, members in parse_vlan_brief(
+        name = self._name()
+        for native, members in parse_vlan_brief(
                 self._section("vlan", _CMD_VLAN)).items():
+            port = name(native)
             if len(members) == 1 and not members[0][1]:
                 out[port] = {"access_vid": members[0][0], "trunk": False}
             else:
@@ -273,7 +315,8 @@ class SonicDriver:
     def mac_address_table(self) -> list[tuple[int, str, str]]:
         """Return [(vlan, mac, port_name)] for every DYNAMIC entry on an
         EthernetN port (static / PortChannel / CPU rows are infrastructure)."""
-        return [(vlan, mac, port)
+        name = self._name()
+        return [(vlan, mac, name(port))
                 for vlan, mac, port, kind in parse_show_mac(
                     self._section("mac", _CMD_MAC))
                 if kind == "dynamic" and port.startswith("Ethernet")]
@@ -283,10 +326,12 @@ class SonicDriver:
         from lldpd's JSON (chassis id = neighbour mac, as on the other NOSes)."""
         data = CumulusDriver._decode_json(self._section("lldp", _CMD_LLDP))
         out: dict[str, list[dict]] = {}
+        name = self._name()
         for entry in _lldpd_interfaces(data):
             port = entry.get("name")
             if not isinstance(port, str) or not port:
                 continue
+            port = name(port)
             for chassis in CumulusDriver._lldp_chassis_list(entry):
                 mac = CumulusDriver._lldp_chassis_mac(chassis)
                 if not mac:

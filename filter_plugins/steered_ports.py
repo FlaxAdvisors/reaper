@@ -11,6 +11,12 @@ reconcile had set when it was fetched, so pushing it would revert live steering.
                                                   vlan` in those ports' stanzas; with
                                                   eos_config replace: line, the live
                                                   value stays
+  sonic_without_steered_vlans(config_db, ports)
+                                               -> config_db JSON minus the VLAN_MEMBER
+                                                  rows of those ports (matched by
+                                                  name or PORT alias); `config load`
+                                                  merges, so their live membership
+                                                  stays
   cumulus_keep_steered_vlans(desired, live, ports)
                                                -> interfaces file whose steered
                                                   stanzas carry the live bridge-access
@@ -103,11 +109,31 @@ def crlf_to_lf(text):
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
+def sonic_without_steered_vlans(config_db, ports):
+    """Rendered config_db (JSON text) without the VLAN_MEMBER rows of steered ports.
+
+    `ports` come from steered_ports (Arista form, Ethernet6/1); a SONiC port is
+    steered when its own name (EthernetN) or its PORT alias is in the list.
+    """
+    steered = set(ports)
+    db = json.loads(config_db)
+    if not steered:
+        return config_db
+    native = {n for n, p in (db.get("PORT") or {}).items()
+              if n in steered or (isinstance(p, dict) and p.get("alias") in steered)}
+    native |= steered
+    members = db.get("VLAN_MEMBER") or {}
+    db["VLAN_MEMBER"] = {k: v for k, v in members.items()
+                         if k.split("|", 1)[-1] not in native}
+    return json.dumps(db, indent=4) + "\n"
+
+
 class FilterModule:
     def filters(self):
         return {
             "steered_ports": steered_ports,
             "eos_without_steered_vlans": eos_without_steered_vlans,
             "cumulus_keep_steered_vlans": cumulus_keep_steered_vlans,
+            "sonic_without_steered_vlans": sonic_without_steered_vlans,
             "crlf_to_lf": crlf_to_lf,
         }

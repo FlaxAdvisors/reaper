@@ -60,10 +60,17 @@ def make_driver(entry: dict, credentials: dict):
     if driver_kind == "sonic":
         # Community SONiC (e.g. the Dell N3248TE / Wedge100S rack switches).
         # Flat creds sonicuser/sonicpass, as the rackpost readers use.
+        # port_names: "alias" (a managed lab switch the pipeline keys et6b1) or
+        # "native" (default; rackpost's EthernetN).
+        port_names = entry.get("port_names", "native")
+        if port_names not in SonicDriver.PORT_NAMES:
+            raise ConfigError(f"switch {entry['name']!r}: port_names must be one of "
+                              f"{SonicDriver.PORT_NAMES}, got {port_names!r}")
         return SonicDriver(
             host=entry["host"],
             user=credentials.get("sonicuser", ""),
             password=credentials.get("sonicpass", ""),
+            port_names=port_names,
         )
     raise ConfigError(
         f"unsupported driver {driver_kind!r} for switch {entry['name']!r}"

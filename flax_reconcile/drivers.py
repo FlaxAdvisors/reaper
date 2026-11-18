@@ -27,7 +27,7 @@ import ssl
 import subprocess
 import time
 
-from flax_switch_sense.driver_sonic import parse_vlan_brief
+from flax_switch_sense.driver_sonic import parse_interface_aliases, parse_vlan_brief
 
 log = logging.getLogger("flax-reconcile.drivers")
 
@@ -216,13 +216,34 @@ class Sonic:
     like EOS/IOS `write memory` and Cumulus `net commit`); flap/set_admin_up do
     not (EOS/IOS shutdown/no shutdown and Cumulus ip link are not saved either).
 
-    Capability only: no SONiC switch is in reconcile's switches.json -- customer
-    rack switches are never a managed set (operator ruling 2026-10-31).
+    Customer rack switches are never a managed set (operator ruling 2026-10-31);
+    a lab SONiC switch of ours is, on `"reconcile": true` (rabbit-fiesta).
+
+    port_names: "native" (default) takes SONiC's EthernetN only. "alias" takes
+    the Arista-canonical name the pipeline uses (Ethernet6/1, or et6b1) and acts
+    on the port whose CONFIG_DB alias it is, read from `show interfaces status`
+    (as flax_switch_sense.driver_sonic reports it in that mode).
     """
 
-    def __init__(self, name, runner):
+    def __init__(self, name, runner, port_names="native"):
+        if port_names not in ("native", "alias"):
+            raise ValueError("port_names must be native or alias: " + repr(port_names))
         self.name = name
         self.runner = runner          # runner(shell_str) runs over ssh
+        self.port_names = port_names
+
+    def _port(self, port):
+        """The switch's own EthernetN for `port` (validated: it goes in a shell string)."""
+        if self.port_names == "alias":
+            m = re.match(r"^et(\d+)b(\d+)$", str(port))
+            alias = "Ethernet%s/%s" % m.groups() if m else str(port)
+            native = {a: n for n, a in parse_interface_aliases(
+                self.runner("sudo -n show interfaces status </dev/null")).items()}
+            if alias not in native:
+                raise ValueError("no SONiC port has alias " + repr(alias)
+                                 + " on " + self.name)
+            port = native[alias]
+        return _sonic_port(port)
 
     def set_access_vlan(self, port, vid):
         """Make `port` an untagged member of `vid` only, then `config save -y`.
@@ -236,7 +257,7 @@ class Sonic:
         them and fails the chain: a refused add still leaves the port as it
         was. No-op when the port is already access on `vid`.
         """
-        port = _sonic_port(port)
+        port = self._port(port)
         vid = int(vid)
         members = parse_vlan_brief(
             self.runner("show vlan brief </dev/null")).get(port, [])
@@ -268,7 +289,7 @@ class Sonic:
     def flap(self, port, hold_seconds=1):
         """shutdown -> sleep -> startup in a single shell invocation (the sleep
         runs switch-side, as Cumulus.flap)."""
-        port = _sonic_port(port)
+        port = self._port(port)
         self.runner(
             "sudo -n config interface shutdown " + port + " </dev/null && "
             "sleep " + str(int(hold_seconds)) + " && "
@@ -278,7 +299,7 @@ class Sonic:
     def set_admin_up(self, port):
         """Bring a port admin-up (the startup half of a flap) -- the self-heal
         un-strand path."""
-        self.runner("sudo -n config interface startup " + _sonic_port(port)
+        self.runner("sudo -n config interface startup " + self._port(port)
                     + " </dev/null")
 
 
@@ -611,7 +632,8 @@ def load_switches(switches_path, switch_creds_path, host_creds_path):
                 host,
                 switch_creds.get("sonicuser", ""),
                 switch_creds.get("sonicpass", ""))
-            switches[name] = Sonic(name, runner=runner)
+            switches[name] = Sonic(name, runner=runner,
+                                   port_names=entry.get("port_names", "native"))
         else:
             # Skip any genuinely unknown driver type gracefully so reconcile
             # does not crash when a new switch type is added to switches.json

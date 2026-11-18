@@ -210,14 +210,6 @@
     sonic_stage: /tmp/.reaper_config_db.json
     steered: "{{ (config_output_dir ~ '/' ~ site_name ~ '/services') | steered_ports(inventory_hostname) }}"
   tasks:
-    - name: Refuse a push that would revert reconcile-steered ports
-      ansible.builtin.assert:
-        that: steered | length == 0
-        fail_msg: >-
-          {{ inventory_hostname }} has flax-reconcile steered ports ({{ steered | join(', ') }})
-          and this push path cannot keep their live access VLAN; add that before pushing.
-        quiet: true
-
     - name: Read desired config_db.json
       delegate_to: localhost
       ansible.builtin.slurp:
@@ -233,8 +225,11 @@
       no_log: true
 
     - name: Render config_db.json
+      # minus the VLAN membership of reconcile-steered ports (geometry slots, not
+      # no-steer): their access VLAN is reconcile's, and `config load` merges, so
+      # leaving their rows out keeps the live value (as the EOS/Cumulus pushes do).
       ansible.builtin.set_fact:
-        sonic_rendered: "{{ sonic_desired.content | b64decode | sonic_render(sonic_vault) }}"
+        sonic_rendered: "{{ sonic_desired.content | b64decode | sonic_render(sonic_vault) | sonic_without_steered_vlans(steered) }}"
       no_log: true
 
     - name: Fetch running config_db
