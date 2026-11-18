@@ -84,3 +84,27 @@ def test_upsert_writes_and_bumps_generation(dp_conn):
         assert row[1] == 2, "generation should be bumped to 2 on second write"
     finally:
         pool.close()
+
+
+def test_sweep_deletes_only_unwritten_ports_on_the_given_switches(dp_conn):
+    """2026-11-18 rabbit-fiesta: a port classify stopped writing (its BMC went
+    quiet) kept a stale desired_vid that reconcile enforced forever."""
+    from flax_classify.desired_port import sweep_desired_ports_not_in, upsert_desired_port
+
+    other = ("rabbit-test-dp-other", "Ethernet1/1")
+    pool = _build_pool(_dsn())
+    try:
+        for sw, port in ((TEST_SWITCH, TEST_PORT), (TEST_SWITCH, "Ethernet98/1"), other):
+            upsert_desired_port(pool, switch=sw, port=port, desired_vid=24, occupants={})
+        n = sweep_desired_ports_not_in(pool, keep={(TEST_SWITCH, TEST_PORT)},
+                                       switches={TEST_SWITCH})
+        rows = set(dp_conn.execute(
+            "SELECT switch, port FROM desired_port WHERE switch IN (%s, %s)",
+            (TEST_SWITCH, other[0])).fetchall())
+        assert n == 1
+        assert rows == {(TEST_SWITCH, TEST_PORT), other}   # other switch untouched
+        assert sweep_desired_ports_not_in(pool, keep=set(), switches=set()) == 0
+    finally:
+        dp_conn.execute("DELETE FROM desired_port WHERE switch IN (%s, %s)",
+                        (TEST_SWITCH, other[0]))
+        pool.close()

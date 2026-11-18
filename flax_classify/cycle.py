@@ -7,7 +7,7 @@ observe_state notifications (Task 8).
 import logging
 
 from .db import read_observe_rows, read_switch_facts, read_devices
-from .desired_port import upsert_desired_port
+from .desired_port import sweep_desired_ports_not_in, upsert_desired_port
 from .desired_reservations import upsert_desired, sweep_desired_not_in, read_desired
 from .kea_hosts import read_aliases_for_macs
 from .feeder import derive_targets, _internal_to_arista
@@ -105,6 +105,14 @@ def run_one_cycle(pool, *, fp_to_vid=None, geom_tokens=None,
             written_desired += 1
         except Exception as e:
             log.warning("upsert_desired_port failed %s/%s: %s", sw, port_arista, e)
+    # Retire the rows of ports this cycle did not write, on the switches it has
+    # facts for: reconcile enforces any row that exists, so a stale one steers.
+    try:
+        swept = sweep_desired_ports_not_in(pool, keep=set(port_groups), switches=set(facts))
+        if swept:
+            log.info("desired_port: retired %d row(s) no longer written", swept)
+    except Exception as e:
+        log.warning("desired_port sweep failed: %s", e)
 
     # --- classify + collect desired_reservations rows (one per mac) --------
     written = 0

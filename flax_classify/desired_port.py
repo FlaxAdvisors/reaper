@@ -31,6 +31,31 @@ def upsert_desired_port(pool: ConnectionPool, *, switch, port, desired_vid,
                             "occ": Jsonb(occupants)})
 
 
+_SWEEP_SQL = """
+DELETE FROM desired_port
+WHERE switch = ANY(%(switches)s)
+  AND NOT (switch || '|' || port = ANY(%(keep)s))
+"""
+
+
+def sweep_desired_ports_not_in(pool: ConnectionPool, *, keep, switches) -> int:
+    """Delete the desired_port rows of `switches` whose (switch, port) is not in
+    `keep` (this cycle's writes). Returns the number deleted.
+
+    A port classify stops writing (its occupant went quiet, it joined no-steer,
+    it left every role) must not keep its last desired_vid: reconcile enforces a
+    row as long as it exists (2026-11-18, rabbit-fiesta Ethernet28/3 was set back
+    to a dead VLAN from a row frozen 15 minutes earlier). Only switches with
+    facts this cycle are swept, so a missed poll never clears a switch.
+    """
+    switches = sorted(switches)
+    if not switches:
+        return 0
+    keys = sorted(f"{sw}|{port}" for sw, port in keep)
+    with pool.connection() as conn:
+        return conn.execute(_SWEEP_SQL, {"switches": switches, "keep": keys}).rowcount
+
+
 def write_ack(pool, consumer, source, generation, action, detail=None):
     """Upsert the consumer_acks high-water-mark for (consumer, source)."""
     import datetime

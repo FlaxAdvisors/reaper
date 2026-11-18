@@ -485,3 +485,34 @@ def test_healthz_accepts_the_cycle_summary_with_held():
     h.record_cycle_done(written=1, deleted=0, skipped=0, written_desired=1,
                         purged=0, held=2)
     assert h.snapshot()["last_cycle"]["held"] == 2
+
+
+def test_cycle_sweeps_desired_ports_it_did_not_write(monkeypatch):
+    """Ports on a switch with facts this cycle but no target lose their
+    desired_port row (stale rows were enforced by reconcile forever)."""
+    from flax_classify import cycle
+
+    _stub_targets(monkeypatch, cycle)
+    monkeypatch.setattr(cycle, "upsert_desired", lambda pool, **kw: None)
+    monkeypatch.setattr(cycle, "sweep_desired_not_in", lambda pool, **kw: 0)
+    monkeypatch.setattr(cycle, "upsert_desired_port", lambda pool, **kw: None)
+    calls = []
+    monkeypatch.setattr(cycle, "sweep_desired_ports_not_in",
+                        lambda pool, **kw: calls.append(kw) or 0)
+    cycle.run_one_cycle(pool=object(), resolve=lambda sw, p: "triage")
+    assert calls == [{"keep": {("rabbit-lorax", "Ethernet6/1")}, "switches": {"rabbit-lorax"}}]
+
+
+def test_cycle_desired_port_sweep_failure_is_isolated(monkeypatch):
+    from flax_classify import cycle
+
+    _stub_targets(monkeypatch, cycle)
+    monkeypatch.setattr(cycle, "upsert_desired", lambda pool, **kw: None)
+    monkeypatch.setattr(cycle, "sweep_desired_not_in", lambda pool, **kw: 0)
+    monkeypatch.setattr(cycle, "upsert_desired_port", lambda pool, **kw: None)
+
+    def boom(pool, **kw):
+        raise RuntimeError("db down")
+    monkeypatch.setattr(cycle, "sweep_desired_ports_not_in", boom)
+    summary = cycle.run_one_cycle(pool=object(), resolve=lambda sw, p: "triage")
+    assert summary["written_desired"] == 1
