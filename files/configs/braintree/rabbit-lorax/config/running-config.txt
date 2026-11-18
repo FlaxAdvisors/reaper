@@ -24,7 +24,7 @@ vlan 2
    name mgmt
 !
 vlan 4
-   name external
+   name corp
 !
 vlan 8
    name alt
