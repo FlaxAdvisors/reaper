@@ -13,6 +13,7 @@ from reapercli.lib.components import load_components  # noqa: E402
 from reapercli.lib.inventory import image_pins  # noqa: E402
 from reapercli.lib.remote import Result  # noqa: E402
 from reapercli.lib.sites import load_sites  # noqa: E402
+from dormant_site import siesta_dormant  # noqa: E402
 from test_reapercli_guards import make_clone  # noqa: E402
 from test_reapercli_status import bang_facts  # noqa: E402
 
@@ -232,7 +233,8 @@ def test_failed_play_still_rearms_and_exits_1(tmp_path):
     assert not [x for x in f.log if x.startswith("record")]
 
 
-def test_dormant_standby_limit_and_no_guard(tmp_path, capsys):
+def test_dormant_standby_limit_and_no_guard(tmp_path, capsys, monkeypatch):
+    siesta_dormant(monkeypatch)
     f = Fake()
     assert main(["deploy", "braintree", "flax_console", "--yes"], f.ctx(tmp_path, "braintree")) == 0
     [argv] = deploys(f)
@@ -446,7 +448,8 @@ def test_triage_verify_failure_exits_1(tmp_path, capsys):
     assert "prod-api-1: runs prod-api:latest" in capsys.readouterr().out
 
 
-def test_triage_dormant_standby_not_shipped(tmp_path, capsys):
+def test_triage_dormant_standby_not_shipped(tmp_path, capsys, monkeypatch):
+    siesta_dormant(monkeypatch)
     f = Fake()
     assert main(["deploy", "braintree", "triage", "--yes"], f.ctx(tmp_path, "braintree")) == 0
     assert "bang-siesta: dormant, not shipped" in capsys.readouterr().out
@@ -493,9 +496,10 @@ def test_triage_yes_prints_build_and_ship_progress(tmp_path, capsys):
 
 
 # ---- deferred minors (2026-11-09)
-def test_all_scope_a_refused_site_does_not_stop_the_later_sites(tmp_path, capsys):
+def test_all_scope_a_refused_site_does_not_stop_the_later_sites(tmp_path, capsys, monkeypatch):
     """eindhoven and lavergne refuse at the ship (their standbys never get the images);
     braintree (dormant standby, nothing shipped) must still deploy."""
+    siesta_dormant(monkeypatch)
     f = Fake()
     f.ship_loads = False
     assert main(["deploy", "all", "triage", "--yes"],
@@ -534,7 +538,8 @@ def test_triage_prunes_old_builds_on_each_live_bang_after_a_good_deploy(tmp_path
     assert "pruned bang-gouda: 5 old prod-* images" in capsys.readouterr().out
 
 
-def test_triage_prune_skips_the_dormant_standby(tmp_path):
+def test_triage_prune_skips_the_dormant_standby(tmp_path, monkeypatch):
+    siesta_dormant(monkeypatch)
     f = Fake()
     f.listing = PRUNE_LIST
     assert main(["deploy", "braintree", "triage", "--yes"], f.ctx(tmp_path, "braintree")) == 0

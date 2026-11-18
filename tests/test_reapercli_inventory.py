@@ -1,4 +1,5 @@
 """Inventory facts read from plain YAML, no ansible and no vault (spec §3, §4)."""
+import dataclasses
 from pathlib import Path
 
 import pytest
@@ -29,9 +30,13 @@ def test_on_site_uses_short_hostname(hostname, expected):
 
 
 def test_dormant_host_marked():
-    sh = site_hosts(SITES["braintree"], ROOT, "orbit")
-    siesta = [b for b in sh.bangs if b.name == "bang-siesta"][0]
-    assert siesta.dormant is True
+    """sites.yml dormant_hosts reaches the bang facts (braintree has none since 2026-11-18)."""
+    assert SITES["braintree"].dormant_hosts == ()
+    site = dataclasses.replace(SITES["braintree"], dormant_hosts=("bang-siesta",))
+    sh = site_hosts(site, ROOT, "orbit")
+    by_name = {b.name: b for b in sh.bangs}
+    assert by_name["bang-siesta"].dormant is True
+    assert by_name["bang-fiesta"].dormant is False
     assert sh.primary == "bang-fiesta"
 
 

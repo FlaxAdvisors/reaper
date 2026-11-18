@@ -10,6 +10,7 @@ from reapercli.lib.hapath import ha_guard  # noqa: E402
 from reapercli.lib.inventory import site_hosts  # noqa: E402
 from reapercli.lib.remote import Result  # noqa: E402
 from reapercli.lib.sites import load_sites  # noqa: E402
+from dormant_site import dormant  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 SITES = load_sites(ROOT)
@@ -122,7 +123,7 @@ def test_failed_postcheck_not_ok():
 
 def test_dormant_standby_skips():
     r, lines = Rec(), []
-    with guard(r, site=BTR, holder="bang-fiesta", lines=lines) as g:
+    with guard(r, site=dormant(BTR), holder="bang-fiesta", lines=lines) as g:
         r.log.append("body")
     assert r.log == ["body"]
     assert g.ok is True

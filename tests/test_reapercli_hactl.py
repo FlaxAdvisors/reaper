@@ -11,6 +11,7 @@ from reapercli.lib.guards import Refused  # noqa: E402
 from reapercli.lib.inventory import site_hosts  # noqa: E402
 from reapercli.lib.remote import Result  # noqa: E402
 from reapercli.lib.sites import load_sites  # noqa: E402
+from dormant_site import dormant, siesta_dormant  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 SITES = load_sites(ROOT)
@@ -130,13 +131,14 @@ def test_arm_refuses_failback():
     assert not [x for x in b.log if x.startswith("start")]
 
 
-def test_dormant_standby_refuses_quiesce_and_arm():
+def test_dormant_standby_refuses_quiesce_and_arm(monkeypatch):
+    siesta_dormant(monkeypatch)
     b = Bangs(holder="bang-fiesta")
     for action in ("quiesce", "arm"):
         assert main(["ha", action, "braintree", "--yes"], b.ctx()) == 3
     from reapercli.lib.hactl import refuse_dormant
     with pytest.raises(Refused, match="dormant"):
-        refuse_dormant(BTR, sh(BTR))
+        refuse_dormant(dormant(BTR), sh(dormant(BTR)))
     assert b.log == []
 
 
@@ -283,7 +285,8 @@ def test_reseed_plan_only_without_yes():
     assert any("WIPE postgres on bang-edam" in x for x in out)
 
 
-def test_reseed_dormant_refuses():
+def test_reseed_dormant_refuses(monkeypatch):
+    siesta_dormant(monkeypatch)
     b = Bangs(holder="bang-fiesta")
     assert main(["ha", "reseed", "braintree", "--confirm", "bang-siesta", "--yes"], b.ctx()) == 3
     assert b.log == []

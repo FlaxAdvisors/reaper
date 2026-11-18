@@ -10,6 +10,7 @@ from reapercli.lib.inventory import site_hosts  # noqa: E402
 from reapercli.lib.probe import probe_site  # noqa: E402
 from reapercli.lib.remote import Result, fanout, ssh_argv  # noqa: E402
 from reapercli.lib.sites import load_sites  # noqa: E402
+from dormant_site import dormant  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 SITES = load_sites(ROOT)
@@ -37,7 +38,7 @@ def test_probe_site_skips_dormant_and_reports_dead():
         if "flax@bang-fiesta" in argv:
             return Result(0, json.dumps({"host": {}, "vip": True}), "")
         return Result(255, "", "ssh: connect to host bang-siesta: No route to host")
-    sh = site_hosts(SITES["braintree"], ROOT, "orbit")
+    sh = site_hosts(dormant(SITES["braintree"]), ROOT, "orbit")
     facts = probe_site(sh, COMPS, runner=runner)
     assert facts["bang-siesta"] == {"dormant": True}
     assert all("bang-siesta" not in a for a in seen)

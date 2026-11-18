@@ -11,6 +11,7 @@ from reapercli.lib.components import load_components, placed_on
 from reapercli.lib.inventory import site_hosts
 from reapercli.lib.sitemodel import load_model
 from reapercli.lib.sites import load_sites
+from dormant_site import dormant_model
 
 ROOT = Path(__file__).resolve().parents[1]
 SITES = load_sites(ROOT)
@@ -40,7 +41,9 @@ def test_single_placed_components_appear_only_where_placed():
 
 
 def test_a_dormant_bang_expects_nothing():
-    assert "reaper_expected{" not in hb.expected_prom(*_ctx("braintree"), "bang-siesta")
+    model, *rest = _ctx("braintree")
+    assert "reaper_expected{" in hb.expected_prom(model, *rest, "bang-siesta")   # live since 2026-11-18
+    assert "reaper_expected{" not in hb.expected_prom(dormant_model(model), *rest, "bang-siesta")
 
 
 def _rules(site="eindhoven"):

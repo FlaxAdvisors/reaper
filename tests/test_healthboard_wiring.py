@@ -11,6 +11,7 @@ pytest.importorskip("ansible")
 from ansible.parsing.dataloader import DataLoader  # noqa: E402
 from ansible.plugins.loader import init_plugin_loader  # noqa: E402
 from ansible.template import Templar  # noqa: E402
+from dormant_site import dormant_tree  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE = ROOT / "roles/apply_health_compose"
@@ -54,14 +55,14 @@ def test_one_local_datasource_and_the_old_three_deleted():
     assert sorted(d["name"] for d in doc["deleteDatasources"]) == ["braintree", "eindhoven", "lavergne"]
 
 
-def _render(site, me, hosts):
+def _render(site, me, hosts, **over):
     init_plugin_loader()
     hv = {h: {"bang_tailscale_ip": ts, "bang_mgmt_ip": mg, "site_name": site, "ansible_host": mg}
           for h, (ts, mg) in hosts.items()}
     v = {"inventory_hostname": me, "role_path": str(COMPOSE), "site_name": site,
          "groups": {"jumphosts": [h for h in hosts if h.startswith("bang-")], "arista": [h for h in hosts if h.startswith("rabbit")],
                     "cumulus": [], "cisco": [h for h in hosts if h.startswith("turtle")]},
-         "hostvars": hv, "bang_domain": "bangs.example.net", **hv[me], **yaml.safe_load((COMPOSE / "defaults/main.yml").read_text())}
+         "hostvars": hv, "bang_domain": "bangs.example.net", **hv[me], **yaml.safe_load((COMPOSE / "defaults/main.yml").read_text()), **over}
     t = Templar(loader=DataLoader(), variables=v)
     return yaml.safe_load(t.template((COMPOSE / "templates/prometheus/prometheus.yml.j2").read_text()))
 
@@ -140,10 +141,11 @@ def test_a_bangs_own_bmc_is_pinged_through_its_peer():
     assert "probe_via" in relabel and "labeldrop" in relabel
 
 
-def test_no_peer_no_self_bmc_ping():
+def test_no_peer_no_self_bmc_ping(tmp_path):
+    """bang-siesta dormant (a test copy of sites.yml + devices.yml): fiesta has no live peer."""
     BRT = {"bang-fiesta": ("100.64.0.204", "192.168.88.21"), "bang-siesta": ("100.64.0.203", "192.168.88.22"),
            "turtle-lorax": ("", "192.168.88.33"), "rabbit-lorax": ("", "192.168.88.31")}
-    doc = _render("braintree", "bang-fiesta", BRT)
+    doc = _render("braintree", "bang-fiesta", BRT, role_path=dormant_tree(tmp_path))
     kinds = {(sc["labels"]["device"], sc["labels"]["target_kind"]) for sc in _job(doc, "devices")["static_configs"]}
     assert ("bang-fiesta", "mgmt") in kinds and ("bang-fiesta", "bmc") not in kinds
 

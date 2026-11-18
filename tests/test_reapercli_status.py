@@ -9,6 +9,7 @@ from reapercli.__main__ import Context, main  # noqa: E402
 from reapercli.lib.ansible import playbook_argv  # noqa: E402
 from reapercli.lib.remote import Result  # noqa: E402
 from reapercli.lib.sites import load_sites  # noqa: E402
+from dormant_site import dormant, siesta_dormant  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 SITES = load_sites(ROOT)
@@ -38,7 +39,7 @@ def ctx_for(tmp_path, *sites, ssh=None, play=None):
 
 
 def test_playbook_argv_dormant_limit():
-    argv = playbook_argv(SITES["braintree"], ROOT, "pg_ha_check.yml")
+    argv = playbook_argv(dormant(SITES["braintree"]), ROOT, "pg_ha_check.yml")
     assert argv[argv.index("--limit") + 1] == "all:!bang-siesta"
 
 
@@ -68,7 +69,8 @@ def test_ha_status_ok_pair(tmp_path, capsys):
     assert "streaming" in capsys.readouterr().out
 
 
-def test_ha_check_skips_dormant_standby_site(tmp_path, capsys):
+def test_ha_check_skips_dormant_standby_site(tmp_path, capsys, monkeypatch):
+    siesta_dormant(monkeypatch)
     calls = []
     rc = main(["ha", "check", "braintree"],
               ctx_for(tmp_path, "braintree", play=lambda argv, env: calls.append(argv) or 0))

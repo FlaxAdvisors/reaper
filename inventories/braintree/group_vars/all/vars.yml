@@ -134,12 +134,15 @@ apply_flax_stack_postgres_superuser_password: "{{ vault_flax_stack_postgres_supe
 apply_flax_stack_db_passwords: "{{ vault_flax_stack_db_passwords }}"
 
 # Postgres HA (2026-06-19): bang-fiesta primary, bang-siesta streaming standby.
-# Each bang allows the OTHERS as the replicator role over their mgmt IP (drives
-# pg_hba + listen widening). apply_flax_stack_is_primary is per-host
-# (host_vars/bang-siesta.yml sets it false so the standby gates OFF alembic).
+# Each bang allows the OTHERS as the replicator role over the peer ip (drives
+# pg_hba + listen widening + the 5432 rich rule; also share-sync's rsync target).
+# Since 2026-11-18 the peer ip is the 10G VLAN 8 address (eth0.8 on the mezz
+# trunk), not the 1G mgmt NIC: bang-to-bang replication and rsync ride vid 8.
+# apply_flax_stack_is_primary is per-host (host_vars/bang-siesta.yml sets it false
+# so the standby gates OFF alembic).
 apply_flax_stack_peers:
-  - { name: bang-fiesta, ip: 192.168.88.21 }
-  - { name: bang-siesta, ip: 192.168.88.22 }
+  - { name: bang-fiesta, ip: 10.8.0.4 }
+  - { name: bang-siesta, ip: 10.8.0.5 }
 
 # Plan 2: wire flax-switch-sense DB password (already in vault from Plan 1).
 apply_flax_switch_sense_db_password: "{{ vault_flax_stack_db_passwords.flax_switch_sense }}"

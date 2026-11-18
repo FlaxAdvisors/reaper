@@ -10,6 +10,7 @@ pytest.importorskip("reapercli")
 from reapercli.__main__ import Context, main  # noqa: E402
 from reapercli.lib.images import images, version_tag  # noqa: E402
 from reapercli.lib.remote import Result  # noqa: E402
+from dormant_site import siesta_dormant  # noqa: E402
 from test_reapercli_guards import make_clone  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -118,7 +119,8 @@ def test_ship_refuses_when_primary_lacks_tag(tmp_path):
     assert not f.cmds("docker save")
 
 
-def test_ship_dormant_standby_warns(tmp_path, capsys):
+def test_ship_dormant_standby_warns(tmp_path, capsys, monkeypatch):
+    siesta_dormant(monkeypatch)
     c, f, _ = head_ctx(tmp_path, "braintree", have={"bang-fiesta": {TAG}})
     assert main(["image", "ship", "braintree", TAG, "--yes"], c) == 0
     assert not f.cmds("docker save")

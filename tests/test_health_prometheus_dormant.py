@@ -1,7 +1,9 @@
 """apply_health_compose prometheus.yml.j2 (FOLLOWUP-2026-11-08-health-noise §3): a host
-files/reaper/sites.yml marks dormant (bang-siesta) is no scrape, federate, peer-probe or
-alertmanager target, so a dead standby is not permanent alert noise. Renders the real
-template through Ansible's Templar (select('match'), lookup, from_yaml as in a play)."""
+files/reaper/sites.yml marks dormant is no scrape, federate, peer-probe or alertmanager
+target, so a dead standby is not permanent alert noise. Renders the real template through
+Ansible's Templar (select('match'), lookup, from_yaml as in a play). braintree has no
+dormant host since 2026-11-18, so the dormant tests render against a copy of sites.yml +
+devices.yml with bang-siesta dormant (dormant_site.dormant_tree)."""
 from pathlib import Path
 
 import pytest
@@ -11,6 +13,7 @@ pytest.importorskip("ansible")
 from ansible.parsing.dataloader import DataLoader  # noqa: E402
 from ansible.plugins.loader import init_plugin_loader  # noqa: E402
 from ansible.template import Templar  # noqa: E402
+from dormant_site import dormant_tree  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 ROLE = ROOT / "roles/apply_health_compose"
@@ -29,13 +32,18 @@ def render(name="prometheus/prometheus.yml.j2", me="bang-fiesta", **over):
     return t.template((ROLE / f"templates/{name}").read_text())
 
 
-def test_the_dormant_standby_is_nowhere_in_the_config():
-    text = render()
+@pytest.fixture
+def siesta_dormant(tmp_path):
+    return dormant_tree(tmp_path)
+
+
+def test_the_dormant_standby_is_nowhere_in_the_config(siesta_dormant):
+    text = render(role_path=siesta_dormant)
     assert "100.64.0.203" not in text and "192.168.88.22" not in text and "bang-siesta" not in text
 
 
-def test_the_live_bang_is_still_scraped_and_federation_still_reaches_other_sites():
-    doc = yaml.safe_load(render())
+def test_the_live_bang_is_still_scraped_and_federation_still_reaches_other_sites(siesta_dormant):
+    doc = yaml.safe_load(render(role_path=siesta_dormant))
     jobs = {j["job_name"]: j for j in doc["scrape_configs"]}
     node = [t for sc in jobs["node"]["static_configs"] for t in sc["targets"]]
     assert node == ["100.64.0.202:9100"]
@@ -48,15 +56,15 @@ def _peer_flags(text):
     return re.findall(r'(--cluster\.peer=[^"\s]*)', text)
 
 
-def test_the_dormant_standby_is_no_alertmanager_gossip_peer():
-    # braintree's only live bang has NO peer: no flag at all. An empty
+def test_the_dormant_standby_is_no_alertmanager_gossip_peer(siesta_dormant):
+    # a site whose only live bang has NO peer: no flag at all. An empty
     # `--cluster.peer=` stops alertmanager ("missing port in address"):
     # fiesta restart-looped 223 times after 5bbaf53 (2026-11-09).
-    assert _peer_flags(render("docker-compose-prod.yml.j2")) == []
-    # presence proof: with nothing dormant the same render names the standby, one flag per peer
-    assert _peer_flags(render("docker-compose-prod.yml.j2", apply_health_compose_dormant=[])) == [
-        "--cluster.peer=100.64.0.203:9094"]
-    assert "100.64.0.203" in render(apply_health_compose_dormant=[])
+    assert _peer_flags(render("docker-compose-prod.yml.j2", role_path=siesta_dormant)) == []
+    # presence proof: with nothing dormant (the real config) the same render names the standby,
+    # one flag per peer
+    assert _peer_flags(render("docker-compose-prod.yml.j2")) == ["--cluster.peer=100.64.0.203:9094"]
+    assert "100.64.0.203" in render()
 
 
 def test_prometheus_retention_follows_the_role_vars():

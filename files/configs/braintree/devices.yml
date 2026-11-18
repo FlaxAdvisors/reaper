@@ -1,11 +1,9 @@
 # Braintree site model: our infrastructure only (spec 2026-11-09-site-health-board-design).
-# bang-siesta is dormant (sites.yml dormant_hosts): shown grey, never alerts. Up again
-# since 2026-11-18 (VRRP backup) but its postgres is detached; un-dormant after the re-seed.
 # NOT here, ever: DUT blades, switch DUTs (SONiC, Capri), the vid 888 peer devices.
 site: braintree
 devices:
   - {name: bang-fiesta, kind: bang, mgmt_ip: 192.168.88.21, bmc_ip: 192.168.88.11}
-  - {name: bang-siesta, kind: bang, mgmt_ip: 192.168.88.22, bmc_ip: 192.168.88.12, state: dormant, note: "VRRP backup · PG not replicating (re-seed pending)"}
+  - {name: bang-siesta, kind: bang, mgmt_ip: 192.168.88.22, bmc_ip: 192.168.88.12, note: "VRRP backup · PG streaming standby (vid 8)"}
   - {name: turtle-lorax, kind: switch, vendor: cumulus, mgmt_ip: 192.168.88.33, note: "Cumulus · mgmt/OOB"}
   - {name: rabbit-lorax, kind: switch, vendor: arista, mgmt_ip: 192.168.88.31, note: "Wedge100S · triage + post DUT switch"}
   - {name: rs-bridge, kind: uplink, note: "ReadySpaces wifi, MAC-NAT client bridge · both bangs' only WAN"}

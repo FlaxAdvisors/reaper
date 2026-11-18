@@ -5,5 +5,4 @@
 sites:
   eindhoven:  { inventory: inventories/eindhoven, topology: files/configs/eindhoven/topology.yml, state: active }
   lavergne:   { inventory: inventories/lavergne,  topology: files/configs/lavergne/topology.yml,  state: active }
-  braintree:  { inventory: inventories/braintree, topology: files/configs/braintree/topology.yml, state: active,
-                dormant_hosts: [bang-siesta] }   # CATERR since 2026-11
+  braintree:  { inventory: inventories/braintree, topology: files/configs/braintree/topology.yml, state: active }

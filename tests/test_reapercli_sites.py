@@ -74,4 +74,4 @@ def test_real_sites_file_loads():
     from pathlib import Path
     sites = load_sites(Path(__file__).resolve().parents[1])
     assert set(sites) == {"eindhoven", "lavergne", "braintree"}
-    assert sites["braintree"].dormant_hosts == ("bang-siesta",)
+    assert sites["braintree"].dormant_hosts == ()   # bang-siesta live again since 2026-11-18

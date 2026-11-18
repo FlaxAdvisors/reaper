@@ -11,6 +11,7 @@ from reapercli.lib.components import load_components
 from reapercli.lib.inventory import site_hosts
 from reapercli.lib.sitemodel import load_model
 from reapercli.lib.sites import load_sites
+from dormant_site import dormant_model
 
 ROOT = Path(__file__).resolve().parents[1]
 SITES = load_sites(ROOT)
@@ -44,7 +45,9 @@ def test_a_unit_with_a_timer_is_expected_as_the_timer():
 def test_links_display_folds_expect_and_live():
     recs = {r["labels"]["id"]: r for r in _recs("eindhoven") if r.get("record") == "reaper:link_display"}
     assert recs["L6"]["labels"]["expect"] == "down" and "* 0 + 2" in recs["L6"]["expr"]
-    bt = {r["labels"]["b"]: r for r in _recs("braintree") if r.get("record") == "reaper:link_display"}
+    model, *rest = _ctx("braintree")   # an end not live (bang-siesta dormant) paints grey
+    bt = {r["labels"]["b"]: r for g in yaml.safe_load(hb.rules_yaml(dormant_model(model), *rest))["groups"]
+          for r in g["rules"] if r.get("record") == "reaper:link_display"}
     assert bt["rabbit-lorax:Et32/4"]["expr"] == "vector(3)"
     d = hd.site_dashboard(load_model(ROOT, "eindhoven"), COMPS, site_hosts(SITES["eindhoven"], ROOT, "o"), "eindhoven")
     [links] = [p for p in d["panels"] if p.get("title") == "Links"]
