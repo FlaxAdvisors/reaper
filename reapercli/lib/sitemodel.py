@@ -12,7 +12,7 @@ import yaml
 
 KINDS = ("bang", "switch", "uplink")
 STATES = ("live", "planned", "offline", "dormant")
-VENDOR_GROUPS = ("arista", "cisco", "cumulus")
+VENDOR_GROUPS = ("arista", "cisco", "cumulus", "sonic")
 BANG_GROUP = "jumphosts"
 
 

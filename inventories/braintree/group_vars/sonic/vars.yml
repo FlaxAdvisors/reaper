@@ -1,0 +1,11 @@
+---
+# Wedge100S running our wedge100s SONiC build (rabbit-fiesta), promoted from a
+# vid 26 DUT to the post rack's switch 2026-11-18. ansible.builtin.ssh + raw,
+# like cumulus (SONiC CLI rules in roles/sonic/tasks/main.yml). The login is the
+# site's credentials.json sonicuser/sonicpass, held in the vault.
+ansible_connection: ansible.builtin.ssh
+ansible_user: "{{ vault_sonic_user }}"
+ansible_password: "{{ vault_sonic_password }}"
+
+# Which device-specific role collect_config delegates to
+device_role: sonic
