@@ -1,4 +1,4 @@
-BOOTPROTO='static'
-IPADDR='192.168.88.22/24'
+# Lab VLAN subifs only (rabbit-lorax Et32/4 trunk, no native VLAN). mgmt moved to its own NIC.
+BOOTPROTO='none'
 STARTMODE='auto'
 ZONE=internal

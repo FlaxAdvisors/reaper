@@ -14,6 +14,6 @@
   <port port="5000" protocol="tcp"/>
   <port port="8080" protocol="tcp"/>
   <masquerade/>
-  <interface name="public"/>
+  <interface name="corp"/>
   <forward/>
 </zone>

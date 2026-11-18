@@ -20,11 +20,12 @@ iface eth0 inet static
 
 auto swp1
 iface swp1
-    bridge-pvid 2
-    bridge-vids 2 4 6 8 10 12 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31
+    alias "turtle-lorax eth0 (OOB mgmt, 192.168.88.33)"
+    bridge-access 2
 
 auto swp2
 iface swp2
+    alias "rabbit-lorax Management1"
     bridge-access 2
 
 auto swp3
@@ -33,19 +34,17 @@ iface swp3
 
 auto swp4
 iface swp4
-    alias "Guest computer mgmt access (laptops, on-site tooling)"
+    alias "bang-fiesta mgmt"
     bridge-access 2
 
 auto swp5
 iface swp5
-    alias "bang-fiesta mgmt (native 2) + corp (tagged 4)"
-    bridge-pvid 2
-    bridge-vids 2 4
+    alias "bang-siesta mgmt"
+    bridge-access 2
 
 auto swp6
 iface swp6
-    alias "corp uplink: ReadySpaces wifi bridge (VLAN 4, like LVQ turtle-rhythm swp48)"
-    bridge-access 4
+    bridge-access 2
 
 auto swp7
 iface swp7
@@ -54,9 +53,7 @@ iface swp7
 
 auto swp8
 iface swp8
-    alias "bang-siesta mgmt (native 2) + corp (tagged 4)"
-    bridge-pvid 2
-    bridge-vids 2 4
+    bridge-access 2
 
 auto swp9
 iface swp9
@@ -206,11 +203,13 @@ iface swp44
 
 auto swp45
 iface swp45
-    bridge-access 2
+    alias "bang-fiesta corp (VLAN 4)"
+    bridge-access 4
     
 auto swp46
 iface swp46
-    bridge-access 2
+    alias "bang-siesta corp (VLAN 4)"
+    bridge-access 4
     
 auto swp47
 iface swp47
@@ -218,7 +217,8 @@ iface swp47
 
 auto swp48
 iface swp48
-    bridge-access 2
+    alias "corp uplink: ReadySpaces wifi bridge (VLAN 4, like LVQ turtle-rhythm swp48)"
+    bridge-access 4
 
 ### Uplink ports ##############################################################
 

@@ -6,10 +6,11 @@ ansible_ssh_common_args: >-
   -o UserKnownHostsFile=/dev/null
 device_role: collect_jumphost
 
-# Braintree has a single WAN uplink (wlan0); the dual-WAN failover
-# daemon's primary/backup assertion would fail. Run only the wlan0
-# self-recovery watchdog from the jumphost_wan_failover role.
+# Braintree has a single WAN uplink per bang (corp: own NIC on turtle-lorax VLAN 4
+# to the ReadySpaces wifi bridge, 2026-11-18). No wlan0 dongles any more, so neither
+# the dual-WAN failover daemon nor the wlan0 watchdog applies.
 jumphost_wan_failover_wan_failover_enabled: false
+jumphost_wan_failover_wlan_watchdog_enabled: false
 
 # Dev site: no rack post order server and no post fleet viewer here (as before
 # placement.yml). Delete both lines to take the fleet default (rackpost on the

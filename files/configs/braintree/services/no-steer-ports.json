@@ -113,5 +113,45 @@
     "switch": "rabbit-lorax",
     "port": "Ethernet8/2",
     "reason": "vlan 777 customer-isolation access (TP vKVM) - exclude from steering"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp45",
+    "reason": "vlan 4 bang-fiesta corp - not a blade slot, exclude from steering"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp46",
+    "reason": "vlan 4 bang-siesta corp - not a blade slot, exclude from steering"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp48",
+    "reason": "vlan 4 corp uplink (ReadySpaces wifi bridge) - not a blade slot, exclude from steering"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp47",
+    "reason": "spare, reserved with the corp/uplink block - not a blade slot, exclude from steering"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp49",
+    "reason": "uplink block - not a blade slot, exclude from steering"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp50",
+    "reason": "uplink block - not a blade slot, exclude from steering"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp51",
+    "reason": "uplink block - not a blade slot, exclude from steering"
+  },
+  {
+    "switch": "turtle-lorax",
+    "port": "swp52",
+    "reason": "uplink to rabbit-lorax Ethernet32/1 (trunk) - not a blade slot, exclude from steering"
   }
 ]

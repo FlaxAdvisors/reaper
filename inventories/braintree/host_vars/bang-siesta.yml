@@ -7,12 +7,6 @@
 # this only selects whether alembic runs.
 apply_flax_stack_is_primary: false
 
-# WAN (2026-11-10): primary = eth0 static default via bang-fiesta's mgmt (.21),
-# backup = wlan0 (ReadySpaces wifi, DHCP metric 200). wan-failover probes through
-# eth0 and demotes it to 300 when fiesta's path fails; the guard keeps wlan0 at 200.
-# eth0 is internal (fiesta does the NAT), so there is no external-zone check on it.
-jumphost_wan_failover_wan_failover_enabled: true
-jumphost_wan_failover_primary_iface: eth0
-jumphost_wan_failover_backup_iface: wlan0
-jumphost_wan_failover_primary_nat_here: false
-apply_bang_router_wan_route_metrics: ["wlan0:200"]
+# WAN (2026-11-18): single uplink = corp (own NIC, turtle-lorax swp46, VLAN 4 to the
+# ReadySpaces wifi bridge on swp48), DHCP default at metric 100. No wlan0 backup any
+# more (dongles pulled), so wan-failover stays at the site default (off).

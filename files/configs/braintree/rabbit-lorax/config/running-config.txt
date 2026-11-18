@@ -427,8 +427,7 @@ interface Ethernet32/1
 !
 interface Ethernet32/2
    speed forced 10000full
-   switchport trunk native vlan 2
-   switchport trunk allowed vlan 2,4,6,8,10,12,16-31,40,50
+   switchport trunk allowed vlan 4,6,8,10,12,16-31,40,50
    switchport mode trunk
 !
 interface Ethernet32/3
@@ -437,9 +436,7 @@ interface Ethernet32/3
 !
 interface Ethernet32/4
    speed forced 10000full
-   switchport access vlan 2
-   switchport trunk native vlan 2
-   switchport trunk allowed vlan 2,4,6,8,10,12,16-31,40,50
+   switchport trunk allowed vlan 4,6,8,10,12,16-31,40,50
    switchport mode trunk
 !
 interface Management1

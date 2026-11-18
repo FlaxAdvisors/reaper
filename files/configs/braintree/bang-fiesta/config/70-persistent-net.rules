@@ -1,0 +1,7 @@
+# Reference copy (apply_jumphost does not deploy it): install by hand.
+# Intel (01:00): mgmt -> turtle-lorax swp4 (VLAN 2), corp (was 'public') -> turtle-lorax swp45 (VLAN 4).
+SUBSYSTEM=="net", ACTION=="add", DRIVERS=="?*", KERNELS=="0000:04:00.0", ATTR{dev_id}=="0x0", ATTR{type}=="1", KERNEL=="eth*", NAME="eth0"
+SUBSYSTEM=="net", ACTION=="add", DRIVERS=="?*", KERNELS=="0000:04:00.1", ATTR{dev_id}=="0x0", ATTR{type}=="1", KERNEL=="eth*", NAME="eth1"
+SUBSYSTEM=="net", ACTION=="add", DRIVERS=="?*", KERNELS=="0000:01:00.0", ATTR{dev_id}=="0x0", ATTR{type}=="1", KERNEL=="eth*", NAME="mgmt"
+SUBSYSTEM=="net", ACTION=="add", DRIVERS=="?*", KERNELS=="0000:01:00.1", ATTR{dev_id}=="0x0", ATTR{type}=="1", KERNEL=="eth*", NAME="corp"
+

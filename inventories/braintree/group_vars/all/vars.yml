@@ -42,7 +42,7 @@ turtle_type: cumulus
 bang_mgmt_vip: 192.168.88.10
 bang_mgmt_cidr: 192.168.88.10/24
 bang_mgmt_iface: mgmt
-bang_wan_iface: public
+bang_wan_iface: corp
 
 # Dynamic DHCP pool for laptops/on-site tooling on the mgmt VLAN.
 # Consumed by roles/apply_bang_services/templates/dnsmasq.conf.j2.
