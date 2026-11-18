@@ -215,6 +215,13 @@ lab_data_v6_ra_stateless: true
 # get minted, so reservation-only starves nothing. The SONiC gear here is on
 # 888/999, which are not in `vlans:` at all.
 reservation_only_dhcp: true
+# 2026-11-18 (as eindhoven 2026-11-06): BMC_UDHCP-only pool on the reservation-only post
+# VLANs, so an AMI/IPMI-only BMC (Leopard) that lands on rabbit-fiesta gets IPv4 to be
+# probed and classified; hosts + BMC_FB_DHCLIENT stay reservation-only.
+apply_kea_res_only_bmc_pool: true
+# ...and reconcile kicks a post BMC off that pool onto its post reservation (only while on
+# a pool lease). Keep equal to apply_kea_res_only_bmc_pool: the pool and its escape move together.
+flax_role_post_reconcile_pool_bmc: true
 # Arista ZTP bootfile-name URL for switches tagged set:arista-ztp. Uses the
 # mgmt VIP literal rather than the FQDN, matching eindhoven.
 arista_ztp_url: "http://192.168.88.10/arista-ztp.conf"
