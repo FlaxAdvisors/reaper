@@ -79,14 +79,14 @@ button.primary{background:rgba(88,166,255,.15);border-color:var(--accent);color:
 /* ---- rack ---- */
 .rack{max-width:1000px;margin:1rem 0 1rem 1.25rem;padding:0 1rem 3rem}
 .group{margin-bottom:1.1rem}
-/* elevation: the empty OU spans and the rack's non-slot fixtures (switch, power shelves) */
-.elev-gap{display:flex;align-items:center;gap:.6rem;border:1px dashed var(--border);border-radius:var(--radius);
-  margin:.25rem 0 .8rem 54px;padding:.2rem .6rem;color:var(--dim)}
-.elev-gap .elev-note{font-size:.66rem;text-transform:uppercase;letter-spacing:.7px}
-.elev-fixture{display:flex;align-items:center;gap:.6rem;border:1px solid var(--line);border-radius:var(--radius);
-  margin:.25rem 0 .8rem 54px;padding:.35rem .6rem;background:#121822;color:var(--muted)}
-.elev-fixture .elev-label{font-size:.78rem;font-weight:600}
-.elev-fixture.fx-power{background:#17140d;border-color:#3a3120}
+/* elevation (rackpost rack-v3): an empty span is a thin ┄ marker; the rack switch and
+   power shelves are full-width rows; a BC JBOD's IOM tile carries its side */
+.gap{font-family:ui-monospace,monospace;font-size:.62rem;color:var(--dim);margin:-.2rem 0 .5rem 54px}
+.row.fixture .tile.fx{min-height:auto;cursor:default}
+.row.fixture .fx-detail{font-size:.72rem;color:var(--muted);margin-left:.6rem;font-weight:400}
+.row.fixture.fx-power .tile.fx{background:#121418;border-style:dashed}
+.row.fixture.fx-power .t-port{color:var(--dim)}
+.side{margin-left:auto;font-size:.72rem;color:var(--dim);white-space:nowrap}
 
 .group-h{display:grid;grid-template-columns:46px 1fr 1fr 1fr;gap:.5rem;align-items:end;
   border-top:1px solid var(--line);padding-top:.5rem;margin:.25rem 0 .4rem}

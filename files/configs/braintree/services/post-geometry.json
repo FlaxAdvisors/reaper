@@ -8,8 +8,9 @@
         {
           "ou": 39,
           "height": 1,
-          "label": "rabbit-fiesta \u00b7 Wedge100S SONiC",
-          "kind": "switch"
+          "label": "rabbit-fiesta",
+          "kind": "switch",
+          "detail": "TOR \u00b7 WEDGE100S \u00b7 SONIC \u00b7 192.168.88.32 \u00b7 BMC 192.168.88.14"
         },
         {
           "ou": 28,
@@ -34,7 +35,8 @@
       "height": 4,
       "width": 2,
       "pos": "1:2",
-      "chassis": 1
+      "chassis": 1,
+      "label": "JBOD01 IOM1"
     },
     {
       "port": "et5b2",
@@ -43,7 +45,8 @@
       "height": 4,
       "width": 2,
       "pos": "2:2",
-      "chassis": 1
+      "chassis": 1,
+      "label": "JBOD01 IOM2"
     },
     {
       "port": "et5b3",
@@ -52,7 +55,8 @@
       "height": 4,
       "width": 2,
       "pos": "1:2",
-      "chassis": 1
+      "chassis": 1,
+      "label": "JBOD05 IOM1"
     },
     {
       "port": "et6b1",

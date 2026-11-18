@@ -62,10 +62,16 @@ def test_rack_fixtures_are_parsed_for_the_elevation():
                                                             "kind": "power"}]}],
                                    "slots": [_SLOT]})
     fx = geo["racks"]["rabbit-fiesta"]["fixtures"]
-    assert fx == [{"ou": 39, "height": 1, "label": "rabbit-fiesta", "kind": "switch"},
-                  {"ou": 9, "height": 3, "label": "power shelf", "kind": "power"}]
+    assert fx == [{"ou": 39, "height": 1, "label": "rabbit-fiesta", "kind": "switch", "detail": ""},
+                  {"ou": 9, "height": 3, "label": "power shelf", "kind": "power", "detail": ""}]
 
 
 def test_rack_without_fixtures_has_none():
     geo = geometry.parse_geometry({"racks": [{"switch": "rabbit-edam"}], "slots": [_SLOT]})
     assert geo["racks"]["rabbit-edam"]["fixtures"] == []
+
+
+def test_slot_label_is_carried_and_defaults_empty():
+    """A slot may name its device (a BC JBOD's IOM: 'JBOD01 IOM1'), as rackpost does."""
+    geo = geometry.parse_geometry({"racks": [], "slots": [dict(_SLOT, label="JBOD01 IOM1"), _SLOT]})
+    assert [s["label"] for s in geo["slots"]] == ["JBOD01 IOM1", ""]

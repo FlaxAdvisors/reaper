@@ -48,34 +48,41 @@ function buildGroups(slots, fixtures) {
     // a row is as wide as its geometry width (a 4U BC is two half-width IOM slots)
     // and as tall as its height (2U = one tile height)
     const rows = ous.map((ou) => {
-      const cells = byG[g][ou].slice().sort((a, b) => COL[a.col] - COL[b.col]);
+      let cells = byG[g][ou].slice().sort((a, b) => COL[a.col] - COL[b.col]);
       const width = Math.max(...cells.map((c) => c.width || 3));
+      // a JBOD whose second IOM is not cabled: name the ghost after its sibling
+      if (width === 2) {
+        const named = cells.find((c) => /IOM\d$/.test(c.label || ''));
+        cells = cells.map((c) => (!c.port && !c.label && named)
+          ? { ...c, label: named.label.replace(/IOM\d$/, c.col === 'L' ? 'IOM1' : 'IOM2') + ' · no IOM' } : c);
+      }
       const height = Math.max(...cells.map((c) => c.height || 2));
-      return { ou, cells, width, height, label: height > 2 ? `${ou}–${ou + height - 1}` : `${ou}`,
+      return { ou, cells, width, height, label: `${ou}`,
                style: `grid-template-columns:46px repeat(${width},1fr)` };
     });
     const cols = byG[g][ous[0]].map((c) => COLNAME[c.col] || c.col);
     const lo = ous[ous.length - 1];
     const top = Math.max(...rows.map((r) => r.ou + r.height - 1));
-    return { kind: 'group', key: `g${g}`, gid: g, lo, top, range: `${lo}–${top}`, colHeads: cols, rows,
+    return { kind: 'group', key: `g${g}`, gid: g, lo, top, range: `${top}–${lo}`, colHeads: cols, rows,
              headStyle: `grid-template-columns:46px repeat(${rows[0].width},1fr)` };
   });
   // the physical elevation, top OU first: slot groups, rack fixtures (switch, power
   // shelves) and the empty spans between them, so the view reads like the rack
   const blocks = groups.concat((fixtures || []).map((f, i) => ({
     kind: 'fixture', key: `f${i}`, lo: f.ou, top: f.ou + (f.height || 1) - 1, label: f.label,
-    fkind: f.kind || 'switch' })));
+    detail: f.detail || '', fkind: f.kind || 'switch' })));
   if (!blocks.length) return blocks;
   blocks.sort((a, b) => b.top - a.top);
   const out = [];
   let next = blocks[0].top;            // the highest OU not yet accounted for
   for (const b of blocks) {
+    // rackpost's marker for an empty span: ┄ 27–20 ┄
     if (b.top < next) out.push({ kind: 'gap', key: `gap${b.top + 1}`, lo: b.top + 1, top: next,
-                                 range: b.top + 1 === next ? `${next}` : `${b.top + 1}–${next}` });
+                                 range: b.top + 1 === next ? `${next}` : `${next}–${b.top + 1}` });
     out.push(b);
     next = Math.min(next, b.lo - 1);
   }
-  if (next >= 1) out.push({ kind: 'gap', key: 'gap1', lo: 1, top: next, range: next === 1 ? '1' : `1–${next}` });
+  if (next >= 1) out.push({ kind: 'gap', key: 'gap1', lo: 1, top: next, range: next === 1 ? '1' : `${next}–1` });
   return out;
 }
 
@@ -314,10 +321,13 @@ function App() {
       }
       return cl.join(' ');
     },
-    tileStyle(b) {
-      const tall = (b.height || 2) > 2 ? `min-height:${54 * b.height}px;` : '';
-      return tall + ((!b.empty && this.sel && this.sel.port === b.port) ? `background:rgba(${RGB[this.phaseKey(b)] || RGB.discover},.16)` : '');
+    tileStyle(b) { return (!b.empty && this.sel && this.sel.port === b.port) ? `background:rgba(${RGB[this.phaseKey(b)] || RGB.discover},.16)` : ''; },
+    // a half-width slot is one IOM of a BC JBOD (rackpost's JBOD01 IOM1 · side A)
+    tileName(b) {
+      if (b.label) return b.port ? `${b.label} · ${b.port}` : b.label;
+      return b.port || (b.width === 2 ? 'no IOM' : '');
     },
+    iomSide(b) { return b.width === 2 ? (b.col === 'L' ? 'side A' : 'side B') : ''; },
 
     // ---- filter + search ----
     toggle(f) { this.filter = this.filter === f ? null : f; },

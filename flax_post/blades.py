@@ -656,7 +656,7 @@ def _record(slot, c, st, settings, live_link, macs, node=None, orders=None):
     return {
         "port": slot["port"], "switch": slot["switch"],
         "ou": slot["ou"], "height": slot["height"], "width": slot["width"],
-        "col": slot["col"], "group": slot["group"],
+        "col": slot["col"], "group": slot["group"], "label": slot.get("label", ""),
         "serial": st.get("serial"),
         "bmc_mac": c.get("bmc_mac"), "host_mac": c.get("host_mac"),
         "bmc_ip": c.get("bmc_ip"), "host_ip": c.get("host_ip"),
@@ -752,7 +752,8 @@ def build_slots(slots, consumed, state, settings, switch_facts=None, nodes=None,
         if not c and not st and live_link != "link":
             out.append({"port": port, "switch": slot["switch"], "ou": slot["ou"],
                         "height": slot["height"], "width": slot["width"],
-                        "col": slot["col"], "group": slot["group"], "empty": True})
+                        "col": slot["col"], "group": slot["group"],
+                        "label": slot.get("label", ""), "empty": True})
         else:
             node = (nodes or {}).get((c or {}).get("bmc_mac") or st.get("bmc_mac"))
             out.append(_record(slot, c or {}, st, settings, live_link, macs, node=node,

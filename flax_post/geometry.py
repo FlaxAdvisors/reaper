@@ -54,6 +54,7 @@ def _normalize_slot(s: dict) -> dict:
         "ou": bottom,                       # the label is the bottom OU
         "col": col_label(pos, width),
         "group": s.get("chassis"),          # group == chassis (UI clusters when null)
+        "label": str(s.get("label", "")),   # the device's name on the tile (a BC IOM: JBOD01 IOM1)
     }
 
 
@@ -61,7 +62,8 @@ def _normalize_fixture(f: dict) -> dict:
     """A non-slot rack item drawn in the elevation (the rack switch, a power shelf):
     {ou (bottom), height (1), label, kind (switch | power | other)}."""
     return {"ou": int(f["ou"]), "height": int(f.get("height", 1)),
-            "label": str(f.get("label", "")), "kind": str(f.get("kind", "switch"))}
+            "label": str(f.get("label", "")), "kind": str(f.get("kind", "switch")),
+            "detail": str(f.get("detail", ""))}
 
 
 def parse_geometry(data) -> dict:

@@ -13,7 +13,7 @@ def test_empty_slots_are_minimal():
     slots = blades.build_slots(_GEO["slots"], {}, {}, {"order_no": None, "population": None})
     et6 = next(s for s in slots if s["port"] == "et6b1")
     assert et6["empty"] is True
-    assert set(et6) == {"port", "ou", "height", "width", "col", "group", "switch", "empty"}
+    assert set(et6) == {"port", "ou", "height", "width", "col", "group", "switch", "label", "empty"}
 
 
 def test_rack_order_top_group_first():

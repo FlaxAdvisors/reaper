@@ -83,12 +83,12 @@
 
   <!-- ================= rack ================= -->
   <div class="rack">
-    <template v-for="g in groups" :key="g.key">
-    <div class="elev-gap" v-if="g.kind === 'gap'" :style="'min-height:' + Math.min(14 * (g.top - g.lo + 1), 120) + 'px'">
-      <span class="g-range">{{g.range}}</span><span class="elev-note">empty</span>
-    </div>
-    <div class="elev-fixture" v-else-if="g.kind === 'fixture'" :class="'fx-' + g.fkind">
-      <span class="g-range">{{g.lo === g.top ? g.lo : g.lo + '–' + g.top}}</span><span class="elev-label">{{g.label}}</span>
+    <div v-for="g in groups" :key="g.key">
+    <div class="gap" v-if="g.kind === 'gap'">┄ {{g.range}} ┄</div>
+    <div class="row fixture" v-else-if="g.kind === 'fixture'" :class="'fx-' + g.fkind" style="grid-template-columns:46px 1fr">
+      <span class="ou-label">{{g.lo === g.top ? g.lo : g.top + '–' + g.lo}}</span>
+      <div class="tile fx"><div class="t-head"><span class="t-port">{{g.label}}</span>
+        <span class="fx-detail" v-if="g.detail">{{g.detail}}</span></div></div>
     </div>
     <div class="group" v-else>
       <div class="group-h" :style="g.headStyle">
@@ -99,7 +99,8 @@
         <span class="ou-label">{{row.label}}</span>
         <div class="tile" v-for="cell in row.cells" :class="wrapCls(cell)" :style="tileStyle(cell)" @click="open(cell)">
           <div class="t-head">
-            <span class="t-port">{{cell.port || (cell.width === 2 ? 'no IOM' : '')}}</span>
+            <span class="t-port">{{tileName(cell)}}</span>
+            <span class="side" v-if="iomSide(cell)">{{iomSide(cell)}}</span>
             <span class="watt" :class="wattCls(cell)" v-if="!cell.empty">{{tilePwr(cell)}}</span>
             <span class="flagm" v-if="!cell.empty && tileFlagTitle(cell)" :title="tileFlagTitle(cell)">⚑</span>
             <span class="dot" :class="dotCls(cell)"></span>
@@ -122,7 +123,7 @@
         </div>
       </div>
     </div>
-    </template>
+    </div>
   </div>
 
   <!-- ================= detail drawer (docked, non-modal) ================= -->
