@@ -283,14 +283,15 @@ flax_role_post_vid_by_family:
 # build braintree <tag>`, `reaper migrate braintree --tag <tag>`, then deploy.
 # 2026-11-18: -> 0.9.219 (migration 044; SONiC port_names alias for rabbit-fiesta).
 # 2026-11-18: -> 0.9.220 (classify retires stale desired_port rows; post viewer 4U BC rows).
-apply_flax_stack_flax_control_image_tag: "0.9.220"
-apply_flax_switch_sense_image_tag: "0.9.220"
-apply_flax_observe_image_tag: "0.9.220"
-apply_flax_discover_image_tag: "0.9.220"
-apply_flax_classify_image_tag: "0.9.220"
-apply_flax_reconcile_image_tag: "0.9.220"
-apply_flax_post_image_tag: "0.9.220"
-apply_flax_post_sol_image_tag: "0.9.220"
+# 2026-11-18: -> 0.9.221 (post viewer rack elevation: gaps, power shelves, switch).
+apply_flax_stack_flax_control_image_tag: "0.9.221"
+apply_flax_switch_sense_image_tag: "0.9.221"
+apply_flax_observe_image_tag: "0.9.221"
+apply_flax_discover_image_tag: "0.9.221"
+apply_flax_classify_image_tag: "0.9.221"
+apply_flax_reconcile_image_tag: "0.9.221"
+apply_flax_post_image_tag: "0.9.221"
+apply_flax_post_sol_image_tag: "0.9.221"
 
 # BMC firmware manifest. 2026-11-09 operator: braintree carries the same BIOS +
 # BMC manifests as eindhoven and lavergne (was flax-onetree-1.0.9 here); the
