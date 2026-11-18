@@ -79,8 +79,11 @@ def ha_rows(sh, facts: dict) -> list:
             if missing else "no standby")
         return rows
     stby_name, stby = live[0], pg[live[0]]
-    ip = next(x.mgmt_ip for x in sh.bangs if x.name == stby_name)
-    sender = [r for r in prim.get("replication", []) if r.get("addr") == ip]
+    # the standby streams from its replication address (apply_flax_stack_peers; braintree
+    # uses vid 8 since 2026-11-18), which need not be its mgmt IP
+    b = next(x for x in sh.bangs if x.name == stby_name)
+    addrs = {b.mgmt_ip, b.repl_ip or b.mgmt_ip}
+    sender = [r for r in prim.get("replication", []) if r.get("addr") in addrs]
     ok = sender and sender[0].get("state") == "streaming" and stby.get("wal_receiver") == "streaming"
     row("replication", "ok" if ok else "FAIL",
         f"streaming to {stby_name}" if ok else f"sender={sender[0]['state'] if sender else 'none'} "

@@ -123,3 +123,16 @@ def test_standby_without_facts_keeps_slot_and_fails_replication():
     assert by_item(rows)[("slot-wal", "bang-gouda")].status == "FAIL"
     rep = by_item(rows)[("replication", "")]
     assert rep.status == "unreachable" and "bang-edam" in rep.value
+
+
+def test_braintree_standby_streams_from_its_vid8_address():
+    """apply_flax_stack_peers puts braintree's replication on vid 8 (2026-11-18): the primary's
+    sender is the standby's 10.8.0.5, not its mgmt .22, and that is a healthy pair."""
+    siesta = {b.name: b for b in BTR.bangs}["bang-siesta"]
+    assert (siesta.mgmt_ip, siesta.repl_ip) == ("192.168.88.22", "10.8.0.5")
+    facts = {"bang-fiesta": primary(standby_ip="10.8.0.5"), "bang-siesta": standby()}
+    rows = {r.item: r for r in ha_rows(BTR, facts)}
+    assert rows["replication"].status == "ok", rows["replication"]
+    # presence proof: a sender on an address that is neither of siesta's is still a FAIL
+    facts = {"bang-fiesta": primary(standby_ip="10.9.9.9"), "bang-siesta": standby()}
+    assert {r.item: r for r in ha_rows(BTR, facts)}["replication"].status == "FAIL"

@@ -15,6 +15,7 @@ class Bang:
     name: str
     mgmt_ip: str
     dormant: bool
+    repl_ip: str = ""   # the address the peer replicates from (apply_flax_stack_peers); "" = mgmt_ip
 
 
 @dataclass(frozen=True)
@@ -49,7 +50,9 @@ def site_hosts(site, root: Path, hostname: str) -> SiteHosts:
     allvars = _group_vars(site, "all")
     primary = allvars["apply_keepalived_master_host"]
     suffix = allvars["bang_host_suffix"]
-    bangs = tuple(Bang(n, f"192.168.88.{20 + int(suffix[n])}", n in site.dormant_hosts) for n in names)
+    peers = {p["name"]: str(p["ip"]) for p in allvars.get("apply_flax_stack_peers") or []}
+    bangs = tuple(Bang(n, f"192.168.88.{20 + int(suffix[n])}", n in site.dormant_hosts, peers.get(n, ""))
+                  for n in names)
     return SiteHosts(site.name, primary, tuple(n for n in names if n != primary), bangs,
                      hostname.split(".")[0] in names, str(allvars.get("bang_mgmt_vip", "")))
 
