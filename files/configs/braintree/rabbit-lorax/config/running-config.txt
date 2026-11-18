@@ -26,13 +26,8 @@ vlan 2
 vlan 4
    name external
 !
-vlan 6
-   name postprod
-!
 vlan 8
    name alt
-!
-vlan 10,12,777,888,999
 !
 vlan 16
    name triage-leopard
@@ -81,12 +76,6 @@ vlan 30
 !
 vlan 31
    name post-grandcanyon
-!
-vlan 40
-   name p0harv
-!
-vlan 50
-   name internal
 !
 management api http-commands
    no shutdown
@@ -174,7 +163,7 @@ interface Ethernet8/1
 !
 interface Ethernet8/2
    speed forced 25gfull
-   switchport access vlan 777
+   switchport access vlan 16
 !
 interface Ethernet8/3
    speed forced 25gfull
@@ -254,31 +243,31 @@ interface Ethernet19/1
 !
 interface Ethernet20/1
    speed forced 100gfull
-   switchport access vlan 888
+   switchport access vlan 24
 !
 interface Ethernet21/1
    speed forced 100gfull
-   switchport access vlan 888
+   switchport access vlan 24
 !
 interface Ethernet22/1
    speed forced 100gfull
-   switchport access vlan 888
+   switchport access vlan 24
 !
 interface Ethernet23/1
    speed forced 25gfull
-   switchport access vlan 888
+   switchport access vlan 24
 !
 interface Ethernet23/2
    speed forced 25gfull
-   switchport access vlan 888
+   switchport access vlan 24
 !
 interface Ethernet23/3
    speed forced 25gfull
-   switchport access vlan 888
+   switchport access vlan 24
 !
 interface Ethernet23/4
    speed forced 25gfull
-   switchport access vlan 888
+   switchport access vlan 24
 !
 interface Ethernet24/1
    speed forced 25gfull
@@ -314,7 +303,7 @@ interface Ethernet25/4
 !
 interface Ethernet26/1
    speed forced 25gfull
-   switchport access vlan 888
+   switchport access vlan 24
 !
 interface Ethernet26/2
    speed forced 25gfull
@@ -327,19 +316,19 @@ interface Ethernet26/4
 !
 interface Ethernet27/1
    speed forced 25gfull
-   switchport access vlan 888
+   switchport access vlan 24
 !
 interface Ethernet27/2
    speed forced 25gfull
-   switchport access vlan 888
+   switchport access vlan 24
 !
 interface Ethernet27/3
    speed forced 25gfull
-   switchport access vlan 888
+   switchport access vlan 24
 !
 interface Ethernet27/4
    speed forced 25gfull
-   switchport access vlan 888
+   switchport access vlan 24
 !
 interface Ethernet28/1
    speed forced 25gfull
@@ -381,13 +370,13 @@ interface Ethernet31/4
 !
 interface Ethernet32/1
    speed forced 10000full
-   switchport trunk allowed vlan 2,4,6,8,10,12,16-31,40,50
+   switchport trunk allowed vlan 2,4,8,16-31
    switchport mode trunk
 !
 interface Ethernet32/2
    speed forced 10000full
    switchport trunk native vlan 2
-   switchport trunk allowed vlan 2,4,6,8,10,12,16-31,40,50
+   switchport trunk allowed vlan 2,4,8,16-31
    switchport mode trunk
 !
 interface Ethernet32/3
@@ -397,7 +386,7 @@ interface Ethernet32/3
 interface Ethernet32/4
    speed forced 10000full
    switchport trunk native vlan 2
-   switchport trunk allowed vlan 2,4,6,8,10,12,16-31,40,50
+   switchport trunk allowed vlan 2,4,8,16-31
    switchport mode trunk
 !
 interface Management1
@@ -453,12 +442,6 @@ interface Vlan30
 !
 interface Vlan31
    ip address 172.31.0.3/16
-!
-interface Vlan777
-   description isolate-bmc
-!
-interface Vlan999
-   ip address 10.99.1.0/31
 !
 no ip routing
 !
