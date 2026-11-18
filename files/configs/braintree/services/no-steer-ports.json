@@ -47,22 +47,7 @@
   {
     "switch": "rabbit-lorax",
     "port": "Ethernet1/1",
-    "reason": "vlan 2 mgmt access \u2014 exclude from observation"
-  },
-  {
-    "switch": "rabbit-lorax",
-    "port": "Ethernet1/2",
-    "reason": "vlan 2 mgmt access \u2014 exclude from observation"
-  },
-  {
-    "switch": "rabbit-lorax",
-    "port": "Ethernet1/3",
-    "reason": "vlan 2 mgmt access \u2014 exclude from observation"
-  },
-  {
-    "switch": "rabbit-lorax",
-    "port": "Ethernet1/4",
-    "reason": "vlan 2 mgmt access \u2014 exclude from observation"
+    "reason": "100G trunk to rabbit-fiesta Ethernet32/1 (vids 24-32) - not a blade slot, exclude from steering"
   },
   {
     "switch": "rabbit-lorax",

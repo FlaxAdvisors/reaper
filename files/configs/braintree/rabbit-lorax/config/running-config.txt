@@ -96,20 +96,9 @@ interface Port-Channel1
    switchport access vlan 999
 !
 interface Ethernet1/1
-   speed forced 10000full
-   switchport access vlan 2
-!
-interface Ethernet1/2
-   speed forced 10000full
-   switchport access vlan 2
-!
-interface Ethernet1/3
-   speed forced 10000full
-   switchport access vlan 2
-!
-interface Ethernet1/4
-   speed forced 10000full
-   switchport access vlan 2
+   speed forced 100gfull
+   switchport trunk allowed vlan 24-32
+   switchport mode trunk
 !
 interface Ethernet2/1
    speed forced 10000full
@@ -160,7 +149,7 @@ interface Ethernet6/1
 !
 interface Ethernet6/2
    speed forced 25gfull
-   switchport access vlan 16
+   switchport access vlan 17
 !
 interface Ethernet6/3
    speed forced 25gfull
@@ -176,7 +165,7 @@ interface Ethernet7/1
 !
 interface Ethernet7/2
    speed forced 25gfull
-   switchport access vlan 16
+   switchport access vlan 17
 !
 interface Ethernet7/3
    speed forced 25gfull
@@ -184,7 +173,7 @@ interface Ethernet7/3
 !
 interface Ethernet7/4
    speed forced 25gfull
-   switchport access vlan 17
+   switchport access vlan 16
 !
 interface Ethernet8/1
    speed forced 25gfull
@@ -196,7 +185,7 @@ interface Ethernet8/2
 !
 interface Ethernet8/3
    speed forced 25gfull
-   switchport access vlan 16
+   switchport access vlan 17
 !
 interface Ethernet8/4
    speed forced 25gfull
@@ -366,7 +355,7 @@ interface Ethernet24/4
 !
 interface Ethernet25/1
    speed forced 25gfull
-   switchport access vlan 24
+   switchport access vlan 25
 !
 interface Ethernet25/2
    speed forced 25gfull
