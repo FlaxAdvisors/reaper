@@ -150,6 +150,19 @@ def test_no_peer_no_self_bmc_ping(tmp_path):
     assert ("bang-fiesta", "mgmt") in kinds and ("bang-fiesta", "bmc") not in kinds
 
 
+
+# 2026-11-18: rabbit-fiesta (Wedge100S, SONiC) promoted from DUT to braintree's post rack switch
+def test_a_sonic_switch_is_scraped_with_the_sonic_module():
+    BRT = {"bang-fiesta": ("100.64.0.204", "192.168.88.21"), "bang-siesta": ("100.64.0.203", "192.168.88.22"),
+           "turtle-lorax": ("", "192.168.88.33"), "rabbit-lorax": ("", "192.168.88.31"),
+           "rabbit-fiesta": ("", "192.168.88.32")}
+    doc = _render("braintree", "bang-fiesta", BRT)
+    sw = {sc["labels"]["switch"]: sc for sc in _job(doc, "snmp_switches")["static_configs"]}
+    assert sw["rabbit-fiesta"]["labels"]["module"] == "sonic"
+    assert sw["rabbit-fiesta"]["targets"] == ["192.168.88.32"]
+    snmp = (COMPOSE / "templates/snmp/snmp.yml.j2").read_text()
+    assert "'sonic'" in snmp.split("{% for module in", 1)[1].split("%}", 1)[0]
+
 def test_a_changed_snmp_config_reloads_the_exporter():
     [t] = [t for t in _tasks(COMPOSE) if t["name"] == "Stage snmp.yml"]
     assert t["notify"] == "Reload snmp_exporter"

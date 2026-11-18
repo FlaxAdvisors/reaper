@@ -1,14 +1,14 @@
 # Braintree site model: our infrastructure only (spec 2026-11-09-site-health-board-design).
 # NOT here, ever: DUT blades, switch DUTs (SONiC, Capri), the vid 888 peer devices.
 # rabbit-fiesta (Wedge100S, SONiC) was a vid 26 DUT; PROMOTED 2026-11-18 to the post
-# rack's switch. state planned until its SNMP is on (prometheus has no sonic module yet).
+# rack's switch.
 site: braintree
 devices:
   - {name: bang-fiesta, kind: bang, mgmt_ip: 192.168.88.21, bmc_ip: 192.168.88.11}
   - {name: bang-siesta, kind: bang, mgmt_ip: 192.168.88.22, bmc_ip: 192.168.88.12, note: "VRRP backup · PG streaming standby (vid 8)"}
   - {name: turtle-lorax, kind: switch, vendor: cumulus, mgmt_ip: 192.168.88.33, note: "Cumulus · mgmt/OOB"}
   - {name: rabbit-lorax, kind: switch, vendor: arista, mgmt_ip: 192.168.88.31, note: "Wedge100S · triage + post DUT switch"}
-  - {name: rabbit-fiesta, kind: switch, vendor: sonic, mgmt_ip: 192.168.88.32, bmc_ip: 192.168.88.14, state: planned, note: "Wedge100S · SONiC · post rack switch (SNMP pending)"}
+  - {name: rabbit-fiesta, kind: switch, vendor: sonic, mgmt_ip: 192.168.88.32, bmc_ip: 192.168.88.14, note: "Wedge100S · SONiC · post rack switch"}
   - {name: rs-bridge, kind: uplink, note: "ReadySpaces wifi, MAC-NAT client bridge · both bangs' only WAN"}
 links:
   - {a: "turtle-lorax:swp48", b: "rs-bridge:LAN", speed: 1G, note: "access 4 (corp)"}

@@ -11,7 +11,7 @@ auths:
     version: 2
 
 modules:
-{% for module in ['arista_eos', 'cumulus_linux', 'cisco_ios'] %}
+{% for module in ['arista_eos', 'cumulus_linux', 'cisco_ios', 'sonic'] %}
   {{ module }}:
     walk:
       - 1.3.6.1.2.1.2.2.1.8

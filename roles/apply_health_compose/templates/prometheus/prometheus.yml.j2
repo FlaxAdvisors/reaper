@@ -167,7 +167,7 @@ scrape_configs:
     static_configs:
 {# the LIVE switches of devices.yml: an offline/planned one is not scraped (no
    PrometheusTargetDown forever) #}
-{% set snmp_module = {'arista': 'arista_eos', 'cumulus': 'cumulus_linux', 'cisco': 'cisco_ios'} %}
+{% set snmp_module = {'arista': 'arista_eos', 'cumulus': 'cumulus_linux', 'cisco': 'cisco_ios', 'sonic': 'sonic'} %}
 {% for d in site_devices if d.kind == 'switch' and (d.state | default('live')) == 'live' %}
       - targets: ["{{ d.mgmt_ip }}"]
         labels:
