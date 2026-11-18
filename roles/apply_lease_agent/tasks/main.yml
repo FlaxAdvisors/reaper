@@ -139,6 +139,20 @@
     mode: "0644"
   when: apply_lease_agent_turtle_geometry_stat.stat.exists
 
+# The switches flax polls and actuates (switches.json): read by flax-switch-sense
+# and flax-reconcile at startup (a SONiC entry needs "reconcile": true before
+# reconcile writes to it) and bind-mounted into the console. Was hand-placed on
+# each bang until 2026-11-18; the repo copy matched live at every site then.
+- name: Deploy switches.json
+  become: true
+  ansible.builtin.copy:
+    src: "{{ config_output_dir }}/{{ site_name }}/services/switches.json"
+    dest: /etc/flax/switches.json
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart switches readers
+
 # Site no-steer port list (uplinks to downstream/peer switches + operator-
 # excluded ports). flax-classify skips these entirely; flax-reconcile refuses
 # to set_access_vlan on them. The file MUST exist before those containers

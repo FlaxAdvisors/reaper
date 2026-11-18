@@ -20,3 +20,12 @@
   ansible.builtin.shell: |
     systemctl try-restart flax-reconcile flax-observe || true
   changed_when: true
+
+# switches.json is read at startup by flax-switch-sense (fetchers) and
+# flax-reconcile (writers); the console's single-file bind is flagged by the
+# deploy's stale-bind check.
+- name: restart switches readers
+  become: true
+  ansible.builtin.shell: |
+    systemctl try-restart flax-switch-sense flax-reconcile || true
+  changed_when: true
