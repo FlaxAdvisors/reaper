@@ -146,7 +146,7 @@ interface Ethernet6/2
 !
 interface Ethernet6/3
    speed forced 25gfull
-   switchport access vlan 16
+   switchport access vlan 17
 !
 interface Ethernet6/4
    speed forced 25gfull
