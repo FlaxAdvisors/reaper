@@ -223,15 +223,14 @@ arista_ztp_url: "http://192.168.88.10/arista-ztp.conf"
 apply_radvd_image_tag: "latest"
 
 # ---- Role registry (spine migration) — braintree topology ----
-# Braintree runs triage AND post on the SINGLE switch rabbit-lorax (eindhoven
-# splits them across rabbit-gouda / rabbit-edam). The runtime resolver precedence
-# is port > switch > prefix > catch_all, so triage's 12 geometry ports
-# (et6b1-4, et7b1-4, et8b1-4 — from /etc/flax/geometry.json via triage.json's
-# ports_from) win at PORT precedence; post switch-claims the remainder of
-# rabbit-lorax plus the turtle prefix (turtle-lorax). No catch_all — every
-# braintree port resolves via the explicit switch/prefix claims, so a global
-# fallback is unnecessary and undesirable on a shared switch.
-flax_role_post_switches: ["rabbit-lorax"]
+# Since 2026-11-18 braintree splits them like eindhoven: triage on rabbit-lorax,
+# post on rabbit-fiesta (Wedge100S, SONiC; the post rack, services/post-geometry.json).
+# The runtime resolver precedence is port > switch > prefix > catch_all: triage's
+# geometry ports on rabbit-lorax (from /etc/flax/geometry.json via triage.json's
+# ports_from) win at PORT precedence; post switch-claims all of rabbit-fiesta plus
+# the turtle prefix (turtle-lorax). rabbit-lorax is NOT a post switch: its other
+# ports belong to no role. No catch_all -- a global fallback is undesirable here.
+flax_role_post_switches: ["rabbit-fiesta"]
 flax_role_post_prefixes: ["turtle"]
 flax_role_post_catch_all: false
 # No customer post-switch uplink at braintree → integra.json is not rendered

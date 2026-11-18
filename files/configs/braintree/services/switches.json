@@ -1,4 +1,5 @@
 [
   {"name": "rabbit-lorax", "driver": "eos", "host": "rabbit-lorax", "credentials_key": "eos"},
-  {"name": "turtle-lorax", "driver": "cumulus", "host": "turtle-lorax", "credentials_key": "cumulus"}
+  {"name": "turtle-lorax", "driver": "cumulus", "host": "turtle-lorax", "credentials_key": "cumulus"},
+  {"name": "rabbit-fiesta", "driver": "sonic", "host": "rabbit-fiesta", "credentials_key": "sonic", "port_names": "alias", "reconcile": true}
 ]
