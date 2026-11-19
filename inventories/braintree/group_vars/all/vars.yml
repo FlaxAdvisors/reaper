@@ -274,7 +274,7 @@ flax_role_post_vid_by_family:
   brycecanyon: 29
   lightning: 30
   grandcanyon: 31
-  capri: 24
+  capri: 25          # Capris ride the TiogaPass vid (operator 2026-11-19)
 
 # ---- flax image tags: braintree tracks latest ----
 # The dev site runs the newest build on every flax service (no held-back pins).
