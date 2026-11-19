@@ -43,8 +43,11 @@ EXPECTED = {
     "eindhoven": dict(_COMMON, **{"BryceCanyon": "brycecanyon"}),
     # braintree's brycecanyon.txt is comment-only (pre-flight F1 finding):
     # no line, so BryceCanyon resolves to no family there.
-    "braintree": dict(_COMMON, **{"BryceCanyon": None}),
+    # braintree only (operator 2026-11-19): the OEM TiogaPass (LOM BMC on the turtle)
+    # reports TS2290-E7278P-6SSD and is a TiogaPass; eindhoven keeps it unmapped.
+    "braintree": dict(_COMMON, **{"BryceCanyon": None, "TS2290-E7278P-6SSD": "tiogapass"}),
 }
+OEM_TP = "^TS2290-E7278P-6SSD$"
 
 
 def _dir(site):
@@ -70,5 +73,10 @@ def test_the_d4_line_changes_only_the_two_bare_tioga_names(site):
 
 
 def test_site_copies_are_identical():
-    md5 = {s: hashlib.md5((_dir(s) / "tiogapass.txt").read_bytes()).hexdigest() for s in SITES}
+    """Identical but for braintree's OEM TiogaPass line (operator 2026-11-19)."""
+    def body(site):
+        lines = (_dir(site) / "tiogapass.txt").read_text().splitlines()
+        return "\n".join(l for l in lines if not (site == "braintree" and l.strip() == OEM_TP))
+    md5 = {s: hashlib.md5(body(s).encode()).hexdigest() for s in SITES}
     assert md5["eindhoven"] == md5["braintree"]
+    assert OEM_TP in (_dir("braintree") / "tiogapass.txt").read_text().splitlines()
