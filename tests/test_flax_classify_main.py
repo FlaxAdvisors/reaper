@@ -190,3 +190,35 @@ def test_run_post_lane_dns_failure_is_isolated(monkeypatch):
     # Must NOT raise.
     m.run_post_lane(pool=object(), geometry_path="/x", cycle_secs=30,
                     post_dns_path="/tmp/flax-post-devices")
+
+
+def test_post_dns_records_carry_operator_aliases():
+    """Operator aliases (user_context.aliases) are published for post rows too,
+    as the triage cycle does for its own (braintree 'hoster', 2026-11-18)."""
+    actuals = [
+        {"mac": "98:03:9b:97:e4:06", "source": "post", "hostname": "br001-et8b1",
+         "ipv4": "172.24.8.1", "ipv6": None},
+        {"mac": "98:03:9b:97:e4:08", "source": "post", "hostname": "br001-et8b1-bmc",
+         "ipv4": "172.24.8.101", "ipv6": None},
+        {"mac": "02:00:00:00:00:01", "source": "triage", "hostname": "t", "ipv4": "172.16.6.1", "ipv6": None},
+    ]
+    recs = _post_dns_records(actuals, {"98:03:9b:97:e4:06": ["hoster"],
+                                       "02:00:00:00:00:01": ["not-post"]})
+    assert recs == [{"hostname": "br001-et8b1", "ipv4": "172.24.8.1", "ipv6": None, "aliases": ["hoster"]},
+                    {"hostname": "br001-et8b1-bmc", "ipv4": "172.24.8.101", "ipv6": None}]
+
+
+def test_post_lane_dns_aliases_read_failure_keeps_primary_records(monkeypatch):
+    m = importlib.import_module("flax_classify.__main__")
+    monkeypatch.setattr(m, "run_post_reservations", lambda *a, **k: {}, raising=False)
+    written = {}
+    monkeypatch.setattr(m, "read_kea_actuals", lambda pool: [
+        {"mac": "98:03:9b:97:e4:06", "source": "post", "hostname": "br001-et8b1",
+         "ipv4": "172.24.8.1", "ipv6": None}])
+
+    def boom(pool, macs):
+        raise RuntimeError("db hiccup")
+    monkeypatch.setattr(m, "read_aliases_for_macs", boom)
+    monkeypatch.setattr(m, "write_hosts_file", lambda path, recs: written.setdefault("recs", recs))
+    m._publish_post_dns(object(), "/nonexistent/flax-post-devices")
+    assert written["recs"] == [{"hostname": "br001-et8b1", "ipv4": "172.24.8.1", "ipv6": None}]

@@ -17,7 +17,7 @@ from .cycle import run_one_cycle
 from .db import (build_pool, db_now, read_observe_rows, read_post_order, read_post_assignments,
                  read_switch_facts)
 from .desired_port import write_ack
-from .kea_hosts import read_kea_actuals
+from .kea_hosts import read_aliases_for_macs, read_kea_actuals
 from .dns_hosts import write_hosts_file
 from .materializer import parse_enforce_config, run_cycle
 from .post_reconcile import reconcile_post_reservations
@@ -144,18 +144,39 @@ def _effective_enforced_roles(enforced_roles, role_defs) -> frozenset:
     return effective
 
 
-def _post_dns_records(actuals):
+def _post_dns_records(actuals, aliases_by_mac=None):
     """Project source='post' kea actuals into dns_hosts records.
 
-    read_kea_actuals rows carry {source, hostname, ipv4, ipv6, ...}; keep only
+    read_kea_actuals rows carry {mac, source, hostname, ipv4, ipv6, ...}; keep only
     post-owned rows that have a hostname (a reservation with no hostname can't
     be an A/AAAA record), as {hostname, ipv4, ipv6}. ipv4/ipv6 may be None --
-    render_hosts skips falsy addresses.
+    render_hosts skips falsy addresses. aliases_by_mac ({mac: [names]}, operator
+    aliases from user_context) adds an "aliases" list to that mac's record, as the
+    triage cycle does for its own rows.
     """
-    return [{"hostname": a["hostname"], "ipv4": a.get("ipv4"),
-             "ipv6": a.get("ipv6")}
-            for a in actuals
-            if a.get("source") == "post" and a.get("hostname")]
+    out = []
+    for a in actuals:
+        if a.get("source") != "post" or not a.get("hostname"):
+            continue
+        rec = {"hostname": a["hostname"], "ipv4": a.get("ipv4"), "ipv6": a.get("ipv6")}
+        al = (aliases_by_mac or {}).get(a.get("mac"))
+        if al:
+            rec["aliases"] = al
+        out.append(rec)
+    return out
+
+
+def _publish_post_dns(pool, post_dns_path):
+    """Write the post hostsdir file: post reservations plus their operator aliases.
+    An alias read failure only drops the aliases, never the primary records."""
+    actuals = read_kea_actuals(pool)
+    try:
+        aliases = read_aliases_for_macs(
+            pool, [a["mac"] for a in actuals if a.get("source") == "post" and a.get("mac")])
+    except Exception:
+        log.exception("post DNS: read_aliases_for_macs failed; publishing without aliases")
+        aliases = {}
+    write_hosts_file(post_dns_path, _post_dns_records(actuals, aliases))
 
 
 def run_post_lane(pool, geometry_path, cycle_secs, role_defs=None,
@@ -222,7 +243,7 @@ def run_post_lane(pool, geometry_path, cycle_secs, role_defs=None,
     # and a reservation failure above must not skip DNS (kea still holds the
     # last-good reservations).
     try:
-        write_hosts_file(post_dns_path, _post_dns_records(read_kea_actuals(pool)))
+        _publish_post_dns(pool, post_dns_path)
     except Exception:
         log.exception("post DNS write failed")
 
