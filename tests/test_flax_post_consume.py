@@ -60,3 +60,19 @@ def test_attach_remote_bmcs_fills_the_slot_from_its_lom_port():
     assert r["bmc_at"] == "turtle-lorax:swp44" and r["host_mac"] == "0c:42:a1:7b:e4:2d"
     assert "et6b2" not in out            # no device on its own port and none at swp43 yet
     assert "et8b1" not in out
+
+
+def test_remote_bmc_macs_reads_what_is_plugged_in_now():
+    """The turtle port's live MAC, not a reservation's recorded port (et6b2's BMC
+    moved swp38 -> swp43 and kept its swp38 reservation, 2026-11-19)."""
+    from flax_post import consume
+    slots = [{"port": "et6b1", "bmc_at": {"switch": "turtle-lorax", "port": "swp44"}},
+             {"port": "et6b2", "bmc_at": {"switch": "turtle-lorax", "port": "swp43"}},
+             {"port": "et6b3", "bmc_at": {"switch": "turtle-lorax", "port": "swp42"}},
+             {"port": "et8b1", "bmc_at": None}]
+    facts = {"turtle-lorax": {"swp44": {"bmc_mac": "4C:38:D5:1E:EF:E6", "macs": ["4c:38:d5:1e:ef:e6"]},
+                              "swp43": {"bmc_mac": None, "macs": ["00:22:4d:da:eb:b0"]},
+                              "swp42": {"bmc_mac": None, "macs": []}}}
+    assert consume.remote_bmc_macs(slots, facts) == {
+        ("turtle-lorax", "swp44"): "4c:38:d5:1e:ef:e6",
+        ("turtle-lorax", "swp43"): "00:22:4d:da:eb:b0"}

@@ -59,26 +59,32 @@ def _row_to_device(row) -> dict:
     }
 
 
-_AT_SQL = _SQL.replace(
+_BY_MAC_SQL = _SQL.replace(
     "  AND COALESCE((h.user_context::jsonb)->>'source', '') = 'post' ",
-    "  AND (h.user_context::jsonb)->'classify'->>'kind' = 'bmc' "
-    "  AND ((h.user_context::jsonb)->'classify'->>'switch') || ':' || "
-    "      ((h.user_context::jsonb)->'classify'->>'port') = ANY(%s) ")
+    "  AND h.dhcp_identifier = ANY(%s) ")
+_LEASE_BY_MAC_SQL = (
+    "SELECT " + (_MAC_SQL % "hwaddr") + ", host(('0.0.0.0'::inet) + address), expire "
+    "FROM kea.lease4 WHERE state = 0 AND hwaddr = ANY(%s)")
 
 
-def devices_at(ports) -> dict:
-    """{(switch, port): bmc device} for the given (switch, port) pairs, whoever
-    reserved it (a Capri's LOM BMC on the turtle is classify's, not post's).
-    Read-only, viewer use: the post agents keep reading post_devices()."""
-    keys = sorted({f"{sw}:{p}" for sw, p in ports})
-    if not keys:
+def devices_by_mac(macs) -> dict:
+    """{mac: device} for the given colon-lower MACs from their reservation (whoever
+    minted it: a Capri's LOM BMC on the turtle is classify's) joined to its lease,
+    else from an active lease alone (a pool lease). Read-only, viewer use: the
+    post agents keep reading post_devices()."""
+    macs = sorted({m.lower() for m in macs if m})
+    if not macs:
         return {}
-    with get_pool().connection() as conn:
-        rows = conn.execute(_AT_SQL, (keys,)).fetchall()
+    keys = [bytes.fromhex(m.replace(":", "")) for m in macs]
     out = {}
-    for r in rows:
-        d = _row_to_device(r)
-        out.setdefault((d["switch"], d["port"]), d)
+    with get_pool().connection() as conn:
+        for r in conn.execute(_BY_MAC_SQL, (keys,)).fetchall():
+            d = _row_to_device(r)
+            out.setdefault(d["mac"], d)
+        for mac, ip, expire in conn.execute(_LEASE_BY_MAC_SQL, (keys,)).fetchall():
+            if mac not in out:
+                out[mac] = {"mac": mac, "reservation_ip": None, "lease_ip": ip, "leased": True,
+                            "lease_expires": expire.isoformat() if expire else None}
     return out
 
 

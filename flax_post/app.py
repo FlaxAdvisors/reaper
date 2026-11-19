@@ -76,10 +76,15 @@ def _blade_slots() -> list[dict]:
     devices = queries.post_devices()
     facts = consume.switch_ports(switch)
     consumed = consume.consumed_by_port(devices, facts, switch)
-    remote_at = [(s["bmc_at"]["switch"], s["bmc_at"]["port"]) for s in geo["slots"] if s.get("bmc_at")]
-    if remote_at:
+    remote_sw = sorted({s["bmc_at"]["switch"] for s in geo["slots"] if s.get("bmc_at")})
+    if remote_sw:
+        # a Capri's LOM BMC: whatever is plugged into its bmc_at port NOW (switch
+        # facts), with that MAC's reservation/lease -- never a reservation's stale port
         try:
-            consumed = consume.attach_remote_bmcs(consumed, geo["slots"], queries.devices_at(remote_at))
+            at_macs = consume.remote_bmc_macs(geo["slots"], {sw: consume.switch_ports(sw) for sw in remote_sw})
+            by_mac = queries.devices_by_mac(at_macs.values())
+            remote = {k: (by_mac.get(m) or {"mac": m, "leased": False}) for k, m in at_macs.items()}
+            consumed = consume.attach_remote_bmcs(consumed, geo["slots"], remote)
         except Exception:      # a LOM BMC lookup must never take the rack view down
             log.exception("bmc_at lookup failed; those tiles show no BMC this pass")
     try:

@@ -58,7 +58,7 @@ def consumed_by_port(devices: list, switch_facts: dict, switch: str) -> dict:
 def attach_remote_bmcs(consumed: dict, slots: list, remote: dict) -> dict:
     """Fill a slot's BMC from the port its geometry names in `bmc_at` (a Capri's LOM
     BMC on the turtle), so the tile shows the node's BMC MAC/IP. `remote` is
-    {(switch, port): device} as queries.devices_at returns it. Pure; the slot's own
+    {(switch, port): device} (remote_bmc_macs + queries.devices_by_mac). Pure; the slot's own
     host fields are kept. A slot whose bmc_at port has no reservation is unchanged."""
     out = dict(consumed)
     for slot in slots:
@@ -74,4 +74,20 @@ def attach_remote_bmcs(consumed: dict, slots: list, remote: dict) -> dict:
                     "bmc_leased": bool(dev.get("leased")), "bmc_mac_seen": bool(dev.get("leased")),
                     "bmc_at": f"{at['switch']}:{at['port']}"})
         out[slot["port"]] = rec
+    return out
+
+
+def remote_bmc_macs(slots: list, facts_by_switch: dict) -> dict:
+    """{(switch, port): mac} of what is plugged into each slot's bmc_at port now:
+    the port's bmc_mac in that switch's facts, else its single seen MAC. Pure."""
+    out = {}
+    for slot in slots:
+        at = slot.get("bmc_at")
+        if not at:
+            continue
+        fact = (facts_by_switch.get(at["switch"]) or {}).get(geometry.to_arista(at["port"])) or {}
+        macs = fact.get("macs") or []
+        mac = fact.get("bmc_mac") or (macs[0] if len(macs) == 1 else None)
+        if mac:
+            out[(at["switch"], at["port"])] = str(mac).lower()
     return out
