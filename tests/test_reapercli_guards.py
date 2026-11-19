@@ -131,3 +131,39 @@ def test_keyboardinterrupt_exits_1(tmp_path, monkeypatch, capsys):
 
 def test_context_has_user():
     assert Context(root=ROOT, home=ROOT, hostname="h").user
+
+
+def _push_from_other(tmp_path):
+    other = tmp_path / "other"
+    subprocess.run(["git", "clone", "-q", str(tmp_path / "origin.git"), str(other)], check=True, capture_output=True)
+    git(other, "config", "user.email", "t@t")
+    git(other, "config", "user.name", "t")
+    (other / "g").write_text("x\n")
+    git(other, "add", "g")
+    git(other, "commit", "-qm", "newer")
+    git(other, "push", "-q")
+
+
+def test_behind_refuses_without_a_prior_fetch(tmp_path):
+    """origin moved since this clone last fetched: the guard fetches and sees it."""
+    clone = make_clone(tmp_path)
+    _push_from_other(tmp_path)
+    with pytest.raises(Refused, match="1 commits behind origin/main"):
+        clone_guard(clone)
+
+
+def test_diverged_says_pull_rebase(tmp_path):
+    """A local commit on a stale clone (the 2026-11-19 reaper fw case)."""
+    clone = make_clone(tmp_path)
+    _push_from_other(tmp_path)
+    (clone / "f").write_text("2\n")
+    git(clone, "commit", "-qam", "local")
+    with pytest.raises(Refused, match="diverged.*pull --rebase"):
+        clone_guard(clone)
+
+
+def test_unreachable_origin_warns_and_passes(tmp_path, capsys):
+    clone = make_clone(tmp_path)
+    git(clone, "remote", "set-url", "origin", str(tmp_path / "gone.git"))
+    assert len(clone_guard(clone)) == 40
+    assert "git fetch origin main failed" in capsys.readouterr().err
