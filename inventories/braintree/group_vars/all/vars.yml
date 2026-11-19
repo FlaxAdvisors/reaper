@@ -287,14 +287,15 @@ flax_role_post_vid_by_family:
 # 2026-11-18: -> 0.9.222 (post viewer elevation to scale: 4U BCs, empty spans as slots).
 # 2026-11-18: -> 0.9.223 (a population profile with no rules never passes Qualify / Deploy).
 # 2026-11-18: -> 0.9.224 (post DNS publishes operator aliases).
-apply_flax_stack_flax_control_image_tag: "0.9.224"
-apply_flax_switch_sense_image_tag: "0.9.224"
-apply_flax_observe_image_tag: "0.9.224"
-apply_flax_discover_image_tag: "0.9.224"
-apply_flax_classify_image_tag: "0.9.224"
-apply_flax_reconcile_image_tag: "0.9.224"
-apply_flax_post_image_tag: "0.9.224"
-apply_flax_post_sol_image_tag: "0.9.224"
+# 2026-11-19: -> 0.9.225 (host-only post slots reserved; Capri tiles show their turtle LOM BMC).
+apply_flax_stack_flax_control_image_tag: "0.9.225"
+apply_flax_switch_sense_image_tag: "0.9.225"
+apply_flax_observe_image_tag: "0.9.225"
+apply_flax_discover_image_tag: "0.9.225"
+apply_flax_classify_image_tag: "0.9.225"
+apply_flax_reconcile_image_tag: "0.9.225"
+apply_flax_post_image_tag: "0.9.225"
+apply_flax_post_sol_image_tag: "0.9.225"
 
 # BMC firmware manifest. 2026-11-09 operator: braintree carries the same BIOS +
 # BMC manifests as eindhoven and lavergne (was flax-onetree-1.0.9 here); the
