@@ -87,6 +87,15 @@ def derive_post_targets(switch_facts, switch, *, skip_ports=_DEFAULT_SKIP,
             # authority for a BMC reservation.
             bmc_mac = obs["bmc_mac"]
             nic_macs = [obs["nic_mac"]] if obs.get("nic_mac") else (info.get("nic_macs") or [])
+        elif require_confirmed_bmc and src == "probe_flip_host" and obs.get("nic_mac"):
+            # observe reached the slot's only device and it answered as a HOST, with no
+            # BMC on this port: a Capri, whose BMC is a LOM on the turtle (braintree
+            # rabbit-fiesta, 2026-11-18). Reserve the host alone -- it is positively
+            # identified, and on a reservation-only post VLAN it never leases without
+            # one. Its BMC is reserved where it lives.
+            out.append({"switch": switch, "port": port, "port_token": token,
+                        "kind": "host", "mac": obs["nic_mac"], "vid": int(vid)})
+            continue
         elif require_confirmed_bmc:
             # Continuous post lane: no positive comms-confirmation -> NO BMC reservation.
             # switch_facts arithmetic + LLDP port_description=="eth0" are NOT proof of a

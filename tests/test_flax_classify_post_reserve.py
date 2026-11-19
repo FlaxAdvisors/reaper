@@ -759,3 +759,26 @@ def test_unassigned_and_unknown_bmc_use_header_prefix(monkeypatch):
 
 def test_node_without_any_order_gets_no_reservation(monkeypatch):
     assert _run(monkeypatch, None, {"b8599fabaf0e": "RRORD-1033"}) == ["rr033-et7b1", "rr033-et7b1-bmc"]
+
+
+def test_probe_flip_host_with_a_named_host_reserves_the_host_only():
+    """A post slot whose only MAC observe positively identified as a host (a Capri:
+    its BMC is a LOM on the turtle, braintree rabbit-fiesta et6b1/et6b2,
+    2026-11-18) gets the host's reservation and no BMC one. Without it the host
+    never leases on a reservation-only post VLAN."""
+    from flax_classify.post_reserve import derive_post_targets
+    facts = {"rabbit-fiesta": {"ports": {"Ethernet6/1": {
+        "link": "link", "mask": "access", "access_vid": 24,
+        "bmc_mac": "0c:42:a1:7b:e4:2d", "nic_macs": ["0c:42:a1:7b:e4:2b"]}}}}
+    observed = {("rabbit-fiesta", "et6b1"): {"source": "probe_flip_host", "bmc_mac": None,
+                                             "nic_mac": "0c:42:a1:7b:e4:2d"}}
+    out = derive_post_targets(facts, "rabbit-fiesta", require_confirmed_bmc=True, observed=observed)
+    assert out == [{"switch": "rabbit-fiesta", "port": "Ethernet6/1", "port_token": "et6b1",
+                    "kind": "host", "mac": "0c:42:a1:7b:e4:2d", "vid": 24}]
+
+
+def test_host_only_slot_resolves_to_the_slot_hostname():
+    from flax_classify.post_reserve import resolve
+    [r] = resolve([{"switch": "rabbit-fiesta", "port": "Ethernet6/1", "port_token": "et6b1",
+                    "kind": "host", "mac": "0c:42:a1:7b:e4:2d", "vid": 24}], "br001")
+    assert (r["hostname"], r["ipv4"]) == ("br001-et6b1", "172.24.6.1")
