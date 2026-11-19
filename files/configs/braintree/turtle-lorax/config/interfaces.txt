@@ -237,7 +237,7 @@ iface swp51
 
 auto swp52
 iface swp52
-    bridge-vids 2 4 6 8 10 12 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31
+    bridge-vids 2 4 8 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31
 
 ### VLAN interfaces ###########################################################
 
@@ -245,7 +245,7 @@ auto bridge
 iface bridge
     bridge-ports swp1 swp2 swp3 swp4 swp5 swp6 swp7 swp8 swp9 swp10 swp11 swp12 swp13 swp14 swp15 swp16 swp17 swp18 swp19 swp20 swp21 swp22 swp23 swp24 swp25 swp26 swp27 swp28 swp29 swp30 swp31 swp32 swp33 swp34 swp35 swp36 swp37 swp38 swp39 swp40 swp41 swp42 swp43 swp44 swp45 swp46 swp47 swp48 swp49 swp50 swp51 swp52
     bridge-pvid 1
-    bridge-vids 2 4 6 8 10 12 16-31
+    bridge-vids 2 4 8 16-31
     bridge-vlan-aware yes
 
 auto vlan8
