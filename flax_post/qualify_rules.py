@@ -18,7 +18,8 @@ NO_SHIP_RULE = "no ship serial: FRU 0 %s empty — do not ship"
 
 
 def population_check(dump, profile, dimmsum=None, baseboard=None) -> dict:
-    """green = all profile rules matched, red = any missing, grey = no dump/profile.
+    """green = all profile rules matched, red = any missing, grey = no dump/profile or a
+    profile with no rules (nothing validated: never green).
     A blocked DIMM (blocklist, ruling 2026-09-12) is red whatever the profile
     says: the hits ride along as `blocked_dimms` and as failed rules.
     baseboard = the ladder's bmc-ready evidence (fru.read_baseboard). A
@@ -30,9 +31,17 @@ def population_check(dump, profile, dimmsum=None, baseboard=None) -> dict:
         out = {"profile": profile, "verdict": "grey", "failed_rules": []}
     else:
         rules = population.load_profile(profile)
-        res = population.evaluate(rules, dump)
-        failed = [r["rule"] for r in res["results"] if not r["ok"]]
-        out = {"profile": profile, "verdict": "green" if res["ok"] else "red", "failed_rules": failed}
+        if not rules:
+            # missing, unreadable or comment-only profile: load_profile gives [] and
+            # evaluate([]) is vacuously ok -- nothing was validated, so no verdict
+            # (grey: Qualify never passes, Deploy never starts). Rackpost's rung
+            # already fails these before it calls here (spec A4.6).
+            out = {"profile": profile, "verdict": "grey", "failed_rules": [],
+                   "error": f"population profile {profile!r} has no rules (missing or empty)"}
+        else:
+            res = population.evaluate(rules, dump)
+            failed = [r["rule"] for r in res["results"] if not r["ok"]]
+            out = {"profile": profile, "verdict": "green" if res["ok"] else "red", "failed_rules": failed}
     if blocked:
         out["verdict"] = "red"
         out["failed_rules"] = list(out["failed_rules"]) + [blocklist.describe(h) for h in blocked]

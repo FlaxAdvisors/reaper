@@ -283,7 +283,7 @@ def test_poll_pass_verdict_runs_done_and_writes_vars_done(monkeypatch):
     # is a no-op (early-bound defaults) -- patch the actual subprocess seam
     # (actions.RUNNER, per actions.py's documented test seam) instead.
     from flax_post.observe import host_qual
-    monkeypatch.setattr(host_qual.population, "load_profile", lambda name: [])  # no rules -> green
+    monkeypatch.setattr(host_qual.population, "load_profile", lambda name: ["12 Memory Size: 64 GB"])  # one rule the inventory matches -> green
     monkeypatch.setattr(host_qual, "_read_profile_for", lambda target, store: "prof")
     calls = []
     monkeypatch.setattr(host_qual.actions, "RUNNER",
@@ -417,7 +417,7 @@ def test_build_result_shape():
 
 
 def test_poll_records_result_once_per_run(monkeypatch):
-    monkeypatch.setattr(host_qual.population, "load_profile", lambda name: [])
+    monkeypatch.setattr(host_qual.population, "load_profile", lambda name: ["."])  # a rule any inventory line matches -> green
     monkeypatch.setattr(host_qual, "_read_profile_for", lambda target, store: "prof")
     runner_calls = []
     monkeypatch.setattr(host_qual.actions, "RUNNER",
@@ -759,7 +759,7 @@ def test_checks_run_when_inventory_failed():
 
 
 def test_failed_check_fails_the_run(monkeypatch):
-    monkeypatch.setattr(host_qual.population, "load_profile", lambda name: [])   # green
+    monkeypatch.setattr(host_qual.population, "load_profile", lambda name: ["."])   # any inventory line matches -> green
     monkeypatch.setattr(host_qual, "_read_profile_for", lambda target, store: "prof")
     arts = {**GOOD_ARTS, ("inventory", "tpmstate"): "device=absent\n"}
     agent = _inv_agent(arts=arts, overall={"status": "done", "current": None, "done_n": 11,
@@ -771,7 +771,7 @@ def test_failed_check_fails_the_run(monkeypatch):
 
 def test_disabled_smbios_serial_does_not_fail_the_run(monkeypatch):
     # the Quanta case: FRU serial present, SMBIOS left at the BIOS default
-    monkeypatch.setattr(host_qual.population, "load_profile", lambda name: [])   # green
+    monkeypatch.setattr(host_qual.population, "load_profile", lambda name: ["."])   # any inventory line matches -> green
     monkeypatch.setattr(host_qual, "_read_profile_for", lambda target, store: "prof")
     arts = {**GOOD_ARTS, ("inventory", "dmidecode"): "System Information\n\tSerial Number: To be filled by O.E.M.\n"}
     agent = _inv_agent(arts=arts, overall={"status": "done", "current": None, "done_n": 11,
@@ -984,3 +984,26 @@ def test_fio_judge_without_the_table_still_judges():  # RF4
     host_qual.poll_target(TARGET, make_client=lambda ip: _nvme_agent(), store=store, fio_baseline={})
     summ = store.state["et6b1"]["qual"]["steps"]["fio"]["summary"]
     assert {j["verdict"] for j in summ["judge"].values()} == {"no baseline"}
+
+
+def test_population_check_never_greens_a_profile_with_no_rules(monkeypatch):
+    """A population name with no rules behind it (profile file missing, unreadable or
+    only comments) validated nothing: grey (no Qualify verdict, so no Deploy), never
+    green. load_profile returns [] for all three and evaluate([]) is vacuously ok."""
+    from flax_post.observe import host_qual
+    monkeypatch.setattr(host_qual.population, "load_profile", lambda name: [])
+    pop = host_qual.population_check("12 Memory Size: 64 GB", "no-such-profile")
+    assert pop["verdict"] == "grey"
+    assert "no-such-profile" in pop["error"]
+    assert host_qual.qualify_verdict({"verdict": "pass"}, pop) is None
+
+
+def test_no_population_means_no_qualify_pass_and_no_deploy(monkeypatch):
+    """The whole chain: no profile -> grey -> no verdict -> deploy.wants_deploy None."""
+    from flax_post import deploy
+    from flax_post.observe import host_qual
+    pop = host_qual.population_check("12 Memory Size: 64 GB", None)
+    assert host_qual.qualify_verdict({"verdict": "pass"}, pop) is None
+    assert deploy.wants_deploy({"done": {}, "qual": {"run_id": "r1"}}) is None
+    assert deploy.wants_deploy({"done": {"verdict": "pass", "deploy": "pending"},
+                                "qual": {"run_id": "r1"}}) == "auto"
