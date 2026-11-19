@@ -55,7 +55,17 @@ def _normalize_slot(s: dict) -> dict:
         "col": col_label(pos, width),
         "group": s.get("chassis"),          # group == chassis (UI clusters when null)
         "label": str(s.get("label", "")),   # the device's name on the tile (a BC IOM: JBOD01 IOM1)
+        "bmc_at": _bmc_at(s.get("bmc_at")),  # a LOM BMC on another switch port (a Capri)
     }
+
+
+def _bmc_at(v):
+    """'turtle-lorax:swp44' -> {switch, port}: the slot's BMC is a LOM cabled to that
+    port (a Capri), not on the slot's own port. Empty/malformed -> None."""
+    if not v or ":" not in str(v):
+        return None
+    sw, port = str(v).split(":", 1)
+    return {"switch": sw.strip(), "port": port.strip()} if sw.strip() and port.strip() else None
 
 
 def _normalize_fixture(f: dict) -> dict:

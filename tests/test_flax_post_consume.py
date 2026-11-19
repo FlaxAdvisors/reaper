@@ -39,3 +39,24 @@ def test_consumed_by_port_no_link_no_macseen():
     assert c["link"] == "nolink"
     assert c["bmc_mac_seen"] is False
     assert c["bmc_leased"] is False and c["bmc_reserved"] is True
+
+
+def test_attach_remote_bmcs_fills_the_slot_from_its_lom_port():
+    """braintree et6b1: host on rabbit-fiesta, BMC a LOM on turtle-lorax swp44."""
+    from flax_post import consume
+    consumed = {"et6b1": {"link": "link", "bmc_mac": None, "host_mac": "0c:42:a1:7b:e4:2d",
+                          "bmc_reserved": False, "bmc_ip": None, "bmc_leased": False,
+                          "bmc_mac_seen": False}}
+    slots = [{"port": "et6b1", "bmc_at": {"switch": "turtle-lorax", "port": "swp44"}},
+             {"port": "et6b2", "bmc_at": {"switch": "turtle-lorax", "port": "swp43"}},
+             {"port": "et8b1", "bmc_at": None}]
+    remote = {("turtle-lorax", "swp44"): {"mac": "4c:38:d5:1e:ef:e6", "kind": "bmc",
+                                          "reservation_ip": "172.24.0.144", "lease_ip": "172.24.0.144",
+                                          "leased": True}}
+    out = consume.attach_remote_bmcs(consumed, slots, remote)
+    r = out["et6b1"]
+    assert (r["bmc_mac"], r["bmc_ip"], r["bmc_reserved"], r["bmc_leased"]) == \
+        ("4c:38:d5:1e:ef:e6", "172.24.0.144", True, True)
+    assert r["bmc_at"] == "turtle-lorax:swp44" and r["host_mac"] == "0c:42:a1:7b:e4:2d"
+    assert "et6b2" not in out            # no device on its own port and none at swp43 yet
+    assert "et8b1" not in out

@@ -53,3 +53,25 @@ def consumed_by_port(devices: list, switch_facts: dict, switch: str) -> dict:
             rec[f"{kind}_leased"] = bool(dev and dev.get("leased"))
         out[port] = rec
     return out
+
+
+def attach_remote_bmcs(consumed: dict, slots: list, remote: dict) -> dict:
+    """Fill a slot's BMC from the port its geometry names in `bmc_at` (a Capri's LOM
+    BMC on the turtle), so the tile shows the node's BMC MAC/IP. `remote` is
+    {(switch, port): device} as queries.devices_at returns it. Pure; the slot's own
+    host fields are kept. A slot whose bmc_at port has no reservation is unchanged."""
+    out = dict(consumed)
+    for slot in slots:
+        at = slot.get("bmc_at")
+        dev = remote.get((at["switch"], at["port"])) if at else None
+        if not dev:
+            continue
+        rec = dict(out.get(slot["port"]) or {"link": "nolink", "host_mac": None,
+                                             "host_reserved": False, "host_ip": None,
+                                             "host_leased": False, "host_mac_seen": False})
+        rec.update({"bmc_mac": dev.get("mac"), "bmc_reserved": True,
+                    "bmc_ip": dev.get("lease_ip") or dev.get("reservation_ip"),
+                    "bmc_leased": bool(dev.get("leased")), "bmc_mac_seen": bool(dev.get("leased")),
+                    "bmc_at": f"{at['switch']}:{at['port']}"})
+        out[slot["port"]] = rec
+    return out

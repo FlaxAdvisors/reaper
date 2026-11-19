@@ -75,3 +75,10 @@ def test_slot_label_is_carried_and_defaults_empty():
     """A slot may name its device (a BC JBOD's IOM: 'JBOD01 IOM1'), as rackpost does."""
     geo = geometry.parse_geometry({"racks": [], "slots": [dict(_SLOT, label="JBOD01 IOM1"), _SLOT]})
     assert [s["label"] for s in geo["slots"]] == ["JBOD01 IOM1", ""]
+
+
+def test_slot_bmc_at_names_a_lom_bmc_elsewhere():
+    """A Capri slot's BMC is a LOM on the turtle: the slot says where (bmc_at)."""
+    geo = geometry.parse_geometry({"racks": [], "slots": [dict(_SLOT, bmc_at="turtle-lorax:swp44"), _SLOT]})
+    assert geo["slots"][0]["bmc_at"] == {"switch": "turtle-lorax", "port": "swp44"}
+    assert geo["slots"][1]["bmc_at"] is None

@@ -660,6 +660,7 @@ def _record(slot, c, st, settings, live_link, macs, node=None, orders=None):
         "serial": st.get("serial"),
         "bmc_mac": c.get("bmc_mac"), "host_mac": c.get("host_mac"),
         "bmc_ip": c.get("bmc_ip"), "host_ip": c.get("host_ip"),
+        "bmc_at": c.get("bmc_at"),                # a LOM BMC on another port (a Capri)
         "bmc_leased": bool(c.get("bmc_leased")), "host_leased": bool(c.get("host_leased")),
         "power_on": st.get("power_on"), "watts": st.get("watts"),
         "bmc_pinged": bool(st.get("bmc_pinged")),

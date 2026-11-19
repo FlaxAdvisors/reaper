@@ -65,7 +65,8 @@
       "height": 2,
       "width": 3,
       "pos": "1:3",
-      "chassis": 2
+      "chassis": 2,
+      "bmc_at": "turtle-lorax:swp44"
     },
     {
       "port": "et6b2",
@@ -74,7 +75,8 @@
       "height": 2,
       "width": 3,
       "pos": "1:3",
-      "chassis": 2
+      "chassis": 2,
+      "bmc_at": "turtle-lorax:swp43"
     },
     {
       "port": "et6b3",

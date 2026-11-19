@@ -76,6 +76,12 @@ def _blade_slots() -> list[dict]:
     devices = queries.post_devices()
     facts = consume.switch_ports(switch)
     consumed = consume.consumed_by_port(devices, facts, switch)
+    remote_at = [(s["bmc_at"]["switch"], s["bmc_at"]["port"]) for s in geo["slots"] if s.get("bmc_at")]
+    if remote_at:
+        try:
+            consumed = consume.attach_remote_bmcs(consumed, geo["slots"], queries.devices_at(remote_at))
+        except Exception:      # a LOM BMC lookup must never take the rack view down
+            log.exception("bmc_at lookup failed; those tiles show no BMC this pass")
     try:
         orders = state.order_labels()
     except Exception:          # e.g. before migration 044: blank labels, never a dead view

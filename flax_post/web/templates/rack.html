@@ -116,6 +116,8 @@
               <span v-if="cell.bmc_mac" class="v">{{cell.bmc_mac}}</span>
               <span v-else-if="cell.macs_seen && cell.macs_seen.length" class="v unreserved">{{cell.macs_seen.join(' ')}}</span>
               <span v-else class="skel"></span></div>
+            <div class="t-row" v-if="cell.bmc_at" :title="'BMC is a LOM on ' + cell.bmc_at"><span class="k">BMC</span>
+              <span class="v">{{cell.bmc_ip || '—'}} @ {{cell.bmc_at.split(':')[1]}}</span></div>
             <div class="t-row"><span class="k">SN</span>
               <span v-if="cell.serial" class="v">{{cell.serial}}</span><span v-else class="skel" style="width:60%"></span></div>
             <div class="t-row" v-if="cell.order_no" :title="ordTitle(cell)"

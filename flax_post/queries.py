@@ -59,6 +59,29 @@ def _row_to_device(row) -> dict:
     }
 
 
+_AT_SQL = _SQL.replace(
+    "  AND COALESCE((h.user_context::jsonb)->>'source', '') = 'post' ",
+    "  AND (h.user_context::jsonb)->'classify'->>'kind' = 'bmc' "
+    "  AND ((h.user_context::jsonb)->'classify'->>'switch') || ':' || "
+    "      ((h.user_context::jsonb)->'classify'->>'port') = ANY(%s) ")
+
+
+def devices_at(ports) -> dict:
+    """{(switch, port): bmc device} for the given (switch, port) pairs, whoever
+    reserved it (a Capri's LOM BMC on the turtle is classify's, not post's).
+    Read-only, viewer use: the post agents keep reading post_devices()."""
+    keys = sorted({f"{sw}:{p}" for sw, p in ports})
+    if not keys:
+        return {}
+    with get_pool().connection() as conn:
+        rows = conn.execute(_AT_SQL, (keys,)).fetchall()
+    out = {}
+    for r in rows:
+        d = _row_to_device(r)
+        out.setdefault((d["switch"], d["port"]), d)
+    return out
+
+
 def post_devices() -> list[dict]:
     """All source='post' reservations with active-lease presence, sorted switch/port."""
     with get_pool().connection() as conn:
