@@ -4,3 +4,4 @@ Tioga-Pass Channel
 Tioga Pass Single Side .*
 .* Tioga Pass Single Side
 ^Tioga Pass( Single Side)?$
+^TS2290-E7278P-6SSD$
