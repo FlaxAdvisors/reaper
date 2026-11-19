@@ -248,9 +248,23 @@ def fw_gate_passed(slice_, mode=None, key=None) -> bool:
     phase = slice_.get("phase")
     if phase in _GATE_PASS_BY_KEY.get(key, _GATE_PASS):
         return True
+    detect = (mode or slice_.get("mode") or "detect") == "detect"
     if phase == "needs_update":
-        return (mode or slice_.get("mode") or "detect") == "detect"
+        return detect
+    if key == "fw_nic" and phase == "fault" and detect and _all_fw_locked(slice_):
+        # every card is secure-fw locked: nothing we can flash, a finding to report
+        # (braintree, operator 2026-11-19) -- in detect mode it no more blocks
+        # Qualify than needs_update does; enforce still blocks
+        return True
     return False
+
+
+def _all_fw_locked(slice_) -> bool:
+    devs = slice_.get("devices") or []
+    return bool(devs) and all(d.get("secure") and str(d.get("fault_reason", "")).startswith("fw-locked")
+                              for d in devs if d.get("phase") == "fault") \
+        and any(d.get("phase") == "fault" for d in devs) \
+        and all(d.get("phase") in ("fault", "up_to_date", "needs_update") for d in devs)
 
 
 # Which Firmware step a fw-gates ladder fault lands on, in gate order.

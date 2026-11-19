@@ -1039,3 +1039,38 @@ def test_record_uses_node_assignment():
 def test_record_follows_header_without_node():
     b = _blade()
     assert (b["order_no"], b["order_source"], b["order_stale"]) == ("RRORD-100", "header", False)
+
+
+_LOCKED = {"pci": "05:00.0", "psid": "FB_0000000005", "secure": True, "phase": "fault",
+           "current": "14.27.2606", "target": "14.32.1912",
+           "fault_reason": "fw-locked (secure-fw); cannot flash"}
+
+
+def test_detect_mode_lets_a_nic_whose_cards_are_all_fw_locked_through():
+    """braintree et8b4/et28b1 (2026-11-19): a secure-fw card cannot take our image,
+    so nicd says fault; in detect mode that is a finding, like needs_update --
+    report it and let the node through to Qualify (operator flashes by hand)."""
+    from flax_post import blades
+    nic = {"mode": "detect", "phase": "fault", "devices": [_LOCKED, dict(_LOCKED, pci="05:00.1")]}
+    assert blades.fw_gate_passed(nic, key="fw_nic") is True
+
+
+def test_a_locked_nic_still_blocks_in_enforce_mode():
+    from flax_post import blades
+    nic = {"mode": "enforce", "phase": "fault", "devices": [_LOCKED]}
+    assert blades.fw_gate_passed(nic, key="fw_nic") is False
+
+
+def test_detect_mode_still_blocks_a_nic_fault_that_is_not_a_lock():
+    from flax_post import blades
+    other = dict(_LOCKED, secure=False, fault_reason="flash failed: verify mismatch")
+    assert blades.fw_gate_passed({"mode": "detect", "phase": "fault", "devices": [_LOCKED, other]},
+                                 key="fw_nic") is False
+    assert blades.fw_gate_passed({"mode": "detect", "phase": "fault", "devices": []},
+                                 key="fw_nic") is False
+
+
+def test_the_lock_rule_is_nic_only():
+    from flax_post import blades
+    assert blades.fw_gate_passed({"mode": "detect", "phase": "fault", "devices": [_LOCKED]},
+                                 key="fw_bios") is False
