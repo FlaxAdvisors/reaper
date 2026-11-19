@@ -33,6 +33,9 @@ def clone(tmp_path):
     subprocess.run(["git", "clone", "-q", str(origin), str(c)], check=True, capture_output=True)
     for d in ("inventories", "files/reaper"):
         shutil.copytree(REAL / d, c / d, ignore=shutil.ignore_patterns("vault.yml"))
+    # frozen eindhoven vars (tiogapass-openbmc at 1.1.5), not the live pin a real bump moves
+    shutil.copyfile(REAL / "tests" / "fixtures" / "reapercli" / "eindhoven-vars-onetree-1.1.5.yml",
+                    c / "inventories" / "eindhoven" / "group_vars" / "all" / "vars.yml")
     git(c, "checkout", "-q", "-b", "main")
     git(c, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
     git(c, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "seed")

@@ -11,7 +11,8 @@ from reapercli.lib.guards import Refused  # noqa: E402
 from reapercli.lib.inventory import _Loader  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-EHV = (ROOT / "inventories" / "eindhoven" / "group_vars" / "all" / "vars.yml").read_text()
+# frozen, not the live file: every real `reaper fw` bump moves the live pin
+EHV = (ROOT / "tests" / "fixtures" / "reapercli" / "eindhoven-vars-onetree-1.1.5.yml").read_text()
 
 # The real MANIFESTs on bang-gouda's share (2026-11-11), verbatim.
 BMC_MANIFEST = ("purpose=xyz.openbmc_project.Software.Version.VersionPurpose.BMC\n"
