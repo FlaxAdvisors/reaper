@@ -1,4 +1,5 @@
 """observe/worker: one iteration of a slot worker over fake deps."""
+import pytest
 import copy
 
 from flax_post.observe import ladder as L, worker
@@ -209,7 +210,7 @@ def test_real_deps_ssh_boot_evidence_reads_uptime_on_the_bang_clock_and_scans_th
     calls = _ssh_boot_env(monkeypatch, tmp_path, (0, "3600.50 7100.25\n"))
     deps = worker.RealDeps(FakeFeed(), store=FakeStore())
     ev = deps.evidence("ssh-boot", {"host_ip": "172.25.24.2"}, {"born_at": 1789362000.0})   # 05:00:00Z
-    assert calls == [("172.25.24.2", "cat /proc/uptime")]
+    assert calls == [("172.25.24.2", worker.SSH_BOOT_SCRIPT)]
     assert ev == {"ok": True, "kernel_boot": 1789375563.5,                                    # 08:46:03.5Z
                   "tftp": [1789375441.0], "ipxe": [1789375508.0], "iso": [1789375580.0]}
 
@@ -607,3 +608,13 @@ def test_worker_restamps_engine_window_after_pxe_cycle():
     d.rec["power_on"] = "on"
     lad, _ = worker.iterate_once("et6b1", d, True, 101.0)
     assert lad["last_power_attempt"] == 141.0 and d.rec["ladder"]["last_power_attempt"] == 141.0
+
+
+@pytest.mark.parametrize("cmdline,live", [
+    ("BOOT_IMAGE=/casper/vmlinuz BOOTIF=01-b8-ce-f6-06-fc-ee pxeaddr=172.25.0.1 ip=dhcp", True),
+    ("BOOT_IMAGE=/vmlinuz-6.8.0-48-generic root=/dev/mapper/ubuntu--vg-ubuntu--lv ro", False)])
+def test_real_deps_ssh_boot_evidence_says_whether_the_live_image_runs(monkeypatch, tmp_path, cmdline, live):
+    _ssh_boot_env(monkeypatch, tmp_path, (0, "3600.50 7100.25\n--cmdline--\n" + cmdline + "\n"))
+    deps = worker.RealDeps(FakeFeed(), store=FakeStore())
+    ev = deps.evidence("ssh-boot", {"host_ip": "172.25.24.2"}, {"born_at": 1789362000.0})
+    assert ev["live"] is live and ev["kernel_boot"] == 1789375563.5

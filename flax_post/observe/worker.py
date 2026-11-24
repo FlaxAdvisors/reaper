@@ -208,21 +208,31 @@ def _ssh_ok(ip) -> bool:
     return rc == 0
 
 
+_CMDLINE_SEP = "--cmdline--\n"
+SSH_BOOT_SCRIPT = "cat /proc/uptime; echo --cmdline--; cat /proc/cmdline"
+
+
 def _ssh_boot(ip, born_at) -> dict:
     """host-ssh evidence for a blade that was already on at first sight: ssh
     works, the running kernel's boot time on the BANG clock (now - uptime; the
-    host clock is never trusted), and every boot-log time since the ladder was
-    born. The ladder decides whether that proves the boot."""
+    host clock is never trusted), every boot-log time since the ladder was
+    born, and `live` (the kernel is the live image, not an installed OS). The
+    ladder decides whether that proves the boot."""
     if not ip:
         return {"ok": False}
     from ..biosd import creds as _creds, driver as _driver
     user, pw = _creds.load_host_creds()
     t0 = time.time()
-    rc, out = _driver.run_over_ssh(user, pw, ip, "cat /proc/uptime", timeout=30)
+    rc, out = _driver.run_over_ssh(user, pw, ip, SSH_BOOT_SCRIPT, timeout=30)
     t1 = time.time()
     if rc != 0:
         return {"ok": False}
-    ev = {"ok": True, "kernel_boot": _kernel_boot(out, (t0 + t1) / 2)}
+    uptime, sep, cmdline = (out or "").partition(_CMDLINE_SEP)
+    ev = {"ok": True, "kernel_boot": _kernel_boot(uptime, (t0 + t1) / 2)}
+    if sep:
+        # the live image boots with BOOTIF= on its cmdline (flax_rungs.liveboot); a
+        # deployed node booting its disk does not: the ladder re-arms PXE once
+        ev["live"] = "BOOTIF=" in cmdline
     ev.update(bootlog.boot_times(bootlog.DNSMASQ_LOG, bootlog.NGINX_ACCESS_LOG, ip, born_at))
     return ev
 

@@ -671,3 +671,43 @@ def test_bmc_ready_absent_then_ok_passes():
     ok = dict(_NO_SERIAL, state="ok", serial="WTH1")
     lad, _ = L.advance(lad, snap(**_S), {"bmcdata": ok}, lad["since"] + 10)
     assert lad["rung"] == "fw-gates" and lad["bmc_fru"]["serial"] == "WTH1"
+
+
+# ---- already on, running its installed OS: re-arm PXE once (LVQ et10b4 2026-11-24) ----
+def _disk_boot(live=False):
+    return {"ssh-boot": {"ok": True, "kernel_boot": _t("07:22:06"), "live": live,
+                         "tftp": [], "ipxe": [], "iso": []}}
+
+
+def test_already_on_installed_os_rearms_pxe_and_restarts_at_tftp_seen():
+    lad = at_host_ssh_already_on(_t("07:16:42"), _t("07:31:21"))
+    now = _t("07:31:26")
+    new, acts = L.advance(lad, snap(power_on="on", host_leased=True), _disk_boot(), now)
+    assert acts == ["sol-mark:operator", "claim", "pxe-cycle"]
+    assert new["rung"] == "tftp-seen" and new["power_on_at"] == now and new["last_power_attempt"] == now
+    assert new["rearm"]["at"] == now and not new["fault"]
+    assert "skipped" not in new["marks"]
+
+
+def test_rearmed_ladder_is_a_watched_boot_so_it_never_rearms_again():
+    lad = at_host_ssh_already_on(_t("07:16:42"), _t("07:31:21"))
+    lad, _ = L.advance(lad, snap(power_on="on", host_leased=True), _disk_boot(), _t("07:31:26"))
+    for rung, ev in [("tftp-seen", {"tftp": _t("07:35:00")}), ("ipxe-seen", {"ipxe": _t("07:36:00")}),
+                     ("host-leased", {}), ("live-iso-seen", {"iso": _t("07:37:00")}),
+                     ("host-pinged", {"ping": True})]:
+        assert lad["rung"] == rung
+        lad, _ = L.advance(lad, snap(power_on="on", host_leased=True), ev, _t("07:38:00"))
+    assert lad["rung"] == "host-ssh" and L.evidence_needed(lad) == "ssh"
+
+
+def test_already_on_live_image_walks_on_as_before():
+    lad = at_host_ssh_already_on(_t("07:16:42"), _t("07:31:21"))
+    new, acts = L.advance(lad, snap(power_on="on", host_leased=True), _disk_boot(live=True), _t("07:31:26"))
+    assert new["rung"] == "bmc-ready" and "pxe-cycle" not in acts and "rearm" not in new
+
+
+@pytest.mark.parametrize("gate", [{"hold": True}, {"allowed": False}, {"fw_flashing": True}])
+def test_installed_os_is_left_alone_when_held_unlisted_or_flashing(gate):
+    lad = at_host_ssh_already_on(_t("07:16:42"), _t("07:31:21"))
+    new, acts = L.advance(lad, snap(power_on="on", host_leased=True, **gate), _disk_boot(), _t("07:31:26"))
+    assert new["rung"] == "bmc-ready" and "pxe-cycle" not in acts

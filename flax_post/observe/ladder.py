@@ -243,6 +243,19 @@ def advance(ladder, snap, evidence, now):
     if rung == "host-ssh":
         boot = ev.get("ssh-boot")
         boot = boot if isinstance(boot, dict) else None
+        if boot and boot.get("ok") and boot.get("live") is False and snap.get("allowed") \
+                and not snap.get("hold") and not snap.get("fw_flashing"):
+            # Already on at first sight and running its installed OS, not the live
+            # image: a deployed node put back after a repair (DIMM swap, LVQ et10b4
+            # 2026-11-24) that came up on its own (BMC power restore), so the IPMI
+            # lane never saw a human off->on and nothing re-armed PXE. Re-arm it like
+            # a human reset (spec 2026-11-11 §6) and watch the whole gauntlet again.
+            # The new ladder is a watched boot (no `skipped` mark), so this fires
+            # once; a node that will not PXE faults at tftp-seen with the reason.
+            new = new_ladder(now)
+            new.update(rung="tftp-seen", power_on_at=now, last_power_attempt=now,
+                       rearm={"at": now, "why": "booted its installed OS, not the live image"})
+            return new, acts + ["sol-mark:operator", "claim", "pxe-cycle"]
         if ev.get("ssh") or (boot and boot.get("ok")):
             if boot and lad.get("born_at") is not None:
                 proof = _prove_boot(lad["born_at"], boot, boot.get("kernel_boot"))
