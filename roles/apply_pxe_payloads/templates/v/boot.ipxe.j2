@@ -1,12 +1,16 @@
 {#- Resolve per-VID settings from the inventory `vlans:` array.
     `current_vid` is passed in by the caller (apply_pxe_payloads task
     loop). If the vid isn't in `vlans:` (e.g. the stub vids in
-    apply_pxe_payloads_extra_vids = [1, 2]), fall through to a
-    leopard-triage default so the rendered file is still a valid
-    boot.ipxe and the dispatcher chain works. -#}
+    apply_pxe_payloads_extra_vids, e.g. vid 4 = the mgmt LAN), fall through
+    to apply_pxe_payloads_pxe_fallback_phase (post: staylive, NO disk wipe)
+    on the leopard family default, so the rendered file is still a valid
+    boot.ipxe and the dispatcher chain works. Only a vid the inventory names
+    as a triage VLAN ever gets the inventory action + wipe (operator
+    2026-11-25: a bang netbooted on braintree's mgmt LAN into leopard-triage
+    with flaxwipe=1). -#}
 {%- set vlan_entry = (vlans | selectattr('vid', 'equalto', current_vid | int) | list | first) | default({}) -%}
 {%- set family = vlan_entry.family | default('leopard') -%}
-{%- set phase = vlan_entry.phase | default('triage') -%}
+{%- set phase = vlan_entry.phase | default(apply_pxe_payloads_pxe_fallback_phase | default('post')) -%}
 {%- set pxe_override = vlan_entry.pxe | default({}) -%}
 {%- set fam = apply_pxe_payloads_pxe_family_map[family] | default(apply_pxe_payloads_pxe_family_default) -%}
 {%- set menu = pxe_override.menu | default(apply_pxe_payloads_pxe_menu_default) -%}

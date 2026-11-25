@@ -45,3 +45,26 @@ def test_flag_reaches_the_live_kernel_cmdline():
     t = _render({"vid": 17, "family": "tiogapass", "phase": "triage"})
     live = [l for l in t.splitlines() if l.startswith("set live ")][0]
     assert "postaction=${postaction} flaxwipe=${flaxwipe}" in live
+
+
+def _render_unlisted(vid):
+    env = jinja2.Environment(loader=jinja2.FileSystemLoader(str(ROLE / "templates" / "v")))
+    env.filters["bool"] = _bool
+    ctx = {k: v for k, v in DEFAULTS.items() if k.startswith("apply_pxe_payloads_pxe_")}
+    return env.get_template("boot.ipxe.j2").render(vlans=[], current_vid=vid, **ctx)
+
+
+def test_unlisted_vid_is_post_never_wipes():
+    """A vid with no vlans entry (vid 4, the mgmt LAN) renders as leopard-post:
+    staylive and flaxwipe=0. braintree's bang-siesta netbooted there into
+    leopard-triage with flaxwipe=1 on 2026-11-25."""
+    t = _render_unlisted(4)
+    assert _flag(t) == "0"
+    assert "(leopard-post)" in t
+    assert "isset ${submenu-default} || set submenu-default staylive" in t
+
+
+def test_unknown_phase_stays_live():
+    t = _render({"vid": 40, "family": "tiogapass", "phase": "integra"})
+    assert "isset ${submenu-default} || set submenu-default staylive" in t
+    assert _flag(t) == "0"

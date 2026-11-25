@@ -98,7 +98,15 @@ apply_pxe_payloads_pxe_phase_map:
   triage: inventoryoff
   post:   staylive
 
-apply_pxe_payloads_pxe_phase_default: inventoryoff
+# Submenu for a phase missing from the map above: stay live, never the
+# inventory action (which wipes on a triage VLAN).
+apply_pxe_payloads_pxe_phase_default: staylive
+
+# Phase for a vid with no `vlans:` entry (the extra_vids stubs, e.g. vid 4,
+# the mgmt LAN): post, so anything that netboots there (a bang included)
+# stays live and is never wiped. Triage behaviour comes only from a vlans
+# entry with phase: triage.
+apply_pxe_payloads_pxe_fallback_phase: post
 
 # Site-wide menu default. Overridable per-vlan via `pxe: { menu: ... }`
 # in the inventory entry (e.g. eindhoven vid 31 picks menu-ubuntu for
