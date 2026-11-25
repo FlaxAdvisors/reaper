@@ -309,7 +309,8 @@ def _needs_relocation_cleanup(actual, detail) -> bool:
 
 
 def apply_actions(pool, actions: list, *, enforced_roles: frozenset,
-                  max_deletes: int, actuals_by_mac: dict) -> dict:
+                  max_deletes: int, actuals_by_mac: dict,
+                  exempt_deletes: dict | None = None) -> dict:
     """The enforce-mode apply layer: the ONLY place phase 3a writes
     kea.hosts on the materializer's behalf, and only for actions whose
     owner_role is in `enforced_roles` -- an action for a role NOT in
@@ -365,9 +366,16 @@ def apply_actions(pool, actions: list, *, enforced_roles: frozenset,
     nothing (e.g. a legacy row still untagged), observable residue for the
     checkpoint gate instead of silently reading as a clean apply.
     """
+    # exempt_deletes {role: {mac, ...}}: plain "delete" actions the owning
+    # lane has proved are real vacancies (post: Rule 3 link-down on a switch
+    # whose path checks out, post_reconcile.switch_path_ok). They are applied
+    # like any delete but left out of the cap; purge_handoff never is.
+    exempt_deletes = exempt_deletes or {}
     per_role_deletes = collections.Counter()
     for owner_role, action, mac, detail in actions:
         if owner_role not in enforced_roles:
+            continue
+        if action == "delete" and mac in exempt_deletes.get(owner_role, ()):
             continue
         if action in ("delete", "purge_handoff"):
             per_role_deletes[owner_role] += 1
@@ -465,7 +473,8 @@ def apply_actions(pool, actions: list, *, enforced_roles: frozenset,
 
 
 def run_cycle(pool, owners: set, *, enforced_roles: frozenset = frozenset(),
-             max_deletes: int = _DEFAULT_MAX_DELETES_PER_RUN) -> dict:
+             max_deletes: int = _DEFAULT_MAX_DELETES_PER_RUN,
+             exempt_deletes: dict | None = None) -> dict:
     """Read desired + actuals, plan, apply (for enforced roles only), write
     plan rows (now carrying `applied`/`apply_error`/`skipped_operator_note`/
     `breaker` flags in each row's detail), sweep rows older than 7 days.
@@ -492,7 +501,8 @@ def run_cycle(pool, owners: set, *, enforced_roles: frozenset = frozenset(),
             actuals_by_mac[_norm(a["mac"])] = a
         apply_result = apply_actions(
             pool, actions, enforced_roles=enforced_roles,
-            max_deletes=max_deletes, actuals_by_mac=actuals_by_mac)
+            max_deletes=max_deletes, actuals_by_mac=actuals_by_mac,
+            exempt_deletes=exempt_deletes)
 
     run_id = _next_run_id()
     by_action = collections.Counter(a[1] for a in actions)

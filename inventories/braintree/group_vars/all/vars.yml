@@ -294,7 +294,7 @@ apply_flax_stack_flax_control_image_tag: "0.9.227"
 apply_flax_switch_sense_image_tag: "0.9.227"
 apply_flax_observe_image_tag: "0.9.227"
 apply_flax_discover_image_tag: "0.9.227"
-apply_flax_classify_image_tag: "0.9.227"
+apply_flax_classify_image_tag: "0.9.230"  # 0.9.230 = switch-confirmed post link-down evictions stay out of the materializer delete cap
 apply_flax_reconcile_image_tag: "0.9.227"
 apply_flax_post_image_tag: "0.9.227"
 apply_flax_post_sol_image_tag: "0.9.227"

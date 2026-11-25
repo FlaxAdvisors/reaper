@@ -36,18 +36,21 @@ def read_observe_rows(pool: ConnectionPool) -> list[dict]:
 
 
 _READ_SWITCH_FACTS_SQL = """
-SELECT switch, ports
+SELECT switch, ports, reachable, polled_at
   FROM switch_facts
 """
 
 
 def read_switch_facts(pool: ConnectionPool) -> dict:
     """Snapshot of switch_facts for the feeder. Returns
-    {switch: {"ports": {port: {...}}}}.
+    {switch: {"ports": {port: {...}}, "reachable": bool, "polled_at": ts}}.
+    reachable/polled_at feed post_reconcile.switch_path_ok (the link-down
+    breaker exemption); every other reader uses "ports" only.
     """
     with pool.connection() as conn:
         cur = conn.execute(_READ_SWITCH_FACTS_SQL)
-        return {s: {"ports": p} for s, p in cur.fetchall()}
+        return {s: {"ports": p, "reachable": r, "polled_at": t}
+                for s, p, r, t in cur.fetchall()}
 
 
 _READ_DEVICES_SQL = """

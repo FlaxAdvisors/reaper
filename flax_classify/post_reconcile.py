@@ -19,7 +19,30 @@ from .post_reserve import _COMMS_CONFIRMED
 
 log = logging.getLogger(__name__)
 
-ReconcilePlan = collections.namedtuple("ReconcilePlan", ["deletes", "timer_writes"])
+# linkdown: {mac: switch} for the deletes Rule 3 (link-down past the window)
+# decided, so the caller can exempt them from the materializer's delete cap.
+ReconcilePlan = collections.namedtuple("ReconcilePlan", ["deletes", "timer_writes", "linkdown"],
+                                       defaults=({},))
+
+# A switch's link-down verdicts count as real pulls (exempt from the
+# materializer's per-run delete cap) only when its facts are this fresh.
+SWITCH_PATH_MAX_AGE_SECS = 120.0
+
+
+def switch_path_ok(body, now, max_age=SWITCH_PATH_MAX_AGE_SECS):
+    """Is this switch's link state believable right now? All of: the poller
+    reached it, polled it within max_age, and it still reports link on at
+    least one port (its uplinks), i.e. it is up and forwarding, not
+    rebooting or wedged with every port dark. A switch failing this can
+    still drive Rule 3 evictions, but they count toward the delete cap, so a
+    mass link-down from a bouncing switch trips the breaker as before."""
+    if not body or body.get("reachable") is not True:
+        return False
+    polled = body.get("polled_at")
+    if polled is None or (now - polled).total_seconds() > max_age:
+        return False
+    return any((info or {}).get("link") == "link"
+               for info in (body.get("ports") or {}).values())
 
 
 def _norm(mac):
@@ -139,6 +162,7 @@ def plan_post_reconcile(reservations, switch_facts, now, cfg, observed=None):
 
     deletes = []
     timer_writes = {}
+    linkdown = {}
     for r in reservations:
         mac = _norm(r["mac"])
         if r.get("operator_note") or mac in flash_macs:
@@ -181,6 +205,7 @@ def plan_post_reconcile(reservations, switch_facts, now, cfg, observed=None):
             new_post["link_down_since"] = since
             if rule3_on and _elapsed(since, now) >= linkdown_secs:
                 delete = True
+                linkdown[mac] = r["switch"]
         # link == "unknown" (or anything else): leave link_down_since untouched.
 
         # Rule 2: replaced-blade debounce. Only when link is definitively up and
@@ -212,7 +237,7 @@ def plan_post_reconcile(reservations, switch_facts, now, cfg, observed=None):
         elif new_post != post:
             timer_writes[mac] = new_post
 
-    return ReconcilePlan(deletes, timer_writes)
+    return ReconcilePlan(deletes, timer_writes, linkdown)
 
 
 def duplicate_ipv4(reservations, removed):
@@ -233,8 +258,14 @@ def reconcile_post_reservations(pool, *, facts, now, cfg,
                                 observed: dict | None = None):
     """Read source='post' reservations, plan the reconcile, apply it: stamp
     debounce timers and mirror the eviction/keep decisions into
-    desired_reservations. Returns {"deleted", "timers"}. Best-effort per
-    call -- the post lane wraps it.
+    desired_reservations. Returns {"deleted", "timers",
+    "linkdown_exempt"}. Best-effort per call -- the post lane wraps it.
+
+    linkdown_exempt: the evicted macs Rule 3 decided (port link-down past
+    the window) whose switch passes switch_path_ok in this same facts
+    snapshot. The materializer leaves them out of its per-run delete cap:
+    pulling a rack of blades is a real, switch-confirmed vacancy, not the
+    config-error mass delete the cap exists for.
 
     Post-3b demolition: the LEGACY delete_post_hosts call this function used
     to make (evicting the kea.hosts row directly) is gone -- the
@@ -410,4 +441,8 @@ def reconcile_post_reservations(pool, *, facts, now, cfg,
             log.exception(
                 "desired write (post keep-set) failed for mac=%s", mac)
 
-    return {"deleted": deleted, "timers": len(plan.timer_writes)}
+    path_ok = {sw: switch_path_ok(body, now) for sw, body in (facts or {}).items()}
+    linkdown_exempt = frozenset(
+        m for m in evict if path_ok.get(plan.linkdown.get(m), False))
+    return {"deleted": deleted, "timers": len(plan.timer_writes),
+            "linkdown_exempt": linkdown_exempt}

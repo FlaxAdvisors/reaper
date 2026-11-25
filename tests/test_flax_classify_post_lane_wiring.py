@@ -584,3 +584,27 @@ def test_post_lane_passes_node_orders(monkeypatch):
     monkeypatch.setattr(m, "reconcile_post_reservations", lambda pool, **kw: {"deleted": 0, "timers": 0})
     m.run_post_lane(MagicMock(), "/etc/flax/post-geometry.json", 30.0)
     assert seen["node_orders"] == {"b8599fabaf0e": "RRORD-1033"}
+
+
+def test_post_lane_returns_linkdown_exempt_and_empty_on_failure(monkeypatch):
+    """run_post_lane hands reconcile's switch-confirmed link-down evictions back
+    to main (for the next materializer run's cap exemption); a lane failure
+    exempts nothing."""
+    import flax_classify.__main__ as m
+
+    monkeypatch.setattr(m, "read_post_order", lambda pool: "RRORD-003")
+    monkeypatch.setattr(m, "read_post_racks", lambda path: [("rabbit-edam", "")])
+    monkeypatch.setattr(m, "read_switch_facts", lambda pool: {"rabbit-edam": {}})
+    monkeypatch.setattr(m, "db_now", lambda pool: None)
+    monkeypatch.setattr(m, "_publish_post_dns", lambda *a, **k: None)
+    monkeypatch.setattr(m, "run_post_reservations",
+                        lambda pool, **kw: {"written": 0, "purged": 0})
+    gone = frozenset({"aa:bb:cc:dd:ee:ff"})
+    monkeypatch.setattr(m, "reconcile_post_reservations",
+                        lambda pool, **kw: {"deleted": 1, "timers": 0, "linkdown_exempt": gone})
+    assert m.run_post_lane(MagicMock(), "/etc/flax/post-geometry.json", 30.0) == gone
+
+    def _boom(pool, **kw):
+        raise RuntimeError("db gone")
+    monkeypatch.setattr(m, "reconcile_post_reservations", _boom)
+    assert m.run_post_lane(MagicMock(), "/etc/flax/post-geometry.json", 30.0) == frozenset()

@@ -185,6 +185,11 @@ def run_post_lane(pool, geometry_path, cycle_secs, role_defs=None,
     the triage cycle or its ack. Populates from switch_facts, then reconciles
     (evict replaced blades / depopulate link-down ports).
 
+    Returns the macs this pass evicted for a switch-confirmed link-down
+    (post_reconcile's linkdown_exempt; empty on any failure). main threads
+    them into the NEXT materializer run as {"post": macs}, outside the
+    per-run delete cap.
+
     Post-3b demolition: run_post_reservations and reconcile_post_reservations
     write desired_reservations only now (no more legacy kea writers to gate),
     so this wrapper no longer threads an enforced/enforced_roles config into
@@ -232,10 +237,13 @@ def run_post_lane(pool, geometry_path, cycle_secs, role_defs=None,
             purged_macs=summary.get("purged_macs", frozenset()),
             observed=observed)
         if recon["deleted"]:
-            log.info("post-reconcile deleted=%d timers=%d",
-                     recon["deleted"], recon["timers"])
+            log.info("post-reconcile deleted=%d timers=%d linkdown_exempt=%d",
+                     recon["deleted"], recon["timers"],
+                     len(recon.get("linkdown_exempt", ())))
+        exempt = frozenset(recon.get("linkdown_exempt", ()))
     except Exception:
         log.exception("post reservation lane failed")
+        exempt = frozenset()
 
     # Post DNS: publish A/AAAA for source='post' reservations to the post
     # hostsdir file (dnsmasq inotify-reloads it). Isolated in its own
@@ -246,6 +254,7 @@ def run_post_lane(pool, geometry_path, cycle_secs, role_defs=None,
         _publish_post_dns(pool, post_dns_path)
     except Exception:
         log.exception("post DNS write failed")
+    return exempt
 
 
 def main(argv=None):
@@ -387,6 +396,9 @@ def main(argv=None):
     # dashboard (it gates on freshness + action), so the counter is the
     # documented fallback. GREATEST in write_ack keeps the row monotonic.
     gen_counter = [0]
+    # post Rule 3 evictions from the last post lane pass, exempt from the
+    # materializer's delete cap on its next run (see run_post_lane).
+    post_linkdown_exempt = [frozenset()]
 
     # One hold per process: its "last real target" memory must survive
     # across cycles (a restart re-seeds every existing row as just seen).
@@ -435,7 +447,8 @@ def main(argv=None):
             try:
                 cycle_summary = run_cycle(pool, set(role_defs),
                                           enforced_roles=enforced_roles,
-                                          max_deletes=max_deletes_per_run)
+                                          max_deletes=max_deletes_per_run,
+                                          exempt_deletes={"post": post_linkdown_exempt[0]})
                 by_action = cycle_summary.get("by_action", {})
                 skipped = cycle_summary.get("skipped", {})
                 log.info("materializer cycle: planned=%d upsert=%d delete=%d "
@@ -456,8 +469,9 @@ def main(argv=None):
                          cycle_summary.get("breaker_tripped", []))
             except Exception:
                 log.exception("materializer cycle failed")
-        run_post_lane(pool, args.post_geometry, args.cycle_secs,
-                      active_role_defs, post_dns_path=args.post_dns_hosts)
+        post_linkdown_exempt[0] = run_post_lane(
+            pool, args.post_geometry, args.cycle_secs,
+            active_role_defs, post_dns_path=args.post_dns_hosts) or frozenset()
 
     debouncer = Debouncer(target=_do_cycle, debounce_secs=args.debounce_secs)
     debouncer.start()

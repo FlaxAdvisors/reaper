@@ -39,11 +39,12 @@ def test_read_switch_facts_groups_by_switch():
     from flax_classify.db import read_switch_facts
     pool, conn, cursor = _mock_pool()
     cursor.fetchall.return_value = [
-        ("rabbit-lorax", {"Ethernet6/1": {"access_vid": 17}}),
+        ("rabbit-lorax", {"Ethernet6/1": {"access_vid": 17}}, True, "t0"),
     ]
     out = read_switch_facts(pool)
     assert out == {"rabbit-lorax":
-                   {"ports": {"Ethernet6/1": {"access_vid": 17}}}}
+                   {"ports": {"Ethernet6/1": {"access_vid": 17}},
+                    "reachable": True, "polled_at": "t0"}}
 
 
 # ---------------------------------------------------------------------------

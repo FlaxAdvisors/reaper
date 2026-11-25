@@ -922,7 +922,8 @@ def test_run_cycle_enforced_calls_apply_actions_and_annotates_plan_rows(monkeypa
 
     apply_calls = []
 
-    def _fake_apply(pool, actions, *, enforced_roles, max_deletes, actuals_by_mac):
+    def _fake_apply(pool, actions, *, enforced_roles, max_deletes, actuals_by_mac,
+                    exempt_deletes=None):
         apply_calls.append((enforced_roles, max_deletes, actuals_by_mac))
         return {"applied": 1, "apply_errors": 0, "skipped_operator_note": 0,
                "breaker_tripped": [],
@@ -1173,3 +1174,43 @@ def test_apply_actions_runs_deletes_before_upserts_but_keeps_result_order(monkey
                      ("upsert", "aa:00:00:00:00:03")]
     assert [r.get("deleted_rows") for r in result["results"]] == [None, 1, None]
     assert result["applied"] == 3
+
+
+def test_apply_actions_exempt_deletes_stay_out_of_the_cap(monkeypatch):
+    """A rack pull: 56 post deletes the lane proved are switch-confirmed
+    link-down vacancies apply without tripping the breaker; the same 56
+    unexempted trip it; exempt + 21 unexempted still trips; an exempt mac's
+    purge_handoff still counts."""
+    from flax_classify import materializer
+
+    deleted = []
+    monkeypatch.setattr(materializer, "delete_hosts_for_mac",
+                        lambda pool, **kw: deleted.append(kw["mac"]) or 1)
+    monkeypatch.setattr(materializer, "upsert_kea_host", lambda pool, **kw: None)
+    macs = [f"aa:aa:aa:aa:{i:02x}:00" for i in range(56)]
+    actuals = {m: {"operator_note": False} for m in macs}
+    actions = [("post", "delete", m, {}) for m in macs]
+    post = frozenset({"post"})
+
+    r = materializer.apply_actions(object(), actions, enforced_roles=post, max_deletes=20,
+                                   actuals_by_mac=actuals, exempt_deletes={"post": set(macs)})
+    assert r["breaker_tripped"] == [] and r["applied"] == 56 and sorted(deleted) == sorted(macs)
+
+    deleted.clear()
+    r = materializer.apply_actions(object(), actions, enforced_roles=post, max_deletes=20,
+                                   actuals_by_mac=actuals)
+    assert r["breaker_tripped"] == ["post"] and deleted == []
+
+    r = materializer.apply_actions(object(), actions, enforced_roles=post, max_deletes=20,
+                                   actuals_by_mac=actuals, exempt_deletes={"post": set(macs[:35])})
+    assert r["breaker_tripped"] == ["post"] and deleted == []
+
+    r = materializer.apply_actions(object(), actions, enforced_roles=post, max_deletes=20,
+                                   actuals_by_mac=actuals, exempt_deletes={"triage": set(macs)})
+    assert r["breaker_tripped"] == ["post"], "exemptions are per role"
+
+    handoffs = [("post", "purge_handoff", m, {"from": "triage", "to": "post",
+                                              "desired": {}}) for m in macs[:21]]
+    r = materializer.apply_actions(object(), handoffs, enforced_roles=post, max_deletes=20,
+                                   actuals_by_mac=actuals, exempt_deletes={"post": set(macs)})
+    assert r["breaker_tripped"] == ["post"], "purge_handoff is never exempt"

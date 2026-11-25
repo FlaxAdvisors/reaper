@@ -179,7 +179,7 @@ def test_reconcile_reads_plans_and_applies():
          mock.patch.object(pr, "delete_desired"):
         out = pr.reconcile_post_reservations(
             pool=mock.MagicMock(), facts=facts, now=_now(seconds=900), cfg=_cfg())
-    assert out == {"deleted": 1, "timers": 0}
+    assert {k: out[k] for k in ("deleted", "timers")} == {"deleted": 1, "timers": 0}
     stamp.assert_not_called()  # nothing to stamp when the only row is deleted
 
 
@@ -195,7 +195,7 @@ def test_reconcile_mirrors_deletes_to_desired_reservations():
          mock.patch.object(pr, "delete_desired") as delete_desired:
         out = pr.reconcile_post_reservations(
             pool=mock.MagicMock(), facts=facts, now=_now(seconds=900), cfg=_cfg())
-    assert out == {"deleted": 1, "timers": 0}
+    assert {k: out[k] for k in ("deleted", "timers")} == {"deleted": 1, "timers": 0}
     delete_desired.assert_called_once_with(
         mock.ANY, owner_role="post", macs=["aa:aa:aa:aa:aa:aa"])
 
@@ -216,7 +216,7 @@ def test_reconcile_desired_write_failure_isolated():
          mock.patch.object(pr, "delete_desired", _boom):
         out = pr.reconcile_post_reservations(
             pool=mock.MagicMock(), facts=facts, now=_now(seconds=900), cfg=_cfg())
-    assert out == {"deleted": 1, "timers": 0}
+    assert {k: out[k] for k in ("deleted", "timers")} == {"deleted": 1, "timers": 0}
 
 
 def test_reconcile_no_desired_delete_call_when_nothing_to_delete():
@@ -230,7 +230,7 @@ def test_reconcile_no_desired_delete_call_when_nothing_to_delete():
          mock.patch.object(pr, "upsert_desired") as upsert_desired:
         out = pr.reconcile_post_reservations(
             pool=mock.MagicMock(), facts=facts, now=_now(), cfg=_cfg())
-    assert out == {"deleted": 0, "timers": 0}
+    assert {k: out[k] for k in ("deleted", "timers")} == {"deleted": 0, "timers": 0}
     delete_desired.assert_not_called()
     upsert_desired.assert_called_once_with(
         mock.ANY, owner_role="post", mac="aa:aa:aa:aa:aa:aa", kind="bmc",
@@ -253,7 +253,7 @@ def test_reconcile_keepset_upserts_retained_reservation():
          mock.patch.object(pr, "upsert_desired") as upsert_desired:
         out = pr.reconcile_post_reservations(
             pool=mock.MagicMock(), facts=facts, now=_now(), cfg=_cfg())
-    assert out == {"deleted": 0, "timers": 0}
+    assert {k: out[k] for k in ("deleted", "timers")} == {"deleted": 0, "timers": 0}
     delete_desired.assert_not_called()
     upsert_desired.assert_called_once_with(
         mock.ANY, owner_role="post", mac="aa:aa:aa:aa:aa:aa", kind="bmc",
@@ -273,7 +273,7 @@ def test_reconcile_keepset_excludes_deleted_rows():
          mock.patch.object(pr, "upsert_desired") as upsert_desired:
         out = pr.reconcile_post_reservations(
             pool=mock.MagicMock(), facts=facts, now=_now(seconds=900), cfg=_cfg())
-    assert out == {"deleted": 1, "timers": 0}
+    assert {k: out[k] for k in ("deleted", "timers")} == {"deleted": 1, "timers": 0}
     upsert_desired.assert_not_called()
     delete_desired.assert_called_once_with(
         mock.ANY, owner_role="post", macs=["aa:aa:aa:aa:aa:aa"])
@@ -305,7 +305,7 @@ def test_reconcile_keepset_upsert_failure_isolated_delete_mirror_still_applied()
          mock.patch.object(pr, "upsert_desired", _boom):
         out = pr.reconcile_post_reservations(
             pool=mock.MagicMock(), facts=facts, now=_now(seconds=900), cfg=_cfg())
-    assert out == {"deleted": 1, "timers": 0}
+    assert {k: out[k] for k in ("deleted", "timers")} == {"deleted": 1, "timers": 0}
     delete_desired.assert_called_once_with(
         mock.ANY, owner_role="post", macs=["bb:bb:bb:bb:bb:bb"])
 
@@ -324,7 +324,7 @@ def test_reconcile_stamp_post_timers_always_runs_when_only_timers_planned():
          mock.patch.object(pr, "upsert_desired"):
         out = pr.reconcile_post_reservations(
             pool=mock.MagicMock(), facts=facts, now=_now(), cfg=_cfg())
-    assert out == {"deleted": 0, "timers": 1}
+    assert {k: out[k] for k in ("deleted", "timers")} == {"deleted": 0, "timers": 1}
     stamp.assert_called_once_with(
         mock.ANY, {"aa:aa:aa:aa:aa:aa": {"link_down_since": _now().isoformat()}})
 
@@ -341,7 +341,7 @@ def test_reconcile_keepset_kind_none_defaults_to_bmc():
          mock.patch.object(pr, "upsert_desired") as upsert_desired:
         out = pr.reconcile_post_reservations(
             pool=mock.MagicMock(), facts=facts, now=_now(), cfg=_cfg())
-    assert out == {"deleted": 0, "timers": 0}
+    assert {k: out[k] for k in ("deleted", "timers")} == {"deleted": 0, "timers": 0}
     upsert_desired.assert_called_once_with(
         mock.ANY, owner_role="post", mac="aa:aa:aa:aa:aa:aa", kind="bmc",
         hostname=None, ipv4=None, ipv6=None, vid=None,
@@ -366,7 +366,7 @@ def test_reconcile_keepset_skips_mac_the_reserve_pass_just_derived():
         out = pr.reconcile_post_reservations(
             pool=mock.MagicMock(), facts=facts, now=_now(), cfg=_cfg(),
             derived_macs=frozenset({"aa:aa:aa:aa:aa:aa"}))
-    assert out == {"deleted": 0, "timers": 0}
+    assert {k: out[k] for k in ("deleted", "timers")} == {"deleted": 0, "timers": 0}
     upsert_desired.assert_not_called()
 
 
@@ -386,7 +386,7 @@ def test_reconcile_keepset_still_upserts_quiet_port_mac_not_in_derived_macs():
         out = pr.reconcile_post_reservations(
             pool=mock.MagicMock(), facts=facts, now=_now(), cfg=_cfg(),
             derived_macs=frozenset({"bb:bb:bb:bb:bb:bb"}))
-    assert out == {"deleted": 0, "timers": 0}
+    assert {k: out[k] for k in ("deleted", "timers")} == {"deleted": 0, "timers": 0}
     upsert_desired.assert_called_once_with(
         mock.ANY, owner_role="post", mac="aa:aa:aa:aa:aa:aa", kind="bmc",
         hostname="et6b1-bmc", ipv4="172.31.6.101", ipv6="fe80::1", vid=31,
@@ -436,7 +436,7 @@ def test_reconcile_keepset_per_row_isolation_one_failure_does_not_block_others()
          mock.patch.object(pr, "upsert_desired", _upsert):
         out = pr.reconcile_post_reservations(
             pool=mock.MagicMock(), facts=facts, now=_now(), cfg=_cfg())
-    assert out == {"deleted": 0, "timers": 0}
+    assert {k: out[k] for k in ("deleted", "timers")} == {"deleted": 0, "timers": 0}
     # the SECOND row's upsert must still have run despite the first raising.
     assert calls == ["cc:cc:cc:cc:cc:cc"]
 
@@ -525,7 +525,7 @@ def test_reconcile_default_purged_macs_empty_keeps_prior_behavior():
          mock.patch.object(pr, "upsert_desired") as upsert_desired:
         out = pr.reconcile_post_reservations(
             pool=mock.MagicMock(), facts=facts, now=_now(), cfg=_cfg())
-    assert out == {"deleted": 0, "timers": 0}
+    assert {k: out[k] for k in ("deleted", "timers")} == {"deleted": 0, "timers": 0}
     delete_desired.assert_not_called()
     assert {c.kwargs["mac"] for c in upsert_desired.call_args_list} == {_OLD, _NEW}
 
@@ -732,7 +732,7 @@ def test_reconcile_threads_observed_and_evicts_via_2b():
         out = pr.reconcile_post_reservations(
             pool=mock.MagicMock(), facts=_facts(macs=(_B,)), now=_now(),
             cfg=_cfg(), observed=_obs())
-    assert out == {"deleted": 1, "timers": 0}
+    assert {k: out[k] for k in ("deleted", "timers")} == {"deleted": 1, "timers": 0}
     stamp.assert_not_called()
     delete_desired.assert_called_once_with(mock.ANY, owner_role="post", macs=[_A])
     assert {c.kwargs["mac"] for c in upsert_desired.call_args_list} == {_B}
@@ -808,7 +808,7 @@ def test_reconcile_duplicate_check_failure_never_blocks_keepset():
          mock.patch.object(pr, "upsert_desired") as upsert_desired:
         out = pr.reconcile_post_reservations(
             pool=mock.MagicMock(), facts=facts, now=_now(), cfg=_cfg())
-    assert out == {"deleted": 0, "timers": 0}
+    assert {k: out[k] for k in ("deleted", "timers")} == {"deleted": 0, "timers": 0}
     # Both retained reservations must have been keep-set-upserted despite the
     # duplicate-check failure.
     upserted = {c.kwargs["mac"] for c in upsert_desired.call_args_list}
@@ -847,3 +847,51 @@ def test_reconcile_never_evicts_a_mac_the_reserve_pass_derived():
     delete_desired.assert_not_called()
     assert out["deleted"] == 0
     assert _A not in {c.kwargs["mac"] for c in upsert_desired.call_args_list}
+
+
+# --- link-down exemption from the materializer delete cap -----------------
+def _edam(reachable=True, age=10, uplink="link", slot="nolink"):
+    return {"rabbit-edam": {"reachable": reachable,
+                            "polled_at": _now(seconds=-age),
+                            "ports": {"Ethernet1/1": {"link": uplink, "macs": []},
+                                      "Ethernet6/1": {"link": slot, "macs": []}}}}
+
+
+def test_switch_path_ok():
+    from flax_classify.post_reconcile import switch_path_ok
+    ok = lambda **kw: switch_path_ok(_edam(**kw)["rabbit-edam"], _now())
+    assert ok() is True
+    assert ok(reachable=False) is False
+    assert ok(age=121) is False
+    assert ok(uplink="nolink") is False, "every port dark = rebooting/wedged switch"
+    assert switch_path_ok(None, _now()) is False
+    assert switch_path_ok({"reachable": True, "polled_at": None, "ports": {}}, _now()) is False
+
+
+def test_plan_tags_rule3_deletes_only():
+    gone = _res(post={"link_down_since": _now(seconds=-60).isoformat()})
+    plan = plan_post_reconcile([gone], _edam(), _now(), _cfg(linkdown=30.0))
+    assert plan.deletes == ["aa:aa:aa:aa:aa:aa"]
+    assert plan.linkdown == {"aa:aa:aa:aa:aa:aa": "rabbit-edam"}
+    young = _res(post={"link_down_since": _now(seconds=-10).isoformat()})
+    plan = plan_post_reconcile([young], _edam(), _now(), _cfg(linkdown=30.0))
+    assert plan.deletes == [] and plan.linkdown == {}
+
+
+def _run_linkdown(facts):
+    from flax_classify import post_reconcile as pr
+    gone = _res(post={"link_down_since": _now(seconds=-60).isoformat()})
+    with mock.patch.object(pr, "read_post_reservations", return_value=[gone]), \
+         mock.patch.object(pr, "stamp_post_timers"), \
+         mock.patch.object(pr, "delete_desired"), \
+         mock.patch.object(pr, "upsert_desired"):
+        return pr.reconcile_post_reservations(
+            pool=mock.MagicMock(), facts=facts, now=_now(), cfg=_cfg(linkdown=30.0))
+
+
+def test_reconcile_exempts_linkdown_only_on_a_healthy_switch_path():
+    assert _run_linkdown(_edam())["linkdown_exempt"] == frozenset({"aa:aa:aa:aa:aa:aa"})
+    for bad in (_edam(age=600), _edam(uplink="nolink")):
+        out = _run_linkdown(bad)
+        assert out["deleted"] == 1, "Rule 3 still evicts"
+        assert out["linkdown_exempt"] == frozenset(), "but it counts toward the cap"
