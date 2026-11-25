@@ -83,12 +83,22 @@ def build_policy(health_rows, registry, desired_rows, uncovered_count,
 
 def build_actuation(health_rows, shadow_model, kea_count, cadence_rows,
                     flap_count, now, stale_secs,
-                    config_rows=None, anomalies=None, events=None):
+                    config_rows=None, anomalies=None, events=None,
+                    breaker=None):
     """'Are hands moving, and only as instructed?'"""
     panels = _ack_panels(health_rows, ("flax-reconcile",))
     m = shadow_model or {}
     stale = shadow_view.is_stale(m.get("latest_plan_ts"), now, stale_secs)
-    if stale:
+    if breaker:
+        panels.append(panel(
+            "materializer",
+            "HELD: " + ", ".join(b["role"] for b in breaker), badge="err",
+            href="/shadow",
+            hint="; ".join(f"{b['role']}: {b['held_deletes']} deletions over the "
+                           f"per-run limit, {b['held_total']} writes held"
+                           + (f" for {b['held_for']}" if b["held_for"] else "")
+                           for b in breaker)))
+    elif stale:
         panels.append(panel("materializer", "NO FRESH CYCLE", badge="err",
                             href="/shadow", hint="write-freeze detector"))
     elif m.get("converged"):

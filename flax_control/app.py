@@ -187,7 +187,22 @@ def index(request: Request) -> HTMLResponse:
         classify_state=by.get("flax-classify", "missing"),
         reconcile_state=by.get("flax-reconcile", "missing"),
         recent_events=recent,
+        breaker=_breaker(),
     ))
+
+
+def _breaker():
+    """Roles the materializer's delete breaker is holding (see
+    shadow_view.build_breaker); [] when writes are flowing."""
+    return shadow_view.build_breaker(
+        queries.materializer_breaker(),
+        datetime.datetime.now(datetime.timezone.utc))
+
+
+@app.get("/partials/alerts", response_class=HTMLResponse)
+def partial_alerts(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(request, "partials/alerts.html",
+                                       {"request": request, "breaker": _breaker()})
 
 
 @app.get("/partials/pipeline", response_class=HTMLResponse)
@@ -651,7 +666,8 @@ def layers_actuation_page(request: Request) -> HTMLResponse:
         now, int(_os.environ.get("CONTROL_MATERIALIZER_STALE_SECS", "180")),
         config_rows=_layer_config_rows(svcs),
         anomalies=queries.layer_anomalies(svcs),
-        events=queries.events_for_services(svcs))
+        events=queries.events_for_services(svcs),
+        breaker=_breaker())
     return templates.TemplateResponse(request, "layer.html", _ctx(
         request=request, title="Actuation",
         question="Are hands moving, and only as instructed?",

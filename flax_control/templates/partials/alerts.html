@@ -1,0 +1,10 @@
+{% for b in breaker %}
+<div class="alertbar crit" role="alert">
+  <b>Reservation writes held: {{ b.role }}</b>
+  <span>{{ b.held_deletes }} deletions in one cycle exceed the per-run limit, so classify applies
+    nothing for {{ b.role }}, new blades' reservations included ({{ b.held_total }} writes held{% if b.held_for %}, for {{ b.held_for }} since {{ b.since.strftime('%H:%M') }} UTC{% endif %}).</span>
+  <span class="hint">If those blades really left, roll classify once with
+    <code>-e apply_flax_classify_materializer_max_deletes=100</code>, then back to 20.
+    <a href="/shadow">plan</a></span>
+</div>
+{% endfor %}

@@ -79,6 +79,21 @@ def test_build_actuation_freeze_and_convergence():
     assert {p["label"]: p for p in stale_result["panels"]}["materializer"]["badge"] == "err"
 
 
+def test_build_actuation_breaker_beats_convergence():
+    from flax_control.layers_view import build_actuation
+    fresh = _NOW - datetime.timedelta(seconds=30)
+    model = {"ran": True, "converged": False, "latest_plan_ts": fresh,
+             "planned_count": 84}
+    held = [{"role": "post", "held_deletes": 56, "held_total": 84,
+             "held_for": "4h51m", "since": fresh, "latest_ts": fresh}]
+    result = build_actuation([], model, 100, [], 0, _NOW, 180, breaker=held)
+    m = {p["label"]: p for p in result["panels"]}["materializer"]
+    assert m["badge"] == "err" and m["value"] == "HELD: post"
+    assert "56 deletions" in m["hint"] and "4h51m" in m["hint"]
+    ok = build_actuation([], model, 100, [], 0, _NOW, 180, breaker=[])
+    assert {p["label"]: p for p in ok["panels"]}["materializer"]["badge"] == "warn"
+
+
 def test_layer_routes_render(client):
     with patch("flax_control.queries.consumer_acks", return_value=[]), \
          patch("flax_control.queries.switches", return_value=[]), \
@@ -95,6 +110,7 @@ def test_layer_routes_render(client):
          patch("flax_control.queries.intentional_flap_active", return_value=0), \
          patch("flax_control.queries.layer_anomalies", return_value=[]), \
          patch("flax_control.queries.events_for_services", return_value=[]), \
+         patch("flax_control.queries.materializer_breaker", return_value=[]), \
          patch("flax_control.config_map_view.catalogue_with_mtimes", return_value=[]):
         for path in ("/layers/sensing", "/layers/policy", "/layers/actuation"):
             resp = client.get(path)

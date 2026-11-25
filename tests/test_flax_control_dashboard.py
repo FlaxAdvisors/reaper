@@ -69,6 +69,7 @@ def _patch_index(mp):
     mp.setattr("flax_control.queries.desired_by_role_kind", lambda: [("triage", "port", 5)])
     mp.setattr("flax_control.queries.leases", lambda: [])
     mp.setattr("flax_control.queries.reservations", lambda: [])
+    mp.setattr("flax_control.queries.materializer_breaker", lambda: [])
 
 
 def test_index_renders_hero(monkeypatch):
@@ -93,3 +94,36 @@ def test_partial_events_route():
     with patch("flax_control.queries.events", return_value=[]):
         resp = TestClient(app).get("/partials/events")
     assert resp.status_code == 200
+
+
+def _tripped_rows():
+    import datetime
+    now = datetime.datetime.now(datetime.timezone.utc)
+    return [("post", now - datetime.timedelta(hours=4, minutes=51), 56, 84, now)]
+
+
+def test_index_shows_breaker_alert(monkeypatch):
+    from flax_control.app import app
+    _patch_index(monkeypatch)
+    monkeypatch.setattr("flax_control.queries.materializer_breaker", _tripped_rows)
+    body = TestClient(app).get("/").text
+    assert "Reservation writes held: post" in body
+    assert "56 deletions" in body and "84 writes held, for 4h51m" in body
+    assert "held: post" in body
+
+
+def test_index_quiet_when_writes_flow(monkeypatch):
+    from flax_control.app import app
+    _patch_index(monkeypatch)
+    body = TestClient(app).get("/").text
+    assert "Reservation writes held" not in body
+    assert "flowing" in body
+
+
+def test_partial_alerts_route(monkeypatch):
+    from flax_control.app import app
+    monkeypatch.setattr("flax_control.queries.materializer_breaker", _tripped_rows)
+    resp = TestClient(app).get("/partials/alerts")
+    assert resp.status_code == 200 and "Reservation writes held: post" in resp.text
+    monkeypatch.setattr("flax_control.queries.materializer_breaker", lambda: [])
+    assert TestClient(app).get("/partials/alerts").text.strip() == ""

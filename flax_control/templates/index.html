@@ -4,6 +4,10 @@
 <h1 class="page">System status</h1>
 <p class="page-sub">The pipeline axis and the role lanes riding on it — live.</p>
 
+<div id="alerts" hx-get="/partials/alerts" hx-trigger="every 30s" hx-swap="innerHTML">
+  {% include "partials/alerts.html" %}
+</div>
+
 <div class="hero">
   <div class="hero-head">
     <span class="statelamp {{ pipeline.overall }}"><span class="big"></span>
@@ -31,6 +35,8 @@
   <a class="lcard" href="/layers/actuation"><div class="q">Hands moving, as instructed?</div>
     <h3>Actuation</h3>
     <div class="lrow"><span class="k">Reconcile</span><span class="v">{{ reconcile_state }}</span></div>
+    <div class="lrow"><span class="k">Reservation writes</span>
+      {% if breaker %}<span class="badge c">held: {{ breaker|map(attribute='role')|join(', ') }}</span>{% else %}<span class="badge g">flowing</span>{% endif %}</div>
   </a>
 </div>
 

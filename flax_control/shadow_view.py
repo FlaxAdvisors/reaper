@@ -51,6 +51,28 @@ def is_stale(latest_plan_ts, now, stale_secs):
     return (now - latest_plan_ts).total_seconds() > stale_secs
 
 
+def build_breaker(rows, now):
+    """Shape queries.materializer_breaker() rows for the console alert.
+
+    The delete breaker exists for the config-error class (a registry/universe
+    mistake turning into a mass delete). A tripped role applies NOTHING --
+    new blades get no reservation -- so it must be loud, not just a log line.
+    Returns [] or [{"role", "since", "held_for", "held_deletes",
+    "held_total", "latest_ts"}, ...]."""
+    out = []
+    for role, since, held_deletes, held_total, latest_ts in rows or []:
+        held_for = None
+        if since is not None:
+            secs = max(0, int((now - since).total_seconds()))
+            h, m = divmod(secs // 60, 60)
+            held_for = f"{h}h{m:02d}m" if h else f"{m}m"
+        out.append({"role": role, "since": since, "held_for": held_for,
+                    "held_deletes": int(held_deletes or 0),
+                    "held_total": int(held_total or 0),
+                    "latest_ts": latest_ts})
+    return out
+
+
 def _run_of(detail: Any) -> Any:
     """Extract detail->>'run' from a materializer_plan detail jsonb value.
     detail arrives already deserialized to a dict (or None/empty)."""

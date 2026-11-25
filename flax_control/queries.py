@@ -150,6 +150,51 @@ def materializer_recent(limit: int = 500) -> list[tuple]:
             return cur.fetchall()
 
 
+def materializer_breaker() -> list[tuple]:
+    """Roles the NEWEST materializer run held back with its delete breaker
+    (MATERIALIZER_MAX_DELETES_PER_RUN): one (role, since, held_deletes,
+    held_total, latest_ts) row per tripped role, [] when none tripped.
+
+    since       = ts of the first summary of the current unbroken trip streak
+                  for that role (the first summary after the last one that did
+                  NOT list the role; retention keeps 7 days).
+    held_*      = that role's planned rows in the newest run (deletes incl.
+                  purge_handoff, and every action), all unapplied: a tripped
+                  role applies NOTHING, adds included.
+    A run's action rows precede its summary row, so the newest run is the id
+    range between the previous summary and the newest one (pkey range, no
+    jsonb scan)."""
+    sql = """
+WITH latest AS (
+  SELECT id, ts, detail FROM materializer_plan WHERE action = 'summary'
+  ORDER BY id DESC LIMIT 1),
+prev AS (
+  SELECT coalesce(max(id), 0) AS id FROM materializer_plan
+  WHERE action = 'summary' AND id < (SELECT id FROM latest)),
+tripped AS (
+  SELECT r.role FROM latest,
+    jsonb_array_elements_text(coalesce(latest.detail->'breaker_tripped', '[]'::jsonb)) AS r(role))
+SELECT t.role,
+  (SELECT min(s.ts) FROM materializer_plan s
+    WHERE s.action = 'summary' AND s.id <= (SELECT id FROM latest)
+      AND s.id > coalesce((SELECT max(c.id) FROM materializer_plan c
+                            WHERE c.action = 'summary' AND c.id < (SELECT id FROM latest)
+                              AND NOT (coalesce(c.detail->'breaker_tripped', '[]'::jsonb) ? t.role)), 0)),
+  (SELECT count(*) FROM materializer_plan p
+    WHERE p.id > (SELECT id FROM prev) AND p.id < (SELECT id FROM latest)
+      AND p.owner_role = t.role AND p.action IN ('delete', 'purge_handoff')),
+  (SELECT count(*) FROM materializer_plan p
+    WHERE p.id > (SELECT id FROM prev) AND p.id < (SELECT id FROM latest)
+      AND p.owner_role = t.role),
+  (SELECT ts FROM latest)
+FROM tripped t ORDER BY t.role"""
+    pool = get_pool()
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            return cur.fetchall()
+
+
 def ownership_events_recent(limit: int = 200, mac: str | None = None) -> list[tuple]:
     """Return raw (at, mac, from_role, to_role, switch, port) rows from
     `mac_ownership_events`, newest first, for shadow_view.build_shadow().
